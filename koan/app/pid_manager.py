@@ -357,14 +357,19 @@ def start_ollama(koan_root: Path, verify_timeout: float = OLLAMA_VERIFY_TIMEOUT)
     # Write PID file — ollama serve is an external binary (no flock)
     acquire_pid(koan_root, "ollama", proc.pid)
 
-    # Wait briefly for ollama to start listening
+    # Wait for ollama to start listening on HTTP
     deadline = time.monotonic() + verify_timeout
     while time.monotonic() < deadline:
-        if _is_process_alive(proc.pid):
+        if not _is_process_alive(proc.pid):
+            release_pid(koan_root, "ollama")
+            return False, "ollama launched but exited immediately — check ollama logs"
+        if _ollama_http_ready():
             return True, f"ollama serve started (PID {proc.pid})"
         time.sleep(0.3)
 
-    # Clean up stale PID file — process is dead, don't leave phantom PIDs
+    # Process is alive but HTTP not ready yet — still report success
+    if _is_process_alive(proc.pid):
+        return True, f"ollama serve started (PID {proc.pid}), still warming up"
     release_pid(koan_root, "ollama")
     return False, "ollama launched but exited immediately — check ollama logs"
 
@@ -500,6 +505,17 @@ def _detect_provider(koan_root: Path) -> str:
         return get_provider_name()
     except (ImportError, OSError, ValueError):
         return "claude"
+
+
+def _ollama_http_ready() -> bool:
+    """Check if Ollama server is responding on HTTP."""
+    try:
+        import urllib.request
+        req = urllib.request.Request("http://localhost:11434/", method="GET")
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
 
 
 def _needs_ollama(provider: str) -> bool:

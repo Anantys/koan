@@ -1,6 +1,6 @@
 """Ollama Launch provider — delegates to 'ollama launch claude'.
 
-Uses Ollama v0.16.0+ ``ollama launch claude`` integration to run Claude
+Uses Ollama v0.15.0+ ``ollama launch claude`` integration to run Claude
 Code CLI through a local Ollama server.  This is simpler than manual
 env-var configuration: Ollama handles ``ANTHROPIC_BASE_URL`` setup and
 server lifecycle internally.
@@ -15,11 +15,16 @@ Claude Code CLI verbatim.
 """
 
 import os
+import re
 import shutil
+import subprocess
 import sys
 from typing import Dict, List, Optional, Tuple
 
 from app.provider.base import CLIProvider
+
+# Minimum Ollama version required for the 'launch' subcommand
+MIN_OLLAMA_VERSION = (0, 15, 0)
 
 
 class OllamaLaunchProvider(CLIProvider):
@@ -74,8 +79,34 @@ class OllamaLaunchProvider(CLIProvider):
         return "ollama launch claude"
 
     def is_available(self) -> bool:
-        """Check that ollama binary exists and is v0.16.0+."""
-        return shutil.which("ollama") is not None
+        """Check that ollama binary exists and supports 'launch'."""
+        if not shutil.which("ollama"):
+            return False
+        version = self.get_version()
+        if version is None:
+            # Binary exists but can't determine version — assume OK
+            return True
+        return version >= MIN_OLLAMA_VERSION
+
+    @staticmethod
+    def get_version() -> Optional[Tuple[int, ...]]:
+        """Parse the installed Ollama version as a tuple, e.g. (0, 16, 3).
+
+        Returns None if the version cannot be determined.
+        """
+        try:
+            result = subprocess.run(
+                ["ollama", "-v"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode != 0:
+                return None
+            match = re.search(r"(\d+\.\d+\.\d+)", result.stdout)
+            if match:
+                return tuple(int(x) for x in match.group(1).split("."))
+        except Exception:
+            pass
+        return None
 
     def build_prompt_args(self, prompt: str) -> List[str]:
         return ["-p", prompt]
@@ -157,8 +188,16 @@ class OllamaLaunchProvider(CLIProvider):
         return cmd
 
     def get_env(self) -> Dict[str, str]:
-        """No extra env vars needed — ollama handles everything."""
-        return {}
+        """Environment variables for Ollama.
+
+        Sets OLLAMA_NO_CLOUD=1 by default to prevent data leaving the
+        machine (Ollama v0.16.2+ supports offloading to cloud models).
+        Users can override by setting OLLAMA_NO_CLOUD=0 in their env.
+        """
+        env: Dict[str, str] = {}
+        if not os.environ.get("OLLAMA_NO_CLOUD"):
+            env["OLLAMA_NO_CLOUD"] = "1"
+        return env
 
     def check_quota_available(self, project_path: str, timeout: int = 15) -> Tuple[bool, str]:
         """Local models have no API quota — always available."""
