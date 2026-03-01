@@ -503,7 +503,7 @@ class TestRunReview:
     ):
         """Full review pipeline with JSON output: fetch -> claude -> parse -> post."""
         mock_fetch.return_value = pr_context
-        mock_claude.return_value = json.dumps(LGTM_REVIEW_JSON)
+        mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
         mock_notify = MagicMock()
 
         success, summary, review_data = run_review(
@@ -535,7 +535,8 @@ class TestRunReview:
         mock_claude.return_value = (
             "## PR Review — Fix auth bypass\n\n"
             "Solid fix. No issues found.\n\n---\n\n"
-            "### Summary\n\nMerge-ready."
+            "### Summary\n\nMerge-ready.",
+            "",
         )
         mock_notify = MagicMock()
 
@@ -563,8 +564,8 @@ class TestRunReview:
         mock_fetch.return_value = pr_context
         # First call returns markdown, second returns JSON
         mock_claude.side_effect = [
-            "Not JSON at all",
-            json.dumps(VALID_REVIEW_JSON),
+            ("Not JSON at all", ""),
+            (json.dumps(VALID_REVIEW_JSON), ""),
         ]
         mock_notify = MagicMock()
 
@@ -617,7 +618,7 @@ class TestRunReview:
     ):
         """Returns failure when Claude produces no output."""
         mock_fetch.return_value = pr_context
-        mock_claude.return_value = ""
+        mock_claude.return_value = ("", "Timeout (300s)")
         mock_notify = MagicMock()
 
         success, summary, _rd = run_review(
@@ -627,7 +628,29 @@ class TestRunReview:
         )
 
         assert success is False
-        assert "no output" in summary
+        assert "failed" in summary.lower()
+        assert "Timeout" in summary
+
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    def test_claude_failure_without_error_detail(
+        self, mock_fetch, mock_claude, pr_context, review_skill_dir,
+    ):
+        """Failure without error detail still reports cleanly."""
+        mock_fetch.return_value = pr_context
+        mock_claude.return_value = ("", "")
+        mock_notify = MagicMock()
+
+        success, summary, _rd = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=mock_notify,
+            skill_dir=review_skill_dir,
+        )
+
+        assert success is False
+        assert "failed" in summary.lower()
+        # No error detail — message should not contain "()"
+        assert "()" not in summary
 
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
     @patch("app.review_runner.run_gh", side_effect=RuntimeError("post fail"))
@@ -639,7 +662,7 @@ class TestRunReview:
     ):
         """Handles comment posting failure."""
         mock_fetch.return_value = pr_context
-        mock_claude.return_value = "## PR Review — Fix auth bypass\n\nGood code"
+        mock_claude.return_value = ("## PR Review — Fix auth bypass\n\nGood code", "")
         mock_notify = MagicMock()
 
         success, summary, _rd = run_review(
@@ -650,6 +673,74 @@ class TestRunReview:
 
         assert success is False
         assert "failed to post" in summary.lower()
+
+
+# ---------------------------------------------------------------------------
+# _run_claude_review
+# ---------------------------------------------------------------------------
+
+class TestRunClaudeReview:
+    @patch("app.claude_step.run_claude")
+    @patch("app.cli_provider.build_full_command", return_value=["claude", "--test"])
+    @patch("app.config.get_model_config", return_value={"mission": "m", "fallback": "f"})
+    def test_success_returns_output_and_empty_error(
+        self, mock_config, mock_build, mock_claude,
+    ):
+        """On success, returns (output, empty error)."""
+        from app.review_runner import _run_claude_review
+
+        mock_claude.return_value = {"success": True, "output": "review text", "error": ""}
+        output, error = _run_claude_review("prompt", "/tmp/project")
+        assert output == "review text"
+        assert error == ""
+
+    @patch("app.claude_step.run_claude")
+    @patch("app.cli_provider.build_full_command", return_value=["claude", "--test"])
+    @patch("app.config.get_model_config", return_value={"mission": "m", "fallback": "f"})
+    def test_failure_returns_error_detail(
+        self, mock_config, mock_build, mock_claude,
+    ):
+        """On failure, returns empty output and error detail."""
+        from app.review_runner import _run_claude_review
+
+        mock_claude.return_value = {
+            "success": False, "output": "", "error": "Timeout (300s)",
+        }
+        output, error = _run_claude_review("prompt", "/tmp/project")
+        assert output == ""
+        assert "Timeout" in error
+
+    @patch("app.claude_step.run_claude")
+    @patch("app.cli_provider.build_full_command", return_value=["claude", "--test"])
+    @patch("app.config.get_model_config", return_value={"mission": "m", "fallback": "f"})
+    def test_failure_logs_to_stderr(
+        self, mock_config, mock_build, mock_claude, capsys,
+    ):
+        """Failure is logged to stderr for diagnostics."""
+        from app.review_runner import _run_claude_review
+
+        mock_claude.return_value = {
+            "success": False, "output": "", "error": "Exit code 1: model error",
+        }
+        _run_claude_review("prompt", "/tmp/project")
+        captured = capsys.readouterr()
+        assert "Claude review failed" in captured.err
+        assert "Exit code 1" in captured.err
+
+    @patch("app.claude_step.run_claude")
+    @patch("app.cli_provider.build_full_command", return_value=["claude", "--test"])
+    @patch("app.config.get_model_config", return_value={"mission": "m", "fallback": "f"})
+    def test_default_timeout_is_600(
+        self, mock_config, mock_build, mock_claude,
+    ):
+        """Default timeout increased from 300 to 600 for large PRs."""
+        from app.review_runner import _run_claude_review
+
+        mock_claude.return_value = {"success": True, "output": "ok", "error": ""}
+        _run_claude_review("prompt", "/tmp/project")
+        # Verify run_claude was called with timeout=600
+        _, kwargs = mock_claude.call_args
+        assert kwargs.get("timeout") == 600
 
 
 # ---------------------------------------------------------------------------
