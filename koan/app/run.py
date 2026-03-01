@@ -24,6 +24,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import traceback
 from pathlib import Path
@@ -1580,6 +1581,7 @@ def _run_skill_mission(
     debug_log(f"[run] skill exec: cwd={koan_pkg_dir} timeout={skill_timeout}s")
     stdout_lines = []
     proc = None
+    timed_out = False
 
     # Create temp files for post-mission processing up front.
     # stderr is redirected to a file instead of a pipe to eliminate
@@ -1605,18 +1607,39 @@ def _run_skill_mission(
         # Register for double-tap CTRL-C termination.
         _sig.claude_proc = proc
 
+        # Watchdog timer: kills the process group if the skill exceeds
+        # skill_timeout.  Without this, the ``for line in proc.stdout``
+        # loop below blocks indefinitely if the subprocess hangs without
+        # closing its stdout pipe — ``proc.wait(timeout=...)`` is never
+        # reached because the iterator never finishes.
+        def _watchdog():
+            nonlocal timed_out
+            timed_out = True
+            _kill_process_group(proc)
+
+        timer = threading.Timer(skill_timeout, _watchdog)
+        timer.daemon = True
+        timer.start()
+
         # Stream stdout line-by-line, appending each to pending.md
         # so /live shows real-time progress.
-        for line in proc.stdout:
-            stripped = line.rstrip("\n")
-            stdout_lines.append(stripped)
-            print(stripped)
-            try:
-                with open(pending_path, "a") as f:
-                    f.write(f"{stripped}\n")
-            except OSError:
-                pass
-        proc.wait(timeout=skill_timeout)
+        try:
+            for line in proc.stdout:
+                stripped = line.rstrip("\n")
+                stdout_lines.append(stripped)
+                print(stripped)
+                try:
+                    with open(pending_path, "a") as f:
+                        f.write(f"{stripped}\n")
+                except OSError:
+                    pass
+        finally:
+            timer.cancel()
+
+        proc.wait(timeout=30)
+        if timed_out:
+            # Watchdog killed the process — treat as timeout
+            raise subprocess.TimeoutExpired(skill_cmd, skill_timeout)
         exit_code = proc.returncode
         skill_stdout = "\n".join(stdout_lines)
         # Read stderr from file after process exits.
@@ -1640,6 +1663,7 @@ def _run_skill_mission(
                 debug_log(f"[run] skill stderr: {skill_stderr[:2000]}")
     except subprocess.TimeoutExpired:
         _kill_process_group(proc)
+        timed_out = True
         log("error", f"Skill runner timed out ({skill_timeout}s)")
         debug_log(f"[run] skill exec: TIMEOUT ({skill_timeout}s)")
         exit_code = 1

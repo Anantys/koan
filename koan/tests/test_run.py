@@ -3226,7 +3226,7 @@ class TestRunSkillMissionEnv:
         assert _sig.claude_proc is None
 
     def test_uses_configurable_skill_timeout(self, tmp_path):
-        """_run_skill_mission uses get_skill_timeout() for proc.wait()."""
+        """_run_skill_mission uses get_skill_timeout() for the watchdog timer."""
         from app.run import _run_skill_mission
         koan_root = str(tmp_path)
         instance = str(tmp_path / "instance")
@@ -3235,12 +3235,14 @@ class TestRunSkillMissionEnv:
         (tmp_path / "koan").mkdir()
 
         mock_proc = self._make_mock_popen(stdout_lines=["ok\n"])
+        mock_timer = MagicMock()
 
         with patch("app.run.subprocess.Popen", side_effect=mock_proc._side_effect), \
              patch("app.run._get_koan_branch", return_value="main"), \
              patch("app.run._restore_koan_branch"), \
              patch("app.run._reset_terminal"), \
              patch("app.config.get_skill_timeout", return_value=7200), \
+             patch("app.run.threading.Timer", return_value=mock_timer) as mock_timer_cls, \
              patch("app.mission_runner.run_post_mission"):
             _run_skill_mission(
                 skill_cmd=["python3", "--help"],
@@ -3253,8 +3255,12 @@ class TestRunSkillMissionEnv:
                 autonomous_mode="implement",
             )
 
-        # proc.wait() should be called with the configurable timeout (7200s)
-        mock_proc.wait.assert_called_once_with(timeout=7200)
+        # Watchdog timer should use the configurable timeout (7200s)
+        mock_timer_cls.assert_called_once_with(7200, mock_timer_cls.call_args[0][1])
+        mock_timer.start.assert_called_once()
+        mock_timer.cancel.assert_called_once()
+        # proc.wait() is now a 30s cleanup wait (real timeout via watchdog)
+        mock_proc.wait.assert_called_once_with(timeout=30)
 
     def test_skill_timeout_default_is_3600(self, tmp_path):
         """Default skill timeout should be 3600s (60 minutes)."""
@@ -3266,11 +3272,13 @@ class TestRunSkillMissionEnv:
         (tmp_path / "koan").mkdir()
 
         mock_proc = self._make_mock_popen(stdout_lines=["ok\n"])
+        mock_timer = MagicMock()
 
         with patch("app.run.subprocess.Popen", side_effect=mock_proc._side_effect), \
              patch("app.run._get_koan_branch", return_value="main"), \
              patch("app.run._restore_koan_branch"), \
              patch("app.run._reset_terminal"), \
+             patch("app.run.threading.Timer", return_value=mock_timer) as mock_timer_cls, \
              patch("app.mission_runner.run_post_mission"):
             _run_skill_mission(
                 skill_cmd=["python3", "--help"],
@@ -3283,8 +3291,12 @@ class TestRunSkillMissionEnv:
                 autonomous_mode="implement",
             )
 
-        # Default timeout from get_skill_timeout() is 3600s
-        mock_proc.wait.assert_called_once_with(timeout=3600)
+        # Default timeout from get_skill_timeout() is 3600s, enforced by watchdog
+        mock_timer_cls.assert_called_once_with(3600, mock_timer_cls.call_args[0][1])
+        mock_timer.start.assert_called_once()
+        mock_timer.cancel.assert_called_once()
+        # proc.wait() is now a 30s cleanup wait
+        mock_proc.wait.assert_called_once_with(timeout=30)
 
     def test_timeout_uses_kill_process_group(self, tmp_path):
         """Timeout path kills the whole process group, not just the leader."""
@@ -3296,14 +3308,16 @@ class TestRunSkillMissionEnv:
         (tmp_path / "koan").mkdir()
 
         mock_proc = self._make_mock_popen()
-        mock_proc.wait.side_effect = [subprocess.TimeoutExpired("cmd", 3600), 0]
+        mock_proc.wait.side_effect = [subprocess.TimeoutExpired("cmd", 30), 0]
         mock_proc.poll.return_value = None
         mock_proc.pid = 88888
+        mock_timer = MagicMock()
 
         with patch("app.run.subprocess.Popen", side_effect=mock_proc._side_effect), \
              patch("app.run._get_koan_branch", return_value="main"), \
              patch("app.run._restore_koan_branch"), \
              patch("app.run._reset_terminal"), \
+             patch("app.run.threading.Timer", return_value=mock_timer), \
              patch("app.run.os.getpgid", return_value=88888) as mock_getpgid, \
              patch("app.run.os.killpg") as mock_killpg, \
              patch("app.mission_runner.run_post_mission"):
@@ -3320,6 +3334,116 @@ class TestRunSkillMissionEnv:
 
         mock_getpgid.assert_called_with(88888)
         mock_killpg.assert_any_call(88888, signal.SIGTERM)
+
+    def test_watchdog_kills_hanging_skill_during_stdout(self, tmp_path):
+        """Watchdog timer fires and kills skill that hangs during stdout streaming.
+
+        Before the fix, skill_timeout was only applied to proc.wait() which
+        runs AFTER the stdout iteration loop.  If a subprocess hangs without
+        closing its stdout pipe, the loop blocks indefinitely.  The watchdog
+        timer now kills the process group mid-stream.
+        """
+        import threading
+        from app.run import _run_skill_mission
+        koan_root = str(tmp_path)
+        instance = str(tmp_path / "instance")
+        (tmp_path / "instance").mkdir()
+        (tmp_path / "instance" / "journal").mkdir(parents=True)
+        (tmp_path / "koan").mkdir()
+
+        mock_proc = self._make_mock_popen(stdout_lines=["line1\n"])
+        mock_proc.pid = 99999
+        # poll() must return None so _kill_process_group doesn't skip
+        mock_proc.poll.return_value = None
+
+        # Capture the watchdog callback and invoke it immediately to simulate
+        # the timer firing during the stdout loop.
+        captured_callback = None
+
+        def fake_timer(timeout, callback):
+            nonlocal captured_callback
+            captured_callback = callback
+            timer = MagicMock()
+            return timer
+
+        with patch("app.run.subprocess.Popen", side_effect=mock_proc._side_effect), \
+             patch("app.run._get_koan_branch", return_value="main"), \
+             patch("app.run._restore_koan_branch"), \
+             patch("app.run._reset_terminal"), \
+             patch("app.config.get_skill_timeout", return_value=60), \
+             patch("app.run.threading.Timer", side_effect=fake_timer) as mock_timer_cls, \
+             patch("app.run.os.getpgid", return_value=99999), \
+             patch("app.run.os.killpg") as mock_killpg, \
+             patch("app.mission_runner.run_post_mission"):
+            # Simulate: watchdog fires during the first proc.wait() call.
+            # Subsequent wait() calls (from _kill_process_group) return
+            # immediately to avoid recursion.
+            watchdog_fired = False
+
+            def wait_side_effect(**kwargs):
+                nonlocal watchdog_fired
+                if not watchdog_fired and captured_callback:
+                    watchdog_fired = True
+                    captured_callback()
+                return 0
+
+            mock_proc.wait.side_effect = wait_side_effect
+
+            exit_code = _run_skill_mission(
+                skill_cmd=["python3", "--help"],
+                koan_root=koan_root,
+                instance=instance,
+                project_name="test",
+                project_path=str(tmp_path),
+                run_num=1,
+                mission_title="/test watchdog",
+                autonomous_mode="implement",
+            )
+
+        # Watchdog should have killed the process group
+        mock_killpg.assert_any_call(99999, signal.SIGTERM)
+        # Exit code should be 1 (timeout = failure)
+        assert exit_code == 1
+        # Timer was created with the configured timeout
+        mock_timer_cls.assert_called_once()
+        assert mock_timer_cls.call_args[0][0] == 60
+
+    def test_watchdog_timer_cancelled_on_normal_completion(self, tmp_path):
+        """Timer is properly cancelled when skill completes before timeout."""
+        from app.run import _run_skill_mission
+        koan_root = str(tmp_path)
+        instance = str(tmp_path / "instance")
+        (tmp_path / "instance").mkdir()
+        (tmp_path / "instance" / "journal").mkdir(parents=True)
+        (tmp_path / "koan").mkdir()
+
+        mock_proc = self._make_mock_popen(stdout_lines=["ok\n"])
+        mock_timer = MagicMock()
+
+        with patch("app.run.subprocess.Popen", side_effect=mock_proc._side_effect), \
+             patch("app.run._get_koan_branch", return_value="main"), \
+             patch("app.run._restore_koan_branch"), \
+             patch("app.run._reset_terminal"), \
+             patch("app.run.threading.Timer", return_value=mock_timer), \
+             patch("app.mission_runner.run_post_mission"):
+            exit_code = _run_skill_mission(
+                skill_cmd=["python3", "--help"],
+                koan_root=koan_root,
+                instance=instance,
+                project_name="test",
+                project_path=str(tmp_path),
+                run_num=1,
+                mission_title="/test normal",
+                autonomous_mode="implement",
+            )
+
+        # Timer must be started and then cancelled
+        mock_timer.start.assert_called_once()
+        mock_timer.cancel.assert_called_once()
+        # Timer must be set as daemon
+        assert mock_timer.daemon is True
+        # Normal exit
+        assert exit_code == 0
 
     def test_stderr_file_content_passed_to_post_mission(self, tmp_path):
         """Stderr content written by subprocess is available in the stderr temp file."""
@@ -3403,8 +3527,8 @@ class TestRunSkillMissionEnv:
         # Should return failure exit code
         assert result == 1
 
-    def test_no_threading_import_needed(self):
-        """Verify run.py no longer imports threading (deadlock fix removed the need)."""
+    def test_threading_imported_for_watchdog(self):
+        """Verify run.py imports threading (needed for watchdog timer)."""
         import ast
         from pathlib import Path
 
@@ -3415,7 +3539,7 @@ class TestRunSkillMissionEnv:
             for node in ast.walk(tree)
             if isinstance(node, ast.Import)
         ]
-        assert "threading" not in imports
+        assert "threading" in imports
 
 
 # ---------------------------------------------------------------------------
