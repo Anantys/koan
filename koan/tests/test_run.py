@@ -2808,6 +2808,18 @@ class TestRestoreKoanBranch:
 class TestRunSkillMissionEnv:
     """Tests that _run_skill_mission sets PYTHONPATH and restores branches."""
 
+    class _ClosableIter:
+        """Iterator with close() to mimic subprocess.PIPE stdout."""
+        def __init__(self, lines):
+            self._iter = iter(lines or [])
+            self.closed = False
+        def __iter__(self):
+            return self._iter
+        def __next__(self):
+            return next(self._iter)
+        def close(self):
+            self.closed = True
+
     def _make_mock_popen(self, returncode=0, stdout_lines=None, stderr_content=""):
         """Create a mock Popen that writes stderr to the file handle passed by caller.
 
@@ -2816,7 +2828,7 @@ class TestRunSkillMissionEnv:
         """
         mock_proc = MagicMock()
         mock_proc.returncode = returncode
-        mock_proc.stdout = iter(stdout_lines or [])
+        mock_proc.stdout = self._ClosableIter(stdout_lines)
         mock_proc.wait.return_value = returncode
         mock_proc._stderr_content = stderr_content
 
@@ -2933,7 +2945,7 @@ class TestRunSkillMissionEnv:
         (tmp_path / "koan").mkdir()
 
         mock_proc = MagicMock()
-        mock_proc.stdout = iter(["line1\n"])
+        mock_proc.stdout = self._ClosableIter(["line1\n"])
         mock_proc.wait.side_effect = ValueError("unexpected error")
         mock_proc.returncode = None
         mock_proc.pid = 12345
@@ -3444,6 +3456,109 @@ class TestRunSkillMissionEnv:
         assert mock_timer.daemon is True
         # Normal exit
         assert exit_code == 0
+
+    def test_stdout_closed_on_success(self, tmp_path):
+        """proc.stdout is closed in the finally block after normal completion."""
+        from app.run import _run_skill_mission
+        koan_root = str(tmp_path)
+        instance = str(tmp_path / "instance")
+        (tmp_path / "instance").mkdir()
+        (tmp_path / "instance" / "journal").mkdir(parents=True)
+        (tmp_path / "koan").mkdir()
+
+        mock_proc = self._make_mock_popen(stdout_lines=["ok\n"])
+
+        with patch("app.run.subprocess.Popen", side_effect=mock_proc._side_effect), \
+             patch("app.run._get_koan_branch", return_value="main"), \
+             patch("app.run._restore_koan_branch"), \
+             patch("app.run._reset_terminal"), \
+             patch("app.mission_runner.run_post_mission"):
+            _run_skill_mission(
+                skill_cmd=["python3", "--help"],
+                koan_root=koan_root,
+                instance=instance,
+                project_name="test",
+                project_path=str(tmp_path),
+                run_num=1,
+                mission_title="/test fd-close",
+                autonomous_mode="implement",
+            )
+
+        assert mock_proc.stdout.closed is True
+
+    def test_stdout_closed_on_timeout(self, tmp_path):
+        """proc.stdout is closed even when the subprocess times out."""
+        from app.run import _run_skill_mission
+        koan_root = str(tmp_path)
+        instance = str(tmp_path / "instance")
+        (tmp_path / "instance").mkdir()
+        (tmp_path / "instance" / "journal").mkdir(parents=True)
+        (tmp_path / "koan").mkdir()
+
+        mock_proc = self._make_mock_popen()
+        mock_proc.wait.side_effect = [subprocess.TimeoutExpired("cmd", 30), 0]
+        mock_proc.poll.return_value = None
+        mock_proc.pid = 55555
+        mock_timer = MagicMock()
+
+        with patch("app.run.subprocess.Popen", side_effect=mock_proc._side_effect), \
+             patch("app.run._get_koan_branch", return_value="main"), \
+             patch("app.run._restore_koan_branch"), \
+             patch("app.run._reset_terminal"), \
+             patch("app.run.threading.Timer", return_value=mock_timer), \
+             patch("app.run.os.getpgid", return_value=55555), \
+             patch("app.run.os.killpg"), \
+             patch("app.mission_runner.run_post_mission"):
+            _run_skill_mission(
+                skill_cmd=["python3", "--help"],
+                koan_root=koan_root,
+                instance=instance,
+                project_name="test",
+                project_path=str(tmp_path),
+                run_num=1,
+                mission_title="/test fd-timeout",
+                autonomous_mode="implement",
+            )
+
+        assert mock_proc.stdout.closed is True
+
+    def test_stdout_closed_on_exception(self, tmp_path):
+        """proc.stdout is closed even when an unexpected exception occurs."""
+        from app.run import _run_skill_mission
+        koan_root = str(tmp_path)
+        instance = str(tmp_path / "instance")
+        (tmp_path / "instance").mkdir()
+        (tmp_path / "instance" / "journal").mkdir(parents=True)
+        (tmp_path / "koan").mkdir()
+
+        mock_proc = MagicMock()
+        mock_proc.stdout = self._ClosableIter(["line1\n"])
+        mock_proc.wait.side_effect = ValueError("unexpected error")
+        mock_proc.returncode = None
+        mock_proc.pid = 66666
+
+        with patch("app.run.subprocess.Popen", return_value=mock_proc), \
+             patch("app.run._get_koan_branch", return_value="main"), \
+             patch("app.run._restore_koan_branch"), \
+             patch("app.run._reset_terminal"), \
+             patch("app.run._kill_process_group"), \
+             patch("app.run.protected_phase", return_value=MagicMock(
+                 __enter__=MagicMock(), __exit__=MagicMock(return_value=False)
+             )), \
+             patch("app.run.set_status"), \
+             patch("app.run.log"):
+            _run_skill_mission(
+                skill_cmd=["python3", "-m", "app.fake"],
+                mission_title="/fake test",
+                project_name="test",
+                project_path=str(tmp_path),
+                koan_root=koan_root,
+                instance=instance,
+                run_num=1,
+                autonomous_mode="implement",
+            )
+
+        assert mock_proc.stdout.closed is True
 
     def test_stderr_file_content_passed_to_post_mission(self, tmp_path):
         """Stderr content written by subprocess is available in the stderr temp file."""
