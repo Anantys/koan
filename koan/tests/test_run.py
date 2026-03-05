@@ -4033,33 +4033,33 @@ class TestRunIterationProductiveReturn:
     @patch("app.run.set_status")
     @patch("app.run.log")
     @patch("app.run.plan_iteration")
-    def test_focus_wait_returns_false(self, mock_plan, mock_log, mock_status, mock_sleep, tmp_path):
+    def test_focus_wait_returns_idle(self, mock_plan, mock_log, mock_status, mock_sleep, tmp_path):
         result = self._run(tmp_path, mock_plan, "focus_wait", focus_remaining="2h")
-        assert result is False
+        assert result == "idle"
 
     @patch("app.run.interruptible_sleep", return_value=None)
     @patch("app.run.set_status")
     @patch("app.run.log")
     @patch("app.run.plan_iteration")
-    def test_schedule_wait_returns_false(self, mock_plan, mock_log, mock_status, mock_sleep, tmp_path):
+    def test_schedule_wait_returns_idle(self, mock_plan, mock_log, mock_status, mock_sleep, tmp_path):
         result = self._run(tmp_path, mock_plan, "schedule_wait")
-        assert result is False
+        assert result == "idle"
 
     @patch("app.run.interruptible_sleep", return_value=None)
     @patch("app.run.set_status")
     @patch("app.run.log")
     @patch("app.run.plan_iteration")
-    def test_exploration_wait_returns_false(self, mock_plan, mock_log, mock_status, mock_sleep, tmp_path):
+    def test_exploration_wait_returns_idle(self, mock_plan, mock_log, mock_status, mock_sleep, tmp_path):
         result = self._run(tmp_path, mock_plan, "exploration_wait")
-        assert result is False
+        assert result == "idle"
 
     @patch("app.run.interruptible_sleep", return_value=None)
     @patch("app.run.set_status")
     @patch("app.run.log")
     @patch("app.run.plan_iteration")
-    def test_pr_limit_wait_returns_false(self, mock_plan, mock_log, mock_status, mock_sleep, tmp_path):
+    def test_pr_limit_wait_returns_idle(self, mock_plan, mock_log, mock_status, mock_sleep, tmp_path):
         result = self._run(tmp_path, mock_plan, "pr_limit_wait")
-        assert result is False
+        assert result == "idle"
 
     @patch("app.run._handle_wait_pause")
     @patch("app.run.set_status")
@@ -4211,6 +4211,168 @@ class TestMainLoopCountIncrement:
         assert counts_seen == [0, 0, 1, 1, 1, 2], (
             f"Expected count pattern [0,0,1,1,1,2], got: {counts_seen}"
         )
+
+# ---------------------------------------------------------------------------
+# Idle timeout auto-pause
+# ---------------------------------------------------------------------------
+
+
+class TestIdleTimeoutAutoPause:
+    """main_loop auto-pauses after MAX_CONSECUTIVE_IDLE idle iterations.
+
+    Prevents the agent from spinning indefinitely when all projects
+    are at PR limit or otherwise unable to do work.
+    """
+
+    @patch("app.run.subprocess.run")
+    @patch("app.run.run_startup", return_value=(5, 60, "koan/"))
+    @patch("app.run.acquire_pidfile")
+    @patch("app.run.release_pidfile")
+    @patch("app.run._run_iteration")
+    def test_idle_timeout_creates_pause(
+        self, mock_iteration, mock_release, mock_acquire,
+        mock_startup, mock_subproc, koan_root,
+    ):
+        """After MAX_CONSECUTIVE_IDLE idle iterations, a pause file is created."""
+        from app.run import main_loop
+
+        os.environ["KOAN_ROOT"] = str(koan_root)
+        os.environ["KOAN_PROJECTS"] = f"test:{koan_root}"
+        (koan_root / ".koan-project").write_text("test")
+
+        mock_iteration.return_value = "idle"
+
+        def fake_create_pause(root, reason):
+            """Create the pause file so the main loop detects it."""
+            Path(root, ".koan-pause").touch()
+
+        def pause_stops_loop(root, instance_dir, max_runs):
+            """When handle_pause is called (after create_pause), stop the loop."""
+            Path(root, ".koan-pause").unlink(missing_ok=True)
+            (koan_root / ".koan-stop").touch()
+            (koan_root / ".koan-project").write_text("test")
+            return "resume"
+
+        with patch("app.run._notify") as mock_notify, \
+             patch("app.run.handle_pause", side_effect=pause_stops_loop), \
+             patch("app.pause_manager.create_pause", side_effect=fake_create_pause) as mock_create:
+            main_loop()
+
+        mock_create.assert_called_once_with(str(koan_root), "idle_timeout")
+
+        # Verify notifications
+        notify_msgs = [str(c) for c in mock_notify.call_args_list]
+        assert any("No work available" in m for m in notify_msgs)
+        assert any("Auto-paused" in m for m in notify_msgs)
+
+    @patch("app.run.subprocess.run")
+    @patch("app.run.run_startup", return_value=(5, 60, "koan/"))
+    @patch("app.run.acquire_pidfile")
+    @patch("app.run.release_pidfile")
+    @patch("app.run._run_iteration")
+    def test_idle_counter_resets_on_productive(
+        self, mock_iteration, mock_release, mock_acquire,
+        mock_startup, mock_subproc, koan_root,
+    ):
+        """A productive iteration resets the idle counter."""
+        from app.run import main_loop
+
+        os.environ["KOAN_ROOT"] = str(koan_root)
+        os.environ["KOAN_PROJECTS"] = f"test:{koan_root}"
+        (koan_root / ".koan-project").write_text("test")
+
+        call_count = [0]
+
+        def iteration_side_effect(**kwargs):
+            call_count[0] += 1
+            # 29 idle, then productive, then stop
+            if call_count[0] <= 29:
+                return "idle"
+            if call_count[0] == 30:
+                return True  # productive — resets counter
+            (koan_root / ".koan-stop").touch()
+            (koan_root / ".koan-project").write_text("test")
+            return True
+
+        mock_iteration.side_effect = iteration_side_effect
+
+        with patch("app.run._notify"):
+            main_loop()
+
+        # Should NOT have created pause (29 idle < 30 threshold, then reset)
+        assert not (koan_root / ".koan-pause").exists()
+
+    @patch("app.run.subprocess.run")
+    @patch("app.run.run_startup", return_value=(5, 60, "koan/"))
+    @patch("app.run.acquire_pidfile")
+    @patch("app.run.release_pidfile")
+    @patch("app.run._run_iteration")
+    def test_first_idle_sends_notification(
+        self, mock_iteration, mock_release, mock_acquire,
+        mock_startup, mock_subproc, koan_root,
+    ):
+        """First idle iteration sends a notification to the human."""
+        from app.run import main_loop
+
+        os.environ["KOAN_ROOT"] = str(koan_root)
+        os.environ["KOAN_PROJECTS"] = f"test:{koan_root}"
+        (koan_root / ".koan-project").write_text("test")
+
+        call_count = [0]
+
+        def iteration_side_effect(**kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return "idle"
+            # Stop after 2 calls
+            (koan_root / ".koan-stop").touch()
+            (koan_root / ".koan-project").write_text("test")
+            return True
+
+        mock_iteration.side_effect = iteration_side_effect
+
+        with patch("app.run._notify") as mock_notify:
+            main_loop()
+
+        notify_msgs = [str(c) for c in mock_notify.call_args_list]
+        assert any("No work available" in m for m in notify_msgs), (
+            f"Expected idle notification on first idle, got: {notify_msgs}"
+        )
+
+    @patch("app.run.subprocess.run")
+    @patch("app.run.run_startup", return_value=(5, 60, "koan/"))
+    @patch("app.run.acquire_pidfile")
+    @patch("app.run.release_pidfile")
+    @patch("app.run._run_iteration")
+    def test_non_idle_false_does_not_count(
+        self, mock_iteration, mock_release, mock_acquire,
+        mock_startup, mock_subproc, koan_root,
+    ):
+        """Returning False (non-idle) does not increment idle counter."""
+        from app.run import main_loop
+
+        os.environ["KOAN_ROOT"] = str(koan_root)
+        os.environ["KOAN_PROJECTS"] = f"test:{koan_root}"
+        (koan_root / ".koan-project").write_text("test")
+
+        call_count = [0]
+
+        def iteration_side_effect(**kwargs):
+            call_count[0] += 1
+            if call_count[0] <= 35:
+                return False  # non-idle failures (error, dedup, etc.)
+            (koan_root / ".koan-stop").touch()
+            (koan_root / ".koan-project").write_text("test")
+            return True
+
+        mock_iteration.side_effect = iteration_side_effect
+
+        with patch("app.run._notify"):
+            main_loop()
+
+        # Should NOT have created pause (False doesn't count as idle)
+        assert not (koan_root / ".koan-pause").exists()
+
 
 # ---------------------------------------------------------------------------
 # Contemplative commit gap fix

@@ -593,6 +593,8 @@ def main_loop():
 
     count = 0
     consecutive_errors = 0
+    consecutive_idle = 0
+    MAX_CONSECUTIVE_IDLE = 30  # ~30 min at 60s interval → auto-pause
     try:
         # Startup sequence
         max_runs, interval, branch_prefix = run_startup(koan_root, instance, projects)
@@ -629,6 +631,7 @@ def main_loop():
                 if result == "resume":
                     count = 0
                     consecutive_errors = 0
+                    consecutive_idle = 0
                 continue
 
             # --- Iteration body (exception-protected) ---
@@ -643,8 +646,31 @@ def main_loop():
                     git_sync_interval=git_sync_interval,
                 )
                 consecutive_errors = 0
-                if productive:
+                if productive is True:
                     count += 1
+                    consecutive_idle = 0
+                elif productive == "idle":
+                    consecutive_idle += 1
+                    if consecutive_idle == 1:
+                        _notify(
+                            instance,
+                            "💤 No work available — waiting for pending reviews "
+                            "or new missions. Auto-pause in ~30 min.",
+                        )
+                    if consecutive_idle >= MAX_CONSECUTIVE_IDLE:
+                        idle_min = consecutive_idle * interval // 60
+                        log("koan", f"Idle for {idle_min} min — auto-pausing.")
+                        from app.pause_manager import create_pause
+                        create_pause(koan_root, "idle_timeout")
+                        _notify(
+                            instance,
+                            f"⏸️ Auto-paused after {idle_min} min idle. "
+                            "Use /resume when ready.",
+                        )
+                else:
+                    # Non-productive but not idle (error recovery, dedup, etc.)
+                    # Don't count toward idle timeout
+                    pass
             except KeyboardInterrupt:
                 raise
             except SystemExit:
@@ -974,10 +1000,12 @@ def _run_iteration(
 
     Returns:
         True if this was a productive iteration (mission, autonomous, or
-        contemplative session that consumed API budget).  False for idle
-        iterations (wait states, errors, dedup skips, preflight failures).
-        The caller only increments ``count`` on productive iterations so
-        that ``max_runs`` reflects actual work done, not loop cycles.
+        contemplative session that consumed API budget).  ``"idle"`` for
+        idle wait states (PR limit, schedule, focus, exploration).  False
+        for other non-productive iterations (errors, dedup skips,
+        preflight failures).  The caller only increments ``count`` on
+        productive iterations so that ``max_runs`` reflects actual work
+        done, not loop cycles.
 
     Exceptions:
         KeyboardInterrupt: Propagates to caller (user abort)
@@ -1089,7 +1117,7 @@ def _run_iteration(
             wake = interruptible_sleep(interval, koan_root, instance)
         if wake == "mission":
             log("koan", f"New mission detected during {action} — waking up")
-        return False  # idle wait — not productive
+        return "idle"  # idle wait — not productive, trackable
 
     if action == "wait_pause":
         _handle_wait_pause(plan, count, koan_root, instance)
