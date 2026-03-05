@@ -22,7 +22,7 @@ SERVICE_INSTALLED = $(shell [ -f /etc/systemd/system/koan.service ] && echo 1)
 setup: $(VENV)/.installed
 
 $(VENV)/.installed: koan/requirements.txt
-	$(PYTHON) -m venv $(VENV)
+	$(PYTHON_BIN) -m venv $(VENV)
 	$(VENV)/bin/pip install -r koan/requirements.txt
 	@touch $@
 
