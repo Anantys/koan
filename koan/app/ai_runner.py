@@ -76,11 +76,53 @@ def run_exploration(
     if not result:
         return False, "Claude returned an empty exploration result."
 
-    # Send result to Telegram (truncated)
-    cleaned = _clean_response(result)
-    notify_fn(f"AI exploration of {project_name}:\n\n{cleaned}")
+    # Extract MISSION: lines and queue them as pending missions
+    missions = _extract_missions(result, project_name)
+    if missions:
+        missions_path = Path(instance_dir) / "missions.md"
+        _queue_missions(missions_path, missions)
 
-    return True, f"Exploration of {project_name} completed."
+    # Send result to Telegram (truncated, without MISSION: lines)
+    cleaned = _clean_response(result)
+    report = _strip_mission_lines(cleaned)
+    suffix = f"\n\n({len(missions)} mission(s) queued)" if missions else ""
+    notify_fn(f"AI exploration of {project_name}:\n\n{report}{suffix}")
+
+    return True, f"Exploration of {project_name} completed ({len(missions)} missions queued)."
+
+
+def _extract_missions(text: str, project_name: str) -> list:
+    """Extract MISSION: lines from Claude output.
+
+    Returns a list of formatted mission entries ready for missions.md.
+    """
+    import re
+
+    missions = []
+    for line in text.splitlines():
+        match = re.match(r"^MISSION:\s*(.+)$", line.strip())
+        if match:
+            description = match.group(1).strip()
+            if description:
+                missions.append(f"- [project:{project_name}] {description}")
+    return missions
+
+
+def _queue_missions(missions_path: Path, missions: list):
+    """Insert extracted missions into the Pending section of missions.md."""
+    from app.utils import insert_pending_mission
+
+    for entry in missions:
+        insert_pending_mission(missions_path, entry)
+
+
+def _strip_mission_lines(text: str) -> str:
+    """Remove MISSION: lines from the report sent to Telegram."""
+    lines = text.splitlines()
+    filtered = [l for l in lines if not l.strip().startswith("MISSION:")]
+    # Clean up trailing blank lines
+    result = "\n".join(filtered).rstrip()
+    return result
 
 
 def _clean_response(text: str) -> str:

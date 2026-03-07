@@ -41,5 +41,22 @@ External project constraints:
 - **Dependencies**: don't remove or downgrade existing dependencies without explicit justification.
 - **Conventions**: respect the project's existing code style, naming, and structure even if you'd do it differently.
 
-Save:
-- Save all these ideas as suggestions to the `instance/missions.md` file at the end of the `Ideas` section
+Output format:
+- At the END of your response, after your human-readable report, output each actionable idea
+  as a single line starting with `MISSION:` followed by a clear, self-contained description.
+  The description must be specific enough to be executed as a standalone task by a future agent
+  session without needing to re-read the codebase exploration.
+
+Example output:
+```
+MISSION: Fix the retry logic in fetch_data() which silently swallows ConnectionError exceptions
+MISSION: Add input validation for user email in the registration endpoint to prevent SQL injection
+MISSION: Extract duplicated date formatting code from 3 controllers into a shared utility
+```
+
+Rules for MISSION lines:
+- One line per idea, no multi-line descriptions
+- Be specific: mention file names, function names, or patterns you found
+- Don't include project tags — they will be added automatically
+- Don't include effort estimates in the MISSION line (keep those in the report above)
+- Only output ideas you're confident are worth implementing

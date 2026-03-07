@@ -8,6 +8,9 @@ import pytest
 from app.ai_runner import (
     run_exploration,
     _clean_response,
+    _extract_missions,
+    _strip_mission_lines,
+    _queue_missions,
     main,
 )
 
@@ -261,6 +264,163 @@ class TestRunExploration:
         )
         call_kwargs = mock_claude.call_args[1]
         assert call_kwargs["max_turns"] == 10
+
+
+# ---------------------------------------------------------------------------
+# _extract_missions
+# ---------------------------------------------------------------------------
+
+class TestExtractMissions:
+    def test_extracts_mission_lines(self):
+        text = (
+            "Found some issues:\n"
+            "MISSION: Fix the retry logic in fetch_data()\n"
+            "MISSION: Add input validation for user email\n"
+            "Some other text\n"
+        )
+        missions = _extract_missions(text, "myapp")
+        assert len(missions) == 2
+        assert missions[0] == "- [project:myapp] Fix the retry logic in fetch_data()"
+        assert missions[1] == "- [project:myapp] Add input validation for user email"
+
+    def test_no_mission_lines(self):
+        text = "No issues found. Everything looks good."
+        missions = _extract_missions(text, "myapp")
+        assert missions == []
+
+    def test_ignores_empty_mission_lines(self):
+        text = "MISSION: \nMISSION:   \nMISSION: Real task"
+        missions = _extract_missions(text, "myapp")
+        assert len(missions) == 1
+        assert "Real task" in missions[0]
+
+    def test_strips_whitespace(self):
+        text = "  MISSION:   Fix whitespace issue  \n"
+        missions = _extract_missions(text, "myapp")
+        assert len(missions) == 1
+        assert missions[0] == "- [project:myapp] Fix whitespace issue"
+
+    def test_uses_project_name_in_tag(self):
+        text = "MISSION: Do something"
+        missions = _extract_missions(text, "backend")
+        assert missions[0].startswith("- [project:backend]")
+
+    def test_ignores_non_mission_lines_with_mission_word(self):
+        text = "The MISSION: is clear\nMISSION: Actual task"
+        missions = _extract_missions(text, "myapp")
+        assert len(missions) == 1
+        assert "Actual task" in missions[0]
+
+
+# ---------------------------------------------------------------------------
+# _strip_mission_lines
+# ---------------------------------------------------------------------------
+
+class TestStripMissionLines:
+    def test_removes_mission_lines(self):
+        text = "Report here\nMISSION: Fix something\nMore report"
+        result = _strip_mission_lines(text)
+        assert "MISSION:" not in result
+        assert "Report here" in result
+        assert "More report" in result
+
+    def test_no_mission_lines(self):
+        text = "Just a normal report"
+        result = _strip_mission_lines(text)
+        assert result == "Just a normal report"
+
+    def test_strips_trailing_whitespace(self):
+        text = "Report\nMISSION: Task\n\n\n"
+        result = _strip_mission_lines(text)
+        assert result == "Report"
+
+
+# ---------------------------------------------------------------------------
+# _queue_missions
+# ---------------------------------------------------------------------------
+
+class TestQueueMissions:
+    @patch("app.utils.insert_pending_mission")
+    def test_inserts_each_mission(self, mock_insert):
+        missions_path = Path("/tmp/missions.md")
+        missions = [
+            "- [project:myapp] Fix bug A",
+            "- [project:myapp] Fix bug B",
+        ]
+        _queue_missions(missions_path, missions)
+        assert mock_insert.call_count == 2
+        mock_insert.assert_any_call(missions_path, "- [project:myapp] Fix bug A")
+        mock_insert.assert_any_call(missions_path, "- [project:myapp] Fix bug B")
+
+    @patch("app.utils.insert_pending_mission")
+    def test_no_missions_no_calls(self, mock_insert):
+        _queue_missions(Path("/tmp/missions.md"), [])
+        mock_insert.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# run_exploration with missions
+# ---------------------------------------------------------------------------
+
+class TestRunExplorationWithMissions:
+    @patch("app.utils.insert_pending_mission")
+    @patch("app.cli_provider.run_command",
+           return_value="Found issues\nMISSION: Fix bug A\nMISSION: Fix bug B")
+    @patch("app.ai_runner.get_missions_context", return_value="No active missions.")
+    @patch("app.ai_runner.gather_project_structure", return_value="Directories: src/")
+    @patch("app.ai_runner.gather_git_activity", return_value="Recent commits: abc")
+    @patch("app.ai_runner.load_skill_prompt", return_value="Explore myapp")
+    def test_queues_missions_from_output(
+        self, mock_prompt, mock_git, mock_struct, mock_missions,
+        mock_claude, mock_insert, tmp_path
+    ):
+        notify = MagicMock()
+        success, summary = run_exploration(
+            str(tmp_path), "myapp", str(tmp_path),
+            notify_fn=notify,
+        )
+        assert success is True
+        assert "2 missions queued" in summary
+        assert mock_insert.call_count == 2
+
+    @patch("app.utils.insert_pending_mission")
+    @patch("app.cli_provider.run_command",
+           return_value="Found issues\nMISSION: Fix bug A\nMISSION: Fix bug B")
+    @patch("app.ai_runner.get_missions_context", return_value="No active missions.")
+    @patch("app.ai_runner.gather_project_structure", return_value="Directories: src/")
+    @patch("app.ai_runner.gather_git_activity", return_value="Recent commits: abc")
+    @patch("app.ai_runner.load_skill_prompt", return_value="Explore myapp")
+    def test_telegram_shows_mission_count(
+        self, mock_prompt, mock_git, mock_struct, mock_missions,
+        mock_claude, mock_insert, tmp_path
+    ):
+        notify = MagicMock()
+        run_exploration(
+            str(tmp_path), "myapp", str(tmp_path),
+            notify_fn=notify,
+        )
+        result_msg = notify.call_args_list[1][0][0]
+        assert "2 mission(s) queued" in result_msg
+        assert "MISSION:" not in result_msg
+
+    @patch("app.cli_provider.run_command", return_value="No issues found")
+    @patch("app.ai_runner.get_missions_context", return_value="No active missions.")
+    @patch("app.ai_runner.gather_project_structure", return_value="Directories: src/")
+    @patch("app.ai_runner.gather_git_activity", return_value="Recent commits: abc")
+    @patch("app.ai_runner.load_skill_prompt", return_value="Explore myapp")
+    def test_no_missions_no_suffix(
+        self, mock_prompt, mock_git, mock_struct, mock_missions,
+        mock_claude, tmp_path
+    ):
+        notify = MagicMock()
+        success, summary = run_exploration(
+            str(tmp_path), "myapp", str(tmp_path),
+            notify_fn=notify,
+        )
+        assert success is True
+        assert "0 missions queued" in summary
+        result_msg = notify.call_args_list[1][0][0]
+        assert "mission(s) queued" not in result_msg
 
 
 # ---------------------------------------------------------------------------
