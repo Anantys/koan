@@ -430,6 +430,7 @@ def flush_outbox():
         return
 
     formatted = _format_outbox_message(content)
+    formatted = _expand_outbox_github_refs(formatted, content)
     if send_telegram(formatted):
         preview = formatted[:150].replace("\n", " ")
         if len(formatted) > 150:
@@ -452,6 +453,34 @@ def _requeue_outbox(content: str):
                 fcntl.flock(f, fcntl.LOCK_UN)
     except Exception as e:
         log("error", f"Failed to re-queue outbox message: {e}")
+
+
+def _expand_outbox_github_refs(formatted: str, raw_content: str) -> str:
+    """Expand bare #123 GitHub refs in an outbox message to full URLs.
+
+    Uses the raw (pre-formatted) content to detect the project context,
+    then applies expansion to the formatted output so links are clickable
+    in Telegram.
+    """
+    from app.text_utils import expand_github_refs, extract_project_from_message
+
+    project_name = extract_project_from_message(raw_content)
+    if not project_name:
+        project_name = extract_project_from_message(formatted)
+    if not project_name:
+        return formatted
+
+    try:
+        from app.projects_merged import get_github_url
+        github_url = get_github_url(project_name)
+    except Exception as e:
+        log("error", f"GitHub URL lookup failed for {project_name}: {e}")
+        return formatted
+
+    if not github_url:
+        return formatted
+
+    return expand_github_refs(formatted, github_url)
 
 
 def _format_outbox_message(raw_content: str) -> str:

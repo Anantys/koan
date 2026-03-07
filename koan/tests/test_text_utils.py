@@ -1,7 +1,10 @@
 """Tests for text_utils — shared text processing for messaging delivery."""
 
 import pytest
-from app.text_utils import strip_markdown, clean_cli_response, DEFAULT_MAX_LENGTH
+from app.text_utils import (
+    strip_markdown, clean_cli_response, DEFAULT_MAX_LENGTH,
+    expand_github_refs, extract_project_from_message,
+)
 
 
 class TestStripMarkdown:
@@ -166,3 +169,98 @@ class TestCleanCliResponse:
     def test_error_line_only(self):
         text = "Error: max turns reached"
         assert clean_cli_response(text) == ""
+
+
+class TestExpandGithubRefs:
+    """Tests for expand_github_refs()."""
+
+    GITHUB_URL = "https://github.com/sukria/koan"
+
+    def test_basic_ref(self):
+        result = expand_github_refs("See #123", self.GITHUB_URL)
+        assert result == "See #123 (https://github.com/sukria/koan/issues/123)"
+
+    def test_multiple_refs(self):
+        result = expand_github_refs("Fix #10 and #20", self.GITHUB_URL)
+        assert "(https://github.com/sukria/koan/issues/10)" in result
+        assert "(https://github.com/sukria/koan/issues/20)" in result
+
+    def test_pr_prefix(self):
+        result = expand_github_refs("PR #42 is ready", self.GITHUB_URL)
+        assert "#42 (https://github.com/sukria/koan/issues/42)" in result
+
+    def test_no_expansion_in_url_path(self):
+        """A number after / (like in a URL path) should not be expanded."""
+        text = "See /issues/123 for details"
+        result = expand_github_refs(text, self.GITHUB_URL)
+        assert result == text
+
+    def test_no_expansion_for_word_prefix(self):
+        """#123 preceded by a word character should not expand."""
+        text = "tag#123 is not a ref"
+        result = expand_github_refs(text, self.GITHUB_URL)
+        assert result == text
+
+    def test_already_expanded_not_doubled(self):
+        """If #123 is already followed by its URL in parens, skip it."""
+        text = "#123 (https://github.com/sukria/koan/issues/123)"
+        result = expand_github_refs(text, self.GITHUB_URL)
+        assert result == text
+
+    def test_empty_text(self):
+        assert expand_github_refs("", self.GITHUB_URL) == ""
+
+    def test_none_text(self):
+        assert expand_github_refs(None, self.GITHUB_URL) is None
+
+    def test_empty_github_url(self):
+        assert expand_github_refs("See #1", "") == "See #1"
+
+    def test_no_refs_in_text(self):
+        text = "No references here"
+        assert expand_github_refs(text, self.GITHUB_URL) == text
+
+    def test_trailing_slash_stripped(self):
+        result = expand_github_refs("#5", "https://github.com/o/r/")
+        assert "(https://github.com/o/r/issues/5)" in result
+
+    def test_ref_at_start_of_line(self):
+        result = expand_github_refs("#99 was fixed", self.GITHUB_URL)
+        assert "#99 (https://github.com/sukria/koan/issues/99)" in result
+
+    def test_ref_after_paren(self):
+        result = expand_github_refs("(#7)", self.GITHUB_URL)
+        assert "#7 (https://github.com/sukria/koan/issues/7)" in result
+
+    def test_hex_color_not_expanded(self):
+        """Hex color codes like #FF0000 should not match (they have letters)."""
+        text = "Color is #FF0000"
+        result = expand_github_refs(text, self.GITHUB_URL)
+        assert result == text
+
+
+class TestExtractProjectFromMessage:
+    """Tests for extract_project_from_message()."""
+
+    def test_emoji_bracket_pattern(self):
+        assert extract_project_from_message("🏁 [koan]") == "koan"
+
+    def test_project_colon_pattern(self):
+        assert extract_project_from_message("[project:my-app]") == "my-app"
+
+    def test_project_with_dots(self):
+        assert extract_project_from_message("[project:perl-XML-LibXML]") == "perl-XML-LibXML"
+
+    def test_no_project(self):
+        assert extract_project_from_message("Just a message") == ""
+
+    def test_bracket_mid_text(self):
+        assert extract_project_from_message("Done [koan] stuff") == "koan"
+
+    def test_empty_string(self):
+        assert extract_project_from_message("") == ""
+
+    def test_project_colon_preferred(self):
+        """[project:X] should be found even if [Y] also appears."""
+        text = "[project:real] and [decoy]"
+        assert extract_project_from_message(text) == "real"

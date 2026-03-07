@@ -907,6 +907,30 @@ class TestFlushOutbox:
         assert "SECRET_KEY" in quarantine.read_text()
 
 
+    @patch("app.awake._format_outbox_message", return_value="PR #42 merged")
+    @patch("app.awake.send_telegram", return_value=True)
+    def test_flush_expands_github_refs(self, mock_send, mock_fmt, tmp_path):
+        """GitHub #refs should be expanded to full URLs before sending."""
+        outbox = tmp_path / "outbox.md"
+        outbox.write_text("🏁 [myproject]\nPR #42 merged")
+        with patch("app.awake.OUTBOX_FILE", outbox), \
+             patch("app.projects_merged.get_github_url",
+                   return_value="https://github.com/owner/myproject"):
+            flush_outbox()
+        sent_text = mock_send.call_args[0][0]
+        assert "https://github.com/owner/myproject/issues/42" in sent_text
+
+    @patch("app.awake._format_outbox_message", return_value="All good")
+    @patch("app.awake.send_telegram", return_value=True)
+    def test_flush_no_expansion_without_project(self, mock_send, mock_fmt, tmp_path):
+        """When no project tag is found, text is sent unchanged."""
+        outbox = tmp_path / "outbox.md"
+        outbox.write_text("All good")
+        with patch("app.awake.OUTBOX_FILE", outbox):
+            flush_outbox()
+        mock_send.assert_called_once_with("All good")
+
+
 class TestRequeueOutbox:
     def test_requeue_appends_content(self, tmp_path):
         outbox = tmp_path / "outbox.md"

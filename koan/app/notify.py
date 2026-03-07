@@ -142,6 +142,19 @@ def format_and_send(raw_message: str, instance_dir: str = None,
         prefs = load_human_prefs(instance_path)
         memory = load_memory_context(instance_path, project_name)
         formatted = format_message(raw_message, soul, prefs, memory)
+
+        # Expand bare #123 GitHub refs to full clickable URLs
+        if project_name:
+            try:
+                from app.projects_merged import get_github_url
+                from app.text_utils import expand_github_refs
+                github_url = get_github_url(project_name)
+                if github_url:
+                    formatted = expand_github_refs(formatted, github_url)
+            except Exception as e:
+                print(f"[notify] GitHub ref expansion failed: {e}",
+                      file=sys.stderr)
+
         return send_telegram(formatted)
     except (OSError, subprocess.SubprocessError, ValueError) as e:
         print(f"[notify] Format error, sending fallback: {e}", file=sys.stderr)
