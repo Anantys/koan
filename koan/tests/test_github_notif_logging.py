@@ -105,9 +105,10 @@ class TestFetchAndFilterCommentLogging:
         assert "stale" in caplog.text
         assert "42" in caplog.text
 
+    @patch("app.github_command_handler.find_mention_in_thread", return_value=None)
     @patch("app.github_command_handler.get_comment_from_notification", return_value=None)
     @patch("app.github_command_handler.is_notification_stale", return_value=False)
-    def test_logs_no_comment(self, mock_stale, mock_comment, caplog):
+    def test_logs_no_comment(self, mock_stale, mock_comment, mock_find, caplog):
         from app.github_command_handler import _fetch_and_filter_comment
 
         notif = {"id": "99", "repository": {"full_name": "o/r"}}
@@ -115,7 +116,7 @@ class TestFetchAndFilterCommentLogging:
             result = _fetch_and_filter_comment(notif, "bot", 24)
 
         assert result is None
-        assert "no comment" in caplog.text
+        assert "latest_comment_url failed" in caplog.text
 
     @patch("app.github_command_handler.mark_notification_read")
     @patch("app.github_command_handler.find_mention_in_thread", return_value=None)
