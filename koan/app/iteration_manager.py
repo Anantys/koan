@@ -354,6 +354,7 @@ def _select_random_exploration_project(
 
 
 FilterResult = namedtuple("FilterResult", ["projects", "pr_limited"])
+AutonomousDecision = namedtuple("AutonomousDecision", ["action", "focus_remaining"])
 
 
 def _filter_exploration_projects(
@@ -483,6 +484,55 @@ def _make_result(*, action, project_name, project_path="",
         "schedule_mode": schedule_mode,
         "error": error,
     }
+
+
+def _decide_autonomous_action(
+    autonomous_mode: str,
+    koan_root: str,
+    schedule_state,
+    contemplative_chance: int = 10,
+) -> "AutonomousDecision":
+    """Decide autonomous action via a linear priority chain.
+
+    Called when no mission is pending and WAIT mode has already been
+    handled upstream (before exploration filtering).
+
+    Priority (first match wins):
+    1. Contemplative session — random roll, requires deep/implement + no focus
+    2. Focus wait — focus mode active, skip exploration
+    3. Schedule wait — work_hours active, skip exploration
+    4. Autonomous exploration — default fallback
+
+    Returns:
+        AutonomousDecision(action, focus_remaining)
+    """
+    focus_state = _check_focus(koan_root)
+    focus_active = focus_state is not None
+    _log_iteration("koan",
+        f"Evaluating autonomous action "
+        f"(mode={autonomous_mode}, focus_active={focus_active})")
+
+    # 1. Contemplative session (random reflection)
+    if _should_contemplate(autonomous_mode, focus_active,
+                           contemplative_chance, schedule_state):
+        return AutonomousDecision(action="contemplative", focus_remaining=None)
+
+    # 2. Focus mode active → wait for missions
+    if focus_state is not None:
+        try:
+            focus_remaining = focus_state.remaining_display()
+        except (ValueError, OSError) as e:
+            _log_iteration("error", f"Focus state display error: {e}")
+            focus_remaining = "unknown"
+        return AutonomousDecision(action="focus_wait",
+                                 focus_remaining=focus_remaining)
+
+    # 3. Schedule work_hours → suppress exploration
+    if schedule_state is not None and schedule_state.in_work_hours:
+        return AutonomousDecision(action="schedule_wait", focus_remaining=None)
+
+    # 4. Default: autonomous exploration
+    return AutonomousDecision(action="autonomous", focus_remaining=None)
 
 
 def plan_iteration(
@@ -664,18 +714,10 @@ def plan_iteration(
             f"{' (avoiding last: ' + last_project + ')' if last_project and last_project != project_name else ''}")
 
     # Step 6: Determine action for autonomous mode
-    action = "mission" if mission_title else "autonomous"
-    # schedule_state already set in step 2b (used for mode cap + autonomous decisions)
-
-    if not mission_title:
-        # No mission — check autonomous mode decisions
-
-        # Check focus state once (used by both contemplative and focus_wait)
-        focus_state = _check_focus(koan_root)
-        _log_iteration("koan", f"No mission picked — evaluating autonomous action "
-                       f"(mode={autonomous_mode}, focus_active={focus_state is not None})")
-
-        # 6a: Contemplative chance (random reflection)
+    if mission_title:
+        action = "mission"
+    else:
+        # No mission — decide autonomous action via priority chain
         try:
             from app.utils import get_contemplative_chance
             contemplative_chance = get_contemplative_chance()
@@ -683,58 +725,41 @@ def plan_iteration(
             _log_iteration("error", f"Contemplative chance load error: {e}")
             contemplative_chance = 10
 
-        if _should_contemplate(autonomous_mode, focus_state is not None,
-                               contemplative_chance, schedule_state):
-            action = "contemplative"
-        else:
-            # 6b: Focus mode — skip autonomous, wait for missions
-            if focus_state is not None:
-                action = "focus_wait"
+        autonomous_decision = _decide_autonomous_action(
+            autonomous_mode, koan_root, schedule_state, contemplative_chance,
+        )
+        action = autonomous_decision.action
 
-                focus_area = resolve_focus_area(autonomous_mode, has_mission=False)
+        if action == "focus_wait":
+            focus_area = resolve_focus_area(autonomous_mode, has_mission=False)
+            return _make_result(
+                action=action,
+                project_name=project_name,
+                project_path=project_path,
+                autonomous_mode=autonomous_mode,
+                focus_area=focus_area,
+                available_pct=available_pct,
+                decision_reason=decision_reason,
+                display_lines=display_lines,
+                recurring_injected=recurring_injected,
+                focus_remaining=autonomous_decision.focus_remaining,
+                schedule_mode=schedule_state.mode if schedule_state else "normal",
+            )
 
-                try:
-                    focus_remaining = focus_state.remaining_display()
-                except (ValueError, OSError) as e:
-                    _log_iteration("error", f"Focus state display error: {e}")
-                    focus_remaining = "unknown"
-
-                return _make_result(
-                    action=action,
-                    project_name=project_name,
-                    project_path=project_path,
-                    autonomous_mode=autonomous_mode,
-                    focus_area=focus_area,
-                    available_pct=available_pct,
-                    decision_reason=decision_reason,
-                    display_lines=display_lines,
-                    recurring_injected=recurring_injected,
-                    focus_remaining=focus_remaining,
-                    schedule_mode=schedule_state.mode if schedule_state else "normal",
-                )
-
-            # 6b2: Schedule work_hours — suppress exploration, wait for missions
-            if schedule_state is not None and schedule_state.in_work_hours:
-                action = "schedule_wait"
-
-                focus_area = resolve_focus_area(autonomous_mode, has_mission=False)
-
-                return _make_result(
-                    action=action,
-                    project_name=project_name,
-                    project_path=project_path,
-                    autonomous_mode=autonomous_mode,
-                    focus_area=focus_area,
-                    available_pct=available_pct,
-                    decision_reason=decision_reason,
-                    display_lines=display_lines,
-                    recurring_injected=recurring_injected,
-                    schedule_mode="work",
-                )
-
-            # 6c: WAIT mode — budget exhausted
-            if autonomous_mode == "wait":
-                action = "wait_pause"
+        if action == "schedule_wait":
+            focus_area = resolve_focus_area(autonomous_mode, has_mission=False)
+            return _make_result(
+                action=action,
+                project_name=project_name,
+                project_path=project_path,
+                autonomous_mode=autonomous_mode,
+                focus_area=focus_area,
+                available_pct=available_pct,
+                decision_reason=decision_reason,
+                display_lines=display_lines,
+                recurring_injected=recurring_injected,
+                schedule_mode="work",
+            )
 
     # Step 7: Resolve focus area
     has_mission = bool(mission_title)

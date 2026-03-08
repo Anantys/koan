@@ -12,9 +12,11 @@ import pytest
 os.environ.setdefault("KOAN_ROOT", "/tmp/test-koan")
 
 from app.iteration_manager import (
+    AutonomousDecision,
     FilterResult,
     _check_focus,
     _check_schedule,
+    _decide_autonomous_action,
     _fallback_mission_extract,
     _filter_exploration_projects,
     _get_known_project_names,
@@ -834,6 +836,96 @@ class TestPlanIteration:
         )
 
         mock_focus.assert_called_once()
+
+
+# === Tests: _decide_autonomous_action ===
+
+
+class TestDecideAutonomousAction:
+    """Tests for the extracted autonomous decision priority chain."""
+
+    @patch("app.iteration_manager._check_focus", return_value=None)
+    @patch("random.randint", return_value=3)  # < 10 → contemplation triggers
+    def test_contemplative_wins_first(self, mock_rand, mock_focus):
+        """Contemplative has highest priority in the chain."""
+        result = _decide_autonomous_action("deep", "/tmp/root", None, 10)
+        assert result.action == "contemplative"
+        assert result.focus_remaining is None
+
+    @patch("app.iteration_manager._check_focus")
+    @patch("random.randint", return_value=99)  # No contemplation
+    def test_focus_wait_when_focus_active(self, mock_rand, mock_focus):
+        """Focus wait triggers when focus is active and contemplation skipped."""
+        mock_state = MagicMock()
+        mock_state.remaining_display.return_value = "3h remaining"
+        mock_focus.return_value = mock_state
+
+        result = _decide_autonomous_action("deep", "/tmp/root", None, 10)
+        assert result.action == "focus_wait"
+        assert result.focus_remaining == "3h remaining"
+
+    @patch("app.iteration_manager._check_focus")
+    @patch("random.randint", return_value=99)
+    def test_focus_remaining_unknown_on_error(self, mock_rand, mock_focus):
+        """Focus remaining falls back to 'unknown' on display error."""
+        mock_state = MagicMock()
+        mock_state.remaining_display.side_effect = ValueError("bad state")
+        mock_focus.return_value = mock_state
+
+        result = _decide_autonomous_action("deep", "/tmp/root", None, 10)
+        assert result.action == "focus_wait"
+        assert result.focus_remaining == "unknown"
+
+    @patch("app.iteration_manager._check_focus", return_value=None)
+    @patch("random.randint", return_value=99)
+    def test_schedule_wait_during_work_hours(self, mock_rand, mock_focus):
+        """Schedule wait triggers during work hours when no focus."""
+        from app.schedule_manager import ScheduleState
+        schedule = ScheduleState(in_deep_hours=False, in_work_hours=True)
+
+        result = _decide_autonomous_action("deep", "/tmp/root", schedule, 10)
+        assert result.action == "schedule_wait"
+        assert result.focus_remaining is None
+
+    @patch("app.iteration_manager._check_focus", return_value=None)
+    @patch("random.randint", return_value=99)
+    def test_autonomous_default(self, mock_rand, mock_focus):
+        """Autonomous is the default when no higher-priority action matches."""
+        result = _decide_autonomous_action("deep", "/tmp/root", None, 10)
+        assert result.action == "autonomous"
+        assert result.focus_remaining is None
+
+    @patch("app.iteration_manager._check_focus")
+    @patch("random.randint", return_value=3)  # Would contemplate if focus inactive
+    def test_focus_suppresses_contemplation(self, mock_rand, mock_focus):
+        """Focus active suppresses contemplation (_should_contemplate checks focus)."""
+        mock_state = MagicMock()
+        mock_state.remaining_display.return_value = "1h"
+        mock_focus.return_value = mock_state
+
+        result = _decide_autonomous_action("deep", "/tmp/root", None, 10)
+        assert result.action == "focus_wait"
+
+    @patch("app.iteration_manager._check_focus")
+    @patch("random.randint", return_value=99)
+    def test_focus_beats_schedule(self, mock_rand, mock_focus):
+        """Focus wait wins over schedule wait when both would trigger."""
+        from app.schedule_manager import ScheduleState
+        schedule = ScheduleState(in_deep_hours=False, in_work_hours=True)
+        mock_state = MagicMock()
+        mock_state.remaining_display.return_value = "2h"
+        mock_focus.return_value = mock_state
+
+        result = _decide_autonomous_action("deep", "/tmp/root", schedule, 10)
+        assert result.action == "focus_wait"
+
+    @patch("app.iteration_manager._check_focus", return_value=None)
+    @patch("random.randint", return_value=99)
+    def test_returns_namedtuple(self, mock_rand, mock_focus):
+        """Result is an AutonomousDecision namedtuple."""
+        result = _decide_autonomous_action("deep", "/tmp/root", None, 10)
+        assert isinstance(result, AutonomousDecision)
+        assert result == AutonomousDecision(action="autonomous", focus_remaining=None)
 
 
 # === Tests: Deep hours mode capping ===
