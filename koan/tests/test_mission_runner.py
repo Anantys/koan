@@ -1864,6 +1864,169 @@ class TestTriggerReflectionEdgeCases:
         mock_write.assert_not_called()
 
 
+class TestStatusCallback:
+    """Test status_callback reporting during post-mission pipeline."""
+
+    @patch("app.mission_runner._record_session_outcome")
+    @patch("app.mission_runner.check_auto_merge", return_value=None)
+    @patch("app.mission_runner.trigger_reflection", return_value=False)
+    @patch("app.mission_runner.archive_pending", return_value=False)
+    @patch("app.mission_runner._read_pending_content", return_value="")
+    @patch("app.quota_handler.handle_quota_exhaustion", return_value=None)
+    @patch("app.mission_runner.update_usage", return_value=True)
+    def test_callback_called_for_each_step(
+        self, mock_usage, mock_quota, mock_read, mock_archive,
+        mock_reflect, mock_merge, mock_record, tmp_path
+    ):
+        """status_callback is called with a description for each finalization step."""
+        from app.mission_runner import run_post_mission
+
+        instance_dir = str(tmp_path / "instance")
+        os.makedirs(instance_dir, exist_ok=True)
+        steps = []
+
+        run_post_mission(
+            instance_dir=instance_dir,
+            project_name="koan",
+            project_path=str(tmp_path),
+            run_num=1,
+            exit_code=0,
+            stdout_file="/tmp/out.json",
+            stderr_file="/tmp/err.txt",
+            status_callback=steps.append,
+        )
+
+        assert len(steps) >= 4
+        assert "updating usage stats" in steps
+        assert "checking quota" in steps
+        assert "archiving journal" in steps
+        assert "recording session outcome" in steps
+
+    @patch("app.mission_runner._record_session_outcome")
+    @patch("app.mission_runner.check_auto_merge", return_value=None)
+    @patch("app.mission_runner.trigger_reflection", return_value=False)
+    @patch("app.mission_runner.archive_pending", return_value=False)
+    @patch("app.mission_runner._read_pending_content", return_value="")
+    @patch("app.quota_handler.handle_quota_exhaustion", return_value=None)
+    @patch("app.mission_runner.update_usage", return_value=True)
+    def test_callback_includes_reflection_and_merge_on_success(
+        self, mock_usage, mock_quota, mock_read, mock_archive,
+        mock_reflect, mock_merge, mock_record, tmp_path
+    ):
+        """On exit_code=0, reflection and auto-merge steps are reported."""
+        from app.mission_runner import run_post_mission
+
+        instance_dir = str(tmp_path / "instance")
+        os.makedirs(instance_dir, exist_ok=True)
+        steps = []
+
+        run_post_mission(
+            instance_dir=instance_dir,
+            project_name="koan",
+            project_path=str(tmp_path),
+            run_num=1,
+            exit_code=0,
+            stdout_file="/tmp/out.json",
+            stderr_file="/tmp/err.txt",
+            status_callback=steps.append,
+        )
+
+        assert "running reflection" in steps
+        assert "checking auto-merge" in steps
+
+    @patch("app.mission_runner._record_session_outcome")
+    @patch("app.mission_runner.check_auto_merge", return_value=None)
+    @patch("app.mission_runner.trigger_reflection", return_value=False)
+    @patch("app.mission_runner.archive_pending", return_value=False)
+    @patch("app.mission_runner._read_pending_content", return_value="")
+    @patch("app.quota_handler.handle_quota_exhaustion", return_value=None)
+    @patch("app.mission_runner.update_usage", return_value=True)
+    def test_callback_skips_reflection_on_failure(
+        self, mock_usage, mock_quota, mock_read, mock_archive,
+        mock_reflect, mock_merge, mock_record, tmp_path
+    ):
+        """On exit_code != 0, reflection and auto-merge steps are skipped."""
+        from app.mission_runner import run_post_mission
+
+        instance_dir = str(tmp_path / "instance")
+        os.makedirs(instance_dir, exist_ok=True)
+        steps = []
+
+        run_post_mission(
+            instance_dir=instance_dir,
+            project_name="koan",
+            project_path=str(tmp_path),
+            run_num=1,
+            exit_code=1,
+            stdout_file="/tmp/out.json",
+            stderr_file="/tmp/err.txt",
+            status_callback=steps.append,
+        )
+
+        assert "running reflection" not in steps
+        assert "checking auto-merge" not in steps
+
+    @patch("app.mission_runner._record_session_outcome")
+    @patch("app.mission_runner.check_auto_merge", return_value=None)
+    @patch("app.mission_runner.trigger_reflection", return_value=False)
+    @patch("app.mission_runner.archive_pending", return_value=False)
+    @patch("app.mission_runner._read_pending_content", return_value="")
+    @patch("app.quota_handler.handle_quota_exhaustion", return_value=None)
+    @patch("app.mission_runner.update_usage", return_value=True)
+    def test_no_callback_does_not_crash(
+        self, mock_usage, mock_quota, mock_read, mock_archive,
+        mock_reflect, mock_merge, mock_record, tmp_path
+    ):
+        """Omitting status_callback should work without errors."""
+        from app.mission_runner import run_post_mission
+
+        instance_dir = str(tmp_path / "instance")
+        os.makedirs(instance_dir, exist_ok=True)
+
+        result = run_post_mission(
+            instance_dir=instance_dir,
+            project_name="koan",
+            project_path=str(tmp_path),
+            run_num=1,
+            exit_code=0,
+            stdout_file="/tmp/out.json",
+            stderr_file="/tmp/err.txt",
+        )
+
+        assert result["success"] is True
+
+    @patch("app.mission_runner._record_session_outcome")
+    @patch("app.mission_runner._read_pending_content", return_value="")
+    @patch("app.quota_handler.handle_quota_exhaustion",
+           return_value=("resets 10am", "Auto-resume"))
+    @patch("app.mission_runner.update_usage", return_value=True)
+    def test_callback_called_on_quota_early_return(
+        self, mock_usage, mock_quota, mock_read, mock_record, tmp_path
+    ):
+        """Even on quota exhaustion early return, steps are reported."""
+        from app.mission_runner import run_post_mission
+
+        instance_dir = str(tmp_path / "instance")
+        os.makedirs(instance_dir, exist_ok=True)
+        steps = []
+
+        run_post_mission(
+            instance_dir=instance_dir,
+            project_name="koan",
+            project_path=str(tmp_path),
+            run_num=1,
+            exit_code=0,
+            stdout_file="/tmp/out.json",
+            stderr_file="/tmp/err.txt",
+            status_callback=steps.append,
+        )
+
+        assert "updating usage stats" in steps
+        assert "checking quota" in steps
+        # Should NOT have later steps due to early return
+        assert "running reflection" not in steps
+
+
 class TestUpdateUsageArgs:
     """Test update_usage argument forwarding."""
 

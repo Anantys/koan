@@ -1243,7 +1243,8 @@ def _run_iteration(
             _finalize_mission(instance, original_mission_title, project_name, claude_exit)
 
         # Post-mission pipeline
-        set_status(koan_root, f"Run {run_num}/{max_runs} — post-mission processing")
+        _status_prefix = f"Run {run_num}/{max_runs}"
+        set_status(koan_root, f"{_status_prefix} — finalizing")
         try:
             from app.mission_runner import run_post_mission
             post_result = run_post_mission(
@@ -1257,6 +1258,9 @@ def _run_iteration(
                 mission_title=mission_title,
                 autonomous_mode=autonomous_mode or "implement",
                 start_time=mission_start,
+                status_callback=lambda step: set_status(
+                    koan_root, f"{_status_prefix} — {step}"
+                ),
             )
 
             if post_result.get("pending_archived"):
@@ -1705,6 +1709,8 @@ def _run_skill_mission(
         with open(stdout_file, 'wb') as f:
             f.write(skill_stdout.encode('utf-8'))
 
+        _skill_prefix = f"Run {run_num}"
+        set_status(koan_root, f"{_skill_prefix} — finalizing")
         from app.mission_runner import run_post_mission
         run_post_mission(
             instance_dir=instance,
@@ -1717,6 +1723,9 @@ def _run_skill_mission(
             mission_title=mission_title,
             autonomous_mode=autonomous_mode or "implement",
             start_time=mission_start,
+            status_callback=lambda step: set_status(
+                koan_root, f"{_skill_prefix} — {step}"
+            ),
         )
     except Exception as e:
         log("error", f"Post-mission error: {e}")

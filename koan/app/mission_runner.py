@@ -23,7 +23,7 @@ import os
 import sys
 from datetime import date, datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 
 def build_mission_command(
@@ -324,6 +324,7 @@ def run_post_mission(
     mission_title: str = "",
     autonomous_mode: str = "",
     start_time: int = 0,
+    status_callback: Optional[Callable[[str], None]] = None,
 ) -> dict:
     """Run the complete post-mission processing pipeline.
 
@@ -340,6 +341,8 @@ def run_post_mission(
         mission_title: Mission description (empty for autonomous).
         autonomous_mode: Current mode (review/implement/deep).
         start_time: Mission start time as unix timestamp.
+        status_callback: Optional callable to report progress during finalization.
+            Called with a short description of the current step.
 
     Returns:
         Dict with keys:
@@ -361,12 +364,18 @@ def run_post_mission(
         "quota_info": None,
     }
 
+    def _report(step: str) -> None:
+        if status_callback:
+            status_callback(step)
+
     # 1. Update token usage from JSON output
+    _report("updating usage stats")
     usage_state = os.path.join(instance_dir, "usage_state.json")
     usage_md = os.path.join(instance_dir, "usage.md")
     result["usage_updated"] = update_usage(stdout_file, usage_state, usage_md)
 
     # 2. Check for quota exhaustion
+    _report("checking quota")
     from app.quota_handler import handle_quota_exhaustion
 
     koan_root = os.environ.get("KOAN_ROOT", str(Path(instance_dir).parent))
@@ -399,6 +408,7 @@ def run_post_mission(
         return result  # Early return — no further processing on quota exhaustion
 
     # 3. Archive pending.md if agent didn't clean up
+    _report("archiving journal")
     # Read pending content before archival for session outcome tracking.
     # When the agent follows Mission Completion Checklist, it deletes
     # pending.md before exiting — so we fall back to stdout content.
@@ -416,6 +426,7 @@ def run_post_mission(
     # 5. Post-mission processing (only on success)
     if exit_code == 0:
         # Reflection
+        _report("running reflection")
         mission_text = mission_title if mission_title else f"Autonomous {autonomous_mode} on {project_name}"
         result["reflection_written"] = trigger_reflection(
             instance_dir, mission_text, duration_minutes,
@@ -423,11 +434,13 @@ def run_post_mission(
         )
 
         # Auto-merge check
+        _report("checking auto-merge")
         result["auto_merge_branch"] = check_auto_merge(
             instance_dir, project_name, project_path
         )
 
     # 6. Record session outcome for staleness tracking
+    _report("recording session outcome")
     _record_session_outcome(
         instance_dir, project_name, autonomous_mode,
         duration_minutes, pending_content,
