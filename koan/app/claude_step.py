@@ -246,8 +246,8 @@ def _get_diffstat(base_ref: str, project_path: str) -> str:
         lines = stat.strip().splitlines()
         if lines:
             return lines[-1].strip()
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[claude_step] diffstat failed: {e}", file=sys.stderr)
     return ""
 
 
