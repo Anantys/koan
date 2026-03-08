@@ -481,7 +481,11 @@ def flush_outbox():
 
 
 def _requeue_outbox(content: str):
-    """Re-append content to outbox.md after a failed send attempt."""
+    """Re-append content to outbox.md after a failed send attempt.
+
+    If re-appending to outbox.md itself fails, writes the content to
+    outbox-failed.md so it is never silently lost.
+    """
     try:
         with open(OUTBOX_FILE, "a", encoding="utf-8") as f:
             fcntl.flock(f, fcntl.LOCK_EX)
@@ -492,6 +496,25 @@ def _requeue_outbox(content: str):
                 fcntl.flock(f, fcntl.LOCK_UN)
     except Exception as e:
         log("error", f"Failed to re-queue outbox message: {e}")
+        _write_outbox_failed(content, e)
+
+
+def _write_outbox_failed(content: str, original_error: Exception):
+    """Last-resort persistence: write lost outbox content to outbox-failed.md."""
+    failed_file = OUTBOX_FILE.parent / "outbox-failed.md"
+    try:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        entry = f"<!-- lost {timestamp} — {original_error} -->\n{content}\n"
+        with open(failed_file, "a", encoding="utf-8") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            try:
+                f.write(entry)
+                f.flush()
+            finally:
+                fcntl.flock(f, fcntl.LOCK_UN)
+        log("warn", f"Lost outbox content saved to {failed_file.name}")
+    except Exception as e2:
+        log("error", f"Failed to write outbox-failed.md: {e2} — content lost: {content[:120]}")
 
 
 def _expand_outbox_github_refs(formatted: str, raw_content: str) -> str:
