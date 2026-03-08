@@ -230,24 +230,33 @@ def _load_github_config(config: dict, koan_root: str, instance_dir: str) -> Opti
     }
 
 
+# Module-level cache for the GitHub notification skill registry.
+# _build_skill_registry() is called every ~30s cycle; caching avoids
+# rebuilding from filesystem each time.
+_gh_cached_registry = None
+_gh_cached_extra_dirs: Optional[tuple] = None
+
+
 def _build_skill_registry(instance_dir: str):
     """Build combined skill registry from core and instance skills.
-    
+
+    Uses a module-level cache to avoid rebuilding from filesystem on
+    every GitHub notification polling cycle (~30s).
+
     Returns:
         Populated SkillRegistry
     """
-    from app.skills import SkillRegistry, get_default_skills_dir
-    
-    registry = SkillRegistry(get_default_skills_dir())
-    
-    # Load instance skills
+    global _gh_cached_registry, _gh_cached_extra_dirs
+    from app.skills import build_registry
+
     instance_skills = Path(instance_dir) / "skills"
-    if instance_skills.is_dir():
-        instance_registry = SkillRegistry(instance_skills)
-        for skill in instance_registry.list_all():
-            registry._register(skill)
-    
-    return registry
+    extra = tuple(p for p in [instance_skills] if p.is_dir())
+
+    if _gh_cached_registry is None or extra != _gh_cached_extra_dirs:
+        _gh_cached_registry = build_registry(list(extra))
+        _gh_cached_extra_dirs = extra
+
+    return _gh_cached_registry
 
 
 def _normalize_github_url(url: str) -> str:

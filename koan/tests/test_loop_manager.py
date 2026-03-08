@@ -1631,3 +1631,66 @@ class TestConfigurableMaxCheckInterval:
         lm._GITHUB_MAX_CHECK_INTERVAL = 120
         lm._consecutive_empty_checks = 10
         assert lm._get_effective_check_interval() == 120
+
+
+class TestBuildSkillRegistryCache:
+    """Test module-level caching in _build_skill_registry."""
+
+    def setup_method(self):
+        """Reset cache before each test."""
+        import app.loop_manager as lm
+        lm._gh_cached_registry = None
+        lm._gh_cached_extra_dirs = None
+
+    def teardown_method(self):
+        """Reset cache after each test."""
+        import app.loop_manager as lm
+        lm._gh_cached_registry = None
+        lm._gh_cached_extra_dirs = None
+
+    @patch("app.skills.build_registry")
+    def test_caches_registry_across_calls(self, mock_build, tmp_path):
+        """Second call reuses the cached registry without rebuilding."""
+        from app.loop_manager import _build_skill_registry
+
+        mock_registry = MagicMock()
+        mock_build.return_value = mock_registry
+
+        r1 = _build_skill_registry(str(tmp_path))
+        r2 = _build_skill_registry(str(tmp_path))
+
+        assert r1 is r2
+        assert mock_build.call_count == 1
+
+    @patch("app.skills.build_registry")
+    def test_rebuilds_when_extra_dirs_change(self, mock_build, tmp_path):
+        """Cache invalidates when instance skills dir appears."""
+        from app.loop_manager import _build_skill_registry
+
+        mock_build.side_effect = [MagicMock(), MagicMock()]
+
+        # First call: no instance/skills dir
+        r1 = _build_skill_registry(str(tmp_path))
+
+        # Create instance/skills dir — changes extra_dirs tuple
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        r2 = _build_skill_registry(str(tmp_path))
+
+        assert r1 is not r2
+        assert mock_build.call_count == 2
+
+    @patch("app.skills.build_registry")
+    def test_passes_instance_skills_as_extra_dir(self, mock_build, tmp_path):
+        """Instance skills directory is passed to build_registry."""
+        from app.loop_manager import _build_skill_registry
+
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        mock_build.return_value = MagicMock()
+
+        _build_skill_registry(str(tmp_path))
+
+        args = mock_build.call_args[0][0]
+        assert len(args) == 1
+        assert args[0] == skills_dir
