@@ -78,6 +78,31 @@ class TestRecoverMissions:
         assert "Still active" in between
         assert "Already done" not in between
 
+    def test_skip_strikethrough_with_trailing_text(self, instance_dir):
+        """Struck-through items with trailing text (e.g. '~~done~~ merged') are NOT recovered."""
+        missions = instance_dir / "missions.md"
+        missions.write_text(
+            _missions(
+                in_progress=(
+                    "- ~~Completed task~~ (merged in PR #42)\n"
+                    "- ~~Another done~~ done\n"
+                    "- Still active"
+                )
+            )
+        )
+
+        count = recover_missions(str(instance_dir))
+        assert count == 1
+
+        content = missions.read_text()
+        lines = content.splitlines()
+        pending_idx = next(i for i, l in enumerate(lines) if "pending" in l.lower())
+        in_prog_idx = next(i for i, l in enumerate(lines) if "in progress" in l.lower())
+        between = "\n".join(lines[pending_idx + 1 : in_prog_idx])
+        assert "Still active" in between
+        assert "Completed task" not in between
+        assert "Another done" not in between
+
     def test_skip_complex_mission(self, instance_dir):
         """### header missions with sub-items are NOT recovered."""
         missions = instance_dir / "missions.md"

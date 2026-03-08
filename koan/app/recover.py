@@ -100,7 +100,7 @@ def recover_missions(instance_dir: str) -> int:
                 else:
                     in_complex_mission = False
 
-            if stripped.startswith("- ") and not re.match(r"^- ~~.*~~\s*$", stripped):
+            if stripped.startswith("- ") and not re.match(r"^- ~~.+~~", stripped):
                 recovered.append(line)
             elif stripped == "" or stripped == "(aucune)" or stripped == "(none)":
                 remaining_in_progress.append(line)
