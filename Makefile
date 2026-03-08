@@ -6,6 +6,7 @@ export
 .PHONY: awake run errand-run errand-awake dashboard
 .PHONY: ollama logs ssh-forward
 .PHONY: install-systemctl-service uninstall-systemctl-service
+.PHONY: install-launchd-service uninstall-launchd-service
 .PHONY: docker-setup docker-up docker-down docker-logs docker-test docker-auth docker-gh-auth
 
 PYTHON_BIN ?= python3
@@ -13,11 +14,15 @@ PYTHON_BIN ?= python3
 VENV   ?= .venv
 PYTHON ?= $(VENV)/bin/$(PYTHON_BIN)
 
-# --- systemd detection (Linux only, never on macOS) ---
+# --- service manager detection ---
 IS_LINUX := $(shell [ "$$(uname -s)" = "Linux" ] && echo 1)
+IS_MAC := $(shell [ "$$(uname -s)" = "Darwin" ] && echo 1)
 HAS_SYSTEMD := $(if $(IS_LINUX),$(shell command -v systemctl >/dev/null 2>&1 && echo 1))
 USE_SYSTEMD := $(if $(HAS_SYSTEMD),1)
+HAS_LAUNCHCTL := $(if $(IS_MAC),$(shell command -v launchctl >/dev/null 2>&1 && echo 1))
+USE_LAUNCHD := $(if $(HAS_LAUNCHCTL),1)
 SERVICE_INSTALLED = $(shell [ -f /etc/systemd/system/koan.service ] && echo 1)
+LAUNCHD_INSTALLED = $(shell [ -f ~/Library/LaunchAgents/com.koan.run.plist ] && echo 1)
 
 setup: $(VENV)/.installed
 
@@ -69,6 +74,30 @@ stop:
 
 status:
 	@sudo systemctl status koan koan-awake --no-pager || true
+
+else ifeq ($(USE_LAUNCHD),1)
+
+start: setup
+	@if [ -n "$$SSH_AUTH_SOCK" ]; then \
+		ln -sf "$$SSH_AUTH_SOCK" "$(PWD)/.ssh-agent-sock"; \
+		echo "✓ SSH agent socket forwarded"; \
+	fi
+	@if [ -z "$(LAUNCHD_INSTALLED)" ]; then \
+		echo "→ launchd detected — installing Kōan service (one-time setup)..."; \
+		bash koan/launchd/install-service.sh "$(PWD)"; \
+	fi
+	@launchctl kickstart "gui/$$(id -u)/com.koan.awake" 2>/dev/null || true
+	@launchctl kickstart "gui/$$(id -u)/com.koan.run" 2>/dev/null || true
+	@echo "✓ Kōan started via launchd"
+
+stop:
+	@launchctl kill SIGTERM "gui/$$(id -u)/com.koan.run" 2>/dev/null || true
+	@launchctl kill SIGTERM "gui/$$(id -u)/com.koan.awake" 2>/dev/null || true
+	@echo "✓ Kōan stopped"
+
+status:
+	@echo "=== com.koan.run ===" && launchctl print "gui/$$(id -u)/com.koan.run" 2>/dev/null | head -20 || echo "  not loaded"
+	@echo "=== com.koan.awake ===" && launchctl print "gui/$$(id -u)/com.koan.awake" 2>/dev/null | head -20 || echo "  not loaded"
 
 else
 
@@ -140,6 +169,17 @@ uninstall-systemctl-service:
 	@if [ -z "$(IS_LINUX)" ]; then echo "Error: systemd is only available on Linux." >&2; exit 1; fi
 	@if [ -z "$(HAS_SYSTEMD)" ]; then echo "Error: systemctl not found." >&2; exit 1; fi
 	sudo bash koan/systemd/uninstall-service.sh
+
+install-launchd-service: setup
+	@if [ -z "$(IS_MAC)" ]; then echo "Error: launchd is only available on macOS." >&2; exit 1; fi
+	@if [ -z "$(HAS_LAUNCHCTL)" ]; then echo "Error: launchctl not found." >&2; exit 1; fi
+	bash koan/launchd/install-service.sh "$(PWD)"
+
+uninstall-launchd-service:
+	@-$(MAKE) stop
+	@if [ -z "$(IS_MAC)" ]; then echo "Error: launchd is only available on macOS." >&2; exit 1; fi
+	@if [ -z "$(HAS_LAUNCHCTL)" ]; then echo "Error: launchctl not found." >&2; exit 1; fi
+	bash koan/launchd/uninstall-service.sh
 
 # --- Docker targets ---
 
