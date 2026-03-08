@@ -145,6 +145,22 @@ def _get_pr_feedback_section(project_path: str) -> str:
     return ""
 
 
+def _get_drift_section(instance: str, project_name: str, project_path: str) -> str:
+    """Get drift summary for the current project.
+
+    Checks how many commits landed on main since the agent's last session
+    on this project. Helps the agent avoid conflicts and stale assumptions.
+    """
+    try:
+        from app.session_tracker import get_drift_summary
+        summary = get_drift_summary(instance, project_name, project_path)
+        if summary:
+            return f"\n\n# Codebase Drift\n\n{summary}\n"
+    except Exception as e:
+        print(f"[prompt_builder] Drift check failed: {e}", file=sys.stderr)
+    return ""
+
+
 def _get_verbose_section(instance: str) -> str:
     """Build the verbose mode section if .koan-verbose exists."""
     koan_root = str(Path(instance).parent)
@@ -225,6 +241,10 @@ def build_agent_prompt(
     # Append staleness warning (all autonomous modes — cheap local read)
     if not mission_title:
         prompt += _get_staleness_section(instance, project_name)
+
+    # Append drift detection (autonomous only — shows what changed on main)
+    if not mission_title:
+        prompt += _get_drift_section(instance, project_name, project_path)
 
     # Append PR merge feedback (autonomous only — helps topic alignment)
     if not mission_title and autonomous_mode in ("deep", "implement"):

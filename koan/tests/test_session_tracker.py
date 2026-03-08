@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+from unittest.mock import patch
+
 from app.session_tracker import (
     classify_session,
     record_outcome,
@@ -12,6 +14,10 @@ from app.session_tracker import (
     get_staleness_score,
     get_staleness_warning,
     get_project_freshness,
+    get_last_session_timestamp,
+    get_project_drift,
+    get_drift_summary,
+    _count_commits_since,
     _extract_summary,
     _load_outcomes,
     MAX_OUTCOMES,
@@ -639,3 +645,123 @@ class TestLoadOutcomesValidation:
         outcomes_path.write_text('[{"a": 1}]')
         result = _load_outcomes(outcomes_path)
         assert len(result) == 1
+
+
+# --- Drift detection ---
+
+class TestGetLastSessionTimestamp:
+
+    def test_returns_none_when_no_sessions(self, tracker_env):
+        assert get_last_session_timestamp(tracker_env, "koan") is None
+
+    def test_returns_timestamp_of_last_session(self, tracker_env):
+        record_outcome(tracker_env, "koan", "deep", 10, "branch pushed")
+        ts = get_last_session_timestamp(tracker_env, "koan")
+        assert ts is not None
+        assert "T" in ts  # ISO format
+
+    def test_returns_none_for_different_project(self, tracker_env):
+        record_outcome(tracker_env, "other", "deep", 10, "branch pushed")
+        assert get_last_session_timestamp(tracker_env, "koan") is None
+
+
+class TestCountCommitsSince:
+
+    def test_returns_negative_for_nonexistent_path(self):
+        result = _count_commits_since("/nonexistent/path", "2026-01-01T00:00:00")
+        assert result == -1
+
+    @patch("app.session_tracker.subprocess.run")
+    def test_counts_git_log_lines(self, mock_run):
+        mock_run.return_value = type("R", (), {
+            "returncode": 0,
+            "stdout": "abc123 first commit\ndef456 second commit\nghi789 third\n",
+        })()
+        result = _count_commits_since("/some/path", "2026-01-01T00:00:00")
+        assert result == 3
+        mock_run.assert_called_once()
+        args = mock_run.call_args
+        assert "--since=2026-01-01T00:00:00" in args[0][0]
+
+    @patch("app.session_tracker.subprocess.run")
+    def test_returns_negative_on_git_error(self, mock_run):
+        mock_run.return_value = type("R", (), {
+            "returncode": 128,
+            "stdout": "",
+        })()
+        assert _count_commits_since("/path", "2026-01-01T00:00:00") == -1
+
+    @patch("app.session_tracker.subprocess.run")
+    def test_returns_zero_for_empty_log(self, mock_run):
+        mock_run.return_value = type("R", (), {
+            "returncode": 0,
+            "stdout": "",
+        })()
+        assert _count_commits_since("/path", "2026-01-01T00:00:00") == 0
+
+
+class TestGetProjectDrift:
+
+    def test_no_sessions_returns_zero_drift(self, tracker_env):
+        projects = [("koan", "/some/path"), ("other", "/other")]
+        drift = get_project_drift(tracker_env, projects)
+        assert drift == {"koan": 0, "other": 0}
+
+    @patch("app.session_tracker._count_commits_since", return_value=12)
+    def test_returns_commit_count(self, mock_count, tracker_env):
+        record_outcome(tracker_env, "koan", "deep", 10, "branch pushed")
+        projects = [("koan", "/some/path")]
+        drift = get_project_drift(tracker_env, projects)
+        assert drift["koan"] == 12
+        mock_count.assert_called_once()
+
+    @patch("app.session_tracker._count_commits_since", return_value=-1)
+    def test_error_maps_to_zero(self, mock_count, tracker_env):
+        record_outcome(tracker_env, "koan", "deep", 10, "branch pushed")
+        projects = [("koan", "/some/path")]
+        drift = get_project_drift(tracker_env, projects)
+        assert drift["koan"] == 0
+
+    def test_empty_path_returns_zero(self, tracker_env):
+        record_outcome(tracker_env, "koan", "deep", 10, "branch pushed")
+        projects = [("koan", "")]
+        drift = get_project_drift(tracker_env, projects)
+        assert drift["koan"] == 0
+
+
+class TestGetDriftSummary:
+
+    def test_no_sessions_returns_empty(self, tracker_env):
+        assert get_drift_summary(tracker_env, "koan", "/path") == ""
+
+    @patch("app.session_tracker._count_commits_since", return_value=1)
+    def test_low_drift_returns_empty(self, mock_count, tracker_env):
+        record_outcome(tracker_env, "koan", "deep", 10, "branch pushed")
+        assert get_drift_summary(tracker_env, "koan", "/path") == ""
+
+    @patch("app.session_tracker.subprocess.run")
+    @patch("app.session_tracker._count_commits_since", return_value=5)
+    def test_moderate_drift_returns_summary(self, mock_count, mock_run, tracker_env):
+        mock_run.return_value = type("R", (), {
+            "returncode": 0,
+            "stdout": "abc fix: something\ndef feat: other\n",
+        })()
+        record_outcome(tracker_env, "koan", "deep", 10, "branch pushed")
+        summary = get_drift_summary(tracker_env, "koan", "/path")
+        assert "5 commits" in summary
+        assert "Project Drift Detected" in summary
+
+    @patch("app.session_tracker.subprocess.run")
+    @patch("app.session_tracker._count_commits_since", return_value=20)
+    def test_high_drift_includes_warning(self, mock_count, mock_run, tracker_env):
+        mock_run.return_value = type("R", (), {
+            "returncode": 0,
+            "stdout": "abc fix\n" * 5,
+        })()
+        record_outcome(tracker_env, "koan", "deep", 10, "branch pushed")
+        summary = get_drift_summary(tracker_env, "koan", "/path")
+        assert "High drift" in summary
+
+    def test_empty_path_returns_empty(self, tracker_env):
+        record_outcome(tracker_env, "koan", "deep", 10, "branch pushed")
+        assert get_drift_summary(tracker_env, "koan", "") == ""

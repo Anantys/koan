@@ -300,6 +300,15 @@ def _select_random_exploration_project(
         except (ImportError, OSError, ValueError) as e:
             _log_iteration("error", f"Freshness lookup failed: {e}")
 
+    # Get drift scores (commits since last session)
+    drift = None
+    if instance_dir:
+        try:
+            from app.session_tracker import get_project_drift
+            drift = get_project_drift(instance_dir, projects)
+        except (ImportError, OSError, ValueError) as e:
+            _log_iteration("error", f"Drift detection failed: {e}")
+
     # Filter out last project when possible
     candidates = projects
     if last_project and len(projects) > 1:
@@ -307,18 +316,37 @@ def _select_random_exploration_project(
         if filtered:
             candidates = filtered
 
-    # Weighted random selection if we have weights
-    if weights and len(candidates) > 1:
-        candidate_weights = [weights.get(n, 10) for n, _ in candidates]
+    # Weighted random selection combining freshness and drift
+    if (weights or drift) and len(candidates) > 1:
+        candidate_weights = []
+        for name, _ in candidates:
+            base = weights.get(name, 10) if weights else 10
+            # Drift boost: projects with significant new commits get a bonus
+            if drift:
+                d = drift.get(name, 0)
+                if d >= 15:
+                    base += 6  # High drift — strong pull
+                elif d >= 5:
+                    base += 3  # Moderate drift
+                elif d >= 3:
+                    base += 1  # Minor drift
+            candidate_weights.append(base)
+
         total = sum(candidate_weights)
         if total > 0:
             selected = random.choices(candidates, weights=candidate_weights, k=1)[0]
-            stale_info = ""
-            score = 10 - weights.get(selected[0], 10)
-            if score > 0:
-                stale_info = f" (staleness={score})"
+            extra_info = []
+            if weights:
+                staleness = 10 - weights.get(selected[0], 10)
+                if staleness > 0:
+                    extra_info.append(f"staleness={staleness}")
+            if drift:
+                d = drift.get(selected[0], 0)
+                if d > 0:
+                    extra_info.append(f"drift={d} commits")
+            suffix = f" ({', '.join(extra_info)})" if extra_info else ""
             _log_iteration("koan",
-                f"Weighted selection: '{selected[0]}'{stale_info} "
+                f"Weighted selection: '{selected[0]}'{suffix} "
                 f"from {len(candidates)} candidate(s)")
             return selected
 

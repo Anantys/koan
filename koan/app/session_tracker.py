@@ -15,10 +15,11 @@ Integration points:
 
 import json
 import re
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 
 # Maximum entries to keep in session_outcomes.json (rolling window)
@@ -370,3 +371,160 @@ def get_project_freshness(
             weights[name] = 1  # Heavily deprioritized
 
     return weights
+
+
+def get_last_session_timestamp(instance_dir: str, project: str) -> Optional[str]:
+    """Get the ISO timestamp of the most recent session for a project.
+
+    Args:
+        instance_dir: Path to instance directory.
+        project: Project name.
+
+    Returns:
+        ISO timestamp string, or None if no sessions found.
+    """
+    recent = get_recent_outcomes(instance_dir, project, limit=1)
+    if not recent:
+        return None
+    return recent[-1].get("timestamp")
+
+
+def _count_commits_since(project_path: str, since_iso: str) -> int:
+    """Count commits on the default branch since a given ISO timestamp.
+
+    Uses ``git log --oneline --since`` to count new commits. Runs in
+    the project directory. Returns -1 on error (missing repo, bad path).
+
+    Args:
+        project_path: Path to the project's git repository.
+        since_iso: ISO 8601 timestamp (e.g. "2026-03-01T10:00:00").
+
+    Returns:
+        Number of commits since the timestamp, or -1 on error.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "log", "--oneline", f"--since={since_iso}"],
+            cwd=project_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return -1
+        lines = [l for l in result.stdout.strip().splitlines() if l.strip()]
+        return len(lines)
+    except (subprocess.TimeoutExpired, OSError, ValueError):
+        return -1
+
+
+def get_project_drift(
+    instance_dir: str,
+    projects: List[Tuple[str, str]],
+) -> Dict[str, int]:
+    """Measure how much each project has drifted since the agent's last session.
+
+    For each project, finds the last session timestamp and counts commits
+    on the default branch since then. Projects with no prior sessions get
+    drift = 0 (no baseline to compare against).
+
+    Args:
+        instance_dir: Path to instance directory.
+        projects: List of (name, path) tuples.
+
+    Returns:
+        Dict mapping project name to commit count since last session.
+        Values are >= 0 (errors mapped to 0).
+    """
+    drift = {}
+    for name, path in projects:
+        ts = get_last_session_timestamp(instance_dir, name)
+        if not ts or not path:
+            drift[name] = 0
+            continue
+        count = _count_commits_since(path, ts)
+        drift[name] = max(0, count)
+    return drift
+
+
+def get_drift_summary(
+    instance_dir: str,
+    project_name: str,
+    project_path: str,
+) -> str:
+    """Generate a human-readable drift summary for a single project.
+
+    Used by prompt_builder to inject context about how much the project
+    has changed since the agent last worked on it.
+
+    Args:
+        instance_dir: Path to instance directory.
+        project_name: Project name.
+        project_path: Path to the project directory.
+
+    Returns:
+        Summary string, or empty string if no significant drift.
+    """
+    ts = get_last_session_timestamp(instance_dir, project_name)
+    if not ts or not project_path:
+        return ""
+
+    count = _count_commits_since(project_path, ts)
+    if count <= 0:
+        return ""
+
+    # Only report meaningful drift (3+ commits)
+    if count < 3:
+        return ""
+
+    # Parse the timestamp for display
+    try:
+        dt = datetime.fromisoformat(ts)
+        days_ago = (datetime.now() - dt).days
+        if days_ago == 0:
+            time_desc = "today"
+        elif days_ago == 1:
+            time_desc = "yesterday"
+        else:
+            time_desc = f"{days_ago} days ago"
+    except (ValueError, TypeError):
+        time_desc = "recently"
+
+    # Get brief log of recent changes
+    recent_log = ""
+    try:
+        result = subprocess.run(
+            ["git", "log", "--oneline", f"--since={ts}", "-5"],
+            cwd=project_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            lines = result.stdout.strip().splitlines()[:5]
+            recent_log = "\n".join(f"  - {l.strip()}" for l in lines)
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+
+    summary_lines = [
+        f"### Project Drift Detected",
+        "",
+        f"**{count} commits** landed on main since your last session ({time_desc}).",
+        "Review recent changes before starting work to avoid conflicts or duplication.",
+    ]
+
+    if recent_log:
+        summary_lines.extend([
+            "",
+            "Recent commits:",
+            recent_log,
+        ])
+
+    if count >= 15:
+        summary_lines.extend([
+            "",
+            "**High drift** — consider reading CLAUDE.md and key files again "
+            "before starting work. The codebase may have changed significantly.",
+        ])
+
+    return "\n".join(summary_lines)
