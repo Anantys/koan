@@ -53,10 +53,6 @@ After the title line, leave a blank line and then write the plan body:
 
 One paragraph explaining what this plan achieves and why it matters.
 
-### Open Questions
-
-Bulleted list of questions or decisions that need human input before proceeding. If none, write "None — ready to implement."
-
 ### Implementation Phases
 
 Break the work into numbered **phases**. Each phase should be a self-contained unit of work that can be implemented and reviewed independently.
@@ -85,6 +81,10 @@ How to verify the implementation works correctly.
 ### Risks & Alternatives
 
 Any risks with this approach and alternative approaches considered.
+
+### Open Questions
+
+Bulleted list of questions or decisions that need human input before proceeding. If none, write "None — ready to implement."
 
 Keep the plan actionable and specific to this codebase. Reference actual file paths and function names.
 Do NOT include any preamble or commentary outside the plan structure — just the title line followed by the plan body.
