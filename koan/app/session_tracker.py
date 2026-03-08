@@ -17,6 +17,7 @@ import json
 import re
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -24,6 +25,11 @@ from typing import Dict, List, Optional, Tuple
 
 # Maximum entries to keep in session_outcomes.json (rolling window)
 MAX_OUTCOMES = 200
+
+# TTL cache for _count_commits_since() — avoids repeated git subprocess calls
+# Key: (project_path, since_iso), Value: (commit_count, monotonic_timestamp)
+_commits_cache: Dict[tuple, tuple] = {}
+_COMMITS_CACHE_TTL = 300  # 5 minutes
 
 # Keywords that signal an empty/non-productive session
 _EMPTY_KEYWORDS = [
@@ -395,6 +401,9 @@ def _count_commits_since(project_path: str, since_iso: str) -> int:
     Uses ``git log --oneline --since`` to count new commits. Runs in
     the project directory. Returns -1 on error (missing repo, bad path).
 
+    Results are cached for 5 minutes (``_COMMITS_CACHE_TTL``) since commit
+    counts change rarely but are queried on every autonomous iteration.
+
     Args:
         project_path: Path to the project's git repository.
         since_iso: ISO 8601 timestamp (e.g. "2026-03-01T10:00:00").
@@ -402,6 +411,15 @@ def _count_commits_since(project_path: str, since_iso: str) -> int:
     Returns:
         Number of commits since the timestamp, or -1 on error.
     """
+    cache_key = (project_path, since_iso)
+    now = time.monotonic()
+
+    cached = _commits_cache.get(cache_key)
+    if cached is not None:
+        value, cached_at = cached
+        if now - cached_at < _COMMITS_CACHE_TTL:
+            return value
+
     try:
         result = subprocess.run(
             ["git", "log", "--oneline", f"--since={since_iso}"],
@@ -411,11 +429,15 @@ def _count_commits_since(project_path: str, since_iso: str) -> int:
             timeout=10,
         )
         if result.returncode != 0:
-            return -1
-        lines = [l for l in result.stdout.strip().splitlines() if l.strip()]
-        return len(lines)
+            count = -1
+        else:
+            lines = [l for l in result.stdout.strip().splitlines() if l.strip()]
+            count = len(lines)
     except (subprocess.TimeoutExpired, OSError, ValueError):
-        return -1
+        count = -1
+
+    _commits_cache[cache_key] = (count, now)
+    return count
 
 
 def get_project_drift(

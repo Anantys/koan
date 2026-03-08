@@ -18,10 +18,20 @@ from app.session_tracker import (
     get_project_drift,
     get_drift_summary,
     _count_commits_since,
+    _commits_cache,
+    _COMMITS_CACHE_TTL,
     _extract_summary,
     _load_outcomes,
     MAX_OUTCOMES,
 )
+
+
+@pytest.fixture(autouse=True)
+def _clear_commits_cache():
+    """Clear the _count_commits_since TTL cache between tests."""
+    _commits_cache.clear()
+    yield
+    _commits_cache.clear()
 
 
 @pytest.fixture
@@ -698,6 +708,60 @@ class TestCountCommitsSince:
             "stdout": "",
         })()
         assert _count_commits_since("/path", "2026-01-01T00:00:00") == 0
+
+    @patch("app.session_tracker.subprocess.run")
+    def test_cache_hit_avoids_subprocess(self, mock_run):
+        """Second call with same args should return cached value."""
+        mock_run.return_value = type("R", (), {
+            "returncode": 0,
+            "stdout": "abc first\ndef second\n",
+        })()
+        assert _count_commits_since("/path", "2026-01-01T00:00:00") == 2
+        assert _count_commits_since("/path", "2026-01-01T00:00:00") == 2
+        mock_run.assert_called_once()
+
+    @patch("app.session_tracker.subprocess.run")
+    def test_cache_miss_on_different_args(self, mock_run):
+        """Different args should trigger separate subprocess calls."""
+        mock_run.return_value = type("R", (), {
+            "returncode": 0,
+            "stdout": "abc first\n",
+        })()
+        _count_commits_since("/path-a", "2026-01-01T00:00:00")
+        _count_commits_since("/path-b", "2026-01-01T00:00:00")
+        assert mock_run.call_count == 2
+
+    @patch("app.session_tracker.subprocess.run")
+    @patch("app.session_tracker.time.monotonic")
+    def test_cache_expires_after_ttl(self, mock_mono, mock_run):
+        """Cache entry should expire after _COMMITS_CACHE_TTL seconds."""
+        mock_run.return_value = type("R", (), {
+            "returncode": 0,
+            "stdout": "abc first\n",
+        })()
+        mock_mono.return_value = 1000.0
+        assert _count_commits_since("/path", "2026-01-01T00:00:00") == 1
+
+        # Still within TTL — should use cache
+        mock_mono.return_value = 1000.0 + _COMMITS_CACHE_TTL - 1
+        assert _count_commits_since("/path", "2026-01-01T00:00:00") == 1
+        assert mock_run.call_count == 1
+
+        # Past TTL — should call subprocess again
+        mock_mono.return_value = 1000.0 + _COMMITS_CACHE_TTL + 1
+        assert _count_commits_since("/path", "2026-01-01T00:00:00") == 1
+        assert mock_run.call_count == 2
+
+    @patch("app.session_tracker.subprocess.run")
+    def test_error_result_is_cached(self, mock_run):
+        """Even -1 error results should be cached to avoid retrying."""
+        mock_run.return_value = type("R", (), {
+            "returncode": 128,
+            "stdout": "",
+        })()
+        assert _count_commits_since("/path", "2026-01-01T00:00:00") == -1
+        assert _count_commits_since("/path", "2026-01-01T00:00:00") == -1
+        mock_run.assert_called_once()
 
 
 class TestGetProjectDrift:
