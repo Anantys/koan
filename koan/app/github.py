@@ -69,6 +69,10 @@ def pr_create(title, body, draft=True, base=None, repo=None, head=None, cwd=None
     Returns:
         The URL of the newly created PR.
     """
+    from app.leak_detector import scan_and_redact
+
+    title = scan_and_redact(title, context="PR title")
+    body = scan_and_redact(body, context="PR body")
     args = ["pr", "create", "--title", title, "--body", body]
     if draft:
         args.append("--draft")
@@ -93,6 +97,10 @@ def issue_create(title, body, labels=None, cwd=None):
     Returns:
         The URL of the newly created issue.
     """
+    from app.leak_detector import scan_and_redact
+
+    title = scan_and_redact(title, context="Issue title")
+    body = scan_and_redact(body, context="Issue body")
     args = ["issue", "create", "--title", title, "--body", body]
     if labels:
         args.extend(["--label", ",".join(labels)])

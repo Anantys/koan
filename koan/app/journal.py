@@ -134,6 +134,10 @@ def append_to_journal(instance_dir: Path, project_name: str, content: str):
     journal_dir.mkdir(parents=True, exist_ok=True)
     journal_file = journal_dir / f"{project_name}.md"
 
+    from app.leak_detector import scan_and_redact
+
+    content = scan_and_redact(content, context="journal")
+
     with open(journal_file, "a", encoding="utf-8") as f:
         fcntl.flock(f, fcntl.LOCK_EX)
         try:
