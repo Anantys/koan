@@ -177,6 +177,19 @@ def get_start_on_pause() -> bool:
     return bool(config.get("start_on_pause", False))
 
 
+def get_auto_pause() -> bool:
+    """Check if auto-pause is enabled in config.yaml.
+
+    When True (default), Kōan auto-pauses after max_runs or idle timeout.
+    When False, only quota exhaustion and consecutive errors trigger pause.
+    """
+    config = _load_config()
+    value = config.get("auto_pause")
+    if value is None:
+        return True
+    return bool(value)
+
+
 def get_skip_permissions() -> bool:
     """Check if skip_permissions is enabled in config.yaml.
 

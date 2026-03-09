@@ -130,6 +130,29 @@ class TestGetStartOnPause:
             assert get_start_on_pause() is True
 
 
+# --- get_auto_pause ---
+
+
+class TestGetAutoPause:
+    def test_default_true(self):
+        from app.config import get_auto_pause
+
+        with _mock_config({}):
+            assert get_auto_pause() is True
+
+    def test_disabled(self):
+        from app.config import get_auto_pause
+
+        with _mock_config({"auto_pause": False}):
+            assert get_auto_pause() is False
+
+    def test_explicit_true(self):
+        from app.config import get_auto_pause
+
+        with _mock_config({"auto_pause": True}):
+            assert get_auto_pause() is True
+
+
 # --- get_skip_permissions ---
 
 

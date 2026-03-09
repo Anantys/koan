@@ -625,15 +625,19 @@ def main_loop():
                             "or new missions. Auto-pause in ~30 min.",
                         )
                     if consecutive_idle >= MAX_CONSECUTIVE_IDLE:
-                        idle_min = consecutive_idle * interval // 60
-                        log("koan", f"Idle for {idle_min} min — auto-pausing.")
-                        from app.pause_manager import create_pause
-                        create_pause(koan_root, "idle_timeout")
-                        _notify(
-                            instance,
-                            f"⏸️ Auto-paused after {idle_min} min idle. "
-                            "Use /resume when ready.",
-                        )
+                        from app.config import get_auto_pause
+                        if get_auto_pause():
+                            idle_min = consecutive_idle * interval // 60
+                            log("koan", f"Idle for {idle_min} min — auto-pausing.")
+                            from app.pause_manager import create_pause
+                            create_pause(koan_root, "idle_timeout")
+                            _notify(
+                                instance,
+                                f"⏸️ Auto-paused after {idle_min} min idle. "
+                                "Use /resume when ready.",
+                            )
+                        else:
+                            consecutive_idle = 0  # Reset so we don't log every iteration
                 else:
                     # Non-productive but not idle (error recovery, dedup, etc.)
                     # Don't count toward idle timeout
@@ -1498,21 +1502,25 @@ def _run_iteration(
 
     # Max runs check
     if count + 1 >= max_runs:
-        log("koan", f"Max runs ({max_runs}) reached. Running evening ritual before pause.")
-        with protected_phase("Evening ritual"):
-            try:
-                from app.rituals import run_ritual
-                run_ritual("evening", Path(instance))
-            except Exception as e:
-                log("error", f"Evening ritual failed: {e}")
-        log("pause", "Entering pause mode (auto-resume in 5h).")
-        from app.pause_manager import create_pause
-        create_pause(koan_root, "max_runs")
-        _notify(instance, (
-            f"⏸️ Kōan paused: {max_runs} runs completed. "
-            "Auto-resume in 5h or use /resume to restart."
-        ))
-        return True  # completed final productive run
+        from app.config import get_auto_pause
+        if get_auto_pause():
+            log("koan", f"Max runs ({max_runs}) reached. Running evening ritual before pause.")
+            with protected_phase("Evening ritual"):
+                try:
+                    from app.rituals import run_ritual
+                    run_ritual("evening", Path(instance))
+                except Exception as e:
+                    log("error", f"Evening ritual failed: {e}")
+            log("pause", "Entering pause mode (auto-resume in 5h).")
+            from app.pause_manager import create_pause
+            create_pause(koan_root, "max_runs")
+            _notify(instance, (
+                f"⏸️ Kōan paused: {max_runs} runs completed. "
+                "Auto-resume in 5h or use /resume to restart."
+            ))
+            return True  # completed final productive run
+        else:
+            log("koan", f"Max runs ({max_runs}) reached but auto_pause disabled — continuing.")
 
     # Sleep between runs (skip if pending missions)
     _sleep_between_runs(koan_root, instance, interval, run_num, max_runs)

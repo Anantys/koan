@@ -16,6 +16,11 @@
 max_runs_per_day: 20
 interval_seconds: 300
 
+# Auto-pause — automatically pause after max_runs or idle timeout.
+# When false, Kōan keeps running indefinitely (quota and error pauses still apply).
+# Useful when you have scheduled recurring tasks that must fire reliably.
+# auto_pause: true
+
 # Fast reply mode — use lightweight model (Haiku) for command handlers
 # When true, /usage, /sparring, and similar commands use Haiku instead of default model
 # Faster response, lower cost, but simpler answers
