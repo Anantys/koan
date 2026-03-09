@@ -14,6 +14,7 @@ from app.prompt_builder import (
     _get_submit_pr_section,
     _get_deep_research,
     _get_staleness_section,
+    _get_mission_type_section,
     _get_tdd_section,
     _get_verbose_section,
 )
@@ -220,11 +221,13 @@ class TestBuildAgentPrompt:
     @patch("app.prompt_builder._get_verbose_section", return_value="")
     @patch("app.prompt_builder._get_submit_pr_section", return_value="")
     @patch("app.prompt_builder._get_deep_research", return_value="")
+    @patch("app.prompt_builder._get_mission_type_section", return_value="")
     @patch("app.prompt_builder._get_merge_policy", return_value="\n# Git Merge\nStandard.\n")
     @patch("app.prompt_builder._get_branch_prefix", return_value="koan/")
     @patch("app.prompts.load_prompt")
     def test_basic_mission_prompt(
-        self, mock_load, mock_prefix, mock_merge, mock_deep, mock_submit_pr, mock_verbose,
+        self, mock_load, mock_prefix, mock_merge, mock_type, mock_deep,
+        mock_submit_pr, mock_verbose,
         prompt_env,
     ):
         mock_load.return_value = "Template with {placeholder}"
@@ -1135,3 +1138,97 @@ class TestGetTddSection:
         )
 
         assert "TDD Mode" not in result
+
+
+# --- Tests for _get_mission_type_section ---
+
+
+class TestGetMissionTypeSection:
+    """Tests for mission-type-aware prompt injection."""
+
+    def test_returns_empty_for_no_mission(self):
+        assert _get_mission_type_section("") == ""
+
+    @patch("app.prompts.load_prompt")
+    def test_returns_empty_for_general_type(self, mock_load):
+        """No injection for unclassified missions."""
+        assert _get_mission_type_section("migrate to Python 3.12") == ""
+        mock_load.assert_not_called()
+
+    @patch("app.prompts.load_prompt")
+    def test_returns_debug_hint(self, mock_load):
+        mock_load.return_value = (
+            "## debug\n\nReproduce the bug first.\n\n## implement\n\nBuild it.\n"
+        )
+        result = _get_mission_type_section("fix auth token refresh")
+        assert "Mission Approach Guidance" in result
+        assert "**debug**" in result
+        assert "Reproduce the bug first." in result
+
+    @patch("app.prompts.load_prompt")
+    def test_returns_implement_hint(self, mock_load):
+        mock_load.return_value = (
+            "## debug\n\nReproduce the bug first.\n\n"
+            "## implement\n\nBuild incrementally.\n"
+        )
+        result = _get_mission_type_section("add webhook support")
+        assert "**implement**" in result
+        assert "Build incrementally." in result
+
+    @patch("app.prompts.load_prompt")
+    def test_graceful_on_exception(self, mock_load):
+        """Classification failure should not crash."""
+        mock_load.side_effect = FileNotFoundError("missing")
+        result = _get_mission_type_section("fix something")
+        assert result == ""
+
+    @patch("app.prompt_builder._get_mission_type_section")
+    @patch("app.prompt_builder._get_verbose_section", return_value="")
+    @patch("app.prompt_builder._get_submit_pr_section", return_value="")
+    @patch("app.prompt_builder._get_merge_policy", return_value="\n# Policy\n")
+    @patch("app.prompt_builder._get_branch_prefix", return_value="koan/")
+    @patch("app.prompts.load_prompt")
+    def test_integration_mission_type_called_with_title(
+        self, mock_load, mock_prefix, mock_merge, mock_submit,
+        mock_verbose, mock_type_section, prompt_env,
+    ):
+        """build_agent_prompt calls _get_mission_type_section with title."""
+        mock_load.return_value = "TEMPLATE"
+        mock_type_section.return_value = ""
+        build_agent_prompt(
+            instance=prompt_env["instance"],
+            project_name="testproj",
+            project_path=prompt_env["project_path"],
+            run_num=1,
+            max_runs=20,
+            autonomous_mode="implement",
+            focus_area="Test area",
+            available_pct=50,
+            mission_title="fix a bug",
+        )
+        mock_type_section.assert_called_once_with("fix a bug")
+
+    @patch("app.prompt_builder._get_mission_type_section")
+    @patch("app.prompt_builder._get_verbose_section", return_value="")
+    @patch("app.prompt_builder._get_submit_pr_section", return_value="")
+    @patch("app.prompt_builder._get_merge_policy", return_value="\n# Policy\n")
+    @patch("app.prompt_builder._get_branch_prefix", return_value="koan/")
+    @patch("app.prompts.load_prompt")
+    def test_integration_mission_type_called_without_title(
+        self, mock_load, mock_prefix, mock_merge, mock_submit,
+        mock_verbose, mock_type_section, prompt_env,
+    ):
+        """build_agent_prompt calls _get_mission_type_section with empty string."""
+        mock_load.return_value = "TEMPLATE"
+        mock_type_section.return_value = ""
+        build_agent_prompt(
+            instance=prompt_env["instance"],
+            project_name="testproj",
+            project_path=prompt_env["project_path"],
+            run_num=1,
+            max_runs=20,
+            autonomous_mode="implement",
+            focus_area="Test area",
+            available_pct=50,
+        )
+        mock_type_section.assert_called_once_with("")

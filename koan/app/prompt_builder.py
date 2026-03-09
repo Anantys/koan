@@ -161,6 +161,44 @@ def _get_drift_section(instance: str, project_name: str, project_path: str) -> s
     return ""
 
 
+def _get_mission_type_section(mission_title: str) -> str:
+    """Return type-specific guidance based on mission classification.
+
+    Classifies the mission title into a work type (debug, implement, etc.)
+    and loads the corresponding hint from mission-type-hints.md.
+    Returns empty string for "general" type or when no mission is assigned.
+    """
+    if not mission_title:
+        return ""
+
+    try:
+        from app.mission_classifier import classify_mission
+
+        mission_type = classify_mission(mission_title)
+        if mission_type == "general":
+            return ""
+
+        from app.prompts import load_prompt
+
+        hints_text = load_prompt("mission-type-hints")
+
+        # Extract the section for this type (## type\n\ncontent\n\n## next)
+        import re
+
+        pattern = rf"^## {re.escape(mission_type)}\n\n(.*?)(?=\n## |\Z)"
+        match = re.search(pattern, hints_text, re.MULTILINE | re.DOTALL)
+        if match:
+            hint = match.group(1).strip()
+            return (
+                f"\n\n# Mission Approach Guidance\n\n"
+                f"This looks like a **{mission_type}** mission. "
+                f"{hint}\n"
+            )
+    except Exception as e:
+        print(f"[prompt_builder] Mission type hint failed: {e}", file=sys.stderr)
+    return ""
+
+
 def _get_tdd_section(mission_title: str) -> str:
     """Return the TDD mode section if mission is tagged [tdd]."""
     from app.missions import extract_tdd_tag
@@ -255,6 +293,9 @@ def build_agent_prompt(
             "decisions in the PR description.\n\n"
             f"{spec_content}\n"
         )
+
+    # Append mission type guidance (mission-driven runs only)
+    prompt += _get_mission_type_section(mission_title)
 
     # Append merge policy
     prompt += _get_merge_policy(project_name)
