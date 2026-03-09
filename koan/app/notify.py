@@ -18,9 +18,16 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional, Tuple
 
 from app.utils import load_dotenv
+
+
+# mtime-based file read cache for format_and_send context files.
+# Keyed by (function_name, instance_dir, project_name) -> (result, mtime_signature).
+# Thread-safe via _file_cache_lock.
+_file_cache: Dict[str, Tuple[str, float]] = {}
+_file_cache_lock = threading.Lock()
 
 
 class TypingIndicator:
@@ -173,6 +180,43 @@ def send_telegram(text: str) -> bool:
         return _direct_send(text)
 
 
+def _get_file_mtime(path: Path) -> float:
+    """Get file mtime or 0 if missing."""
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def _cached_file_read(cache_key: str, paths: list, loader):
+    """Return cached result if file mtimes unchanged, else re-read.
+
+    Args:
+        cache_key: Unique key for this cache entry
+        paths: List of Path objects to check mtimes against
+        loader: Callable that returns the fresh value
+    """
+    current_mtime = max((_get_file_mtime(p) for p in paths), default=0.0)
+    with _file_cache_lock:
+        cached = _file_cache.get(cache_key)
+        if cached is not None:
+            value, cached_mtime = cached
+            if cached_mtime == current_mtime:
+                return value
+
+    # Cache miss or mtime changed — re-read
+    value = loader()
+    with _file_cache_lock:
+        _file_cache[cache_key] = (value, current_mtime)
+    return value
+
+
+def invalidate_file_cache():
+    """Clear the file read cache (for tests)."""
+    with _file_cache_lock:
+        _file_cache.clear()
+
+
 def format_and_send(raw_message: str, instance_dir: str = None,
                      project_name: str = "") -> bool:
     """Format a message through Claude with Kōan's personality, then send to Telegram.
@@ -204,9 +248,37 @@ def format_and_send(raw_message: str, instance_dir: str = None,
 
     instance_path = Path(instance_dir)
     try:
-        soul = load_soul(instance_path)
-        prefs = load_human_prefs(instance_path)
-        memory = load_memory_context(instance_path, project_name)
+        # Use mtime-based caching for context files that rarely change
+        soul_file = instance_path / "soul.md"
+        soul = _cached_file_read(
+            f"soul:{instance_dir}",
+            [soul_file],
+            lambda: load_soul(instance_path),
+        )
+
+        prefs_file = instance_path / "memory" / "global" / "human-preferences.md"
+        prefs = _cached_file_read(
+            f"prefs:{instance_dir}",
+            [prefs_file],
+            lambda: load_human_prefs(instance_path),
+        )
+
+        # Memory context reads up to 4 files — cache by max mtime across all
+        memory_files = [
+            instance_path / "memory" / "global" / "personality-evolution.md",
+            instance_path / "memory" / "global" / "emotional-memory.md",
+            instance_path / "memory" / "summary.md",
+        ]
+        if project_name:
+            memory_files.append(
+                instance_path / "memory" / "projects" / project_name / "learnings.md"
+            )
+        memory = _cached_file_read(
+            f"memory:{instance_dir}:{project_name}",
+            memory_files,
+            lambda: load_memory_context(instance_path, project_name),
+        )
+
         formatted = format_message(raw_message, soul, prefs, memory)
 
         # Expand bare #123 GitHub refs to full clickable URLs

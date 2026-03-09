@@ -10,7 +10,16 @@ from app.notify import (
     send_telegram, format_and_send, reset_flood_state,
     send_typing, TypingIndicator,
     _send_raw_bypass_flood, _direct_send,
+    invalidate_file_cache, _file_cache,
 )
+
+
+@pytest.fixture(autouse=True)
+def _clear_file_cache():
+    """Reset mtime file cache between tests."""
+    invalidate_file_cache()
+    yield
+    invalidate_file_cache()
 
 
 class TestSendTelegram:
@@ -394,6 +403,93 @@ class TestTypingIndicator:
             with pytest.raises(ValueError):
                 with TypingIndicator():
                     raise ValueError("test error")
+
+
+class TestMtimeFileCaching:
+    """Tests for mtime-based file read caching in format_and_send."""
+
+    @patch("app.notify.send_telegram", return_value=True)
+    def test_repeated_calls_use_cached_files(self, mock_send, instance_dir):
+        """Repeated format_and_send with unchanged files should cache file reads."""
+        call_counts = {"soul": 0, "prefs": 0, "memory": 0}
+
+        def counting_soul(path):
+            call_counts["soul"] += 1
+            return "soul"
+
+        def counting_prefs(path):
+            call_counts["prefs"] += 1
+            return "prefs"
+
+        def counting_memory(path, project=""):
+            call_counts["memory"] += 1
+            return "memory"
+
+        with patch("app.format_outbox.format_message", return_value="fmt"), \
+             patch("app.format_outbox.load_soul", counting_soul), \
+             patch("app.format_outbox.load_human_prefs", counting_prefs), \
+             patch("app.format_outbox.load_memory_context", counting_memory):
+            format_and_send("raw1", instance_dir=str(instance_dir))
+            format_and_send("raw2", instance_dir=str(instance_dir))
+
+        # Each loader should only be called once (second call hits cache)
+        assert call_counts["soul"] == 1
+        assert call_counts["prefs"] == 1
+        assert call_counts["memory"] == 1
+
+    @patch("app.notify.send_telegram", return_value=True)
+    def test_file_modification_invalidates_cache(self, mock_send, instance_dir):
+        """Modifying a file should cause a cache miss on next call."""
+        call_counts = {"soul": 0}
+
+        def counting_soul(path):
+            call_counts["soul"] += 1
+            return f"soul-v{call_counts['soul']}"
+
+        with patch("app.format_outbox.format_message", return_value="fmt"), \
+             patch("app.format_outbox.load_soul", counting_soul), \
+             patch("app.format_outbox.load_human_prefs", return_value="p"), \
+             patch("app.format_outbox.load_memory_context", return_value="m"):
+            format_and_send("raw", instance_dir=str(instance_dir))
+            assert call_counts["soul"] == 1
+
+            # Modify the soul file to change mtime
+            soul_file = instance_dir / "soul.md"
+            import os
+            mtime = soul_file.stat().st_mtime
+            os.utime(str(soul_file), (mtime + 1, mtime + 1))
+
+            format_and_send("raw", instance_dir=str(instance_dir))
+            assert call_counts["soul"] == 2
+
+    @patch("app.notify.send_telegram", return_value=True)
+    def test_missing_file_cached_with_zero_mtime(self, mock_send, tmp_path):
+        """Missing files should be cached with mtime=0."""
+        # Instance dir with no soul.md
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+
+        call_counts = {"soul": 0}
+
+        def counting_soul(path):
+            call_counts["soul"] += 1
+            return ""
+
+        with patch("app.format_outbox.format_message", return_value="fmt"), \
+             patch("app.format_outbox.load_soul", counting_soul), \
+             patch("app.format_outbox.load_human_prefs", return_value=""), \
+             patch("app.format_outbox.load_memory_context", return_value=""):
+            format_and_send("raw", instance_dir=str(instance_dir))
+            format_and_send("raw", instance_dir=str(instance_dir))
+
+        assert call_counts["soul"] == 1  # cached even for missing file
+
+    def test_invalidate_clears_cache(self):
+        """invalidate_file_cache should clear all entries."""
+        _file_cache["test_key"] = ("value", 123.0)
+        assert len(_file_cache) == 1
+        invalidate_file_cache()
+        assert len(_file_cache) == 0
 
 
 # Flood protection tests moved to test_telegram_provider.py
