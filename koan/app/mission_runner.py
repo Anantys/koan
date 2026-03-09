@@ -447,6 +447,33 @@ def check_auto_merge(
         return None
 
 
+def check_security_review(
+    instance_dir: str,
+    project_name: str,
+    project_path: str,
+) -> bool:
+    """Run differential security review on the current branch.
+
+    Analyzes the diff for security-sensitive patterns and blast radius.
+    Configured via security_review section in projects.yaml.
+
+    Args:
+        instance_dir: Path to instance directory.
+        project_name: Current project name.
+        project_path: Path to project directory.
+
+    Returns:
+        True if auto-merge should proceed, False if blocked by review.
+    """
+    try:
+        from app.security_review import check_security_review as _check
+
+        return _check(instance_dir, project_name, project_path)
+    except Exception as e:
+        print(f"[mission_runner] Security review failed: {e}", file=sys.stderr)
+        return True  # Don't block on failures
+
+
 def run_post_mission(
     instance_dir: str,
     project_name: str,
@@ -484,6 +511,7 @@ def run_post_mission(
             usage_updated (bool): Whether usage tracking was updated.
             pending_archived (bool): Whether pending.md was archived.
             reflection_written (bool): Whether a reflection was generated.
+            security_review_passed (bool): Whether security review passed.
             auto_merge_branch (str|None): Branch name if auto-merge attempted.
             quota_exhausted (bool): Whether quota exhaustion was detected.
             quota_info (tuple|None): (reset_display, resume_message) if exhausted.
@@ -493,6 +521,7 @@ def run_post_mission(
         "usage_updated": False,
         "pending_archived": False,
         "reflection_written": False,
+        "security_review_passed": True,
         "auto_merge_branch": None,
         "quota_exhausted": False,
         "quota_info": None,
@@ -586,14 +615,21 @@ def run_post_mission(
             project_name=project_name,
         )
 
-        # Auto-merge check (respects quality gate + lint gate)
+        # Differential security review (before auto-merge)
+        _report("security review")
+        result["security_review_passed"] = check_security_review(
+            instance_dir, project_name, project_path
+        )
+
+        # Auto-merge check (respects quality gate + lint gate + security review)
         _report("checking auto-merge")
         lint_blocking = lint_result is not None and not lint_result.passed and _is_lint_blocking(instance_dir, project_name)
-        result["auto_merge_branch"] = check_auto_merge(
-            instance_dir, project_name, project_path,
-            quality_report=quality_report,
-            lint_blocked=lint_blocking,
-        )
+        if result.get("security_review_passed", True):
+            result["auto_merge_branch"] = check_auto_merge(
+                instance_dir, project_name, project_path,
+                quality_report=quality_report,
+                lint_blocked=lint_blocking,
+            )
 
     # 6. Record session outcome for staleness tracking
     _report("recording session outcome")

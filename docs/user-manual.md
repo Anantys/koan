@@ -657,8 +657,36 @@ Key per-project settings:
 - **`models`** — Override model selection per role
 - **`tools`** — Restrict available tools
 - **`git_auto_merge`** — Auto-merge completed PRs (strategy: squash/merge/rebase)
+- **`security_review`** — Automatic diff analysis for dangerous patterns before auto-merge (see below)
 - **`authorized_users`** — GitHub users allowed to trigger via @mention
 - **`exploration`** — Enable/disable autonomous exploration
+
+#### Security Review
+
+When enabled, Kōan scans mission diffs for security-sensitive patterns before auto-merge:
+- **Blast radius** — files changed, modules affected, infrastructure/dependency changes
+- **Content patterns** — eval, exec, shell injection, hardcoded secrets, unsafe deserialization, XSS, wildcard CORS, etc.
+- **Risk classification** — low / medium / high / critical based on cumulative score
+
+Results are logged to the project journal. In blocking mode, auto-merge is skipped when the risk level meets or exceeds the configured threshold.
+
+```yaml
+defaults:
+  security_review:
+    enabled: true              # Scan diffs for dangerous patterns
+    blocking: false            # true = block auto-merge on high risk
+    severity_threshold: high   # low / medium / high / critical
+```
+
+Per-project override example:
+```yaml
+projects:
+  production-api:
+    security_review:
+      enabled: true
+      blocking: true           # Block auto-merge for risky changes
+      severity_threshold: medium
+```
 
 ### Custom Skills
 
