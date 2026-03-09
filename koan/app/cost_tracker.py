@@ -21,6 +21,7 @@ Usage:
 import fcntl
 import json
 import os
+import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -235,7 +236,8 @@ def get_pricing_config(config: Optional[dict] = None) -> Optional[dict]:
         try:
             from app.utils import load_config
             config = load_config()
-        except Exception:
+        except Exception as e:
+            print(f"[cost_tracker] failed to load config: {e}", file=sys.stderr)
             return None
     pricing = config.get("usage", {}).get("pricing")
     if isinstance(pricing, dict):
