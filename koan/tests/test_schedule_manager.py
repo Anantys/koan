@@ -17,6 +17,7 @@ from app.schedule_manager import (
     get_current_schedule,
     get_schedule_config,
     parse_time_ranges,
+    should_relax_pr_limit,
     should_suppress_exploration,
 )
 
@@ -259,6 +260,25 @@ class TestAdjustContemplativeChance:
     def test_zero_base_stays_zero(self):
         state = ScheduleState(in_deep_hours=True, in_work_hours=False)
         assert adjust_contemplative_chance(0, state) == 0
+
+
+# === Tests: should_relax_pr_limit ===
+
+
+class TestShouldRelaxPrLimit:
+    """Tests for should_relax_pr_limit()."""
+
+    def test_deep_hours_relaxes(self):
+        state = ScheduleState(in_deep_hours=True, in_work_hours=False)
+        assert should_relax_pr_limit(state) is True
+
+    def test_work_hours_does_not_relax(self):
+        state = ScheduleState(in_deep_hours=False, in_work_hours=True)
+        assert should_relax_pr_limit(state) is False
+
+    def test_normal_does_not_relax(self):
+        state = ScheduleState(in_deep_hours=False, in_work_hours=False)
+        assert should_relax_pr_limit(state) is False
 
 
 # === Tests: should_suppress_exploration ===

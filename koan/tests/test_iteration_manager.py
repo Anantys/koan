@@ -1592,6 +1592,97 @@ projects:
         assert mock_count.call_count == 1
 
 
+# === Tests: _filter_exploration_projects with deep_hours PR limit relaxation ===
+
+
+class TestFilterExplorationProjectsDeepHours:
+
+    def setup_method(self):
+        """Clear the PR count cache between tests."""
+        from app.github import _pr_count_cache
+        _pr_count_cache.clear()
+
+    @patch("app.github.get_gh_username", return_value="koan-bot")
+    @patch("app.github.count_open_prs", return_value=10)
+    def test_deep_hours_skips_pr_limit(self, mock_count, mock_user, koan_root):
+        """During deep_hours, PR limit is relaxed — project included even at limit."""
+        from app.schedule_manager import ScheduleState
+        (koan_root / "projects.yaml").write_text("""
+projects:
+  koan:
+    path: /path/to/koan
+    github_url: owner/koan
+    max_open_prs: 5
+""")
+        schedule = ScheduleState(in_deep_hours=True, in_work_hours=False)
+        result = _filter_exploration_projects(
+            [("koan", "/path/to/koan")], str(koan_root),
+            schedule_state=schedule,
+        )
+        assert len(result.projects) == 1
+        assert result.pr_limited == []
+        # PR count should NOT be called — skipped entirely
+        mock_count.assert_not_called()
+
+    @patch("app.github.get_gh_username", return_value="koan-bot")
+    @patch("app.github.count_open_prs", return_value=10)
+    def test_normal_hours_enforces_pr_limit(self, mock_count, mock_user, koan_root):
+        """Outside deep_hours, PR limit is enforced normally."""
+        from app.schedule_manager import ScheduleState
+        (koan_root / "projects.yaml").write_text("""
+projects:
+  koan:
+    path: /path/to/koan
+    github_url: owner/koan
+    max_open_prs: 5
+""")
+        schedule = ScheduleState(in_deep_hours=False, in_work_hours=False)
+        result = _filter_exploration_projects(
+            [("koan", "/path/to/koan")], str(koan_root),
+            schedule_state=schedule,
+        )
+        assert result.projects == []
+        assert result.pr_limited == ["koan"]
+
+    @patch("app.github.get_gh_username", return_value="koan-bot")
+    @patch("app.github.count_open_prs", return_value=10)
+    def test_no_schedule_state_enforces_pr_limit(self, mock_count, mock_user, koan_root):
+        """When schedule_state is None, PR limit is enforced (backward compat)."""
+        (koan_root / "projects.yaml").write_text("""
+projects:
+  koan:
+    path: /path/to/koan
+    github_url: owner/koan
+    max_open_prs: 5
+""")
+        result = _filter_exploration_projects(
+            [("koan", "/path/to/koan")], str(koan_root),
+            schedule_state=None,
+        )
+        assert result.projects == []
+        assert result.pr_limited == ["koan"]
+
+    @patch("app.github.get_gh_username", return_value="koan-bot")
+    @patch("app.github.count_open_prs", return_value=10)
+    def test_deep_hours_still_respects_exploration_flag(self, mock_count, mock_user, koan_root):
+        """Deep hours relaxes PR limit but NOT the exploration:false flag."""
+        from app.schedule_manager import ScheduleState
+        (koan_root / "projects.yaml").write_text("""
+projects:
+  koan:
+    path: /path/to/koan
+    exploration: false
+    github_url: owner/koan
+    max_open_prs: 5
+""")
+        schedule = ScheduleState(in_deep_hours=True, in_work_hours=False)
+        result = _filter_exploration_projects(
+            [("koan", "/path/to/koan")], str(koan_root),
+            schedule_state=schedule,
+        )
+        assert result.projects == []
+
+
 # === Tests: plan_iteration with exploration flag ===
 
 

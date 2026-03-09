@@ -234,7 +234,42 @@ def validate_config(config: dict) -> List[Tuple[str, str]]:
                     f"'{key}' should be {exp_label}, got {type(value).__name__}",
                 ))
 
+    # Semantic check: warn on overlapping deep_hours and work_hours
+    schedule = config.get("schedule")
+    if isinstance(schedule, dict):
+        deep_spec = str(schedule.get("deep_hours", ""))
+        work_spec = str(schedule.get("work_hours", ""))
+        if deep_spec.strip() and work_spec.strip():
+            overlap = _check_schedule_overlap(deep_spec, work_spec)
+            if overlap:
+                warnings.append((
+                    "schedule",
+                    f"deep_hours ({deep_spec}) and work_hours ({work_spec}) "
+                    f"overlap — deep_hours takes priority in overlapping hours. "
+                    f"Recommended: use non-overlapping ranges (e.g., deep_hours: \"0-8\", work_hours: \"8-20\")",
+                ))
+
     return warnings
+
+
+def _check_schedule_overlap(deep_spec: str, work_spec: str) -> bool:
+    """Check if deep_hours and work_hours time ranges overlap.
+
+    Returns True if any hour is covered by both specs.
+    """
+    try:
+        from app.schedule_manager import parse_time_ranges, TimeRange
+        deep_ranges = parse_time_ranges(deep_spec)
+        work_ranges = parse_time_ranges(work_spec)
+    except ValueError:
+        return False
+
+    for hour in range(24):
+        in_deep = any(r.contains(hour) for r in deep_ranges)
+        in_work = any(r.contains(hour) for r in work_ranges)
+        if in_deep and in_work:
+            return True
+    return False
 
 
 def validate_and_warn(config: dict) -> List[str]:

@@ -380,6 +380,7 @@ AutonomousDecision = namedtuple("AutonomousDecision", ["action", "focus_remainin
 
 def _filter_exploration_projects(
     projects: List[Tuple[str, str]], koan_root: str,
+    schedule_state=None,
 ) -> FilterResult:
     """Filter projects to only those eligible for exploration.
 
@@ -412,6 +413,15 @@ def _filter_exploration_projects(
     ]
 
     # Gate 2: max_open_prs limit
+    # During deep_hours, relax PR limits — allow exploration in review mode
+    skip_pr_limit = False
+    if schedule_state is not None:
+        from app.schedule_manager import should_relax_pr_limit
+        skip_pr_limit = should_relax_pr_limit(schedule_state)
+
+    if skip_pr_limit:
+        return FilterResult(projects=exploration_enabled, pr_limited=[])
+
     from app.github import get_gh_username, cached_count_open_prs
     author = get_gh_username()
 
@@ -694,7 +704,8 @@ def plan_iteration(
             )
 
         # Filter to exploration-enabled projects only
-        filter_result = _filter_exploration_projects(projects, koan_root)
+        filter_result = _filter_exploration_projects(projects, koan_root,
+                                                     schedule_state=schedule_state)
         exploration_projects = filter_result.projects
         if not exploration_projects:
             # Determine whether this is exploration-disabled or PR-limited

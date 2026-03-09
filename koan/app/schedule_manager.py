@@ -220,6 +220,23 @@ def adjust_contemplative_chance(base_chance: int, schedule: ScheduleState) -> in
     return base_chance
 
 
+def should_relax_pr_limit(schedule: ScheduleState) -> bool:
+    """Check if PR limits should be relaxed for exploration.
+
+    During deep_hours, the agent should be free to explore even when
+    projects are at their PR limit — it can work in review mode
+    (read-only: audit code, find bugs, write reports) without creating
+    new PRs.
+
+    Args:
+        schedule: Current schedule state.
+
+    Returns:
+        True if PR limits should be relaxed (deep_hours active).
+    """
+    return schedule.in_deep_hours
+
+
 def should_suppress_exploration(schedule: ScheduleState) -> bool:
     """Check if autonomous exploration should be suppressed.
 

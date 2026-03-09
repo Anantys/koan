@@ -127,13 +127,18 @@ git_auto_merge:
       delete_after_merge: true      # Clean up branch after successful merge
 
 # Schedule — control when deep exploration vs mission-only work happens
-# deep_hours: time ranges for deep/contemplative work (higher exploration chance)
+# deep_hours: time ranges for deep/contemplative work (higher exploration chance,
+#              PR limits relaxed so exploration isn't blocked by pending reviews)
 # work_hours: time ranges for mission-only work (exploration suppressed)
 # Format: "START-END" using 24h hours. Wraps around midnight: "22-6".
 # Multiple ranges: "0-6,22-24". Leave empty to disable.
-# Example: deep exploration at night (0-6), missions only during work day (8-20)
+# NOTE: deep_hours and work_hours should NOT overlap. If they do, deep_hours
+# takes priority but work_hours has no effect during the overlap.
+# Recommended: use non-overlapping ranges with a gap for normal behavior.
+# Example: deep exploration at night (0-8), missions during work day (8-20),
+#          normal behavior in the evening (20-24)
 # schedule:
-#   deep_hours: "0-6"
+#   deep_hours: "0-8"
 #   work_hours: "8-20"
 
 # Log rotation — controls backup behavior when processes restart

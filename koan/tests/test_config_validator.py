@@ -2,7 +2,10 @@
 
 import pytest
 
-from app.config_validator import validate_config, validate_and_warn, _check_type, _suggest_typo
+from app.config_validator import (
+    validate_config, validate_and_warn, _check_type, _check_schedule_overlap,
+    _suggest_typo,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -244,6 +247,74 @@ class TestEdgeCases:
 
 # ---------------------------------------------------------------------------
 # validate_and_warn — integration with logging
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# _check_schedule_overlap
+# ---------------------------------------------------------------------------
+
+class TestCheckScheduleOverlap:
+    def test_no_overlap(self):
+        assert _check_schedule_overlap("0-8", "8-20") is False
+
+    def test_full_overlap(self):
+        assert _check_schedule_overlap("0-8", "0-8") is True
+
+    def test_partial_overlap(self):
+        assert _check_schedule_overlap("0-10", "8-20") is True
+
+    def test_empty_specs(self):
+        assert _check_schedule_overlap("", "") is False
+
+    def test_invalid_spec_returns_false(self):
+        assert _check_schedule_overlap("invalid", "0-8") is False
+
+    def test_wrap_around_overlap(self):
+        assert _check_schedule_overlap("22-6", "0-8") is True
+
+    def test_wrap_around_no_overlap(self):
+        assert _check_schedule_overlap("22-6", "8-20") is False
+
+
+class TestValidateConfigScheduleOverlap:
+    def test_overlapping_schedule_produces_warning(self):
+        config = {
+            "schedule": {
+                "deep_hours": "0-8",
+                "work_hours": "0-8",
+            }
+        }
+        warnings = validate_config(config)
+        paths = [p for p, _ in warnings]
+        assert "schedule" in paths
+        msgs = [m for _, m in warnings]
+        assert any("overlap" in m for m in msgs)
+
+    def test_non_overlapping_schedule_no_warning(self):
+        config = {
+            "schedule": {
+                "deep_hours": "0-8",
+                "work_hours": "8-20",
+            }
+        }
+        warnings = validate_config(config)
+        paths = [p for p, _ in warnings]
+        assert "schedule" not in paths
+
+    def test_partial_schedule_no_overlap_check(self):
+        """Only one range configured — no overlap possible."""
+        config = {
+            "schedule": {
+                "deep_hours": "0-8",
+            }
+        }
+        warnings = validate_config(config)
+        paths = [p for p, _ in warnings]
+        assert "schedule" not in paths
+
+
+# ---------------------------------------------------------------------------
+# validate_and_warn
 # ---------------------------------------------------------------------------
 
 class TestValidateAndWarn:
