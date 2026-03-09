@@ -324,7 +324,7 @@ See [docs/github-commands.md](docs/github-commands.md) for the full list of supp
 
 On Linux systems with systemd, Kōan can run as a native system service with automatic restart on failure, journal integration, and boot-time startup.
 
-> **Note:** macOS users should use `make start` directly (or `caffeinate` — see [Preventing macOS sleep](#preventing-macos-sleep) below). systemd is Linux-only.
+> **Note:** macOS users should use launchd instead — see [Running as a launchd Service (macOS)](#running-as-a-launchd-service-macos) below. systemd is Linux-only.
 
 ### Quick setup
 
@@ -390,6 +390,79 @@ make uninstall-systemctl-service
 ```
 
 This stops the services, disables them, removes the unit files, and reloads systemd. After uninstalling, `make start` will use the Python PID manager again.
+
+## Running as a launchd Service (macOS)
+
+On macOS, Kōan can run as a native launchd user agent with automatic restart on failure and login-time startup — no `sudo` required.
+
+> **Tip:** To keep your Mac awake while Kōan runs, see [Preventing macOS sleep](#preventing-macos-sleep) below.
+
+### Quick setup
+
+```bash
+make install-launchd-service   # One-time: render plists + load services
+make start                     # Start via launchctl
+```
+
+Or simply run `make start` — on macOS, it auto-installs the launchd service on first run.
+
+### What it does
+
+The install creates two launchd user agents in `~/Library/LaunchAgents/`:
+
+| Plist | Process | Description |
+|-------|---------|-------------|
+| `com.koan.run.plist` | `run.py` | Agent loop (missions, execution, reflection) |
+| `com.koan.awake.plist` | `awake.py` | Messaging bridge (Telegram/Slack) |
+
+Both services are configured with:
+- **`RunAtLoad`** — start automatically at login
+- **`KeepAlive`** (on non-zero exit) — restart on failure
+- **`ThrottleInterval`** (10s) — prevent rapid restart loops
+
+A wrapper script (`koan/launchd/koan-wrapper.sh`) sources your `.env` file and sets up the environment (`KOAN_ROOT`, `PYTHONPATH`, `SSH_AUTH_SOCK`) before launching Python.
+
+### How `make start/stop/status` work with launchd
+
+On macOS with launchctl available, the Makefile **automatically delegates** to launchd:
+
+| Command | Without launchd | With launchd |
+|---------|----------------|--------------|
+| `make start` | Python PID manager | `launchctl kickstart` |
+| `make stop` | Python PID manager | `launchctl kill SIGTERM` |
+| `make status` | Python PID manager | `launchctl print` |
+
+The detection is automatic — no configuration needed. On Linux or systems without launchctl, the original PID-manager behavior is preserved.
+
+### Viewing logs
+
+Logs are written to the `logs/` directory:
+
+```bash
+# Watch live logs
+make logs
+
+# Or tail directly
+tail -f logs/run.log
+tail -f logs/awake.log
+```
+
+### SSH agent forwarding
+
+If you use SSH-based git remotes, `make start` automatically forwards your SSH agent socket so launchd-managed processes can access it:
+
+```bash
+# This is done automatically by `make start`, but you can also do it manually:
+ln -sf "$SSH_AUTH_SOCK" /path/to/koan/.ssh-agent-sock
+```
+
+### Uninstalling
+
+```bash
+make uninstall-launchd-service
+```
+
+This stops the services, removes the plist files from `~/Library/LaunchAgents/`, and unloads them from launchd. After uninstalling, `make start` will use the Python PID manager again.
 
 ## Troubleshooting
 
