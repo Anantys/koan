@@ -21,7 +21,7 @@ import re
 import subprocess
 import sys
 import time
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 from flask import Flask, Response, jsonify, redirect, render_template, request, url_for
@@ -430,6 +430,42 @@ def api_progress_stream():
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@app.route("/usage")
+def usage_page():
+    """Usage tracking page — per-project and per-model token breakdown."""
+    return render_template("usage.html")
+
+
+@app.route("/api/usage")
+def api_usage():
+    """JSON usage data for the specified time range."""
+    from app.cost_tracker import summarize_range, get_pricing_config
+
+    days = request.args.get("days", "7", type=str)
+    try:
+        days = int(days)
+        days = max(1, min(days, 90))
+    except (ValueError, TypeError):
+        days = 7
+
+    end = date.today()
+    start = end - timedelta(days=days - 1)
+    summary = summarize_range(INSTANCE_DIR, start, end)
+
+    pricing = get_pricing_config()
+    return jsonify({
+        "days": days,
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "total_input": summary["total_input"],
+        "total_output": summary["total_output"],
+        "count": summary["count"],
+        "by_project": summary["by_project"],
+        "by_model": summary["by_model"],
+        "has_pricing": pricing is not None,
+    })
 
 
 @app.route("/journal")

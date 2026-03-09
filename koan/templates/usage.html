@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block title %}Koan — Usage{% endblock %}
+{% block content %}
+<h1>Usage</h1>
+
+<div class="form-row" style="margin-bottom:1.5rem;margin-top:0;">
+    <select id="range-select" style="padding:0.4rem;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;">
+        <option value="1">Today</option>
+        <option value="7" selected>Last 7 days</option>
+        <option value="30">Last 30 days</option>
+    </select>
+</div>
+
+<div class="grid" id="totals">
+    <div class="card">
+        <div class="stat-label">Total Tokens</div>
+        <div class="stat-value" id="total-tokens">-</div>
+    </div>
+    <div class="card">
+        <div class="stat-label">Missions</div>
+        <div class="stat-value" id="total-count">-</div>
+    </div>
+</div>
+
+<h2>By Project</h2>
+<div class="card" id="by-project-card">
+    <table id="by-project" style="width:100%;border-collapse:collapse;font-family:var(--mono);font-size:0.85rem;">
+        <thead>
+            <tr style="color:var(--text-muted);text-align:left;">
+                <th style="padding:0.5rem 0;">Project</th>
+                <th style="padding:0.5rem 0;text-align:right;">Input</th>
+                <th style="padding:0.5rem 0;text-align:right;">Output</th>
+                <th style="padding:0.5rem 0;text-align:right;">Total</th>
+                <th style="padding:0.5rem 0;text-align:right;">Runs</th>
+            </tr>
+        </thead>
+        <tbody></tbody>
+    </table>
+</div>
+
+<h2>By Model</h2>
+<div class="card" id="by-model-card">
+    <table id="by-model" style="width:100%;border-collapse:collapse;font-family:var(--mono);font-size:0.85rem;">
+        <thead>
+            <tr style="color:var(--text-muted);text-align:left;">
+                <th style="padding:0.5rem 0;">Model</th>
+                <th style="padding:0.5rem 0;text-align:right;">Input</th>
+                <th style="padding:0.5rem 0;text-align:right;">Output</th>
+                <th style="padding:0.5rem 0;text-align:right;">Total</th>
+                <th style="padding:0.5rem 0;text-align:right;">Runs</th>
+            </tr>
+        </thead>
+        <tbody></tbody>
+    </table>
+</div>
+
+<script>
+function fmtTokens(n) {
+    if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+    if (n >= 1e3) return (n / 1e3).toFixed(1) + 'k';
+    return n.toString();
+}
+
+function shortModel(id) {
+    if (id.includes('opus')) return 'Opus';
+    if (id.includes('sonnet')) return 'Sonnet';
+    if (id.includes('haiku')) return 'Haiku';
+    return id;
+}
+
+function loadUsage(days) {
+    fetch('/api/usage?days=' + days)
+        .then(r => r.json())
+        .then(data => {
+            document.getElementById('total-tokens').textContent =
+                fmtTokens(data.total_input + data.total_output);
+            document.getElementById('total-count').textContent = data.count;
+
+            // By project table
+            const pTbody = document.querySelector('#by-project tbody');
+            pTbody.innerHTML = '';
+            const projects = Object.entries(data.by_project)
+                .sort((a, b) => (b[1].input_tokens + b[1].output_tokens) - (a[1].input_tokens + a[1].output_tokens));
+            if (projects.length === 0) {
+                pTbody.innerHTML = '<tr><td colspan="5" style="color:var(--text-muted);padding:0.5rem 0;">No data</td></tr>';
+            }
+            for (const [name, p] of projects) {
+                const total = p.input_tokens + p.output_tokens;
+                pTbody.innerHTML += `<tr style="border-top:1px solid var(--border);">
+                    <td style="padding:0.5rem 0;">${name}</td>
+                    <td style="padding:0.5rem 0;text-align:right;">${fmtTokens(p.input_tokens)}</td>
+                    <td style="padding:0.5rem 0;text-align:right;">${fmtTokens(p.output_tokens)}</td>
+                    <td style="padding:0.5rem 0;text-align:right;">${fmtTokens(total)}</td>
+                    <td style="padding:0.5rem 0;text-align:right;">${p.count}</td>
+                </tr>`;
+            }
+
+            // By model table
+            const mTbody = document.querySelector('#by-model tbody');
+            mTbody.innerHTML = '';
+            const models = Object.entries(data.by_model)
+                .sort((a, b) => (b[1].input_tokens + b[1].output_tokens) - (a[1].input_tokens + a[1].output_tokens));
+            if (models.length === 0) {
+                mTbody.innerHTML = '<tr><td colspan="5" style="color:var(--text-muted);padding:0.5rem 0;">No data</td></tr>';
+            }
+            for (const [name, m] of models) {
+                const total = m.input_tokens + m.output_tokens;
+                mTbody.innerHTML += `<tr style="border-top:1px solid var(--border);">
+                    <td style="padding:0.5rem 0;">${shortModel(name)}</td>
+                    <td style="padding:0.5rem 0;text-align:right;">${fmtTokens(m.input_tokens)}</td>
+                    <td style="padding:0.5rem 0;text-align:right;">${fmtTokens(m.output_tokens)}</td>
+                    <td style="padding:0.5rem 0;text-align:right;">${fmtTokens(total)}</td>
+                    <td style="padding:0.5rem 0;text-align:right;">${m.count}</td>
+                </tr>`;
+            }
+        })
+        .catch(() => {});
+}
+
+document.getElementById('range-select').addEventListener('change', function() {
+    loadUsage(this.value);
+});
+
+loadUsage(7);
+</script>
+{% endblock %}
