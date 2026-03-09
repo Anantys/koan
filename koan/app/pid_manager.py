@@ -565,7 +565,7 @@ def _ollama_http_ready() -> bool:
         req = urllib.request.Request("http://localhost:11434/", method="GET")
         with urllib.request.urlopen(req, timeout=2) as resp:
             return resp.status == 200
-    except Exception:
+    except OSError:
         return False
 
 
