@@ -183,6 +183,7 @@ Skills are pluggable commands — some are instant, others spawn Claude work ses
 | `/check <project>` | Run project health checks |
 | `/claudemd` | Refresh a project's CLAUDE.md |
 | `/refactor <desc>` | Targeted refactoring mission |
+| `/gha-audit` | Scan GitHub Actions workflows for security vulnerabilities |
 | `/sparring` | Strategic challenge — not code, thinking |
 | `/reflect <msg>` | Write to the shared journal |
 | `/status` | Quick status overview |
@@ -191,9 +192,9 @@ Skills are pluggable commands — some are instant, others spawn Claude work ses
 | `/journal` | Read today's journal entries |
 | `/verbose` / `/silent` | Toggle real-time updates |
 
-Full list: run `/help` in Telegram. Skills are extensible — drop a `SKILL.md` in `instance/skills/` or install from a Git repo with `/skill install <url>`.
+**[Full skills reference →](docs/skills.md)** — all 37 commands with aliases, descriptions, and usage details.
 
-See [koan/skills/README.md](koan/skills/README.md) for the authoring guide.
+Skills are extensible — drop a `SKILL.md` in `instance/skills/` or install from a Git repo with `/skill install <url>`. See [koan/skills/README.md](koan/skills/README.md) for the authoring guide.
 
 ## Configuration
 
