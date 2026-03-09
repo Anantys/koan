@@ -21,7 +21,7 @@ import sys
 import time
 from pathlib import Path
 
-RESTART_FILE = ".koan-restart"
+from app.signals import RESTART_FILE
 RESTART_EXIT_CODE = 42
 
 

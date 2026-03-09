@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from app.signals import PAUSE_FILE, PAUSE_REASON_FILE
 
 # Default cooldown for non-quota pauses (max_runs, manual)
 DEFAULT_COOLDOWN_SECONDS = 5 * 60 * 60  # 5 hours
@@ -45,7 +46,7 @@ class PauseState:
 
 def is_paused(koan_root: str) -> bool:
     """Check if the pause file exists."""
-    return os.path.isfile(os.path.join(koan_root, ".koan-pause"))
+    return os.path.isfile(os.path.join(koan_root, PAUSE_FILE))
 
 
 def get_pause_state(koan_root: str) -> Optional[PauseState]:
@@ -57,7 +58,7 @@ def get_pause_state(koan_root: str) -> Optional[PauseState]:
     if not is_paused(koan_root):
         return None
 
-    reason_file = os.path.join(koan_root, ".koan-pause-reason")
+    reason_file = os.path.join(koan_root, PAUSE_REASON_FILE)
     if not os.path.isfile(reason_file):
         return None
 
@@ -132,8 +133,8 @@ def create_pause(
     if timestamp is None:
         timestamp = int(time.time())
 
-    pause_file = Path(koan_root) / ".koan-pause"
-    reason_file = Path(koan_root) / ".koan-pause-reason"
+    pause_file = Path(koan_root) / PAUSE_FILE
+    reason_file = Path(koan_root) / PAUSE_REASON_FILE
 
     # Write reason file first (so it's ready before the signal file)
     content = f"{reason}\n{timestamp}\n{display}\n"
@@ -152,7 +153,7 @@ def remove_pause(koan_root: str) -> None:
     signal file (the gate). If interrupted between the two removals, the
     system still reports as paused (safer than the reverse).
     """
-    for name in (".koan-pause-reason", ".koan-pause"):
+    for name in (PAUSE_REASON_FILE, PAUSE_FILE):
         path = os.path.join(koan_root, name)
         try:
             os.remove(path)

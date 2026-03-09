@@ -16,7 +16,7 @@ import os
 import time
 from pathlib import Path
 
-SHUTDOWN_FILE = ".koan-shutdown"
+from app.signals import SHUTDOWN_FILE
 
 
 def request_shutdown(koan_root: str) -> None:

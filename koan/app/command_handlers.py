@@ -19,6 +19,7 @@ from app.bridge_state import (
     _reset_registry,
 )
 from app.notify import TypingIndicator, send_telegram
+from app.signals import PAUSE_FILE, PAUSE_REASON_FILE, QUOTA_RESET_FILE, STOP_FILE
 from app.skills import Skill, SkillContext, execute_skill
 from app.utils import (
     parse_project as _parse_project,
@@ -58,7 +59,7 @@ def handle_command(text: str):
     # --- Core hardcoded commands (safety-critical / bootstrap) ---
 
     if cmd == "/stop":
-        (KOAN_ROOT / ".koan-stop").write_text("STOP")
+        (KOAN_ROOT / STOP_FILE).write_text("STOP")
         send_telegram("⏹️ Stop requested. Current mission will complete, then Kōan will stop.")
         return
 
@@ -487,9 +488,9 @@ def _reset_session_counters():
 
 def handle_resume():
     """Resume from pause or quota exhaustion."""
-    pause_file = KOAN_ROOT / ".koan-pause"
-    pause_reason_file = KOAN_ROOT / ".koan-pause-reason"
-    quota_file = KOAN_ROOT / ".koan-quota-reset"  # Legacy, kept for compat
+    pause_file = KOAN_ROOT / PAUSE_FILE
+    pause_reason_file = KOAN_ROOT / PAUSE_REASON_FILE
+    quota_file = KOAN_ROOT / QUOTA_RESET_FILE  # Legacy, kept for compat
 
     if pause_file.exists():
         # Read pause reason and reset info for better messaging
@@ -578,7 +579,7 @@ def _handle_start():
     pid = check_pidfile(KOAN_ROOT, "run")
     if pid:
         # Runner is alive — check if paused
-        pause_file = KOAN_ROOT / ".koan-pause"
+        pause_file = KOAN_ROOT / PAUSE_FILE
         if pause_file.exists():
             handle_resume()
         else:

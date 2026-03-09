@@ -46,6 +46,13 @@ from app.run_log import (  # noqa: F401 — re-exported for backward compat
     log,
 )
 from app.shutdown_manager import is_shutdown_requested, clear_shutdown
+from app.signals import (
+    PAUSE_FILE,
+    PROJECT_FILE,
+    SHUTDOWN_FILE,
+    STATUS_FILE,
+    STOP_FILE,
+)
 from app.utils import atomic_write
 
 
@@ -95,7 +102,7 @@ def _should_notify_error(attempt: int) -> bool:
 def set_status(koan_root: str, message: str):
     """Write loop status for /status and dashboard."""
     try:
-        atomic_write(Path(koan_root, ".koan-status"), message)
+        atomic_write(Path(koan_root, STATUS_FILE), message)
     except Exception as e:
         log("error", f"Failed to write status: {e}")
 
@@ -110,7 +117,7 @@ def _build_startup_status(koan_root: str) -> str:
     """
     from app.pause_manager import get_pause_state
 
-    if not Path(koan_root, ".koan-pause").exists():
+    if not Path(koan_root, PAUSE_FILE).exists():
         return "✅ Active — ready to work"
 
     state = get_pause_state(koan_root)
@@ -425,7 +432,7 @@ def _read_current_project(koan_root: str) -> str:
     (missing, locked, or corrupt).
     """
     try:
-        return Path(koan_root, ".koan-project").read_text().strip() or "unknown"
+        return Path(koan_root, PROJECT_FILE).read_text().strip() or "unknown"
     except (OSError, ValueError):
         return "unknown"
 
@@ -475,7 +482,7 @@ def handle_pause(
     # Manual resume (pause file already removed — /resume handler already
     # resets session counters for quota pauses, but we reset here too as
     # a safety net for any resume path)
-    if not Path(koan_root, ".koan-pause").exists():
+    if not Path(koan_root, PAUSE_FILE).exists():
         log("pause", "Manual resume detected")
         _reset_usage_session(instance)
         return "resume"
@@ -483,12 +490,12 @@ def handle_pause(
     # Sleep 5 min in 5s increments — check for resume/stop/restart/shutdown
     with protected_phase("Paused — waiting for resume"):
         for _ in range(60):
-            if not Path(koan_root, ".koan-pause").exists():
+            if not Path(koan_root, PAUSE_FILE).exists():
                 return "resume"
-            if Path(koan_root, ".koan-stop").exists():
+            if Path(koan_root, STOP_FILE).exists():
                 log("pause", "Stop signal detected while paused")
                 break
-            if Path(koan_root, ".koan-shutdown").exists():
+            if Path(koan_root, SHUTDOWN_FILE).exists():
                 log("pause", "Shutdown signal detected while paused")
                 break
             if check_restart(koan_root):
@@ -538,8 +545,8 @@ def main_loop():
     # Clear stale signal files from a previous session.
     # If `make stop` or `/stop` ran while run.py was NOT running, the signal
     # file persists and would cause an immediate exit on next startup.
-    Path(koan_root, ".koan-stop").unlink(missing_ok=True)
-    Path(koan_root, ".koan-shutdown").unlink(missing_ok=True)
+    Path(koan_root, STOP_FILE).unlink(missing_ok=True)
+    Path(koan_root, SHUTDOWN_FILE).unlink(missing_ok=True)
     clear_restart(koan_root)
 
     # Install SIGINT handler
@@ -547,7 +554,7 @@ def main_loop():
 
     # Initialize project state
     if projects:
-        atomic_write(Path(koan_root, ".koan-project"), projects[0][0])
+        atomic_write(Path(koan_root, PROJECT_FILE), projects[0][0])
         os.environ["KOAN_CURRENT_PROJECT"] = projects[0][0]
         os.environ["KOAN_CURRENT_PROJECT_PATH"] = projects[0][1]
 
@@ -563,7 +570,7 @@ def main_loop():
 
         while True:
             # --- Stop check ---
-            stop_file = Path(koan_root, ".koan-stop")
+            stop_file = Path(koan_root, STOP_FILE)
             if stop_file.exists():
                 log("koan", "Stop requested.")
                 stop_file.unlink(missing_ok=True)
@@ -586,7 +593,7 @@ def main_loop():
                 sys.exit(RESTART_EXIT_CODE)
 
             # --- Pause mode ---
-            if Path(koan_root, ".koan-pause").exists():
+            if Path(koan_root, PAUSE_FILE).exists():
                 result = handle_pause(koan_root, instance, max_runs)
                 if result == "resume":
                     count = 0
@@ -652,7 +659,7 @@ def main_loop():
         except Exception as e:
             print(f"[hooks] session_end hook error: {e}", file=sys.stderr)
         # Cleanup
-        Path(koan_root, ".koan-status").unlink(missing_ok=True)
+        Path(koan_root, STATUS_FILE).unlink(missing_ok=True)
         release_pidfile(pidfile_lock, Path(koan_root), "run")
         log("koan", f"Shutdown. {count} runs executed.")
         _reset_terminal()
@@ -1212,7 +1219,7 @@ def _run_iteration(
             log("error", f"Dedup guard error: {e}")
 
     # Set project state
-    atomic_write(Path(koan_root, ".koan-project"), project_name)
+    atomic_write(Path(koan_root, PROJECT_FILE), project_name)
     os.environ["KOAN_CURRENT_PROJECT"] = project_name
     os.environ["KOAN_CURRENT_PROJECT_PATH"] = project_path
 

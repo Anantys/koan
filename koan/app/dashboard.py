@@ -36,6 +36,14 @@ from app.conversation_history import (
     load_recent_history,
     format_conversation_history,
 )
+from app.signals import (
+    DAILY_REPORT_FILE,
+    PAUSE_FILE,
+    PAUSE_REASON_FILE,
+    QUOTA_RESET_FILE,
+    STATUS_FILE,
+    STOP_FILE,
+)
 from app.utils import (
     parse_project,
     insert_pending_mission,
@@ -72,16 +80,16 @@ def read_file(path: Path) -> str:
 def get_signal_status() -> dict:
     """Read .koan-* signal files."""
     status = {
-        "stop_requested": (KOAN_ROOT / ".koan-stop").exists(),
-        "quota_paused": (KOAN_ROOT / ".koan-quota-reset").exists(),
-        "paused": (KOAN_ROOT / ".koan-pause").exists(),
+        "stop_requested": (KOAN_ROOT / STOP_FILE).exists(),
+        "quota_paused": (KOAN_ROOT / QUOTA_RESET_FILE).exists(),
+        "paused": (KOAN_ROOT / PAUSE_FILE).exists(),
         "loop_status": "",
         "pause_reason": "",
         "reset_time": "",
     }
 
     # Read pause reason file for detailed status
-    pause_reason_file = KOAN_ROOT / ".koan-pause-reason"
+    pause_reason_file = KOAN_ROOT / PAUSE_REASON_FILE
     if pause_reason_file.exists():
         try:
             lines = pause_reason_file.read_text().strip().split("\n")
@@ -99,10 +107,10 @@ def get_signal_status() -> dict:
         except OSError:
             pass
 
-    status_file = KOAN_ROOT / ".koan-status"
+    status_file = KOAN_ROOT / STATUS_FILE
     if status_file.exists():
         status["loop_status"] = status_file.read_text().strip()
-    report_file = KOAN_ROOT / ".koan-daily-report"
+    report_file = KOAN_ROOT / DAILY_REPORT_FILE
     if report_file.exists():
         status["last_report"] = report_file.read_text().strip()
     return status

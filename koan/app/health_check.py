@@ -21,10 +21,7 @@ import time
 from pathlib import Path
 
 from app.notify import format_and_send
-
-
-HEARTBEAT_FILENAME = ".koan-heartbeat"
-RUN_HEARTBEAT_FILENAME = ".koan-run-heartbeat"
+from app.signals import HEARTBEAT_FILE, RUN_HEARTBEAT_FILE
 DEFAULT_MAX_AGE = 60  # seconds
 # Run loop heartbeat is written once per iteration (~minutes apart),
 # so a longer max age is appropriate. 10 minutes covers normal idle periods.
@@ -33,7 +30,7 @@ DEFAULT_RUN_MAX_AGE = 600  # seconds
 
 def write_heartbeat(koan_root: str) -> None:
     """Write current timestamp to heartbeat file. Called by awake.py."""
-    path = Path(koan_root) / HEARTBEAT_FILENAME
+    path = Path(koan_root) / HEARTBEAT_FILE
     path.write_text(str(time.time()))
 
 
@@ -42,7 +39,7 @@ def check_heartbeat(koan_root: str, max_age: int = DEFAULT_MAX_AGE) -> bool:
 
     Returns True if healthy (fresh or no file yet), False if stale.
     """
-    path = Path(koan_root) / HEARTBEAT_FILENAME
+    path = Path(koan_root) / HEARTBEAT_FILE
     if not path.exists():
         # No heartbeat file = bridge never started or first run. Not an error.
         return True
@@ -61,7 +58,7 @@ def check_and_alert(koan_root: str, max_age: int = DEFAULT_MAX_AGE) -> bool:
     if check_heartbeat(koan_root, max_age):
         return True
 
-    path = Path(koan_root) / HEARTBEAT_FILENAME
+    path = Path(koan_root) / HEARTBEAT_FILE
     try:
         ts = float(path.read_text().strip())
         age_minutes = (time.time() - ts) / 60
@@ -80,7 +77,7 @@ def check_and_alert(koan_root: str, max_age: int = DEFAULT_MAX_AGE) -> bool:
 
 def write_run_heartbeat(koan_root: str) -> None:
     """Write current timestamp to run heartbeat file. Called by run.py."""
-    path = Path(koan_root) / RUN_HEARTBEAT_FILENAME
+    path = Path(koan_root) / RUN_HEARTBEAT_FILE
     path.write_text(str(time.time()))
 
 
@@ -89,7 +86,7 @@ def check_run_heartbeat(koan_root: str, max_age: int = DEFAULT_RUN_MAX_AGE) -> b
 
     Returns True if healthy (fresh or no file yet), False if stale.
     """
-    path = Path(koan_root) / RUN_HEARTBEAT_FILENAME
+    path = Path(koan_root) / RUN_HEARTBEAT_FILE
     if not path.exists():
         return True
 
@@ -104,7 +101,7 @@ def check_run_heartbeat(koan_root: str, max_age: int = DEFAULT_RUN_MAX_AGE) -> b
 
 def get_run_heartbeat_age(koan_root: str) -> float:
     """Return age of the run heartbeat in seconds, or -1 if no file."""
-    path = Path(koan_root) / RUN_HEARTBEAT_FILENAME
+    path = Path(koan_root) / RUN_HEARTBEAT_FILE
     if not path.exists():
         return -1
     try:

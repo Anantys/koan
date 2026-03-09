@@ -18,6 +18,8 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from app.signals import DEBUG_LOG_FILE
+
 _enabled: Optional[bool] = None
 _log_path: Optional[Path] = None
 
@@ -35,7 +37,7 @@ def _init() -> None:
     if _enabled:
         koan_root = os.environ.get("KOAN_ROOT", "")
         if koan_root:
-            _log_path = Path(koan_root) / ".koan-debug.log"
+            _log_path = Path(koan_root) / DEBUG_LOG_FILE
         else:
             _enabled = False
 

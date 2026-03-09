@@ -65,6 +65,7 @@ from app.conversation_history import (
     format_conversation_history,
     compact_history,
 )
+from app.signals import HEARTBEAT_FILE, PAUSE_FILE, STOP_FILE
 from app.utils import (
     parse_project as _parse_project,
 )
@@ -195,8 +196,8 @@ def _build_chat_prompt(text: str, *, lite: bool = False) -> str:
 
     # Run loop status (CRITICAL for pause awareness)
     run_loop_status = ""
-    pause_file = KOAN_ROOT / ".koan-pause"
-    stop_file = KOAN_ROOT / ".koan-stop"
+    pause_file = KOAN_ROOT / PAUSE_FILE
+    stop_file = KOAN_ROOT / STOP_FILE
     if pause_file.exists():
         run_loop_status = "\n\nRun loop status: ⏸️ PAUSED — Missions are NOT being executed"
     elif stop_file.exists():
@@ -654,7 +655,7 @@ def main():
         log("health", f"Compacted {compacted} old messages at startup")
 
     # Purge stale heartbeat so health_check doesn't report STALE on restart
-    heartbeat_file = KOAN_ROOT / ".koan-heartbeat"
+    heartbeat_file = KOAN_ROOT / HEARTBEAT_FILE
     heartbeat_file.unlink(missing_ok=True)
     write_heartbeat(str(KOAN_ROOT))
     log("init", f"Token: ...{BOT_TOKEN[-8:]}")

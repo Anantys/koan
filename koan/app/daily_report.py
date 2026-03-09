@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from app.notify import format_and_send
-
+from app.signals import DAILY_REPORT_FILE, QUOTA_RESET_FILE
 
 from app.utils import load_dotenv
 
@@ -31,7 +31,7 @@ if "KOAN_ROOT" not in os.environ:
 KOAN_ROOT = Path(os.environ["KOAN_ROOT"])
 INSTANCE_DIR = KOAN_ROOT / "instance"
 MISSIONS_FILE = INSTANCE_DIR / "missions.md"
-REPORT_MARKER = KOAN_ROOT / ".koan-daily-report"
+REPORT_MARKER = KOAN_ROOT / DAILY_REPORT_FILE
 
 
 def should_send_report() -> Optional[str]:
@@ -57,7 +57,7 @@ def should_send_report() -> Optional[str]:
 
     # Evening report: after 8pm if quota exhausted
     if now.hour >= 20:
-        quota_file = KOAN_ROOT / ".koan-quota-reset"
+        quota_file = KOAN_ROOT / QUOTA_RESET_FILE
         if quota_file.exists():
             return "evening"
 
