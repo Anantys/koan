@@ -330,11 +330,40 @@ def _run_quality_pipeline(
         return {}
 
 
+def _run_lint_gate(
+    instance_dir: str, project_name: str, project_path: str
+):
+    """Run lint gate, returning LintResult or None."""
+    try:
+        from app.lint_gate import run_lint_gate
+        return run_lint_gate(project_path, project_name, instance_dir)
+    except Exception as e:
+        print(f"[mission_runner] Lint gate failed: {e}", file=sys.stderr)
+        return None
+
+
+def _is_lint_blocking(instance_dir: str, project_name: str) -> bool:
+    """Check if lint gate is configured as blocking for a project."""
+    try:
+        from app.lint_gate import get_project_lint_config
+        from app.projects_config import load_projects_config
+        koan_root = os.environ.get("KOAN_ROOT", str(Path(instance_dir).parent))
+        config = load_projects_config(koan_root)
+        if not config:
+            return False
+        lint_config = get_project_lint_config(config, project_name)
+        return lint_config.get("blocking", True) and lint_config.get("enabled", False)
+    except Exception as e:
+        print(f"[mission_runner] Lint config check failed: {e}", file=sys.stderr)
+        return False
+
+
 def check_auto_merge(
     instance_dir: str,
     project_name: str,
     project_path: str,
     quality_report: Optional[dict] = None,
+    lint_blocked: bool = False,
 ) -> Optional[str]:
     """Check if current branch should be auto-merged.
 
@@ -343,6 +372,7 @@ def check_auto_merge(
         project_name: Current project name.
         project_path: Path to project directory.
         quality_report: Optional quality pipeline results for gating.
+        lint_blocked: Whether lint gate is blocking auto-merge.
 
     Returns:
         Branch name if auto-merge was attempted, None otherwise.
@@ -354,6 +384,11 @@ def check_auto_merge(
             return None
         from app.config import get_branch_prefix
         if not branch.startswith(get_branch_prefix()):
+            return None
+
+        # Lint gate block
+        if lint_blocked:
+            print("[mission_runner] Auto-merge blocked by lint gate")
             return None
 
         # Quality gate check
@@ -502,6 +537,12 @@ def run_post_mission(
         )
         result["quality"] = quality_report
 
+        # Lint gate
+        _report("running lint gate")
+        lint_result = _run_lint_gate(instance_dir, project_name, project_path)
+        if lint_result is not None:
+            result["lint_passed"] = lint_result.passed
+
         # Reflection
         _report("running reflection")
         mission_text = mission_title if mission_title else f"Autonomous {autonomous_mode} on {project_name}"
@@ -510,11 +551,13 @@ def run_post_mission(
             project_name=project_name,
         )
 
-        # Auto-merge check (respects quality gate)
+        # Auto-merge check (respects quality gate + lint gate)
         _report("checking auto-merge")
+        lint_blocking = lint_result is not None and not lint_result.passed and _is_lint_blocking(instance_dir, project_name)
         result["auto_merge_branch"] = check_auto_merge(
             instance_dir, project_name, project_path,
             quality_report=quality_report,
+            lint_blocked=lint_blocking,
         )
 
     # 6. Record session outcome for staleness tracking
