@@ -376,4 +376,10 @@ def run_startup(koan_root: str, instance: str, projects: list):
     with protected_phase("Morning ritual"):
         _safe_run("Morning ritual", run_morning_ritual, instance)
 
+    # Initialize hook system and fire session_start
+    from app.hooks import fire_hook, init_hooks
+    _safe_run("Hook discovery", init_hooks, instance)
+    _safe_run("Session start hooks", fire_hook, "session_start",
+              instance_dir=instance, koan_root=koan_root)
+
     return max_runs, interval, branch_prefix

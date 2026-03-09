@@ -383,3 +383,44 @@ class TestPostMissionHookIntegration:
         assert mod is not None
         assert len(mod.calls) == 1
         assert mod.calls[0]["exit_code"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Integration: session and pre-mission hook wiring
+# ---------------------------------------------------------------------------
+
+
+class TestSessionHookWiring:
+    """Verify session_start hook is wired in startup_manager."""
+
+    def test_session_start_hook_in_source(self):
+        """Verify the session_start fire_hook call exists in startup_manager source."""
+        import inspect
+        from app import startup_manager
+        source = inspect.getsource(startup_manager)
+        assert 'fire_hook, init_hooks' in source
+        assert '"session_start"' in source
+
+
+class TestPreMissionHookWiring:
+    """Verify pre_mission hook fires before Claude execution in _run_iteration."""
+
+    def test_fire_hook_called_with_pre_mission(self):
+        """Verify the pre_mission fire_hook call exists in run.py source."""
+        # Static verification: ensure fire_hook("pre_mission", ...) is in the source
+        import inspect
+        from app import run
+        source = inspect.getsource(run)
+        assert 'fire_hook(\n            "pre_mission"' in source or \
+               'fire_hook("pre_mission"' in source
+
+
+class TestSessionEndHookWiring:
+    """Verify session_end hook fires in main_loop finally block."""
+
+    def test_fire_hook_called_with_session_end(self):
+        """Verify the session_end fire_hook call exists in run.py source."""
+        import inspect
+        from app import run
+        source = inspect.getsource(run)
+        assert 'fire_hook("session_end"' in source

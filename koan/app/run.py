@@ -645,6 +645,12 @@ def main_loop():
         current = _read_current_project(koan_root)
         _notify(instance, f"Kōan interrupted after {count} runs. Last project: {current}.")
     finally:
+        # Fire session_end hook (fire-and-forget, exception-safe)
+        try:
+            from app.hooks import fire_hook
+            fire_hook("session_end", instance_dir=instance, total_runs=count)
+        except Exception:
+            pass
         # Cleanup
         Path(koan_root, ".koan-status").unlink(missing_ok=True)
         release_pidfile(pidfile_lock, Path(koan_root), "run")
@@ -1258,6 +1264,21 @@ def _run_iteration(
         print(f"  Focus: {focus_area}")
         print()
         _notify(instance, f"🚀 [{project_name}] Run {run_num}/{max_runs} — Autonomous: {autonomous_mode} mode")
+
+    # --- Fire pre-mission hook ---
+    try:
+        from app.hooks import fire_hook
+        fire_hook(
+            "pre_mission",
+            instance_dir=instance,
+            project_name=project_name,
+            project_path=project_path,
+            mission_title=mission_title,
+            autonomous_mode=autonomous_mode,
+            run_num=run_num,
+        )
+    except Exception:
+        pass
 
     # --- Generate mission spec for complex missions ---
     spec_content = ""
