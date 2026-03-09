@@ -94,7 +94,7 @@ def _get_audit_config() -> dict:
     try:
         from app.utils import load_config
         config = load_config()
-    except Exception:
+    except (OSError, ValueError, KeyError):
         config = {}
     audit_cfg = config.get("audit") or {}
     return {
@@ -127,8 +127,8 @@ def _rotate_if_needed(audit_path: Path, max_size_bytes: int):
             return
         from app.log_rotation import rotate_log
         rotate_log(audit_path)
-    except Exception:
-        pass  # Rotation failure is non-fatal
+    except (OSError, ImportError) as exc:
+        print(f"[security_audit] Rotation failed: {exc}", file=sys.stderr)
 
 
 def log_event(
@@ -216,5 +216,6 @@ def read_recent_events(count: int = 50) -> list:
                 except json.JSONDecodeError:
                     continue
         return events
-    except Exception:
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"[security_audit] Failed to read events: {exc}", file=sys.stderr)
         return []
