@@ -5,6 +5,12 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      group:
+        description: "Test group to run (fast, slow-1, slow-2, or blank for all)"
+        required: false
+        type: string
 
 concurrency:
   group: tests-${{ github.ref }}
@@ -56,6 +62,7 @@ jobs:
           pip install pytest
 
       - name: Run tests (${{ matrix.group.name }})
+        if: ${{ !inputs.group || matrix.group.name == inputs.group }}
         working-directory: koan
         env:
           KOAN_ROOT: ${{ github.workspace }}/koan
