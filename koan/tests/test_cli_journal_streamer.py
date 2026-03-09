@@ -8,6 +8,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+pytestmark = pytest.mark.slow
+
 
 @pytest.fixture(autouse=True)
 def _fast_poll():

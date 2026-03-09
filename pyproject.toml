@@ -2,11 +2,14 @@
 name = "koan"
 version = "0.1.0"
 description = "Autonomous background agent using idle Claude API quota"
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 
 [tool.pytest.ini_options]
 testpaths = ["koan/tests"]
 pythonpath = ["koan"]
 filterwarnings = [
     "error::ResourceWarning",
+]
+markers = [
+    "slow: marks tests as slow (run in dedicated CI groups)",
 ]

@@ -28,6 +28,8 @@ from app.plan_runner import (
     main,
 )
 
+pytestmark = pytest.mark.slow
+
 
 # ---------------------------------------------------------------------------
 # run_plan — top-level routing

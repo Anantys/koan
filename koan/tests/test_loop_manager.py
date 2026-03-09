@@ -8,6 +8,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+pytestmark = pytest.mark.slow
+
 
 # --- Test resolve_focus_area ---
 

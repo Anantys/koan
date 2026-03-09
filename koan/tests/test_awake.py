@@ -47,6 +47,8 @@ from app.command_handlers import (
     _handle_skill_update,
 )
 
+pytestmark = pytest.mark.slow
+
 _STATUS_HANDLER_PATH = str(
     Path(__file__).parent.parent / "skills" / "core" / "status" / "handler.py"
 )

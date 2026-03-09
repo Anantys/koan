@@ -13,6 +13,8 @@ from app.notify import (
     invalidate_file_cache, _file_cache,
 )
 
+pytestmark = pytest.mark.slow
+
 
 @pytest.fixture(autouse=True)
 def _clear_file_cache():
