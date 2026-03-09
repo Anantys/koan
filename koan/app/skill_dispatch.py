@@ -51,6 +51,7 @@ _SKILL_RUNNERS = {
     "claude": "app.claudemd_refresh",
     "claude.md": "app.claudemd_refresh",
     "claude_md": "app.claudemd_refresh",
+    "incident": "skills.core.incident.incident_runner",
 }
 
 _PROJECT_TAG_RE = re.compile(r"^\[projec?t:([a-zA-Z0-9_-]+)\]\s*")
@@ -202,6 +203,7 @@ def build_skill_command(
         "claude": lambda: _build_claudemd_cmd(base_cmd, project_name, project_path),
         "claude.md": lambda: _build_claudemd_cmd(base_cmd, project_name, project_path),
         "claude_md": lambda: _build_claudemd_cmd(base_cmd, project_name, project_path),
+        "incident": lambda: _build_incident_cmd(base_cmd, args, project_path, instance_dir),
     }
 
     builder = _COMMAND_BUILDERS.get(command)
@@ -322,6 +324,31 @@ def _build_claudemd_cmd(
         project_path,
         "--project-name", project_name,
     ]
+
+
+def _build_incident_cmd(
+    base_cmd: List[str],
+    args: str,
+    project_path: str,
+    instance_dir: str,
+) -> List[str]:
+    """Build incident_runner command.
+
+    The error text is passed via --error-file (temp file) to avoid
+    shell escaping issues with stack traces.
+    """
+    import tempfile
+
+    cmd = base_cmd + ["--project-path", project_path, "--instance-dir", instance_dir]
+
+    # Write error text to a temp file to avoid shell escaping issues
+    if args.strip():
+        fd, path = tempfile.mkstemp(prefix="koan-incident-", suffix=".txt")
+        with open(fd, "w", encoding="utf-8") as f:
+            f.write(args)
+        cmd.extend(["--error-file", path])
+
+    return cmd
 
 
 def validate_skill_args(command: str, args: str) -> Optional[str]:
