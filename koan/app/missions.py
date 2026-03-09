@@ -919,6 +919,12 @@ def start_mission(content: str, mission_text: str) -> str:
     if result is None:
         return content
 
+    from app.security_audit import MISSION_START, log_event
+    log_event(MISSION_START, details={
+        "mission": mission_text,
+        "project": extract_project_tag(mission_text),
+    })
+
     updated = result[0]
     removed = result[1].strip()
     # Keep the original line text (with project tag, queued timestamp etc)
@@ -952,6 +958,8 @@ def complete_mission(content: str, mission_text: str) -> str:
         Updated content string. Returns original content unchanged if
         the mission is not found in either section.
     """
+    from app.security_audit import MISSION_COMPLETE, log_event
+    log_event(MISSION_COMPLETE, details={"mission": mission_text})
     return _move_pending_to_section(content, mission_text, "done", "\u2705", "Done")
 
 
@@ -963,6 +971,8 @@ def fail_mission(content: str, mission_text: str) -> str:
 
     Returns content unchanged if the mission is not found in either section.
     """
+    from app.security_audit import MISSION_FAIL, log_event
+    log_event(MISSION_FAIL, details={"mission": mission_text})
     return _move_pending_to_section(content, mission_text, "failed", "\u274c", "Failed")
 
 
