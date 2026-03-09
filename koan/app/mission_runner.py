@@ -280,10 +280,61 @@ def trigger_reflection(
     return False
 
 
+def _get_quality_gate_mode(instance_dir: str, project_name: str) -> str:
+    """Get the quality gate mode for a project.
+
+    Returns one of: "strict", "warn", "off". Default: "warn".
+    """
+    try:
+        from app.projects_config import load_projects_config, get_project_config
+        koan_root = os.environ.get("KOAN_ROOT", str(Path(instance_dir).parent))
+        config = load_projects_config(koan_root)
+        if config:
+            project_config = get_project_config(config, project_name)
+            pr_quality = project_config.get("pr_quality", {})
+            gate = pr_quality.get("gate", "warn")
+            if gate in ("strict", "warn", "off"):
+                return gate
+    except Exception as e:
+        print(f"[mission_runner] Quality gate config error: {e}", file=sys.stderr)
+    return "warn"
+
+
+def _run_quality_pipeline(
+    instance_dir: str,
+    project_name: str,
+    project_path: str,
+    report_fn,
+) -> dict:
+    """Run the post-mission quality pipeline.
+
+    Wraps pr_quality.run_quality_pipeline with project config resolution.
+    """
+    try:
+        from app.config import get_branch_prefix
+        from app.pr_quality import run_quality_pipeline
+
+        branch_prefix = get_branch_prefix()
+        gate_mode = _get_quality_gate_mode(instance_dir, project_name)
+
+        return run_quality_pipeline(
+            project_path=project_path,
+            branch_prefix=branch_prefix,
+            run_tests=True,
+            test_timeout=120,
+            gate_mode=gate_mode,
+            status_callback=report_fn,
+        )
+    except Exception as e:
+        print(f"[mission_runner] Quality pipeline failed: {e}", file=sys.stderr)
+        return {}
+
+
 def check_auto_merge(
     instance_dir: str,
     project_name: str,
     project_path: str,
+    quality_report: Optional[dict] = None,
 ) -> Optional[str]:
     """Check if current branch should be auto-merged.
 
@@ -291,6 +342,7 @@ def check_auto_merge(
         instance_dir: Path to instance directory.
         project_name: Current project name.
         project_path: Path to project directory.
+        quality_report: Optional quality pipeline results for gating.
 
     Returns:
         Branch name if auto-merge was attempted, None otherwise.
@@ -303,6 +355,24 @@ def check_auto_merge(
         from app.config import get_branch_prefix
         if not branch.startswith(get_branch_prefix()):
             return None
+
+        # Quality gate check
+        if quality_report:
+            from app.pr_quality import should_block_auto_merge, post_quality_comment
+            gate_mode = _get_quality_gate_mode(instance_dir, project_name)
+            if should_block_auto_merge(quality_report, gate_mode):
+                print(f"[mission_runner] Auto-merge blocked by quality gate ({gate_mode})")
+                try:
+                    post_quality_comment(project_path, quality_report)
+                except Exception as e:
+                    print(f"[mission_runner] Quality comment failed: {e}", file=sys.stderr)
+                return None
+            # In warn mode, post comment but still merge
+            if gate_mode == "warn":
+                try:
+                    post_quality_comment(project_path, quality_report)
+                except Exception as e:
+                    print(f"[mission_runner] Quality comment failed: {e}", file=sys.stderr)
 
         from app.git_auto_merge import auto_merge_branch
 
@@ -425,6 +495,13 @@ def run_post_mission(
 
     # 5. Post-mission processing (only on success)
     if exit_code == 0:
+        # Quality pipeline (scan, tests, branch hygiene, PR enrichment)
+        _report("running quality pipeline")
+        quality_report = _run_quality_pipeline(
+            instance_dir, project_name, project_path, _report,
+        )
+        result["quality"] = quality_report
+
         # Reflection
         _report("running reflection")
         mission_text = mission_title if mission_title else f"Autonomous {autonomous_mode} on {project_name}"
@@ -433,10 +510,11 @@ def run_post_mission(
             project_name=project_name,
         )
 
-        # Auto-merge check
+        # Auto-merge check (respects quality gate)
         _report("checking auto-merge")
         result["auto_merge_branch"] = check_auto_merge(
-            instance_dir, project_name, project_path
+            instance_dir, project_name, project_path,
+            quality_report=quality_report,
         )
 
     # 6. Record session outcome for staleness tracking
