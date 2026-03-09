@@ -182,6 +182,35 @@ def _record_session_outcome(
         print(f"[mission_runner] Session outcome recording failed: {e}", file=sys.stderr)
 
 
+def _record_cost_event(
+    instance_dir: str,
+    project_name: str,
+    stdout_file: str,
+    autonomous_mode: str,
+    mission_title: str,
+) -> None:
+    """Record structured usage event to JSONL cost tracker (fire-and-forget)."""
+    try:
+        from app.usage_estimator import extract_tokens_detailed
+        from app.cost_tracker import record_usage
+
+        detailed = extract_tokens_detailed(Path(stdout_file))
+        if detailed is None:
+            return
+
+        record_usage(
+            instance_dir=Path(instance_dir),
+            project=project_name or "_global",
+            model=detailed["model"],
+            input_tokens=detailed["input_tokens"],
+            output_tokens=detailed["output_tokens"],
+            mode=autonomous_mode,
+            mission=mission_title,
+        )
+    except Exception as e:
+        print(f"[mission_runner] Cost tracking failed: {e}", file=sys.stderr)
+
+
 def archive_pending(instance_dir: str, project_name: str, run_num: int) -> bool:
     """Archive pending.md to daily journal if agent didn't clean it up.
 
@@ -478,6 +507,12 @@ def run_post_mission(
     usage_state = os.path.join(instance_dir, "usage_state.json")
     usage_md = os.path.join(instance_dir, "usage.md")
     result["usage_updated"] = update_usage(stdout_file, usage_state, usage_md)
+
+    # 1b. Record structured usage to JSONL cost tracker
+    _record_cost_event(
+        instance_dir, project_name, stdout_file,
+        autonomous_mode, mission_title,
+    )
 
     # 2. Check for quota exhaustion
     _report("checking quota")
