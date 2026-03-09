@@ -434,6 +434,14 @@ def extract_next_pending(content: str, project_name: str = "") -> str:
     return ""
 
 
+def extract_tdd_tag(line: str) -> bool:
+    """Check if a mission line or block contains the [tdd] tag.
+
+    Returns True if [tdd] is found (case-insensitive), False otherwise.
+    """
+    return bool(re.search(r'\[tdd\]', line, re.IGNORECASE))
+
+
 def extract_project_tag(line: str) -> str:
     """Extract project name from a mission line or block, or 'default'.
 

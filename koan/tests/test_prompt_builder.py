@@ -14,6 +14,7 @@ from app.prompt_builder import (
     _get_submit_pr_section,
     _get_deep_research,
     _get_staleness_section,
+    _get_tdd_section,
     _get_verbose_section,
 )
 
@@ -1048,3 +1049,89 @@ class TestBuildAgentPromptSections:
         mock_deep.assert_not_called()
         # Staleness should be included for autonomous
         mock_stale.assert_called_once()
+
+
+# --- Tests for _get_tdd_section ---
+
+
+class TestGetTddSection:
+    """Tests for TDD mode prompt injection."""
+
+    def test_tdd_tag_injects_prompt(self):
+        """Mission tagged [tdd] should inject TDD prompt section."""
+        result = _get_tdd_section("[tdd] Add user validation")
+        assert "TDD Mode" in result
+        assert "Red-Green-Refactor" in result
+
+    def test_no_tdd_tag_returns_empty(self):
+        """Mission without [tdd] tag should return empty string."""
+        result = _get_tdd_section("Add user validation")
+        assert result == ""
+
+    def test_empty_mission_returns_empty(self):
+        """Empty mission title should return empty string."""
+        assert _get_tdd_section("") == ""
+
+    def test_tdd_tag_case_insensitive(self):
+        """[TDD] should also trigger injection."""
+        result = _get_tdd_section("[TDD] Add tests")
+        assert "TDD Mode" in result
+
+    def test_tdd_with_project_tag(self):
+        """[tdd] alongside [project:X] should still inject."""
+        result = _get_tdd_section("[tdd] [project:koan] Fix bug")
+        assert "TDD Mode" in result
+
+    @patch("app.prompt_builder._get_verbose_section", return_value="")
+    @patch("app.prompt_builder._get_submit_pr_section", return_value="")
+    @patch("app.prompt_builder._get_merge_policy", return_value="\nMerge\n")
+    @patch("app.prompt_builder._get_branch_prefix", return_value="koan/")
+    @patch("app.prompts.load_prompt")
+    def test_build_agent_prompt_includes_tdd(
+        self, mock_load, mock_prefix, mock_merge, mock_submit_pr, mock_verbose,
+        prompt_env,
+    ):
+        """build_agent_prompt should include TDD section when mission is tagged."""
+        mock_load.side_effect = lambda name, **kw: (
+            "Base prompt" if name == "agent" else
+            "TDD Mode — Red-Green-Refactor" if name == "tdd-mode" else
+            ""
+        )
+
+        result = build_agent_prompt(
+            instance=prompt_env["instance"],
+            project_name="testproj",
+            project_path=prompt_env["project_path"],
+            run_num=1,
+            max_runs=20,
+            autonomous_mode="implement",
+            focus_area="Test area",
+            available_pct=50,
+            mission_title="[tdd] Add user validation",
+        )
+
+        assert "TDD Mode" in result
+
+    @patch("app.prompt_builder._get_verbose_section", return_value="")
+    @patch("app.prompt_builder._get_submit_pr_section", return_value="")
+    @patch("app.prompt_builder._get_merge_policy", return_value="\nMerge\n")
+    @patch("app.prompt_builder._get_branch_prefix", return_value="koan/")
+    @patch("app.prompts.load_prompt", return_value="Base prompt")
+    def test_build_agent_prompt_no_tdd_without_tag(
+        self, mock_load, mock_prefix, mock_merge, mock_submit_pr, mock_verbose,
+        prompt_env,
+    ):
+        """build_agent_prompt should NOT include TDD section without tag."""
+        result = build_agent_prompt(
+            instance=prompt_env["instance"],
+            project_name="testproj",
+            project_path=prompt_env["project_path"],
+            run_num=1,
+            max_runs=20,
+            autonomous_mode="implement",
+            focus_area="Test area",
+            available_pct=50,
+            mission_title="Add user validation",
+        )
+
+        assert "TDD Mode" not in result

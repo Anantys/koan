@@ -161,6 +161,18 @@ def _get_drift_section(instance: str, project_name: str, project_path: str) -> s
     return ""
 
 
+def _get_tdd_section(mission_title: str) -> str:
+    """Return the TDD mode section if mission is tagged [tdd]."""
+    from app.missions import extract_tdd_tag
+
+    if not mission_title or not extract_tdd_tag(mission_title):
+        return ""
+
+    from app.prompts import load_prompt
+
+    return load_prompt("tdd-mode")
+
+
 def _get_verbose_section(instance: str) -> str:
     """Build the verbose mode section if .koan-verbose exists."""
     koan_root = str(Path(instance).parent)
@@ -253,6 +265,9 @@ def build_agent_prompt(
     # Append deep research suggestions (DEEP mode, autonomous only)
     if autonomous_mode == "deep" and not mission_title:
         prompt += _get_deep_research(instance, project_name, project_path)
+
+    # Append TDD mode section if mission is tagged [tdd]
+    prompt += _get_tdd_section(mission_title)
 
     # Append focus mode section if active
     prompt += _get_focus_section(instance)

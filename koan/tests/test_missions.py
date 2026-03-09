@@ -20,6 +20,7 @@ from app.missions import (
     count_pending,
     extract_next_pending,
     extract_project_tag,
+    extract_tdd_tag,
     extract_now_flag,
     group_by_project,
     find_section_boundaries,
@@ -637,6 +638,35 @@ class TestSubHeaderProjectGrouping:
     def test_extract_project_tag_french_subheader(self):
         block = "### projet:anantys-back\n- Task"
         assert extract_project_tag(block) == "anantys-back"
+
+    # --- extract_tdd_tag ---
+
+    def test_tdd_tag_present(self):
+        """extract_tdd_tag should detect [tdd] tag."""
+        assert extract_tdd_tag("- [tdd] Add user validation") is True
+
+    def test_tdd_tag_absent(self):
+        """extract_tdd_tag should return False when no [tdd] tag."""
+        assert extract_tdd_tag("- Add user validation") is False
+
+    def test_tdd_tag_case_insensitive(self):
+        """extract_tdd_tag should be case-insensitive."""
+        assert extract_tdd_tag("- [TDD] Add tests") is True
+        assert extract_tdd_tag("- [Tdd] Add tests") is True
+
+    def test_tdd_tag_with_project_tag(self):
+        """extract_tdd_tag should work alongside [project:name] tag."""
+        assert extract_tdd_tag("- [tdd] [project:koan] Fix bug") is True
+        assert extract_tdd_tag("- [project:koan] [tdd] Fix bug") is True
+
+    def test_tdd_tag_does_not_match_partial(self):
+        """extract_tdd_tag should not match partial words like [tddd]."""
+        assert extract_tdd_tag("- [tddd] Not a match") is False
+
+    def test_tdd_tag_in_multiline_block(self):
+        """extract_tdd_tag should detect tag in multi-line mission text."""
+        block = "- [tdd] Build feature\n  with detailed spec"
+        assert extract_tdd_tag(block) is True
 
     def test_group_by_project_with_subheaders(self):
         """group_by_project should correctly assign missions under ### sub-headers."""
