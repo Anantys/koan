@@ -4,6 +4,7 @@ import json
 import os
 from datetime import datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -514,39 +515,59 @@ class TestPeriodLine:
 class TestTimeBreakdowns:
     def test_overview_shows_today(self, tmp_path):
         ctx = _make_ctx(tmp_path)
-        # Use hours_ago=0 to guarantee "today" regardless of time of day
-        # (hours_ago=1 or 2 can cross midnight boundary)
+        # Pin time to Wednesday mid-day to avoid day/week boundary flakiness
+        fixed_now = datetime(2026, 3, 4, 12, 0, 0)  # Wednesday
         outcomes = [
-            _make_outcome(outcome="productive", hours_ago=0),
-            _make_outcome(outcome="empty", hours_ago=0),
+            {"timestamp": fixed_now.isoformat(timespec="seconds"),
+             "project": "koan", "mode": "implement", "duration_minutes": 10,
+             "outcome": "productive", "summary": "branch pushed"},
+            {"timestamp": fixed_now.isoformat(timespec="seconds"),
+             "project": "koan", "mode": "implement", "duration_minutes": 10,
+             "outcome": "empty", "summary": "nothing"},
         ]
         _write_outcomes(ctx.instance_dir, outcomes)
         from skills.core.stats.handler import handle
-        result = handle(ctx)
+        with patch("skills.core.stats.handler.datetime") as mock_dt:
+            mock_dt.now.return_value = fixed_now
+            mock_dt.fromisoformat = datetime.fromisoformat
+            result = handle(ctx)
         assert "Today:" in result
 
     def test_overview_shows_this_week(self, tmp_path):
         ctx = _make_ctx(tmp_path)
-        # Use hours_ago=0 to guarantee "this week" regardless of time of day
-        # (hours_ago=1 fails on Mondays shortly after midnight UTC)
+        # Pin time to Wednesday mid-day to avoid week boundary flakiness
+        fixed_now = datetime(2026, 3, 4, 12, 0, 0)  # Wednesday
         outcomes = [
-            _make_outcome(outcome="productive", hours_ago=0),
+            {"timestamp": fixed_now.isoformat(timespec="seconds"),
+             "project": "koan", "mode": "implement", "duration_minutes": 10,
+             "outcome": "productive", "summary": "branch pushed"},
         ]
         _write_outcomes(ctx.instance_dir, outcomes)
         from skills.core.stats.handler import handle
-        result = handle(ctx)
+        with patch("skills.core.stats.handler.datetime") as mock_dt:
+            mock_dt.now.return_value = fixed_now
+            mock_dt.fromisoformat = datetime.fromisoformat
+            result = handle(ctx)
         assert "This week:" in result
 
     def test_detail_shows_today(self, tmp_path):
         ctx = _make_ctx(tmp_path, args="koan")
-        # Use hours_ago=0 to guarantee "today" regardless of time of day
+        # Pin time to Wednesday mid-day to avoid day/week boundary flakiness
+        fixed_now = datetime(2026, 3, 4, 12, 0, 0)  # Wednesday
         outcomes = [
-            _make_outcome(outcome="productive", hours_ago=0),
-            _make_outcome(outcome="productive", hours_ago=0),
+            {"timestamp": fixed_now.isoformat(timespec="seconds"),
+             "project": "koan", "mode": "implement", "duration_minutes": 10,
+             "outcome": "productive", "summary": "branch pushed"},
+            {"timestamp": fixed_now.isoformat(timespec="seconds"),
+             "project": "koan", "mode": "implement", "duration_minutes": 10,
+             "outcome": "productive", "summary": "branch pushed"},
         ]
         _write_outcomes(ctx.instance_dir, outcomes)
         from skills.core.stats.handler import handle
-        result = handle(ctx)
+        with patch("skills.core.stats.handler.datetime") as mock_dt:
+            mock_dt.now.return_value = fixed_now
+            mock_dt.fromisoformat = datetime.fromisoformat
+            result = handle(ctx)
         assert "Today:" in result
 
     def test_no_time_lines_for_old_data(self, tmp_path):
