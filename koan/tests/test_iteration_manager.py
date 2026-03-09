@@ -14,9 +14,11 @@ os.environ.setdefault("KOAN_ROOT", "/tmp/test-koan")
 from app.iteration_manager import (
     AutonomousDecision,
     FilterResult,
+    _MODE_DOWNGRADE,
     _check_focus,
     _check_schedule,
     _decide_autonomous_action,
+    _downgrade_if_unaffordable,
     _fallback_mission_extract,
     _filter_exploration_projects,
     _get_known_project_names,
@@ -186,6 +188,65 @@ class TestRefreshUsage:
             _refresh_usage(tmp_path / "state", tmp_path / "usage.md", count=1)
 
 
+# === Tests: _downgrade_if_unaffordable ===
+
+
+class TestDowngradeIfUnaffordable:
+
+    def _make_tracker(self, tmp_path, session_pct, runs):
+        """Create a UsageTracker with known session usage."""
+        from app.usage_tracker import UsageTracker
+        usage_md = tmp_path / "usage.md"
+        usage_md.write_text(
+            f"Session (5hr) : {session_pct}% (reset in 2h)\n"
+            f"Weekly (7 day) : 10% (Resets in 5d)\n"
+        )
+        return UsageTracker(usage_md, runs)
+
+    def test_no_downgrade_when_affordable(self, tmp_path):
+        """Deep mode stays deep when budget is ample."""
+        tracker = self._make_tracker(tmp_path, session_pct=20, runs=5)
+        assert _downgrade_if_unaffordable(tracker, "deep") == "deep"
+
+    def test_deep_downgrades_to_implement(self, tmp_path):
+        """Deep is too expensive but implement fits."""
+        # 80% used, 10% safety → 10% remaining
+        # 10 runs at 80% → avg cost 8%/run → deep=16% > 10%, implement=8% ≤ 10%
+        tracker = self._make_tracker(tmp_path, session_pct=80, runs=10)
+        assert _downgrade_if_unaffordable(tracker, "deep") == "implement"
+
+    def test_deep_downgrades_to_review(self, tmp_path):
+        """Both deep and implement too expensive, review fits."""
+        # 87% used → 3% remaining, 20 runs → avg 4.35%/run
+        # deep=8.7%, implement=4.35% > 3%, review=2.175% ≤ 3%
+        tracker = self._make_tracker(tmp_path, session_pct=87, runs=20)
+        assert _downgrade_if_unaffordable(tracker, "deep") == "review"
+
+    def test_all_unaffordable_falls_to_wait(self, tmp_path):
+        """When nothing is affordable, mode becomes wait."""
+        # 95% used → -5% remaining (clamped to 0)
+        tracker = self._make_tracker(tmp_path, session_pct=95, runs=5)
+        assert _downgrade_if_unaffordable(tracker, "deep") == "wait"
+
+    def test_review_stays_review(self, tmp_path):
+        """Review mode with enough budget stays review."""
+        tracker = self._make_tracker(tmp_path, session_pct=50, runs=10)
+        assert _downgrade_if_unaffordable(tracker, "review") == "review"
+
+    def test_wait_passthrough(self, tmp_path):
+        """Wait mode is not in downgrade chain — passes through unchanged."""
+        tracker = self._make_tracker(tmp_path, session_pct=95, runs=5)
+        assert _downgrade_if_unaffordable(tracker, "wait") == "wait"
+
+    def test_mode_downgrade_chain(self):
+        """Verify the downgrade chain is complete."""
+        assert _MODE_DOWNGRADE == {
+            "deep": "implement",
+            "implement": "review",
+            "review": "wait",
+        }
+
+
 # === Tests: _get_usage_decision ===
 
 
@@ -237,6 +298,20 @@ class TestGetUsageDecision:
         )
         result = _get_usage_decision(usage_md, 3, PROJECTS_STR)
         assert result["mode"] == "implement"  # 30% available
+
+    def test_can_afford_run_downgrades_mode(self, tmp_path):
+        """When decide_mode picks deep but can_afford_run says no, mode is downgraded."""
+        usage_md = tmp_path / "usage.md"
+        # 50% used, 2 runs → avg cost 25%/run → deep=50% > 40% available → downgrade
+        # decide_mode returns "deep" (40% available ≥ 40 threshold)
+        # but can_afford_run("deep") = 25*2.0=50 > 40 → downgrade to implement
+        # can_afford_run("implement") = 25*1.0=25 ≤ 40 → implement fits
+        usage_md.write_text(
+            "Session (5hr) : 50% (reset in 3h)\n"
+            "Weekly (7 day) : 10% (Resets in 5d)\n"
+        )
+        result = _get_usage_decision(usage_md, 2, PROJECTS_STR)
+        assert result["mode"] == "implement"
 
 
 # === Tests: _inject_recurring ===
@@ -1101,14 +1176,15 @@ class TestDeepHoursModeCap:
         mock_schedule.return_value = ScheduleState(in_deep_hours=False, in_work_hours=False)
 
         usage_md = instance_dir / "usage.md"
-        # 35% session + 10% margin = 55% used → 45% remaining → but let's set higher
+        # 55% session + 10% margin → 35% remaining → implement mode
+        # Use count=10 so avg cost (5.5%/run) stays affordable for implement
         usage_md.write_text("Session (5hr) : 55% (reset in 3h)\nWeekly (7 day) : 10% (Resets in 5d)\n")
 
         result = plan_iteration(
             instance_dir=str(instance_dir),
             koan_root=str(koan_root),
             run_num=2,
-            count=1,
+            count=10,
             projects=PROJECTS_LIST,
             last_project="koan",
             usage_state_path=str(usage_state),

@@ -52,6 +52,30 @@ def _refresh_usage(usage_state: Path, usage_md: Path, count: int):
         _log_iteration("error", f"Usage refresh error: {e}")
 
 
+_MODE_DOWNGRADE = {
+    "deep": "implement",
+    "implement": "review",
+    "review": "wait",
+}
+
+
+def _downgrade_if_unaffordable(tracker, mode: str) -> str:
+    """Downgrade mode until can_afford_run() passes or we hit wait.
+
+    Called after decide_mode() to ensure the estimated run cost
+    actually fits within remaining budget. Prevents launching a deep
+    session when budget can only cover a review.
+    """
+    original = mode
+    while mode in _MODE_DOWNGRADE and not tracker.can_afford_run(mode):
+        mode = _MODE_DOWNGRADE[mode]
+    if mode != original:
+        _log_iteration("koan",
+            f"Budget check: downgraded {original} → {mode} "
+            f"(estimated cost {tracker.estimate_run_cost():.1f}%)")
+    return mode
+
+
 def _get_usage_decision(usage_md: Path, count: int, projects_str: str):
     """Parse usage.md and decide autonomous mode.
 
@@ -65,6 +89,10 @@ def _get_usage_decision(usage_md: Path, count: int, projects_str: str):
         tracker = UsageTracker(usage_md, count, budget_mode=budget_mode,
                                warn_pct=warn_pct, stop_pct=stop_pct)
         mode = tracker.decide_mode()
+
+        # Verify the chosen mode is affordable; downgrade if not
+        mode = _downgrade_if_unaffordable(tracker, mode)
+
         session_rem, weekly_rem = tracker.remaining_budget()
         available_pct = int(min(session_rem, weekly_rem))
         reason = tracker.get_decision_reason(mode)
