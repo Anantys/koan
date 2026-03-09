@@ -96,17 +96,35 @@ def _extract_tokens(claude_json_path: Path) -> Optional[int]:
     - Top-level: input_tokens + output_tokens
     - Nested: usage.input_tokens + usage.output_tokens
     - Array: sum across multiple turns
+
+    Returns:
+        Total token count (int) or None if no tokens found.
+    """
+    result = extract_tokens_detailed(claude_json_path)
+    if result is None:
+        return None
+    return result["input_tokens"] + result["output_tokens"]
+
+
+def extract_tokens_detailed(claude_json_path: Path) -> Optional[dict]:
+    """Extract structured token info from Claude JSON output.
+
+    Returns:
+        Dict with keys: input_tokens, output_tokens, model.
+        None if no tokens found or file unreadable.
     """
     try:
         data = json.loads(claude_json_path.read_text())
     except (json.JSONDecodeError, OSError):
         return None
 
+    model = data.get("model", "unknown")
+
     # Try top-level fields
     inp = data.get("input_tokens", 0)
     out = data.get("output_tokens", 0)
     if inp or out:
-        return inp + out
+        return {"input_tokens": inp, "output_tokens": out, "model": model}
 
     # Try nested usage object
     usage = data.get("usage", {})
@@ -114,7 +132,7 @@ def _extract_tokens(claude_json_path: Path) -> Optional[int]:
         inp = usage.get("input_tokens", 0)
         out = usage.get("output_tokens", 0)
         if inp or out:
-            return inp + out
+            return {"input_tokens": inp, "output_tokens": out, "model": model}
 
     # Try stats or metadata
     for key in ("stats", "metadata", "session"):
@@ -123,7 +141,7 @@ def _extract_tokens(claude_json_path: Path) -> Optional[int]:
             inp = sub.get("input_tokens", 0)
             out = sub.get("output_tokens", 0)
             if inp or out:
-                return inp + out
+                return {"input_tokens": inp, "output_tokens": out, "model": model}
 
     return None
 

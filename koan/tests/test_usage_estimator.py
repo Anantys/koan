@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from app.usage_estimator import (
     _extract_tokens,
+    extract_tokens_detailed,
     _fresh_state,
     _load_state,
     _maybe_reset,
@@ -75,6 +76,61 @@ class TestExtractTokens:
 
     def test_missing_file(self, tmp_path):
         assert _extract_tokens(tmp_path / "nonexistent.json") is None
+
+
+class TestExtractTokensDetailed:
+    def test_top_level_fields(self, claude_json):
+        result = extract_tokens_detailed(claude_json)
+        assert result["input_tokens"] == 1500
+        assert result["output_tokens"] == 500
+        assert result["model"] == "unknown"  # No model field in fixture
+
+    def test_nested_usage(self, claude_json_nested):
+        result = extract_tokens_detailed(claude_json_nested)
+        assert result["input_tokens"] == 3000
+        assert result["output_tokens"] == 1000
+
+    def test_with_model_field(self, tmp_path):
+        f = tmp_path / "with_model.json"
+        f.write_text(json.dumps({
+            "input_tokens": 100, "output_tokens": 50,
+            "model": "claude-sonnet-4-20250514",
+        }))
+        result = extract_tokens_detailed(f)
+        assert result["model"] == "claude-sonnet-4-20250514"
+        assert result["input_tokens"] == 100
+        assert result["output_tokens"] == 50
+
+    def test_no_tokens_returns_none(self, tmp_path):
+        f = tmp_path / "no_tokens.json"
+        f.write_text(json.dumps({"result": "hello"}))
+        assert extract_tokens_detailed(f) is None
+
+    def test_invalid_json_returns_none(self, tmp_path):
+        f = tmp_path / "bad.json"
+        f.write_text("not json")
+        assert extract_tokens_detailed(f) is None
+
+    def test_missing_file_returns_none(self, tmp_path):
+        assert extract_tokens_detailed(tmp_path / "nope.json") is None
+
+    def test_stats_nested_with_model(self, tmp_path):
+        f = tmp_path / "stats_model.json"
+        f.write_text(json.dumps({
+            "result": "done",
+            "model": "claude-opus-4-20250514",
+            "stats": {"input_tokens": 2000, "output_tokens": 500},
+        }))
+        result = extract_tokens_detailed(f)
+        assert result["model"] == "claude-opus-4-20250514"
+        assert result["input_tokens"] == 2000
+        assert result["output_tokens"] == 500
+
+    def test_backward_compat_with_extract_tokens(self, claude_json):
+        """_extract_tokens still returns int total."""
+        total = _extract_tokens(claude_json)
+        detailed = extract_tokens_detailed(claude_json)
+        assert total == detailed["input_tokens"] + detailed["output_tokens"]
 
 
 class TestMaybeReset:
