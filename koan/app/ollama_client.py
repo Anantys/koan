@@ -41,7 +41,7 @@ def _api_request(
     except urllib.error.HTTPError as e:
         try:
             detail = json.loads(e.read().decode()).get("error", str(e))
-        except Exception:
+        except (ValueError, UnicodeDecodeError):
             detail = str(e)
         return False, detail
     except urllib.error.URLError as e:
@@ -56,7 +56,7 @@ def is_server_running(host: str = DEFAULT_HOST, timeout: int = 3) -> bool:
         req = urllib.request.Request(f"{host.rstrip('/')}/", method="GET")
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.status == 200
-    except Exception:
+    except (OSError, urllib.error.URLError):
         return False
 
 

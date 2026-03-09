@@ -104,7 +104,7 @@ class OllamaLaunchProvider(CLIProvider):
             match = re.search(r"(\d+\.\d+\.\d+)", result.stdout)
             if match:
                 return tuple(int(x) for x in match.group(1).split("."))
-        except Exception:
+        except (OSError, subprocess.SubprocessError):
             pass
         return None
 
