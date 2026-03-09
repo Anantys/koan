@@ -38,6 +38,8 @@ from app.pid_manager import (
     PROCESS_NAMES,
 )
 
+pytestmark = pytest.mark.slow
+
 
 # ---------------------------------------------------------------------------
 # _pidfile_path

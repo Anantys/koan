@@ -29,6 +29,8 @@ from app.github_command_handler import (
 )
 from app.skills import Skill, SkillCommand, SkillRegistry
 
+pytestmark = pytest.mark.slow
+
 
 # ---------------------------------------------------------------------------
 # Fixtures

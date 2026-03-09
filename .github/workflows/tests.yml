@@ -15,21 +15,38 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
-        python-version: ["3.12", "3.13", "3.14"]
-        include:
-          - python-version: "3.14"
-            allow-prereleases: true
+        group:
+          - name: fast
+            marker: "not slow"
+          - name: slow-1
+            marker: "slow"
+            files: >-
+              tests/test_pid_manager.py
+              tests/test_awake.py
+              tests/test_command_handlers.py
+          - name: slow-2
+            marker: "slow"
+            files: >-
+              tests/test_plan_runner.py
+              tests/test_deep_research.py
+              tests/test_loop_manager.py
+              tests/test_run.py
+              tests/test_cli_journal_streamer.py
+              tests/test_github_command_handler.py
+              tests/test_notify.py
+
+    name: test (${{ matrix.group.name }})
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python ${{ matrix.python-version }}
+      - name: Set up Python 3.14
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
-          allow-prereleases: ${{ matrix.allow-prereleases || false }}
+          python-version: "3.14"
+          allow-prereleases: true
           cache: 'pip'
           cache-dependency-path: koan/requirements.txt
 
@@ -38,11 +55,16 @@ jobs:
           pip install -r koan/requirements.txt
           pip install pytest
 
-      - name: Run tests
+      - name: Run tests (${{ matrix.group.name }})
         working-directory: koan
         env:
           KOAN_ROOT: ${{ github.workspace }}/koan
           PYTHONPATH: "."
           KOAN_TELEGRAM_TOKEN: "fake-token-for-ci"
           KOAN_TELEGRAM_CHAT_ID: "123456789"
-        run: pytest tests/ -v
+        run: |
+          if [ -n "${{ matrix.group.files }}" ]; then
+            pytest ${{ matrix.group.files }} -v
+          else
+            pytest tests/ -m "${{ matrix.group.marker }}" -v
+          fi

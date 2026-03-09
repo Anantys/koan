@@ -10,6 +10,8 @@ import pytest
 
 from app.deep_research import DeepResearch
 
+pytestmark = pytest.mark.slow
+
 
 @pytest.fixture
 def research_env(tmp_path):
