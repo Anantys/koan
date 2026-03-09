@@ -1,0 +1,46 @@
+"""Example hook: Send a Slack notification after each mission.
+
+To use:
+1. Copy this file to instance/hooks/slack_notify.py (remove .example)
+2. Set SLACK_WEBHOOK_URL in your .env file
+3. Restart Koan
+
+This is a template — adapt to your needs.
+"""
+
+import os
+import json
+import urllib.request
+
+
+SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL", "")
+
+
+def on_post_mission(ctx):
+    """Send a Slack message after a mission completes."""
+    if not SLACK_WEBHOOK_URL:
+        return
+
+    project = ctx.get("project_name", "unknown")
+    title = ctx.get("mission_title", "autonomous")
+    exit_code = ctx.get("exit_code", -1)
+    duration = ctx.get("duration_minutes", 0)
+
+    emoji = ":white_check_mark:" if exit_code == 0 else ":x:"
+    text = f"{emoji} *[{project}]* {title} ({duration}min)"
+
+    payload = json.dumps({"text": text}).encode("utf-8")
+    req = urllib.request.Request(
+        SLACK_WEBHOOK_URL,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        urllib.request.urlopen(req, timeout=5)
+    except Exception:
+        pass  # fire-and-forget
+
+
+HOOKS = {
+    "post_mission": on_post_mission,
+}

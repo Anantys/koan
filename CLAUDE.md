@@ -60,6 +60,7 @@ Communication between processes happens through shared files in `instance/` with
 - **`quota_handler.py`** — Quota exhaustion detection from CLI output; parses reset times, creates pause state, writes journal entries
 - **`prompt_builder.py`** — Agent prompt assembly for the agent loop
 - **`skill_dispatch.py`** — Direct skill execution from agent loop. Detects `/command` missions, parses project prefix and command, dispatches to skill-specific runners (plan, rebase, recreate, check, claudemd) bypassing the Claude agent
+- **`hooks.py`** — Hook system for extensible lifecycle events. Discovers `.py` modules from `instance/hooks/`, registers handlers by event name, fires them sequentially with per-handler error isolation. Events: `session_start`, `session_end`, `pre_mission`, `post_mission`.
 
 **Bridge (Telegram):**
 - **`awake.py`** — Main bridge loop, Telegram polling, outbox flushing
@@ -124,6 +125,7 @@ Extensible command plugin system. Each skill lives in `skills/<scope>/<skill-nam
 - `soul.md` — Agent personality definition
 - `memory/` — Global summary + per-project learnings/context
 - `journal/` — Daily logs organized as `YYYY-MM-DD/project.md`
+- `hooks/` — User-defined Python hook modules for lifecycle events (see `instance.example/hooks/README.md`)
 
 ## Conventions
 
