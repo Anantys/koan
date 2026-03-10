@@ -387,6 +387,35 @@ def _is_lint_blocking(instance_dir: str, project_name: str) -> bool:
         return False
 
 
+def _run_mission_verification(
+    project_path: str,
+    mission_title: str,
+    exit_code: int,
+    instance_dir: str,
+):
+    """Run post-mission semantic verification (fire-and-forget).
+
+    Returns VerifyResult or None on error.
+    """
+    try:
+        from app.mission_verifier import verify_mission, format_verify_result
+        from app.config import get_branch_prefix
+
+        branch_prefix = get_branch_prefix()
+        result = verify_mission(
+            project_path=project_path,
+            mission_title=mission_title,
+            exit_code=exit_code,
+            branch_prefix=branch_prefix,
+        )
+        # Log result to console
+        print(f"[mission_runner] {format_verify_result(result)}")
+        return result
+    except Exception as e:
+        print(f"[mission_runner] Mission verification failed: {e}", file=sys.stderr)
+        return None
+
+
 def check_auto_merge(
     instance_dir: str,
     project_name: str,
@@ -565,6 +594,19 @@ def run_post_mission(
 
     # 5. Post-mission processing (only on success)
     if exit_code == 0:
+        # Mission verification (RARV Verify phase — semantic checks)
+        _report("verifying mission output")
+        verify_result = _run_mission_verification(
+            project_path, mission_title, exit_code, instance_dir,
+        )
+        if verify_result is not None:
+            result["verification"] = {
+                "passed": verify_result.passed,
+                "summary": verify_result.summary,
+                "warnings": len(verify_result.warnings),
+                "failures": len(verify_result.failures),
+            }
+
         # Quality pipeline (scan, tests, branch hygiene, PR enrichment)
         _report("running quality pipeline")
         quality_report = _run_quality_pipeline(
@@ -586,13 +628,14 @@ def run_post_mission(
             project_name=project_name,
         )
 
-        # Auto-merge check (respects quality gate + lint gate)
+        # Auto-merge check (respects quality gate + lint gate + verification)
         _report("checking auto-merge")
         lint_blocking = lint_result is not None and not lint_result.passed and _is_lint_blocking(instance_dir, project_name)
+        verify_blocking = verify_result is not None and not verify_result.passed
         result["auto_merge_branch"] = check_auto_merge(
             instance_dir, project_name, project_path,
             quality_report=quality_report,
-            lint_blocked=lint_blocking,
+            lint_blocked=lint_blocking or verify_blocking,
         )
 
     # 6. Record session outcome for staleness tracking
