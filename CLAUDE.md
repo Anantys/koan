@@ -59,6 +59,7 @@ Communication between processes happens through shared files in `instance/` with
 - **`contemplative_runner.py`** — Contemplative session runner (probability roll, prompt building, CLI invocation)
 - **`quota_handler.py`** — Quota exhaustion detection from CLI output; parses reset times, creates pause state, writes journal entries
 - **`prompt_builder.py`** — Agent prompt assembly for the agent loop
+- **`pr_review_learning.py`** — Extracts actionable patterns from human PR reviews (comments, approvals, rejections). Categorizes feedback (scope, testing, style, approach, dont_touch, praise), tracks rejected PRs, and formats lessons for prompt injection via `prompt_builder.py`.
 - **`skill_dispatch.py`** — Direct skill execution from agent loop. Detects `/command` missions, parses project prefix and command, dispatches to skill-specific runners (plan, rebase, recreate, check, claudemd) bypassing the Claude agent
 - **`hooks.py`** — Hook system for extensible lifecycle events. Discovers `.py` modules from `instance/hooks/`, registers handlers by event name, fires them sequentially with per-handler error isolation. Events: `session_start`, `session_end`, `pre_mission`, `post_mission`.
 
