@@ -15,12 +15,18 @@ VENV   ?= .venv
 PYTHON ?= $(VENV)/bin/$(PYTHON_BIN)
 
 # --- service manager detection ---
+# Set KOAN_SERVICE_MANAGER=none in .env to disable systemd/launchd and use foreground processes
 IS_LINUX := $(shell [ "$$(uname -s)" = "Linux" ] && echo 1)
 IS_MAC := $(shell [ "$$(uname -s)" = "Darwin" ] && echo 1)
-HAS_SYSTEMD := $(if $(IS_LINUX),$(shell command -v systemctl >/dev/null 2>&1 && echo 1))
-USE_SYSTEMD := $(if $(HAS_SYSTEMD),1)
-HAS_LAUNCHCTL := $(if $(IS_MAC),$(shell command -v launchctl >/dev/null 2>&1 && echo 1))
-USE_LAUNCHD := $(if $(HAS_LAUNCHCTL),1)
+ifeq ($(KOAN_SERVICE_MANAGER),none)
+  USE_SYSTEMD :=
+  USE_LAUNCHD :=
+else
+  HAS_SYSTEMD := $(if $(IS_LINUX),$(shell command -v systemctl >/dev/null 2>&1 && echo 1))
+  USE_SYSTEMD := $(if $(HAS_SYSTEMD),1)
+  HAS_LAUNCHCTL := $(if $(IS_MAC),$(shell command -v launchctl >/dev/null 2>&1 && echo 1))
+  USE_LAUNCHD := $(if $(HAS_LAUNCHCTL),1)
+endif
 SERVICE_INSTALLED = $(shell [ -f /etc/systemd/system/koan.service ] && echo 1)
 LAUNCHD_INSTALLED = $(shell [ -f ~/Library/LaunchAgents/com.koan.run.plist ] && echo 1)
 
