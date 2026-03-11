@@ -86,13 +86,13 @@ start: setup
 		echo "→ launchd detected — installing Kōan service (one-time setup)..."; \
 		bash koan/launchd/install-service.sh "$(PWD)"; \
 	fi
-	@launchctl kickstart "gui/$$(id -u)/com.koan.awake" 2>/dev/null || true
-	@launchctl kickstart "gui/$$(id -u)/com.koan.run" 2>/dev/null || true
+	@launchctl bootstrap "gui/$$(id -u)" ~/Library/LaunchAgents/com.koan.awake.plist 2>/dev/null || true
+	@launchctl bootstrap "gui/$$(id -u)" ~/Library/LaunchAgents/com.koan.run.plist 2>/dev/null || true
 	@echo "✓ Kōan started via launchd"
 
 stop:
-	@launchctl kill SIGTERM "gui/$$(id -u)/com.koan.run" 2>/dev/null || true
-	@launchctl kill SIGTERM "gui/$$(id -u)/com.koan.awake" 2>/dev/null || true
+	@launchctl bootout "gui/$$(id -u)/com.koan.run" 2>/dev/null || true
+	@launchctl bootout "gui/$$(id -u)/com.koan.awake" 2>/dev/null || true
 	@echo "✓ Kōan stopped"
 
 status:
