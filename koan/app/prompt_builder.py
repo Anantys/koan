@@ -145,27 +145,6 @@ def _get_pr_feedback_section(project_path: str) -> str:
     return ""
 
 
-def _get_review_lessons_section(project_path: str) -> str:
-    """Get lessons learned from human PR reviews.
-
-    Extracts actionable patterns from review comments, approvals,
-    rejections, and recurring feedback themes. Helps the agent avoid
-    repeating past mistakes and align with human preferences.
-    """
-    try:
-        from app.pr_review_learning import get_review_lessons
-        lessons = get_review_lessons(project_path)
-        if lessons:
-            return (
-                f"\n\n# PR Review Lessons\n\n"
-                f"Patterns extracted from recent human reviews on your PRs:\n\n"
-                f"{lessons}\n"
-            )
-    except Exception as e:
-        print(f"[prompt_builder] PR review learning failed: {e}", file=sys.stderr)
-    return ""
-
-
 def _get_drift_section(instance: str, project_name: str, project_path: str) -> str:
     """Get drift summary for the current project.
 
@@ -335,10 +314,6 @@ def build_agent_prompt(
     # Append PR merge feedback (autonomous only — helps topic alignment)
     if not mission_title and autonomous_mode in ("deep", "implement"):
         prompt += _get_pr_feedback_section(project_path)
-
-    # Append PR review lessons (autonomous only — learns from review comments)
-    if not mission_title and autonomous_mode in ("deep", "implement"):
-        prompt += _get_review_lessons_section(project_path)
 
     # Append deep research suggestions (DEEP mode, autonomous only)
     if autonomous_mode == "deep" and not mission_title:

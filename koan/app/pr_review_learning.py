@@ -1,60 +1,29 @@
 """Kōan — PR review learning for autonomous alignment.
 
-Extracts actionable patterns from human PR reviews (comments, approvals,
-rejections, closures) and surfaces them as lessons for the agent.
+Extracts actionable lessons from human PR reviews (comments, approvals,
+rejections, closures) and persists them to the project's learnings.md.
 
 The PR feedback system (pr_feedback.py) tracks *merge velocity* — how fast
 PRs get merged by category. This module goes deeper: it reads the actual
 review comments and actions to learn *what* the human values, critiques,
 or rejects.
 
-Signals captured:
-- Review comments (inline and top-level)
-- Review state (APPROVED, CHANGES_REQUESTED, COMMENTED)
-- Closed-without-merge PRs (rejection signal)
-- Recurrent themes across multiple reviews
+Architecture:
+1. Fetch: GitHub API via gh CLI (review comments, states, closed PRs)
+2. Analyze: Claude CLI (lightweight model) parses raw feedback into lessons
+3. Persist: New lessons are appended to memory/projects/{name}/learnings.md
 
-Integration points:
-- Read: prompt_builder.py injects lessons into the agent prompt
-- Data: GitHub API via gh CLI
+The learnings.md file is already consumed by deep_research.py,
+prompt_builder.py, and format_outbox.py — so lessons written here
+are automatically surfaced to the agent without additional wiring.
 """
 
+import hashlib
 import json
-import re
 import sys
-from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
-
-
-# Review comment categories — used to bucket feedback patterns
-_FEEDBACK_CATEGORIES = {
-    "scope": re.compile(
-        r"too\s+(?:many|much|big|large)|scope|split|smaller\s+pr|separate\s+pr|one\s+concern",
-        re.IGNORECASE,
-    ),
-    "testing": re.compile(
-        r"\btest[s]?\b|coverage|spec[s]?\b|assert|untested|missing\s+test",
-        re.IGNORECASE,
-    ),
-    "style": re.compile(
-        r"naming|style|convention|format|indent|readab|lint|typo",
-        re.IGNORECASE,
-    ),
-    "approach": re.compile(
-        r"approach|design|architect|pattern|instead|alternative|simpler|overkill|over.?engineer",
-        re.IGNORECASE,
-    ),
-    "dont_touch": re.compile(
-        r"don'?t\s+touch|leave\s+(?:it|this)|not\s+(?:needed|necessary|now)|revert|undo",
-        re.IGNORECASE,
-    ),
-    "praise": re.compile(
-        r"\bgood\b|nice|great|clean|well\s+done|excellent|solid|perfect|love|👍|🎉|lgtm",
-        re.IGNORECASE,
-    ),
-}
+from typing import List, Optional
 
 
 def fetch_pr_reviews(
@@ -202,261 +171,259 @@ def _fetch_review_comments_for_pr(project_path: str, pr_number: int) -> List[dic
         return []
 
 
-def categorize_feedback(text: str) -> List[str]:
-    """Categorize a review comment into feedback types.
+def format_reviews_for_analysis(prs: List[dict]) -> str:
+    """Format enriched PR data as text for Claude to analyze.
 
-    Args:
-        text: Review comment body.
-
-    Returns:
-        List of matching category names (can match multiple).
-    """
-    if not text:
-        return []
-
-    categories = []
-    for category, pattern in _FEEDBACK_CATEGORIES.items():
-        if pattern.search(text):
-            categories.append(category)
-
-    return categories
-
-
-def extract_lessons(prs: List[dict]) -> dict:
-    """Extract structured lessons from enriched PR data.
-
-    Analyzes review patterns across multiple PRs to identify:
-    - Recurring feedback themes
-    - What the human approves quickly (positive patterns)
-    - What gets rejected or criticized (negative patterns)
-    - Areas the human doesn't want touched
+    Produces a structured summary of each PR with its reviews and comments,
+    suitable as input to the analysis prompt.
 
     Args:
         prs: List of enriched PR dicts from fetch_pr_reviews().
 
     Returns:
-        Dict with keys:
-            feedback_counts: Counter of feedback categories.
-            rejected_prs: List of {number, title, reason} for closed-without-merge.
-            positive_patterns: List of strings (what gets approved).
-            negative_patterns: List of strings (what gets criticized).
-            dont_touch_areas: List of strings (areas to avoid).
-            review_quotes: List of notable review comments (for prompt injection).
+        Formatted text string, or empty string if no reviews to analyze.
     """
-    feedback_counts = Counter()
-    rejected_prs = []
-    positive_patterns = []
-    negative_patterns = []
-    dont_touch_areas = []
-    review_quotes = []
-
-    for pr in prs:
-        all_feedback_text = []
-
-        # Analyze reviews (top-level)
-        for review in pr.get("reviews", []):
-            body = review.get("body", "") or ""
-            state = review.get("state", "")
-
-            if body.strip():
-                all_feedback_text.append(body)
-                categories = categorize_feedback(body)
-                for cat in categories:
-                    feedback_counts[cat] += 1
-
-                # Track notable quotes (non-trivial, non-bot)
-                if len(body.strip()) > 10 and state != "PENDING":
-                    review_quotes.append({
-                        "pr": pr.get("number"),
-                        "title": pr.get("title", ""),
-                        "text": body.strip()[:200],
-                        "state": state,
-                    })
-
-            # Track approval/rejection patterns
-            if state == "CHANGES_REQUESTED":
-                categories = categorize_feedback(body)
-                for cat in categories:
-                    if cat != "praise":
-                        negative_patterns.append(
-                            f"PR #{pr['number']} ({pr.get('title', '')}): {cat}"
-                        )
-            elif state == "APPROVED" and body.strip():
-                categories = categorize_feedback(body)
-                if "praise" in categories:
-                    positive_patterns.append(
-                        f"PR #{pr['number']} ({pr.get('title', '')}): approved with praise"
-                    )
-
-        # Analyze inline comments
-        for comment in pr.get("review_comments", []):
-            body = comment.get("body", "") or ""
-            if body.strip():
-                all_feedback_text.append(body)
-                categories = categorize_feedback(body)
-                for cat in categories:
-                    feedback_counts[cat] += 1
-
-                if "dont_touch" in categories:
-                    path = comment.get("path", "")
-                    dont_touch_areas.append(
-                        f"{path}: {body.strip()[:100]}"
-                    )
-
-        # Track rejected PRs (closed without merge)
-        if not pr.get("was_merged"):
-            reason = _infer_rejection_reason(all_feedback_text)
-            rejected_prs.append({
-                "number": pr.get("number"),
-                "title": pr.get("title", ""),
-                "reason": reason,
-            })
-
-    return {
-        "feedback_counts": dict(feedback_counts),
-        "rejected_prs": rejected_prs,
-        "positive_patterns": positive_patterns[:10],  # Cap
-        "negative_patterns": negative_patterns[:10],
-        "dont_touch_areas": dont_touch_areas[:5],
-        "review_quotes": review_quotes[:10],
-    }
-
-
-def _infer_rejection_reason(feedback_texts: List[str]) -> str:
-    """Infer why a PR was rejected from its review comments."""
-    if not feedback_texts:
-        return "no review comments"
-
-    combined = " ".join(feedback_texts)
-    categories = categorize_feedback(combined)
-
-    if "scope" in categories:
-        return "scope too large"
-    if "approach" in categories:
-        return "approach disagreement"
-    if "dont_touch" in categories:
-        return "area should not be touched"
-    if "style" in categories:
-        return "style/convention issues"
-    if categories:
-        return f"feedback on: {', '.join(categories)}"
-    return "unclear (review had comments)"
-
-
-def format_lessons_for_prompt(lessons: dict) -> str:
-    """Format extracted lessons as markdown for prompt injection.
-
-    Produces a concise, actionable summary that helps the agent
-    avoid past mistakes and repeat successful patterns.
-
-    Args:
-        lessons: Dict from extract_lessons().
-
-    Returns:
-        Formatted markdown string, or empty string if no lessons.
-    """
-    lines = []
-
-    # Rejected PRs — strongest signal
-    if lessons.get("rejected_prs"):
-        lines.append("### Rejected PRs (closed without merge)")
-        lines.append("")
-        for pr in lessons["rejected_prs"]:
-            lines.append(f"- PR #{pr['number']} ({pr['title']}): {pr['reason']}")
-        lines.append("")
-        lines.append(
-            "These PRs were closed without merging. Avoid repeating the same "
-            "patterns. Consider why the work was rejected before choosing "
-            "similar topics."
-        )
-        lines.append("")
-
-    # Don't-touch areas
-    if lessons.get("dont_touch_areas"):
-        lines.append("### Areas to avoid (reviewer feedback)")
-        lines.append("")
-        for area in lessons["dont_touch_areas"]:
-            lines.append(f"- {area}")
-        lines.append("")
-
-    # Recurring feedback themes
-    counts = lessons.get("feedback_counts", {})
-    # Only show categories with 2+ occurrences (patterns, not noise)
-    recurring = {k: v for k, v in counts.items() if v >= 2 and k != "praise"}
-    if recurring:
-        lines.append("### Recurring review feedback")
-        lines.append("")
-        for cat, count in sorted(recurring.items(), key=lambda x: -x[1]):
-            label = _category_label(cat)
-            lines.append(f"- **{label}** ({count} occurrences)")
-        lines.append("")
-        lines.append(
-            "Address these patterns proactively in your next PR — "
-            "the reviewer has flagged them multiple times."
-        )
-        lines.append("")
-
-    # Positive patterns (what works well)
-    if lessons.get("positive_patterns"):
-        lines.append("### What the reviewer values")
-        lines.append("")
-        for pattern in lessons["positive_patterns"][:5]:
-            lines.append(f"- {pattern}")
-        lines.append("")
-
-    # Notable quotes (direct voice of the reviewer)
-    notable = [q for q in lessons.get("review_quotes", [])
-               if q.get("state") in ("CHANGES_REQUESTED", "APPROVED")
-               and len(q.get("text", "")) > 20]
-    if notable:
-        lines.append("### Notable reviewer comments")
-        lines.append("")
-        for q in notable[:3]:
-            lines.append(f"- PR #{q['pr']}: \"{q['text']}\"")
-        lines.append("")
-
-    if not lines:
+    if not prs:
         return ""
 
-    return "\n".join(lines)
+    sections = []
+    for pr in prs:
+        status = "MERGED" if pr.get("was_merged") else "CLOSED (not merged)"
+        header = f"## PR #{pr['number']}: {pr.get('title', '')} [{status}]"
+        lines = [header]
+
+        for review in pr.get("reviews", []):
+            body = (review.get("body") or "").strip()
+            state = review.get("state", "")
+            user = review.get("user", "")
+            if body:
+                lines.append(f"  Review ({state}) by {user}: {body}")
+            elif state in ("APPROVED", "CHANGES_REQUESTED"):
+                lines.append(f"  Review ({state}) by {user}: [no comment]")
+
+        for comment in pr.get("review_comments", []):
+            body = (comment.get("body") or "").strip()
+            path = comment.get("path", "")
+            user = comment.get("user", "")
+            if body:
+                lines.append(f"  Inline on {path} by {user}: {body}")
+
+        # Only include PRs that have actual review content
+        if len(lines) > 1:
+            sections.append("\n".join(lines))
+
+    return "\n\n".join(sections)
 
 
-def _category_label(category: str) -> str:
-    """Human-readable label for a feedback category."""
-    labels = {
-        "scope": "PR scope too large",
-        "testing": "Missing or insufficient tests",
-        "style": "Style/convention issues",
-        "approach": "Approach/design disagreement",
-        "dont_touch": "Area should not be touched",
-        "praise": "Positive feedback",
-    }
-    return labels.get(category, category)
+def analyze_reviews_with_cli(
+    review_text: str,
+    project_path: str,
+) -> str:
+    """Use Claude CLI (lightweight model) to extract lessons from review text.
+
+    Args:
+        review_text: Formatted review text from format_reviews_for_analysis().
+        project_path: Path to the git repo (used as cwd for CLI).
+
+    Returns:
+        Markdown bullet list of lessons, or empty string on failure.
+    """
+    from app.cli_provider import build_full_command
+    from app.config import get_model_config
+    from app.prompts import load_prompt
+
+    prompt = load_prompt("review-learning", REVIEW_DATA=review_text)
+    models = get_model_config()
+
+    cmd = build_full_command(
+        prompt=prompt,
+        allowed_tools=[],
+        model=models.get("lightweight", "haiku"),
+        fallback=models.get("fallback", "sonnet"),
+        max_turns=1,
+    )
+
+    from app.cli_exec import run_cli_with_retry
+
+    try:
+        result = run_cli_with_retry(
+            cmd,
+            capture_output=True, text=True,
+            timeout=60, cwd=project_path,
+        )
+        if result.returncode != 0:
+            print(
+                f"[pr_review_learning] CLI analysis failed: {result.stderr[:200]}",
+                file=sys.stderr,
+            )
+            return ""
+        return result.stdout.strip()
+    except Exception as e:
+        print(f"[pr_review_learning] CLI analysis error: {e}", file=sys.stderr)
+        return ""
 
 
-def get_review_lessons(
+def _compute_review_hash(prs: List[dict]) -> str:
+    """Compute a stable hash of review data to detect changes.
+
+    Uses PR numbers + review/comment bodies to produce a fingerprint.
+    If the hash hasn't changed since last run, we skip re-analysis.
+    """
+    parts = []
+    for pr in sorted(prs, key=lambda p: p.get("number", 0)):
+        parts.append(str(pr.get("number", "")))
+        for review in pr.get("reviews", []):
+            parts.append(review.get("body") or "")
+        for comment in pr.get("review_comments", []):
+            parts.append(comment.get("body") or "")
+    content = "|".join(parts)
+    return hashlib.sha256(content.encode()).hexdigest()[:16]
+
+
+def _get_cache_path(instance_dir: str) -> Path:
+    """Get the path to the review learning cache file."""
+    return Path(instance_dir) / ".koan-review-learning-hash"
+
+
+def _is_cache_fresh(instance_dir: str, current_hash: str) -> bool:
+    """Check if the cached hash matches (no new reviews to process)."""
+    cache_path = _get_cache_path(instance_dir)
+    if not cache_path.exists():
+        return False
+    try:
+        return cache_path.read_text().strip() == current_hash
+    except OSError:
+        return False
+
+
+def _write_cache(instance_dir: str, review_hash: str) -> None:
+    """Write the review hash to the cache file."""
+    try:
+        cache_path = _get_cache_path(instance_dir)
+        cache_path.write_text(review_hash + "\n")
+    except OSError as e:
+        print(f"[pr_review_learning] Cache write failed: {e}", file=sys.stderr)
+
+
+def _append_lessons_to_learnings(
+    instance_dir: str,
+    project_name: str,
+    lessons_text: str,
+) -> int:
+    """Append new lessons to the project's learnings.md, skipping duplicates.
+
+    Args:
+        instance_dir: Path to the instance directory.
+        project_name: Project name for scoping.
+        lessons_text: Markdown bullet list from Claude analysis.
+
+    Returns:
+        Number of new lines appended.
+    """
+    from app.utils import atomic_write
+
+    learnings_path = (
+        Path(instance_dir) / "memory" / "projects" / project_name / "learnings.md"
+    )
+
+    # Read existing content
+    existing_lines = set()
+    existing_content = ""
+    if learnings_path.exists():
+        try:
+            existing_content = learnings_path.read_text(encoding="utf-8")
+            existing_lines = {
+                line.strip()
+                for line in existing_content.splitlines()
+                if line.strip() and not line.strip().startswith("#")
+            }
+        except (OSError, UnicodeDecodeError) as e:
+            print(f"[pr_review_learning] Error reading learnings: {e}", file=sys.stderr)
+
+    # Filter out duplicate lessons
+    new_lines = []
+    for line in lessons_text.splitlines():
+        stripped = line.strip()
+        if stripped and stripped not in existing_lines:
+            new_lines.append(line)
+
+    if not new_lines:
+        return 0
+
+    # Ensure directory exists
+    learnings_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Build new content
+    date_str = datetime.now().strftime("%Y-%m-%d")
+    section = f"\n## PR review learnings ({date_str})\n\n" + "\n".join(new_lines) + "\n"
+
+    if existing_content:
+        new_content = existing_content.rstrip("\n") + "\n" + section
+    else:
+        new_content = f"# Learnings — {project_name}\n" + section
+
+    atomic_write(learnings_path, new_content)
+    return len(new_lines)
+
+
+def learn_from_reviews(
+    instance_dir: str,
+    project_name: str,
     project_path: str,
     days: int = 30,
     limit: int = 20,
-) -> str:
-    """Main entry point: fetch reviews, extract lessons, format for prompt.
+) -> dict:
+    """Main entry point: fetch reviews, analyze with Claude, persist to learnings.md.
 
-    This is the function called by prompt_builder.py.
+    This is the function called by the agent loop (e.g., from mission_runner
+    or iteration_manager) after a session completes.
 
     Args:
+        instance_dir: Path to the instance directory.
+        project_name: Current project name.
         project_path: Path to the git repo.
         days: Look-back window.
         limit: Max PRs to analyze.
 
     Returns:
-        Formatted markdown string for prompt injection, or empty string.
+        Dict with keys: fetched (int), analyzed (bool), lessons_added (int),
+        skipped_reason (str or None).
     """
-    prs = fetch_pr_reviews(project_path, days=days, limit=limit)
-    if not prs:
-        return ""
+    result = {"fetched": 0, "analyzed": False, "lessons_added": 0, "skipped_reason": None}
 
-    lessons = extract_lessons(prs)
-    return format_lessons_for_prompt(lessons)
+    prs = fetch_pr_reviews(project_path, days=days, limit=limit)
+    result["fetched"] = len(prs)
+    if not prs:
+        result["skipped_reason"] = "no_reviews"
+        return result
+
+    # Check cache — skip if reviews haven't changed
+    review_hash = _compute_review_hash(prs)
+    if _is_cache_fresh(instance_dir, review_hash):
+        result["skipped_reason"] = "cache_fresh"
+        return result
+
+    # Format reviews for analysis
+    review_text = format_reviews_for_analysis(prs)
+    if not review_text:
+        result["skipped_reason"] = "no_review_content"
+        return result
+
+    # Analyze with Claude CLI
+    lessons_text = analyze_reviews_with_cli(review_text, project_path)
+    result["analyzed"] = True
+    if not lessons_text:
+        result["skipped_reason"] = "empty_analysis"
+        _write_cache(instance_dir, review_hash)
+        return result
+
+    # Persist to learnings.md
+    added = _append_lessons_to_learnings(instance_dir, project_name, lessons_text)
+    result["lessons_added"] = added
+
+    # Update cache
+    _write_cache(instance_dir, review_hash)
+    return result
 
 
 def _parse_iso(dt_str: str) -> Optional[datetime]:
