@@ -85,7 +85,8 @@ def fetch_pr_reviews(
     try:
         from app.config import get_branch_prefix
         prefix = get_branch_prefix()
-    except Exception:
+    except Exception as e:
+        print(f"[pr_review_learning] branch prefix lookup failed: {e}", file=sys.stderr)
         prefix = "koan/"
 
     # Fetch merged + closed PRs (both contain review signals)
