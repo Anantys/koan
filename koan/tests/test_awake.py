@@ -711,7 +711,8 @@ class TestHandleChat:
              patch("app.awake.CONVERSATION_HISTORY_FILE", tmp_path / "history.jsonl"), \
              patch("app.awake.SOUL", ""), \
              patch("app.awake.SUMMARY", ""), \
-             patch("app.awake.CHAT_TIMEOUT", 180):
+             patch("app.awake.CHAT_TIMEOUT", 180), \
+             patch("app.awake.time.sleep"):
             handle_chat("complex question")
         mock_send.assert_called_once()
         assert "Timeout" in mock_send.call_args[0][0]
@@ -1743,7 +1744,8 @@ class TestChatLiteRetryErrors:
              patch("app.awake.CONVERSATION_HISTORY_FILE", tmp_path / "history.jsonl"), \
              patch("app.awake.SOUL", ""), \
              patch("app.awake.SUMMARY", ""), \
-             patch("app.awake.CHAT_TIMEOUT", 180):
+             patch("app.awake.CHAT_TIMEOUT", 180), \
+             patch("app.awake.time.sleep"):
             handle_chat("complex question")
         assert "went wrong" in mock_send.call_args[0][0].lower()
 
@@ -1767,9 +1769,62 @@ class TestChatLiteRetryErrors:
              patch("app.awake.CONVERSATION_HISTORY_FILE", tmp_path / "history.jsonl"), \
              patch("app.awake.SOUL", ""), \
              patch("app.awake.SUMMARY", ""), \
-             patch("app.awake.CHAT_TIMEOUT", 180):
+             patch("app.awake.CHAT_TIMEOUT", 180), \
+             patch("app.awake.time.sleep"):
             handle_chat("complex question")
         assert "timeout" in mock_send.call_args[0][0].lower()
+
+    @patch("app.awake.save_conversation_message")
+    @patch("app.awake.load_recent_history", return_value=[])
+    @patch("app.awake.format_conversation_history", return_value="")
+    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.awake.get_chat_tools", return_value="")
+    @patch("app.awake.send_telegram")
+    @patch("app.awake.subprocess.run")
+    def test_lite_retry_backoff_delay(self, mock_run, mock_send, mock_tools,
+                                      mock_tools_desc, mock_fmt, mock_hist, mock_save, tmp_path):
+        """Lite retry should sleep before retrying to let API pressure ease."""
+        mock_run.side_effect = [
+            subprocess.TimeoutExpired("claude", 180),
+            MagicMock(stdout="OK reply", returncode=0),
+        ]
+        with patch("app.awake.INSTANCE_DIR", tmp_path), \
+             patch("app.awake.KOAN_ROOT", tmp_path), \
+             patch("app.awake.PROJECT_PATH", ""), \
+             patch("app.awake.CONVERSATION_HISTORY_FILE", tmp_path / "history.jsonl"), \
+             patch("app.awake.SOUL", ""), \
+             patch("app.awake.SUMMARY", ""), \
+             patch("app.awake.CHAT_TIMEOUT", 180), \
+             patch("app.awake.time.sleep") as mock_sleep:
+            handle_chat("complex question")
+        mock_sleep.assert_called_once_with(4)
+
+    @patch("app.awake.save_conversation_message")
+    @patch("app.awake.load_recent_history", return_value=[])
+    @patch("app.awake.format_conversation_history", return_value="")
+    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.awake.get_chat_tools", return_value="")
+    @patch("app.awake.send_telegram")
+    @patch("app.awake.subprocess.run")
+    def test_lite_retry_uses_shorter_timeout(self, mock_run, mock_send, mock_tools,
+                                              mock_tools_desc, mock_fmt, mock_hist, mock_save, tmp_path):
+        """Lite retry should use CHAT_TIMEOUT//2 to avoid doubling user wait time."""
+        mock_run.side_effect = [
+            subprocess.TimeoutExpired("claude", 180),
+            MagicMock(stdout="OK reply", returncode=0),
+        ]
+        with patch("app.awake.INSTANCE_DIR", tmp_path), \
+             patch("app.awake.KOAN_ROOT", tmp_path), \
+             patch("app.awake.PROJECT_PATH", ""), \
+             patch("app.awake.CONVERSATION_HISTORY_FILE", tmp_path / "history.jsonl"), \
+             patch("app.awake.SOUL", ""), \
+             patch("app.awake.SUMMARY", ""), \
+             patch("app.awake.CHAT_TIMEOUT", 180), \
+             patch("app.awake.time.sleep"):
+            handle_chat("complex question")
+        # Second call (lite retry) should use timeout=90 (180//2)
+        retry_call = mock_run.call_args_list[1]
+        assert retry_call.kwargs["timeout"] == 90
 
 
 class TestCleanChatResponse:
