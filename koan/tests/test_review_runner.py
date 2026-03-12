@@ -331,6 +331,7 @@ class TestMainCli:
         mock_run.assert_called_once_with(
             "owner", "repo", "42", "/tmp/project",
             skill_dir=Path(__file__).resolve().parent.parent / "skills" / "core" / "review",
+            architecture=False,
         )
 
     @patch("app.review_runner.run_review")
@@ -360,6 +361,105 @@ class TestMainCli:
 # ---------------------------------------------------------------------------
 # Skill dispatch integration
 # ---------------------------------------------------------------------------
+
+class TestArchitectureFlag:
+    """Tests for the --architecture flag."""
+
+    def test_cli_parses_architecture_flag(self):
+        """CLI parses --architecture flag."""
+        from app.review_runner import main
+
+        with patch("app.review_runner.run_review") as mock_run:
+            mock_run.return_value = (True, "Review posted.")
+            main([
+                "https://github.com/owner/repo/pull/42",
+                "--project-path", "/tmp/project",
+                "--architecture",
+            ])
+
+            call_kwargs = mock_run.call_args
+            assert call_kwargs[1].get("architecture") is True or (
+                len(call_kwargs[0]) >= 6 and call_kwargs[0][5] is True
+            )
+
+    def test_cli_default_no_architecture(self):
+        """CLI defaults to no architecture flag."""
+        from app.review_runner import main
+
+        with patch("app.review_runner.run_review") as mock_run:
+            mock_run.return_value = (True, "Review posted.")
+            main([
+                "https://github.com/owner/repo/pull/42",
+                "--project-path", "/tmp/project",
+            ])
+
+            _, kwargs = mock_run.call_args
+            assert kwargs.get("architecture") is False or "architecture" not in kwargs
+
+    def test_build_prompt_architecture_selects_correct_template(
+        self, pr_context, tmp_path,
+    ):
+        """build_review_prompt with architecture=True loads review-architecture template."""
+        prompts_dir = tmp_path / "prompts"
+        prompts_dir.mkdir()
+        (prompts_dir / "review-architecture.md").write_text(
+            "ARCH REVIEW: {TITLE}\nAuthor: {AUTHOR}\nBranch: {BRANCH} -> {BASE}\n"
+            "Body: {BODY}\nDiff: {DIFF}\n"
+            "Reviews: {REVIEWS}\nComments: {REVIEW_COMMENTS}\n"
+            "Issue: {ISSUE_COMMENTS}\n"
+        )
+
+        prompt = build_review_prompt(
+            pr_context, skill_dir=tmp_path, architecture=True,
+        )
+        assert "ARCH REVIEW:" in prompt
+        assert "Fix auth bypass" in prompt
+
+    def test_build_prompt_default_selects_review_template(
+        self, pr_context, review_skill_dir,
+    ):
+        """build_review_prompt without architecture uses standard review template."""
+        prompt = build_review_prompt(
+            pr_context, skill_dir=review_skill_dir, architecture=False,
+        )
+        assert "Review PR:" in prompt
+        assert "{TITLE}" not in prompt
+
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    def test_run_review_passes_architecture_to_prompt(
+        self, mock_fetch, mock_claude, mock_gh, pr_context, tmp_path,
+    ):
+        """run_review with architecture=True uses architecture prompt."""
+        # Set up skill dir with both prompts
+        prompts_dir = tmp_path / "prompts"
+        prompts_dir.mkdir()
+        (prompts_dir / "review.md").write_text(
+            "STANDARD: {TITLE} {AUTHOR} {BRANCH} {BASE} {BODY} {DIFF} "
+            "{REVIEWS} {REVIEW_COMMENTS} {ISSUE_COMMENTS}"
+        )
+        (prompts_dir / "review-architecture.md").write_text(
+            "ARCHITECTURE: {TITLE} {AUTHOR} {BRANCH} {BASE} {BODY} {DIFF} "
+            "{REVIEWS} {REVIEW_COMMENTS} {ISSUE_COMMENTS}"
+        )
+
+        mock_fetch.return_value = pr_context
+        mock_claude.return_value = "## PR Review — Fix auth bypass\n\nGood"
+        mock_notify = MagicMock()
+
+        run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=mock_notify,
+            skill_dir=tmp_path,
+            architecture=True,
+        )
+
+        # Verify the architecture prompt was passed to Claude
+        prompt_arg = mock_claude.call_args[0][0]
+        assert "ARCHITECTURE:" in prompt_arg
+        assert "STANDARD:" not in prompt_arg
+
 
 class TestSkillDispatchIntegration:
     """Verify /review is properly wired in skill_dispatch.py."""
@@ -414,3 +514,46 @@ class TestSkillDispatchIntegration:
         assert result is not None
         assert any("review_runner" in str(p) for p in result)
         assert "/tmp/project" in result
+
+    @patch("app.skill_dispatch.is_known_project", return_value=True)
+    def test_dispatch_passes_architecture_flag(self, mock_known):
+        """dispatch_skill_mission passes --architecture when present."""
+        from app.skill_dispatch import dispatch_skill_mission
+        result = dispatch_skill_mission(
+            mission_text="/review https://github.com/o/r/pull/1 --architecture",
+            project_name="koan",
+            project_path="/tmp/project",
+            koan_root="/tmp/koan",
+            instance_dir="/tmp/instance",
+        )
+        assert result is not None
+        assert "--architecture" in result
+
+    @patch("app.skill_dispatch.is_known_project", return_value=True)
+    def test_dispatch_no_architecture_by_default(self, mock_known):
+        """dispatch_skill_mission does not include --architecture by default."""
+        from app.skill_dispatch import dispatch_skill_mission
+        result = dispatch_skill_mission(
+            mission_text="/review https://github.com/o/r/pull/1",
+            project_name="koan",
+            project_path="/tmp/project",
+            koan_root="/tmp/koan",
+            instance_dir="/tmp/instance",
+        )
+        assert result is not None
+        assert "--architecture" not in result
+
+    @patch("app.skill_dispatch.is_known_project", return_value=True)
+    def test_dispatch_architecture_before_url(self, mock_known):
+        """dispatch_skill_mission handles --architecture before URL."""
+        from app.skill_dispatch import dispatch_skill_mission
+        result = dispatch_skill_mission(
+            mission_text="/review --architecture https://github.com/o/r/pull/1",
+            project_name="koan",
+            project_path="/tmp/project",
+            koan_root="/tmp/koan",
+            instance_dir="/tmp/instance",
+        )
+        assert result is not None
+        assert "--architecture" in result
+        assert any("pull/1" in str(p) for p in result)

@@ -26,10 +26,15 @@ from app.prompts import load_prompt_or_skill
 from app.rebase_pr import fetch_pr_context
 
 
-def build_review_prompt(context: dict, skill_dir: Optional[Path] = None) -> str:
+def build_review_prompt(
+    context: dict,
+    skill_dir: Optional[Path] = None,
+    architecture: bool = False,
+) -> str:
     """Build a prompt for Claude to review a PR."""
+    prompt_name = "review-architecture" if architecture else "review"
     return load_prompt_or_skill(
-        skill_dir, "review",
+        skill_dir, prompt_name,
         TITLE=context["title"],
         AUTHOR=context["author"],
         BRANCH=context["branch"],
@@ -129,6 +134,7 @@ def run_review(
     project_path: str,
     notify_fn=None,
     skill_dir: Optional[Path] = None,
+    architecture: bool = False,
 ) -> Tuple[bool, str]:
     """Execute a read-only code review on a PR.
 
@@ -139,6 +145,7 @@ def run_review(
         project_path: Local path to the project.
         notify_fn: Optional callback for progress notifications.
         skill_dir: Optional path to the review skill directory for prompts.
+        architecture: If True, use architecture-focused review prompt.
 
     Returns:
         (success, summary) tuple.
@@ -160,7 +167,7 @@ def run_review(
         return False, f"PR #{pr_number} has no diff — nothing to review."
 
     # Step 2: Build review prompt
-    prompt = build_review_prompt(context, skill_dir=skill_dir)
+    prompt = build_review_prompt(context, skill_dir=skill_dir, architecture=architecture)
 
     # Step 3: Run Claude review (read-only)
     notify_fn(f"Analyzing code changes on `{context['branch']}`...")
@@ -203,6 +210,10 @@ def main(argv=None):
         "--project-path", required=True,
         help="Local path to the project repository",
     )
+    parser.add_argument(
+        "--architecture", action="store_true",
+        help="Use architecture-focused review (SOLID, layering, coupling)",
+    )
     cli_args = parser.parse_args(argv)
 
     try:
@@ -216,6 +227,7 @@ def main(argv=None):
     success, summary = run_review(
         owner, repo, pr_number, cli_args.project_path,
         skill_dir=skill_dir,
+        architecture=cli_args.architecture,
     )
     print(summary)
     return 0 if success else 1
