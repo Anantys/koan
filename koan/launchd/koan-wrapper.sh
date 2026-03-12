@@ -25,6 +25,10 @@ if [ -S "$KOAN_ROOT/.ssh-agent-sock" ]; then
     export SSH_AUTH_SOCK="$KOAN_ROOT/.ssh-agent-sock"
 fi
 
+# Restore common tool paths not available in launchd's minimal environment
+eval "$(/usr/libexec/path_helper -s 2>/dev/null)" || true
+export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH"
+
 PYTHON="$KOAN_ROOT/.venv/bin/python3"
 if [ ! -x "$PYTHON" ]; then
     echo "Error: Python venv not found at $PYTHON — run 'make setup' first." >&2

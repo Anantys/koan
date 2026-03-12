@@ -15,6 +15,7 @@ from app.pid_manager import (
     _read_pid,
     _read_runner_state,
     _is_process_alive,
+    _bootout_launchd_service,
     _detect_provider,
     _needs_ollama,
     _log_dir,
@@ -613,6 +614,60 @@ class TestStopProcesses:
         assert "run" in PROCESS_NAMES
         assert "awake" in PROCESS_NAMES
         assert "ollama" in PROCESS_NAMES
+
+    def test_bootouts_launchd_before_sigterm(self, tmp_path):
+        """stop_processes calls _bootout_launchd_service for each process."""
+        with patch("app.pid_manager._bootout_launchd_service") as mock_bootout:
+            mock_bootout.return_value = False
+            stop_processes(tmp_path)
+            # Should be called for each process name
+            assert mock_bootout.call_count == len(PROCESS_NAMES)
+            called_names = [c[0][0] for c in mock_bootout.call_args_list]
+            for name in PROCESS_NAMES:
+                assert name in called_names
+
+
+# ---------------------------------------------------------------------------
+# _bootout_launchd_service
+# ---------------------------------------------------------------------------
+
+
+class TestBootoutLaunchdService:
+    def test_returns_false_on_non_darwin(self):
+        """On non-Darwin platforms, returns False immediately."""
+        with patch("app.pid_manager.sys") as mock_sys:
+            mock_sys.platform = "linux"
+            assert _bootout_launchd_service("run") is False
+
+    def test_returns_false_when_service_not_loaded(self):
+        """Returns False when launchctl list fails (service not registered)."""
+        with patch("app.pid_manager.sys") as mock_sys, \
+             patch("app.pid_manager.subprocess.run") as mock_run:
+            mock_sys.platform = "darwin"
+            mock_run.return_value = MagicMock(returncode=113)
+            assert _bootout_launchd_service("run") is False
+            mock_run.assert_called_once()
+
+    def test_bootouts_loaded_service(self):
+        """Successfully boots out a loaded launchd service."""
+        with patch("app.pid_manager.sys") as mock_sys, \
+             patch("app.pid_manager.subprocess.run") as mock_run, \
+             patch("app.pid_manager.os.getuid", return_value=501):
+            mock_sys.platform = "darwin"
+            mock_run.return_value = MagicMock(returncode=0)
+            assert _bootout_launchd_service("awake") is True
+            assert mock_run.call_count == 2
+            # Second call should be bootout
+            bootout_call = mock_run.call_args_list[1]
+            assert "bootout" in bootout_call[0][0]
+            assert "gui/501/com.koan.awake" in bootout_call[0][0]
+
+    def test_handles_subprocess_error(self):
+        """Returns False on subprocess errors (e.g., launchctl not found)."""
+        with patch("app.pid_manager.sys") as mock_sys, \
+             patch("app.pid_manager.subprocess.run", side_effect=OSError("not found")):
+            mock_sys.platform = "darwin"
+            assert _bootout_launchd_service("run") is False
 
 
 # ---------------------------------------------------------------------------

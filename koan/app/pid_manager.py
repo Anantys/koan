@@ -602,11 +602,35 @@ def _wait_for_exit(pid: int, timeout: float) -> bool:
     return not _is_process_alive(pid)
 
 
+def _bootout_launchd_service(name: str) -> bool:
+    """Try to bootout a launchd service. Returns True if service was found and booted out."""
+    if sys.platform != "darwin":
+        return False
+    uid = os.getuid()
+    service_label = f"com.koan.{name}"
+    try:
+        result = subprocess.run(
+            ["launchctl", "list", service_label],
+            capture_output=True, timeout=5,
+        )
+        if result.returncode != 0:
+            return False
+        subprocess.run(
+            ["launchctl", "bootout", f"gui/{uid}/{service_label}"],
+            capture_output=True, timeout=10,
+        )
+        return True
+    except (subprocess.SubprocessError, OSError):
+        return False
+
+
 def stop_processes(koan_root: Path, timeout: float = 5.0) -> dict:
     """Stop all running Kōan processes (run + awake + ollama).
 
-    Sends SIGTERM to each running process, waits up to timeout seconds
-    for termination. Creates .koan-stop signal file for graceful shutdown.
+    Detects and boots out launchd services first (prevents respawn),
+    then sends SIGTERM to each running process, waits up to timeout
+    seconds for termination. Creates .koan-stop signal file for
+    graceful shutdown.
 
     Returns dict mapping process name to result: "stopped", "not_running",
     or "force_killed".
@@ -616,6 +640,10 @@ def stop_processes(koan_root: Path, timeout: float = 5.0) -> dict:
     # Create .koan-stop signal file for graceful run loop shutdown
     stop_file = koan_root / STOP_FILE
     stop_file.write_text("STOP")
+
+    # Bootout any launchd-managed services first to prevent respawn
+    for name in PROCESS_NAMES:
+        _bootout_launchd_service(name)
 
     for name in PROCESS_NAMES:
         pid = check_pidfile(koan_root, name)

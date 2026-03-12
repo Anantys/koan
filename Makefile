@@ -114,6 +114,11 @@ start: setup
 	@cd koan && KOAN_ROOT=$(PWD) PYTHONPATH=. ../$(PYTHON) -m app.pid_manager start-all $(PWD)
 
 stop: setup
+	@if [ "$$(uname -s)" = "Darwin" ] && launchctl list com.koan.run >/dev/null 2>&1; then \
+		echo "⚠ Launchd services detected — running bootout..."; \
+		launchctl bootout "gui/$$(id -u)/com.koan.run" 2>/dev/null || true; \
+		launchctl bootout "gui/$$(id -u)/com.koan.awake" 2>/dev/null || true; \
+	fi
 	@cd koan && KOAN_ROOT=$(PWD) PYTHONPATH=. ../$(PYTHON) -m app.pid_manager stop-all $(PWD)
 
 status: setup
