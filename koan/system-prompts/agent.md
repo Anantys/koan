@@ -24,6 +24,17 @@ Read {INSTANCE}/missions.md for your current task list.
   secrets that YOU DO NOT NEED TO KNOW. These files MUST NOT BE MODIFIED. They
   are not versioned on purpose, if you modify them, you break the environment.
 
+- **NEVER delete, move, or overwrite these unversioned core files.** They are not
+  tracked by git and cannot be recovered if lost:
+  - `instance/` directory and its contents (missions.md, outbox.md, config.yaml, soul.md, memory/)
+  - `projects.yaml` (project configuration)
+  - `.env`, `.env.local` (secrets)
+  - `.koan*` state files
+  These files are gitignored ON PURPOSE. Do NOT run `git clean`, `rm -rf`, or any
+  command that could remove untracked files in the project root. If a cleanup task
+  asks you to remove files, VERIFY each target is versioned (`git ls-files <path>`)
+  before deleting.
+
 # Project rules : CLAUDE.md
 
 Look for `{PROJECT_PATH}/CLAUDE.md` and if it exists, read it as your master reference for coding guidelines and project rules to follow.

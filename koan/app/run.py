@@ -914,6 +914,10 @@ def _handle_skill_dispatch(
             log("error", f"Failed to create pending.md for skill dispatch: {e}")
 
         exit_code = 1
+        # Snapshot core files before skill execution
+        from app.core_files import snapshot_core_files, check_core_files, log_integrity_warnings
+        skill_core_snapshot = snapshot_core_files(koan_root, project_path)
+
         try:
             with protected_phase(f"Skill: {mission_title[:50]}"):
                 exit_code = _run_skill_mission(
@@ -928,6 +932,12 @@ def _handle_skill_dispatch(
                 )
             if exit_code == 0:
                 log("mission", f"Run {run_num}/{max_runs} — [{project_name}] skill completed")
+
+            # Verify core files survived skill execution
+            skill_integrity = check_core_files(koan_root, skill_core_snapshot, project_path)
+            if skill_integrity:
+                log_integrity_warnings(skill_integrity)
+                log("error", f"Core file integrity check failed after skill: {len(skill_integrity)} file(s) missing")
         except KeyboardInterrupt:
             log("error", "Skill dispatch interrupted by user")
             _finalize_mission(instance, mission_title, project_name, 1)
@@ -1393,11 +1403,21 @@ def _run_iteration(
         # Capture git HEAD before execution for retry safety check
         pre_head = _get_git_head(project_path)
 
+        # Snapshot core files before execution for integrity check
+        from app.core_files import snapshot_core_files, check_core_files, log_integrity_warnings
+        core_snapshot = snapshot_core_files(koan_root, project_path)
+
         claude_exit = run_claude_task(
             cmd, stdout_file, stderr_file, cwd=project_path,
             instance_dir=instance, project_name=project_name, run_num=run_num,
         )
         _debug_log(f"[run] cli: exit_code={claude_exit}")
+
+        # Verify core files survived the mission
+        integrity_warnings = check_core_files(koan_root, core_snapshot, project_path)
+        if integrity_warnings:
+            log_integrity_warnings(integrity_warnings)
+            log("error", f"Core file integrity check failed: {len(integrity_warnings)} file(s) missing")
 
         # --- Mission retry on transient CLI errors ---
         # One retry for missions, zero for autonomous (they're lower-priority).
