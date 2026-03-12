@@ -674,10 +674,9 @@ def run_quality_pipeline(
     # Phase 5: Quality gate evaluation
     result["gate_blocked"] = should_block_auto_merge(result, gate_mode)
 
-    if gate_mode == "warn" and not result.get("scan", {}).get("clean", True):
-        try:
-            result["gate_comment"] = post_quality_comment(project_path, result)
-        except Exception as e:
-            print(f"[pr_quality] Quality comment failed: {e}", file=sys.stderr)
+    # Quality gate comments are posted by the caller (check_auto_merge)
+    # only when auto-merge is configured for the project.  This avoids
+    # noise on external repos where the gate has no enforcement role.
+    # The quality report is still embedded in the PR description (Phase 4).
 
     return result

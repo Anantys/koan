@@ -902,27 +902,49 @@ class TestCheckAutoMergeWithQuality:
     @patch("app.pr_quality.post_quality_comment")
     @patch("app.pr_quality.should_block_auto_merge", return_value=True)
     @patch("app.mission_runner._get_quality_gate_mode", return_value="strict")
+    @patch("app.projects_config.get_project_auto_merge", return_value={"enabled": True})
+    @patch("app.projects_config.load_projects_config", return_value={"projects": {}})
     @patch("app.config.get_branch_prefix", return_value="koan/")
     @patch("app.git_sync.run_git", return_value="koan/feature")
-    def test_blocks_merge_on_strict_gate(self, mock_git, mock_prefix, mock_gate, mock_block, mock_comment, mock_merge):
+    def test_blocks_merge_on_strict_gate(self, mock_git, mock_prefix, mock_load, mock_am, mock_gate, mock_block, mock_comment, mock_merge):
         from app.mission_runner import check_auto_merge
 
         quality_report = {"scan": {"clean": False, "issues": [{"type": "secret"}]}}
         result = check_auto_merge("/tmp/instance", "test", "/tmp/project", quality_report=quality_report)
         assert result is None
         mock_merge.assert_not_called()
+        mock_comment.assert_called_once()
 
     @patch("app.git_auto_merge.auto_merge_branch")
     @patch("app.pr_quality.post_quality_comment")
     @patch("app.pr_quality.should_block_auto_merge", return_value=False)
     @patch("app.mission_runner._get_quality_gate_mode", return_value="warn")
+    @patch("app.projects_config.get_project_auto_merge", return_value={"enabled": True})
+    @patch("app.projects_config.load_projects_config", return_value={"projects": {}})
     @patch("app.config.get_branch_prefix", return_value="koan/")
     @patch("app.git_sync.run_git", return_value="koan/feature")
-    def test_merges_with_comment_on_warn(self, mock_git, mock_prefix, mock_gate, mock_block, mock_comment, mock_merge):
+    def test_merges_without_comment_on_warn(self, mock_git, mock_prefix, mock_load, mock_am, mock_gate, mock_block, mock_comment, mock_merge):
+        """In warn mode, quality info is in the PR description — no separate comment."""
         from app.mission_runner import check_auto_merge
 
         quality_report = {"scan": {"clean": False, "issues": [{"type": "debug"}]}}
         result = check_auto_merge("/tmp/instance", "test", "/tmp/project", quality_report=quality_report)
         assert result == "koan/feature"
         mock_merge.assert_called_once()
-        mock_comment.assert_called_once()
+        mock_comment.assert_not_called()
+
+    @patch("app.git_auto_merge.auto_merge_branch")
+    @patch("app.pr_quality.post_quality_comment")
+    @patch("app.projects_config.get_project_auto_merge", return_value={"enabled": False})
+    @patch("app.projects_config.load_projects_config", return_value={"projects": {}})
+    @patch("app.config.get_branch_prefix", return_value="koan/")
+    @patch("app.git_sync.run_git", return_value="koan/feature")
+    def test_skips_quality_gate_when_auto_merge_disabled(self, mock_git, mock_prefix, mock_load, mock_am, mock_comment, mock_merge):
+        """No quality gate comments when auto-merge is not configured."""
+        from app.mission_runner import check_auto_merge
+
+        quality_report = {"scan": {"clean": False, "issues": [{"type": "secret"}]}}
+        result = check_auto_merge("/tmp/instance", "test", "/tmp/project", quality_report=quality_report)
+        assert result == "koan/feature"
+        mock_merge.assert_called_once()
+        mock_comment.assert_not_called()

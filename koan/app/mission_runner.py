@@ -456,8 +456,18 @@ def check_auto_merge(
             print("[mission_runner] Auto-merge blocked by verification failure")
             return None
 
-        # Quality gate check
-        if quality_report:
+        # Check if auto-merge is configured for this project
+        from app.git_auto_merge import auto_merge_branch
+        from app.projects_config import load_projects_config, get_project_auto_merge
+
+        koan_root = os.environ.get("KOAN_ROOT", str(Path(instance_dir).parent))
+        projects_config = load_projects_config(koan_root)
+        auto_merge_cfg = get_project_auto_merge(projects_config, project_name) if projects_config else {}
+        auto_merge_enabled = auto_merge_cfg.get("enabled", False)
+
+        # Quality gate check — only post comments when auto-merge is configured.
+        # Without auto-merge, quality info is already in the PR description.
+        if quality_report and auto_merge_enabled:
             from app.pr_quality import should_block_auto_merge, post_quality_comment
             gate_mode = _get_quality_gate_mode(instance_dir, project_name)
             if should_block_auto_merge(quality_report, gate_mode):
@@ -467,14 +477,6 @@ def check_auto_merge(
                 except Exception as e:
                     print(f"[mission_runner] Quality comment failed: {e}", file=sys.stderr)
                 return None
-            # In warn mode, post comment but still merge
-            if gate_mode == "warn":
-                try:
-                    post_quality_comment(project_path, quality_report)
-                except Exception as e:
-                    print(f"[mission_runner] Quality comment failed: {e}", file=sys.stderr)
-
-        from app.git_auto_merge import auto_merge_branch
 
         auto_merge_branch(instance_dir, project_name, project_path, branch)
         return branch
