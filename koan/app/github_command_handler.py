@@ -26,6 +26,7 @@ from typing import List, Optional, Tuple
 from app.bounded_set import BoundedSet
 from app.github_config import (
     get_github_authorized_users,
+    get_github_natural_language,
     get_github_nickname,
     get_github_reply_enabled,
     get_github_subscribe_enabled,
@@ -496,6 +497,85 @@ def _validate_and_parse_command(
     return skill, command_name, context
 
 
+def _try_nlp_classification(
+    comment: dict,
+    config: dict,
+    projects_config: Optional[dict],
+    registry: SkillRegistry,
+    bot_username: str,
+    project_name: str,
+    owner: str,
+    repo: str,
+) -> Optional[Tuple[object, str, str]]:
+    """Attempt NLP intent classification for an unrecognized command.
+
+    Only runs when natural_language is enabled in config. Calls Claude
+    to classify the comment text into a known github-enabled command.
+
+    Args:
+        comment: Comment dict.
+        config: Global config.
+        projects_config: Projects config.
+        registry: Skills registry.
+        bot_username: Bot's GitHub username.
+        project_name: Resolved project name.
+        owner: Repository owner.
+        repo: Repository name.
+
+    Returns:
+        Tuple of (skill, command_name, context) if classification succeeded,
+        or None if NLP is disabled, failed, or returned no match.
+    """
+    if not get_github_natural_language(config, project_name, projects_config):
+        return None
+
+    # Resolve project path for Claude CLI
+    from app.utils import resolve_project_path
+    project_path = resolve_project_path(repo, owner=owner)
+    if not project_path:
+        log.debug("GitHub NLP: could not resolve project path for %s/%s", owner, repo)
+        return None
+
+    # Get available commands for the classifier
+    commands = get_github_enabled_commands_with_descriptions(registry)
+    if not commands:
+        return None
+
+    # Extract the full comment text (after @mention, code blocks stripped)
+    nickname = get_github_nickname(config)
+    from app.github_reply import extract_mention_text
+    message = extract_mention_text(comment.get("body", ""), nickname)
+    if not message:
+        return None
+
+    from app.github_intent import classify_intent
+
+    log.debug("GitHub NLP: classifying intent for: %s", message[:100])
+    result = classify_intent(message, commands, project_path)
+
+    if not result or not result.get("command"):
+        log.debug("GitHub NLP: no command classified")
+        return None
+
+    classified_command = result["command"]
+    classified_context = result.get("context", "")
+
+    # Validate the classified command is actually github_enabled
+    skill = validate_command(classified_command, registry)
+    if not skill:
+        log.debug(
+            "GitHub NLP: classified command '%s' is not github-enabled",
+            classified_command,
+        )
+        return None
+
+    log.info(
+        "GitHub NLP: classified '%s' as /%s for %s/%s",
+        message[:80], classified_command, owner, repo,
+    )
+    return skill, classified_command, classified_context
+
+
 def _try_reply(
     notification: dict,
     comment: dict,
@@ -670,6 +750,19 @@ def process_single_notification(
 
     # If skill is None but we have a command_name, it's an invalid command
     if skill is None:
+        # Try NLP intent classification if natural_language is enabled
+        nlp_result = _try_nlp_classification(
+            comment, config, projects_config, registry,
+            bot_username, project_name, owner, repo,
+        )
+        if nlp_result:
+            nlp_skill, nlp_command, nlp_context = nlp_result
+            skill = nlp_skill
+            command_name = nlp_command
+            context = nlp_context
+
+    # If still no skill after NLP, fall through to reply/error
+    if skill is None and command_name is not None and command_name != "help":
         # Try AI reply before falling back to error message
         full_question = f"{command_name} {context}".strip()
         if _try_reply(
@@ -678,7 +771,18 @@ def process_single_notification(
         ):
             return False, None  # Reply posted instead of error
         mark_notification_read(str(notification.get("id", "")))
-        help_msg = format_help_message(command_name, registry, bot_username)
+        # When natural_language is enabled, use a friendly clarification
+        # instead of the rigid "Unknown command `X`" error
+        nlp_enabled = get_github_natural_language(
+            config, project_name, projects_config,
+        )
+        if nlp_enabled:
+            help_msg = (
+                "I wasn't sure what you'd like me to do. "
+                + format_help_list_message(registry, bot_username)
+            )
+        else:
+            help_msg = format_help_message(command_name, registry, bot_username)
         return False, help_msg
 
     # Check permissions

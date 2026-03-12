@@ -14,6 +14,7 @@ from app.github_command_handler import (
     _notify_github_question,
     _notify_github_reply,
     _post_help_reply,
+    _try_nlp_classification,
     _try_reply,
     _validate_and_parse_command,
     build_mission_from_command,
@@ -2334,3 +2335,219 @@ class TestProcessNotificationPlanCommand:
         assert success is True
         mission = mock_insert.call_args[0][1]
         assert "focus on auth module" in mission
+
+
+# ---------------------------------------------------------------------------
+# NLP intent classification tests
+# ---------------------------------------------------------------------------
+
+
+class TestTryNlpClassification:
+    """Unit tests for _try_nlp_classification."""
+
+    def test_disabled_by_default(self, registry):
+        comment = {"body": "@bot fix this bug", "user": {"login": "alice"}}
+        config = {"github": {"nickname": "bot"}}
+        result = _try_nlp_classification(
+            comment, config, None, registry, "bot", "myproject", "owner", "repo",
+        )
+        assert result is None
+
+    @patch("app.github_intent.classify_intent")
+    @patch("app.github_reply.extract_mention_text", return_value="fix this bug")
+    @patch("app.utils.resolve_project_path", return_value="/tmp/myproject")
+    def test_successful_classification(
+        self, mock_resolve, mock_extract, mock_classify, registry,
+    ):
+        mock_classify.return_value = {"command": "implement", "context": "the auth bug"}
+        comment = {"body": "@bot fix this bug", "user": {"login": "alice"}}
+        config = {"github": {"nickname": "bot", "natural_language": True}}
+
+        result = _try_nlp_classification(
+            comment, config, None, registry, "bot", "myproject", "owner", "repo",
+        )
+        assert result is not None
+        skill, cmd, ctx = result
+        assert skill.name == "implement"
+        assert cmd == "implement"
+        assert ctx == "the auth bug"
+
+    @patch("app.github_intent.classify_intent")
+    @patch("app.github_reply.extract_mention_text", return_value="do something")
+    @patch("app.utils.resolve_project_path", return_value="/tmp/myproject")
+    def test_no_match_returns_none(
+        self, mock_resolve, mock_extract, mock_classify, registry,
+    ):
+        mock_classify.return_value = {"command": None, "context": ""}
+        comment = {"body": "@bot do something", "user": {"login": "alice"}}
+        config = {"github": {"nickname": "bot", "natural_language": True}}
+
+        result = _try_nlp_classification(
+            comment, config, None, registry, "bot", "myproject", "owner", "repo",
+        )
+        assert result is None
+
+    @patch("app.github_intent.classify_intent", return_value=None)
+    @patch("app.github_reply.extract_mention_text", return_value="test")
+    @patch("app.utils.resolve_project_path", return_value="/tmp/myproject")
+    def test_cli_failure_returns_none(
+        self, mock_resolve, mock_extract, mock_classify, registry,
+    ):
+        comment = {"body": "@bot test", "user": {"login": "alice"}}
+        config = {"github": {"nickname": "bot", "natural_language": True}}
+
+        result = _try_nlp_classification(
+            comment, config, None, registry, "bot", "myproject", "owner", "repo",
+        )
+        assert result is None
+
+    @patch("app.github_intent.classify_intent")
+    @patch("app.github_reply.extract_mention_text", return_value="do status check")
+    @patch("app.utils.resolve_project_path", return_value="/tmp/myproject")
+    def test_classified_non_github_command_returns_none(
+        self, mock_resolve, mock_extract, mock_classify,
+    ):
+        """If NLP classifies to a command that isn't github_enabled, return None."""
+        mock_classify.return_value = {"command": "status", "context": ""}
+        # Registry with only a non-github-enabled skill
+        skill = Skill(
+            name="status", scope="core", github_enabled=False,
+            commands=[SkillCommand(name="status")],
+        )
+        reg = SkillRegistry()
+        reg._register(skill)
+
+        comment = {"body": "@bot do status check", "user": {"login": "alice"}}
+        config = {"github": {"nickname": "bot", "natural_language": True}}
+
+        result = _try_nlp_classification(
+            comment, config, None, reg, "bot", "myproject", "owner", "repo",
+        )
+        assert result is None
+
+    def test_per_project_override_disables(self, registry):
+        """Per-project natural_language=false overrides global true."""
+        comment = {"body": "@bot fix this", "user": {"login": "alice"}}
+        config = {"github": {"nickname": "bot", "natural_language": True}}
+        projects_config = {
+            "projects": {
+                "myproject": {
+                    "path": "/tmp/myproject",
+                    "github": {"natural_language": False},
+                }
+            }
+        }
+
+        result = _try_nlp_classification(
+            comment, config, projects_config, registry, "bot",
+            "myproject", "owner", "repo",
+        )
+        assert result is None
+
+
+class TestProcessNotificationWithNLP:
+    """Integration tests for NLP fallback in process_single_notification."""
+
+    @patch("app.github_command_handler.mark_notification_read")
+    @patch("app.github_command_handler.add_reaction", return_value=True)
+    @patch("app.github_command_handler.check_user_permission", return_value=True)
+    @patch("app.github_command_handler.check_already_processed", return_value=False)
+    @patch("app.github_command_handler.is_self_mention", return_value=False)
+    @patch("app.github_command_handler.is_notification_stale", return_value=False)
+    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler.resolve_project_from_notification")
+    @patch("app.utils.insert_pending_mission")
+    @patch("app.github_command_handler._try_nlp_classification")
+    def test_nlp_fallback_creates_mission(
+        self, mock_nlp, mock_insert, mock_resolve, mock_get_comment,
+        mock_stale, mock_self, mock_processed, mock_perm,
+        mock_react, mock_read, registry, sample_notification, tmp_path,
+    ):
+        """NLP classification succeeds → mission is created."""
+        mock_resolve.return_value = ("koan", "sukria", "koan")
+        mock_get_comment.return_value = {
+            "id": 99999,
+            "body": "@testbot this is a bug for you, fix it",
+            "user": {"login": "alice"},
+            "url": "https://api.github.com/repos/sukria/koan/issues/comments/99999",
+        }
+
+        # Rigid parse will produce command_name="this" which is invalid
+        # NLP fallback should kick in
+        impl_skill = registry.find_by_command("implement")
+        mock_nlp.return_value = (impl_skill, "implement", "fix the login bug")
+
+        config = {"github": {"nickname": "testbot", "authorized_users": ["*"]}}
+
+        with patch.dict("os.environ", {"KOAN_ROOT": str(tmp_path)}):
+            success, error = process_single_notification(
+                sample_notification, registry, config, None, "testbot",
+            )
+
+        assert success is True
+        assert error is None
+        mock_insert.assert_called_once()
+        mission = mock_insert.call_args[0][1]
+        assert "/implement" in mission
+
+    @patch("app.github_command_handler.mark_notification_read")
+    @patch("app.github_command_handler.check_already_processed", return_value=False)
+    @patch("app.github_command_handler.is_self_mention", return_value=False)
+    @patch("app.github_command_handler.is_notification_stale", return_value=False)
+    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler.resolve_project_from_notification")
+    @patch("app.github_command_handler._try_nlp_classification", return_value=None)
+    def test_nlp_fails_falls_through_to_error(
+        self, mock_nlp, mock_resolve, mock_get_comment,
+        mock_stale, mock_self, mock_processed, mock_read,
+        registry, sample_notification,
+    ):
+        """NLP returns None → existing error path with help message."""
+        mock_resolve.return_value = ("koan", "sukria", "koan")
+        mock_get_comment.return_value = {
+            "id": 99999,
+            "body": "@testbot blahblah",
+            "user": {"login": "alice"},
+            "url": "https://api.github.com/repos/sukria/koan/issues/comments/99999",
+        }
+        config = {"github": {"nickname": "testbot"}}
+
+        success, error = process_single_notification(
+            sample_notification, registry, config, None, "testbot",
+        )
+
+        assert success is False
+        assert "`blahblah`" in error  # "Unknown command `blahblah`"
+
+    @patch("app.github_command_handler.mark_notification_read")
+    @patch("app.github_command_handler.add_reaction", return_value=True)
+    @patch("app.github_command_handler.check_user_permission", return_value=True)
+    @patch("app.github_command_handler.check_already_processed", return_value=False)
+    @patch("app.github_command_handler.is_self_mention", return_value=False)
+    @patch("app.github_command_handler.is_notification_stale", return_value=False)
+    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler.resolve_project_from_notification")
+    @patch("app.utils.insert_pending_mission")
+    @patch("app.github_command_handler._try_nlp_classification")
+    def test_rigid_parse_takes_priority(
+        self, mock_nlp, mock_insert, mock_resolve, mock_get_comment,
+        mock_stale, mock_self, mock_processed, mock_perm,
+        mock_react, mock_read, registry, sample_notification, tmp_path,
+    ):
+        """Rigid parse succeeds → NLP is NOT called."""
+        mock_resolve.return_value = ("koan", "sukria", "koan")
+        mock_get_comment.return_value = {
+            "id": 99999,
+            "body": "@testbot rebase",
+            "user": {"login": "alice"},
+            "url": "https://api.github.com/repos/sukria/koan/issues/comments/99999",
+        }
+        config = {"github": {"nickname": "testbot", "authorized_users": ["*"]}}
+
+        with patch.dict("os.environ", {"KOAN_ROOT": str(tmp_path)}):
+            success, error = process_single_notification(
+                sample_notification, registry, config, None, "testbot",
+            )
+
+        assert success is True
+        mock_nlp.assert_not_called()  # NLP should not be invoked
