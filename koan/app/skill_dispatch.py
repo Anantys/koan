@@ -198,7 +198,7 @@ def build_skill_command(
         "fix": lambda: _build_implement_cmd(base_cmd, args, project_path),
         "rebase": lambda: _build_pr_url_cmd(base_cmd, args, project_path),
         "recreate": lambda: _build_pr_url_cmd(base_cmd, args, project_path),
-        "review": lambda: _build_pr_url_cmd(base_cmd, args, project_path),
+        "review": lambda: _build_review_cmd(base_cmd, args, project_path),
         "ai": lambda: _build_ai_cmd(base_cmd, project_name, project_path, instance_dir),
         "check": lambda: _build_check_cmd(base_cmd, args, instance_dir, koan_root),
         "tech-debt": lambda: _build_tech_debt_cmd(
@@ -286,6 +286,19 @@ def _build_pr_url_cmd(
     if not url_match:
         return None
     return base_cmd + [url_match.group(0), "--project-path", project_path]
+
+
+def _build_review_cmd(
+    base_cmd: List[str], args: str, project_path: str,
+) -> Optional[List[str]]:
+    """Build review_runner command, passing --architecture if present."""
+    url_match = _PR_URL_RE.search(args)
+    if not url_match:
+        return None
+    cmd = base_cmd + [url_match.group(0), "--project-path", project_path]
+    if "--architecture" in args:
+        cmd.append("--architecture")
+    return cmd
 
 
 def _build_ai_cmd(

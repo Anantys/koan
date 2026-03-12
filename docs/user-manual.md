@@ -292,15 +292,18 @@ These features turn Kōan from a task runner into a full development workflow pa
 
 **`/review`** — Queue a code review for a pull request or issue.
 
-- **Usage:** `/review <github-pr-or-issue-url>`
+- **Usage:** `/review <github-pr-or-issue-url> [--architecture]`
 - **Aliases:** `/rv`
 - **GitHub @mention:** `@koan-bot /review` on a PR
+- **Flags:**
+  - `--architecture` — Architecture-focused review (SOLID principles, layering, coupling, abstraction boundaries)
 
 <details>
 <summary>Use cases</summary>
 
 - `/review https://github.com/org/repo/pull/55` — Get a thorough code review
 - `/rv https://github.com/org/repo/pull/55` — Same thing, shorter
+- `/review https://github.com/org/repo/pull/55 --architecture` — Architecture-focused review
 </details>
 
 **`/refactor`** — Queue a targeted refactoring mission.
@@ -907,7 +910,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/plan <desc>` | — | I | Create a structured implementation plan |
 | `/implement <issue>` | `/impl` | I | Implement a GitHub issue |
 | `/fix <issue>` | — | I | Full bug-fix pipeline (understand → plan → test → fix → PR) |
-| `/review <PR>` | `/rv` | I | Review a pull request |
+| `/review <PR> [--architecture]` | `/rv` | I | Review a pull request |
 | `/refactor <desc>` | `/rf` | I | Targeted refactoring mission |
 | `/rebase <PR>` | `/rb` | I | Rebase a PR onto its base branch |
 | `/recreate <PR>` | `/rc` | I | Re-implement a PR from scratch |
