@@ -71,6 +71,21 @@ from app.utils import (
 )
 
 
+def _get_last_message_id() -> int:
+    """Get the message_id from the last send_telegram() call.
+
+    Returns 0 if the provider doesn't support message ID tracking
+    or if no message was sent.
+    """
+    try:
+        from app.messaging import get_messaging_provider
+        provider = get_messaging_provider()
+        ids = provider.get_last_message_ids()
+        return ids[-1] if ids else 0
+    except (SystemExit, Exception):
+        return 0
+
+
 def check_config():
     if not BOT_TOKEN or not CHAT_ID:
         log("error", "Set KOAN_TELEGRAM_TOKEN and KOAN_TELEGRAM_CHAT_ID env vars.")
@@ -323,8 +338,11 @@ def handle_chat(text: str):
             response = _clean_chat_response(result.stdout.strip())
             if response:
                 send_telegram(response)
-                # Save assistant response to history
-                save_conversation_message(CONVERSATION_HISTORY_FILE, "assistant", response)
+                msg_id = _get_last_message_id()
+                save_conversation_message(
+                    CONVERSATION_HISTORY_FILE, "assistant", response,
+                    message_id=msg_id, message_type="chat",
+                )
                 log("chat", f"Chat reply: {response[:80]}...")
             elif result.returncode != 0:
                 log("error", f"Claude error: {result.stderr[:200]}")
@@ -353,7 +371,11 @@ def handle_chat(text: str):
                 response = _clean_chat_response(result.stdout.strip())
                 if response:
                     send_telegram(response)
-                    save_conversation_message(CONVERSATION_HISTORY_FILE, "assistant", response)
+                    msg_id = _get_last_message_id()
+                    save_conversation_message(
+                        CONVERSATION_HISTORY_FILE, "assistant", response,
+                        message_id=msg_id, message_type="chat",
+                    )
                     log("chat", f"Chat reply (lite retry): {response[:80]}...")
                 else:
                     if result.stderr:
@@ -470,6 +492,11 @@ def flush_outbox():
     formatted = _format_outbox_message(content)
     formatted = _expand_outbox_github_refs(formatted, content)
     if send_telegram(formatted):
+        msg_id = _get_last_message_id()
+        save_conversation_message(
+            CONVERSATION_HISTORY_FILE, "assistant", formatted,
+            message_id=msg_id, message_type="notification",
+        )
         preview = formatted[:150].replace("\n", " ")
         if len(formatted) > 150:
             preview += "..."
@@ -596,6 +623,67 @@ set_callbacks(handle_chat=handle_chat, run_in_worker=_run_in_worker)
 # Main loop
 # ---------------------------------------------------------------------------
 
+REACTIONS_FILE = INSTANCE_DIR / "reactions.jsonl"
+
+
+def _handle_reaction_update(update: dict):
+    """Process a message_reaction update from Telegram.
+
+    Looks up the reacted-to message in conversation history to enrich
+    the reaction with context, then stores it in reactions.jsonl.
+    """
+    from app.reaction_store import save_reaction, lookup_message_context
+
+    reaction_data = update.get("message_reaction", {})
+    chat_id = str(reaction_data.get("chat", {}).get("id", ""))
+    if chat_id != CHAT_ID:
+        return
+
+    message_id = reaction_data.get("message_id", 0)
+    if not message_id:
+        return
+
+    new_emojis = {
+        e.get("emoji", "")
+        for e in reaction_data.get("new_reaction", [])
+        if e.get("type") == "emoji"
+    }
+    old_emojis = {
+        e.get("emoji", "")
+        for e in reaction_data.get("old_reaction", [])
+        if e.get("type") == "emoji"
+    }
+
+    added = new_emojis - old_emojis
+    removed = old_emojis - new_emojis
+
+    # Look up original message context
+    context = lookup_message_context(CONVERSATION_HISTORY_FILE, message_id)
+    text_preview = ""
+    msg_type = ""
+    if context:
+        text_preview = context.get("text", "")[:100]
+        msg_type = context.get("message_type", "")
+
+    for emoji in added:
+        save_reaction(
+            REACTIONS_FILE, message_id, emoji,
+            is_added=True,
+            original_text_preview=text_preview,
+            message_type=msg_type,
+        )
+        log("reaction", f"Reaction {emoji} added on message {message_id}")
+
+    for emoji in removed:
+        save_reaction(
+            REACTIONS_FILE, message_id, emoji,
+            is_added=False,
+            original_text_preview=text_preview,
+            message_type=msg_type,
+        )
+        log("reaction", f"Reaction {emoji} removed from message {message_id}")
+
+
 def handle_message(text: str):
     text = text.strip()
     if not text:
@@ -698,6 +786,15 @@ def main():
 
             for update in updates:
                 offset = update["update_id"] + 1
+
+                # Handle reaction updates
+                if "message_reaction" in update:
+                    try:
+                        _handle_reaction_update(update)
+                    except Exception as e:
+                        log("error", f"Reaction handling failed: {e}")
+                    continue
+
                 msg = update.get("message", {})
                 text = msg.get("text", "")
                 chat_id = str(msg.get("chat", {}).get("id", ""))

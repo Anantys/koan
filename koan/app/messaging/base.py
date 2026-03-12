@@ -22,10 +22,20 @@ class Message:
 
 
 @dataclass
+class Reaction:
+    """Provider-agnostic reaction representation."""
+    message_id: int
+    emoji: str  # The emoji string (e.g., "👍", "👎", "❤️")
+    is_added: bool  # True = added, False = removed
+    timestamp: str = ""
+
+
+@dataclass
 class Update:
     """Provider-agnostic update from polling."""
     update_id: int
     message: Optional[Message] = None
+    reaction: Optional[Reaction] = None
     raw_data: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -76,6 +86,15 @@ class MessagingProvider(ABC):
 
         Should print clear error messages to stderr if credentials are missing.
         """
+
+    def get_last_message_ids(self) -> List[int]:
+        """Return message IDs from the last send_message() call.
+
+        Providers that support message ID tracking override this to return
+        the IDs of messages sent in the most recent send_message() invocation.
+        Returns empty list by default (no tracking).
+        """
+        return []
 
     def send_typing(self) -> bool:
         """Send a typing indicator to the channel.

@@ -52,19 +52,31 @@ def _parse_jsonl_lines(lines: list) -> List[Dict]:
     return messages
 
 
-def save_conversation_message(history_file: Path, role: str, text: str):
+def save_conversation_message(
+    history_file: Path,
+    role: str,
+    text: str,
+    message_id: int = 0,
+    message_type: str = "",
+):
     """Save a message to the conversation history file (JSONL format).
 
     Args:
         history_file: Path to the history file (e.g., instance/conversation-history.jsonl)
         role: "user" or "assistant"
         text: Message content
+        message_id: Telegram message_id for reaction correlation (0 = unknown)
+        message_type: Origin context tag (e.g., "chat", "conclusion", "notification")
     """
     message = {
         "timestamp": datetime.now().isoformat(),
         "role": role,
         "text": text
     }
+    if message_id:
+        message["message_id"] = message_id
+    if message_type:
+        message["message_type"] = message_type
     try:
         with open(history_file, "a", encoding="utf-8") as f:
             fcntl.flock(f, fcntl.LOCK_EX)

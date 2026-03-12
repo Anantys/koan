@@ -14,7 +14,7 @@ import sys
 import threading
 from typing import Dict, Optional, Type
 
-from app.messaging.base import DEFAULT_MAX_MESSAGE_SIZE, MessagingProvider, Update, Message
+from app.messaging.base import DEFAULT_MAX_MESSAGE_SIZE, MessagingProvider, Update, Message, Reaction
 
 # Provider registry: name -> class
 _providers: Dict[str, Type[MessagingProvider]] = {}
@@ -158,6 +158,7 @@ __all__ = [
     "MessagingProvider",
     "Update",
     "Message",
+    "Reaction",
     "get_messaging_provider",
     "register_provider",
     "reset_provider",
