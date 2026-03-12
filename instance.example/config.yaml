@@ -201,3 +201,7 @@ usage:
 #   reply_enabled: false             # AI replies to non-command @mentions (default: false)
 #                                    # When enabled, the bot replies to questions/requests
 #                                    # from authorized users with contextual AI-generated answers.
+#   natural_language: false           # NLP intent parsing for @mentions (default: false)
+#                                    # When enabled, unrecognized commands are sent to Claude
+#                                    # for intent classification before falling back to error.
+#                                    # Per-project override available in projects.yaml.

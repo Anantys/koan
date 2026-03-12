@@ -60,6 +60,28 @@ def get_github_authorized_users(config: dict, project_name: Optional[str] = None
     return users if isinstance(users, list) else []
 
 
+def get_github_natural_language(config: dict, project_name: Optional[str] = None,
+                                projects_config: Optional[dict] = None) -> bool:
+    """Check if natural-language intent parsing is enabled for GitHub @mentions.
+
+    When enabled, unrecognized commands are sent to Claude for intent
+    classification before falling back to error/reply paths.
+
+    Checks per-project override first (via projects.yaml), then falls back
+    to global config.yaml setting.  Default: False.
+    """
+    # Check per-project override first
+    if project_name and projects_config:
+        from app.projects_config import get_project_github_natural_language
+        project_value = get_project_github_natural_language(projects_config, project_name)
+        if project_value is not None:
+            return project_value
+
+    # Fall back to global config.yaml
+    github = config.get("github") or {}
+    return bool(github.get("natural_language", False))
+
+
 def get_github_reply_enabled(config: dict) -> bool:
     """Check if AI-powered replies to non-command @mentions are enabled.
 

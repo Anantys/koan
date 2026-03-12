@@ -7,6 +7,7 @@ from app.github_config import (
     get_github_check_interval,
     get_github_commands_enabled,
     get_github_max_age_hours,
+    get_github_natural_language,
     get_github_nickname,
     get_github_reply_enabled,
     validate_github_config,
@@ -82,6 +83,66 @@ class TestGetGithubAuthorizedUsers:
             config, project_name="myapp", projects_config=projects_config
         )
         assert result == ["bob"]
+
+
+class TestGetGithubNaturalLanguage:
+    def test_default_disabled(self):
+        assert get_github_natural_language({}) is False
+
+    def test_enabled(self):
+        assert get_github_natural_language({"github": {"natural_language": True}}) is True
+
+    def test_disabled(self):
+        assert get_github_natural_language({"github": {"natural_language": False}}) is False
+
+    def test_none_section(self):
+        assert get_github_natural_language({"github": None}) is False
+
+    def test_missing_key(self):
+        assert get_github_natural_language({"github": {}}) is False
+
+    def test_per_project_override_true(self):
+        config = {"github": {"natural_language": False}}
+        projects_config = {
+            "defaults": {},
+            "projects": {
+                "myapp": {
+                    "path": "/tmp/myapp",
+                    "github": {"natural_language": True},
+                }
+            },
+        }
+        result = get_github_natural_language(
+            config, project_name="myapp", projects_config=projects_config
+        )
+        assert result is True
+
+    def test_per_project_override_false(self):
+        config = {"github": {"natural_language": True}}
+        projects_config = {
+            "defaults": {},
+            "projects": {
+                "myapp": {
+                    "path": "/tmp/myapp",
+                    "github": {"natural_language": False},
+                }
+            },
+        }
+        result = get_github_natural_language(
+            config, project_name="myapp", projects_config=projects_config
+        )
+        assert result is False
+
+    def test_per_project_fallback_to_global(self):
+        config = {"github": {"natural_language": True}}
+        projects_config = {
+            "defaults": {},
+            "projects": {"myapp": {"path": "/tmp/myapp"}},
+        }
+        result = get_github_natural_language(
+            config, project_name="myapp", projects_config=projects_config
+        )
+        assert result is True
 
 
 class TestGetGithubReplyEnabled:

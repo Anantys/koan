@@ -294,6 +294,21 @@ def get_project_github_authorized_users(config: dict, project_name: str) -> list
     return users if isinstance(users, list) else []
 
 
+def get_project_github_natural_language(config: dict, project_name: str) -> Optional[bool]:
+    """Get GitHub natural_language setting for a project from projects.yaml.
+
+    Per-project github.natural_language overrides the global setting.
+    Returns True/False if explicitly set, or None if not configured
+    (meaning: fall back to global config.yaml).
+    """
+    project_cfg = get_project_config(config, project_name)
+    github = project_cfg.get("github", {}) or {}
+    value = github.get("natural_language")
+    if value is None:
+        return None
+    return bool(value)
+
+
 def get_project_submit_to_repository(config: dict, project_name: str) -> dict:
     """Get submit_to_repository config for a project from projects.yaml.
 
