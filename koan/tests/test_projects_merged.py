@@ -11,7 +11,10 @@ from app.projects_merged import (
     refresh_projects,
     get_warnings,
     invalidate_cache,
+    get_all_github_urls,
+    get_all_github_urls_cache,
     get_github_url,
+    set_all_github_urls,
     set_github_url,
     get_github_url_cache,
     clear_github_url_cache,
@@ -368,11 +371,32 @@ class TestPopulateWorkspaceGithubUrls:
         proj.mkdir()
         (proj / ".git").mkdir()
 
-        with patch("app.utils.get_github_remote", return_value="https://github.com/me/myproj"):
+        with patch("app.utils.get_github_remote", return_value="me/myproj"), \
+             patch("app.utils.get_all_github_remotes", return_value=["me/myproj"]):
             count = populate_workspace_github_urls(str(koan_root))
 
         assert count == 1
-        assert get_github_url("myproj") == "https://github.com/me/myproj"
+        assert get_github_url("myproj") == "me/myproj"
+
+    def test_caches_all_remotes(self, koan_root):
+        """Caches ALL remote URLs for cross-owner notification matching."""
+        from app.projects_merged import populate_workspace_github_urls
+        ws = koan_root / "workspace"
+        proj = ws / "myfork"
+        proj.mkdir()
+        (proj / ".git").mkdir()
+
+        all_remotes = ["me/myfork", "upstream-org/myfork"]
+        with patch("app.utils.get_github_remote", return_value="me/myfork"), \
+             patch("app.utils.get_all_github_remotes", return_value=all_remotes):
+            populate_workspace_github_urls(str(koan_root))
+
+        # Primary URL is origin
+        assert get_github_url("myfork") == "me/myfork"
+        # All URLs include upstream
+        all_urls = get_all_github_urls("myfork")
+        assert "me/myfork" in all_urls
+        assert "upstream-org/myfork" in all_urls
 
     def test_skips_yaml_projects(self, koan_root):
         """Skips projects that are in projects.yaml."""
@@ -390,11 +414,12 @@ projects:
         ws_proj.mkdir()
         (ws_proj / ".git").mkdir()
 
-        with patch("app.utils.get_github_remote", return_value="https://github.com/me/proj"):
+        with patch("app.utils.get_github_remote", return_value="me/proj"), \
+             patch("app.utils.get_all_github_remotes", return_value=["me/proj"]):
             count = populate_workspace_github_urls(str(koan_root))
 
         assert count == 1
-        assert get_github_url("ws-proj") == "https://github.com/me/proj"
+        assert get_github_url("ws-proj") == "me/proj"
         assert get_github_url("yaml-proj") is None
 
     def test_skips_already_cached(self, koan_root):
@@ -404,11 +429,13 @@ projects:
         proj = ws / "myproj"
         proj.mkdir()
         (proj / ".git").mkdir()
-        set_github_url("myproj", "https://github.com/existing/url")
+        set_github_url("myproj", "existing/url")
 
-        with patch("app.utils.get_github_remote") as mock_remote:
+        with patch("app.utils.get_github_remote") as mock_remote, \
+             patch("app.utils.get_all_github_remotes") as mock_all:
             populate_workspace_github_urls(str(koan_root))
             mock_remote.assert_not_called()
+            mock_all.assert_not_called()
 
     def test_skips_non_git_dirs(self, koan_root):
         """Skips workspace directories that aren't git repos."""
@@ -430,7 +457,8 @@ projects:
         proj.mkdir()
         (proj / ".git").mkdir()
 
-        with patch("app.utils.get_github_remote", return_value=None):
+        with patch("app.utils.get_github_remote", return_value=None), \
+             patch("app.utils.get_all_github_remotes", return_value=[]):
             count = populate_workspace_github_urls(str(koan_root))
 
         assert count == 0

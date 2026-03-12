@@ -1105,20 +1105,26 @@ class TestGetKnownReposFromProjects:
         from app.loop_manager import reset_github_backoff
         reset_github_backoff()
 
+    @patch("app.projects_merged.get_all_github_urls_cache", return_value={})
+    @patch("app.projects_merged.get_github_url_cache", return_value={})
     @patch("app.projects_config.load_projects_config")
-    def test_returns_none_when_no_config(self, mock_load):
+    def test_returns_none_when_no_config(self, mock_load, _url, _all):
         from app.loop_manager import _get_known_repos_from_projects
         mock_load.return_value = None
         assert _get_known_repos_from_projects("/tmp") is None
 
+    @patch("app.projects_merged.get_all_github_urls_cache", return_value={})
+    @patch("app.projects_merged.get_github_url_cache", return_value={})
     @patch("app.projects_config.load_projects_config")
-    def test_returns_none_when_no_github_urls(self, mock_load):
+    def test_returns_none_when_no_github_urls(self, mock_load, _url, _all):
         from app.loop_manager import _get_known_repos_from_projects
         mock_load.return_value = {"projects": {"myapp": {"path": "/tmp/myapp"}}}
         assert _get_known_repos_from_projects("/tmp") is None
 
+    @patch("app.projects_merged.get_all_github_urls_cache", return_value={})
+    @patch("app.projects_merged.get_github_url_cache", return_value={})
     @patch("app.projects_config.load_projects_config")
-    def test_normalizes_owner_repo_format(self, mock_load):
+    def test_normalizes_owner_repo_format(self, mock_load, _url, _all):
         from app.loop_manager import _get_known_repos_from_projects
         mock_load.return_value = {
             "projects": {"koan": {"path": "/tmp/koan", "github_url": "sukria/koan"}}
@@ -1126,8 +1132,10 @@ class TestGetKnownReposFromProjects:
         repos = _get_known_repos_from_projects("/tmp")
         assert repos == {"sukria/koan"}
 
+    @patch("app.projects_merged.get_all_github_urls_cache", return_value={})
+    @patch("app.projects_merged.get_github_url_cache", return_value={})
     @patch("app.projects_config.load_projects_config")
-    def test_normalizes_full_url_format(self, mock_load):
+    def test_normalizes_full_url_format(self, mock_load, _url, _all):
         from app.loop_manager import _get_known_repos_from_projects
         mock_load.return_value = {
             "projects": {"koan": {"path": "/tmp/koan", "github_url": "https://github.com/sukria/koan"}}
@@ -1135,8 +1143,10 @@ class TestGetKnownReposFromProjects:
         repos = _get_known_repos_from_projects("/tmp")
         assert repos == {"sukria/koan"}
 
+    @patch("app.projects_merged.get_all_github_urls_cache", return_value={})
+    @patch("app.projects_merged.get_github_url_cache", return_value={})
     @patch("app.projects_config.load_projects_config")
-    def test_normalizes_mixed_formats(self, mock_load):
+    def test_normalizes_mixed_formats(self, mock_load, _url, _all):
         from app.loop_manager import _get_known_repos_from_projects
         mock_load.return_value = {
             "projects": {
@@ -1147,14 +1157,60 @@ class TestGetKnownReposFromProjects:
         repos = _get_known_repos_from_projects("/tmp")
         assert repos == {"sukria/koan", "alice/myapp"}
 
+    @patch("app.projects_merged.get_all_github_urls_cache", return_value={})
+    @patch("app.projects_merged.get_github_url_cache", return_value={})
     @patch("app.projects_config.load_projects_config")
-    def test_lowercase_normalization(self, mock_load):
+    def test_lowercase_normalization(self, mock_load, _url, _all):
         from app.loop_manager import _get_known_repos_from_projects
         mock_load.return_value = {
             "projects": {"koan": {"path": "/tmp/koan", "github_url": "Sukria/Koan"}}
         }
         repos = _get_known_repos_from_projects("/tmp")
         assert repos == {"sukria/koan"}
+
+    @patch("app.projects_config.load_projects_config")
+    @patch("app.projects_merged.get_github_url_cache")
+    @patch("app.projects_merged.get_all_github_urls_cache")
+    def test_includes_workspace_primary_urls(self, mock_all_cache, mock_url_cache, mock_load):
+        """Workspace projects' primary URLs are included in known_repos."""
+        from app.loop_manager import _get_known_repos_from_projects
+        mock_load.return_value = None  # No projects.yaml
+        mock_url_cache.return_value = {"rsa": "atoomic/crypt-openssl-rsa"}
+        mock_all_cache.return_value = {}
+        repos = _get_known_repos_from_projects("/tmp")
+        assert repos == {"atoomic/crypt-openssl-rsa"}
+
+    @patch("app.projects_config.load_projects_config")
+    @patch("app.projects_merged.get_github_url_cache")
+    @patch("app.projects_merged.get_all_github_urls_cache")
+    def test_includes_workspace_all_remotes(self, mock_all_cache, mock_url_cache, mock_load):
+        """Workspace projects' ALL remote URLs are included (fork + upstream)."""
+        from app.loop_manager import _get_known_repos_from_projects
+        mock_load.return_value = None  # No projects.yaml
+        mock_url_cache.return_value = {"rsa": "atoomic/crypt-openssl-rsa"}
+        mock_all_cache.return_value = {
+            "rsa": ["atoomic/crypt-openssl-rsa", "cpan-authors/crypt-openssl-rsa"]
+        }
+        repos = _get_known_repos_from_projects("/tmp")
+        assert "atoomic/crypt-openssl-rsa" in repos
+        assert "cpan-authors/crypt-openssl-rsa" in repos
+
+    @patch("app.projects_config.load_projects_config")
+    @patch("app.projects_merged.get_github_url_cache")
+    @patch("app.projects_merged.get_all_github_urls_cache")
+    def test_merges_yaml_and_workspace_repos(self, mock_all_cache, mock_url_cache, mock_load):
+        """Known repos from yaml AND workspace are merged."""
+        from app.loop_manager import _get_known_repos_from_projects
+        mock_load.return_value = {
+            "projects": {"koan": {"path": "/tmp/koan", "github_url": "sukria/koan"}}
+        }
+        mock_url_cache.return_value = {"rsa": "atoomic/crypt-openssl-rsa"}
+        mock_all_cache.return_value = {
+            "rsa": ["atoomic/crypt-openssl-rsa", "cpan-authors/crypt-openssl-rsa"]
+        }
+        repos = _get_known_repos_from_projects("/tmp")
+        assert "sukria/koan" in repos
+        assert "cpan-authors/crypt-openssl-rsa" in repos
 
 
 # --- Test _github_log ---

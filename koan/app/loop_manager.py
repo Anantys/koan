@@ -313,7 +313,11 @@ def _normalize_github_url(url: str) -> str:
 
 
 def _get_known_repos_from_projects(koan_root: str) -> Optional[set]:
-    """Extract known repo names from projects config.
+    """Extract known repo names from all project sources.
+
+    Includes repos from:
+    1. projects.yaml (github_url + github_urls fields)
+    2. Workspace projects (in-memory github URL cache from git remotes)
 
     Returns:
         Set of "owner/repo" strings or None for all repos.
@@ -322,25 +326,41 @@ def _get_known_repos_from_projects(koan_root: str) -> Optional[set]:
     """
     from app.projects_config import load_projects_config
 
-    projects_config = load_projects_config(koan_root)
-    if not projects_config:
-        return None
-
     known_repos = set()
-    for name, proj in projects_config.get("projects", {}).items():
-        if not isinstance(proj, dict):
-            continue
-        gh_url = proj.get("github_url", "")
-        if gh_url:
-            normalized = _normalize_github_url(gh_url)
-            known_repos.add(normalized)
-        # Also include all remotes (github_urls) for fork workflows
-        for url in proj.get("github_urls", []):
+
+    # 1. projects.yaml — primary source
+    projects_config = load_projects_config(koan_root)
+    if projects_config:
+        for name, proj in projects_config.get("projects", {}).items():
+            if not isinstance(proj, dict):
+                continue
+            gh_url = proj.get("github_url", "")
+            if gh_url:
+                known_repos.add(_normalize_github_url(gh_url))
+            # Also include all remotes (github_urls) for fork workflows
+            for url in proj.get("github_urls", []):
+                if url:
+                    known_repos.add(_normalize_github_url(url))
+
+    # 2. Workspace projects — in-memory cache populated at startup
+    try:
+        from app.projects_merged import get_all_github_urls_cache, get_github_url_cache
+
+        # Primary URLs (origin remote)
+        for _name, url in get_github_url_cache().items():
             if url:
                 known_repos.add(_normalize_github_url(url))
 
+        # All remote URLs (origin + upstream + others)
+        for _name, urls in get_all_github_urls_cache().items():
+            for url in urls:
+                if url:
+                    known_repos.add(_normalize_github_url(url))
+    except ImportError:
+        pass
+
     if known_repos:
-        log.debug("GitHub: known repos from projects.yaml: %s", known_repos)
+        log.debug("GitHub: known repos from all sources: %s", known_repos)
 
     return known_repos or None
 

@@ -24,6 +24,10 @@ _cached_root: Optional[str] = None
 _cached_yaml_mtime: Optional[float] = None
 _cached_workspace_mtime: Optional[float] = None
 _github_url_cache: Dict[str, str] = {}
+# ALL github URLs per workspace project (origin + upstream + others).
+# Keyed by project name → list of "owner/repo" strings (lowercase).
+# Used by notification filtering to match cross-owner repos (fork workflows).
+_github_all_urls_cache: Dict[str, List[str]] = {}
 
 
 def get_all_projects(koan_root: str) -> List[Tuple[str, str]]:
@@ -219,10 +223,34 @@ def get_github_url(project_name: str) -> Optional[str]:
         return _github_url_cache.get(project_name)
 
 
+def get_all_github_urls(project_name: str) -> List[str]:
+    """Get ALL cached github URLs for a workspace project.
+
+    Returns a list of "owner/repo" strings (lowercase) from all git remotes.
+    For fork workflows, this includes both origin (fork) and upstream.
+    Returns empty list if not cached.
+    """
+    with _lock:
+        return list(_github_all_urls_cache.get(project_name, []))
+
+
+def set_all_github_urls(project_name: str, urls: List[str]) -> None:
+    """Cache ALL github URLs for a workspace project."""
+    with _lock:
+        _github_all_urls_cache[project_name] = list(urls)
+
+
+def get_all_github_urls_cache() -> Dict[str, List[str]]:
+    """Return the full all-URLs cache (project_name -> list of urls)."""
+    with _lock:
+        return {k: list(v) for k, v in _github_all_urls_cache.items()}
+
+
 def clear_github_url_cache() -> None:
     """Clear the github_url memory cache."""
     with _lock:
         _github_url_cache.clear()
+        _github_all_urls_cache.clear()
 
 
 def get_yaml_project_names(koan_root: str) -> set:
@@ -248,36 +276,43 @@ def get_yaml_project_names(koan_root: str) -> set:
 
 def populate_workspace_github_urls(koan_root: str) -> int:
     """Populate github_url cache for workspace projects by scanning git remotes.
-    
+
     Only processes projects that are not in projects.yaml (workspace-only projects).
+    Caches both the primary URL (origin) and ALL remote URLs for cross-owner
+    matching (fork workflows where notifications come from the upstream repo).
     Returns the number of URLs discovered.
     """
-    from app.utils import get_github_remote
-    
+    from app.utils import get_all_github_remotes, get_github_remote
+
     # Get yaml project names
     yaml_project_names = get_yaml_project_names(koan_root)
-    
+
     # Scan workspace projects for github URLs
     projects = get_all_projects(koan_root)
     discovered = 0
-    
+
     for name, path in projects:
         # Only process workspace projects (not in yaml)
         if name in yaml_project_names:
             continue
-            
+
         # Skip if already cached
         if get_github_url(name):
             continue
-        
+
         # Skip non-git directories to avoid timeout
         if not (Path(path) / ".git").exists():
             continue
-            
-        # Discover and cache
+
+        # Discover and cache primary URL
         gh_url = get_github_remote(path)
         if gh_url:
             set_github_url(name, gh_url)
             discovered += 1
-    
+
+        # Cache ALL remotes for cross-owner notification matching
+        all_urls = get_all_github_remotes(path)
+        if all_urls:
+            set_all_github_urls(name, all_urls)
+
     return discovered
