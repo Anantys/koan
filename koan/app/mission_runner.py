@@ -27,6 +27,13 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
+from app.circuit_breaker import CircuitBreaker
+
+# Module-level circuit breaker for fire-and-forget subsystems.
+# Threshold=2: a subsystem must fail twice before being skipped.
+# No auto-reset — circuits stay open for the process lifetime.
+_breaker = CircuitBreaker(threshold=2, log_prefix="mission_runner")
+
 # Maximum wall-clock time for the entire post-mission pipeline (seconds).
 # Individual steps have their own timeouts (tests: 120s, reflection: 60s,
 # verification: 10s), but without an overall ceiling, accumulated steps
@@ -273,6 +280,7 @@ def _read_stdout_summary(stdout_file: str, max_chars: int = 2000) -> str:
         return ""
 
 
+@_breaker.guard("session_tracker")
 def _record_session_outcome(
     instance_dir: str,
     project_name: str,
@@ -282,20 +290,18 @@ def _record_session_outcome(
     mission_title: str = "",
 ) -> None:
     """Record session outcome for staleness tracking (fire-and-forget)."""
-    try:
-        from app.session_tracker import record_outcome
-        record_outcome(
-            instance_dir=instance_dir,
-            project=project_name,
-            mode=autonomous_mode or "unknown",
-            duration_minutes=duration_minutes,
-            journal_content=journal_content,
-            mission_title=mission_title,
-        )
-    except Exception as e:
-        print(f"[mission_runner] Session outcome recording failed: {e}", file=sys.stderr)
+    from app.session_tracker import record_outcome
+    record_outcome(
+        instance_dir=instance_dir,
+        project=project_name,
+        mode=autonomous_mode or "unknown",
+        duration_minutes=duration_minutes,
+        journal_content=journal_content,
+        mission_title=mission_title,
+    )
 
 
+@_breaker.guard("cost_tracker")
 def _record_cost_event(
     instance_dir: str,
     project_name: str,
@@ -304,28 +310,25 @@ def _record_cost_event(
     mission_title: str,
 ) -> None:
     """Record structured usage event to JSONL cost tracker (fire-and-forget)."""
-    try:
-        from app.usage_estimator import extract_tokens_detailed
-        from app.cost_tracker import record_usage
+    from app.usage_estimator import extract_tokens_detailed
+    from app.cost_tracker import record_usage
 
-        detailed = extract_tokens_detailed(Path(stdout_file))
-        if detailed is None:
-            return
+    detailed = extract_tokens_detailed(Path(stdout_file))
+    if detailed is None:
+        return
 
-        record_usage(
-            instance_dir=Path(instance_dir),
-            project=project_name or "_global",
-            model=detailed["model"],
-            input_tokens=detailed["input_tokens"],
-            output_tokens=detailed["output_tokens"],
-            mode=autonomous_mode,
-            mission=mission_title,
-            cache_creation_input_tokens=detailed.get("cache_creation_input_tokens", 0),
-            cache_read_input_tokens=detailed.get("cache_read_input_tokens", 0),
-            cost_usd=detailed.get("cost_usd", 0.0),
-        )
-    except Exception as e:
-        print(f"[mission_runner] Cost tracking failed: {e}", file=sys.stderr)
+    record_usage(
+        instance_dir=Path(instance_dir),
+        project=project_name or "_global",
+        model=detailed["model"],
+        input_tokens=detailed["input_tokens"],
+        output_tokens=detailed["output_tokens"],
+        mode=autonomous_mode,
+        mission=mission_title,
+        cache_creation_input_tokens=detailed.get("cache_creation_input_tokens", 0),
+        cache_read_input_tokens=detailed.get("cache_read_input_tokens", 0),
+        cost_usd=detailed.get("cost_usd", 0.0),
+    )
 
 
 def archive_pending(instance_dir: str, project_name: str, run_num: int) -> bool:
@@ -361,6 +364,7 @@ def archive_pending(instance_dir: str, project_name: str, run_num: int) -> bool:
     return True
 
 
+@_breaker.guard("usage_estimator", default=False)
 def update_usage(stdout_file: str, usage_state: str, usage_md: str) -> bool:
     """Update token usage state from Claude JSON output.
 
@@ -372,16 +376,13 @@ def update_usage(stdout_file: str, usage_state: str, usage_md: str) -> bool:
     Returns:
         True if update succeeded.
     """
-    try:
-        from app.usage_estimator import cmd_update
+    from app.usage_estimator import cmd_update
 
-        cmd_update(Path(stdout_file), Path(usage_state), Path(usage_md))
-        return True
-    except Exception as e:
-        print(f"[mission_runner] Usage update failed: {e}", file=sys.stderr)
-        return False
+    cmd_update(Path(stdout_file), Path(usage_state), Path(usage_md))
+    return True
 
 
+@_breaker.guard("reflection", default=False)
 def trigger_reflection(
     instance_dir: str,
     mission_title: str,
@@ -403,26 +404,23 @@ def trigger_reflection(
     Returns:
         True if reflection was generated.
     """
-    try:
-        from app.post_mission_reflection import (
-            _read_journal_file,
-            is_significant_mission,
-            run_reflection,
-            write_to_journal,
-        )
+    from app.post_mission_reflection import (
+        _read_journal_file,
+        is_significant_mission,
+        run_reflection,
+        write_to_journal,
+    )
 
-        inst = Path(instance_dir)
-        journal_content = _read_journal_file(inst, project_name)
+    inst = Path(instance_dir)
+    journal_content = _read_journal_file(inst, project_name)
 
-        if not is_significant_mission(mission_title, duration_minutes, journal_content):
-            return False
+    if not is_significant_mission(mission_title, duration_minutes, journal_content):
+        return False
 
-        reflection = run_reflection(inst, mission_title, journal_content)
-        if reflection:
-            write_to_journal(inst, reflection)
-            return True
-    except Exception as e:
-        print(f"[mission_runner] Reflection failed: {e}", file=sys.stderr)
+    reflection = run_reflection(inst, mission_title, journal_content)
+    if reflection:
+        write_to_journal(inst, reflection)
+        return True
     return False
 
 
@@ -446,6 +444,7 @@ def _get_quality_gate_mode(instance_dir: str, project_name: str) -> str:
     return "warn"
 
 
+@_breaker.guard("quality_pipeline", default_factory=dict)
 def _run_quality_pipeline(
     instance_dir: str,
     project_name: str,
@@ -473,6 +472,7 @@ def _run_quality_pipeline(
     )
 
 
+@_breaker.guard("lint_gate")
 def _run_lint_gate(
     instance_dir: str, project_name: str, project_path: str
 ):
@@ -484,22 +484,20 @@ def _run_lint_gate(
     return run_lint_gate(project_path, project_name, instance_dir)
 
 
+@_breaker.guard("lint_config", default=False)
 def _is_lint_blocking(instance_dir: str, project_name: str) -> bool:
     """Check if lint gate is configured as blocking for a project."""
-    try:
-        from app.lint_gate import get_project_lint_config
-        from app.projects_config import load_projects_config
-        koan_root = _get_koan_root(instance_dir)
-        config = load_projects_config(koan_root)
-        if not config:
-            return False
-        lint_config = get_project_lint_config(config, project_name)
-        return lint_config.get("blocking", True) and lint_config.get("enabled", False)
-    except Exception as e:
-        print(f"[mission_runner] Lint config check failed: {e}", file=sys.stderr)
+    from app.lint_gate import get_project_lint_config
+    from app.projects_config import load_projects_config
+    koan_root = _get_koan_root(instance_dir)
+    config = load_projects_config(koan_root)
+    if not config:
         return False
+    lint_config = get_project_lint_config(config, project_name)
+    return lint_config.get("blocking", True) and lint_config.get("enabled", False)
 
 
+@_breaker.guard("mission_verifier")
 def _run_mission_verification(
     project_path: str,
     mission_title: str,
@@ -633,6 +631,7 @@ def _notify_pipeline_failures(
         print(f"[mission_runner] Pipeline failure notification failed: {e}", file=sys.stderr)
 
 
+@_breaker.guard("hooks")
 def _fire_post_mission_hook(
     instance_dir: str,
     project_name: str,
@@ -647,21 +646,17 @@ def _fire_post_mission_hook(
     Returns a dict mapping failed handler names to error messages.
     Empty dict means all hooks succeeded.
     """
-    try:
-        from app.hooks import fire_hook
-        return fire_hook(
-            "post_mission",
-            instance_dir=instance_dir,
-            project_name=project_name,
-            project_path=project_path,
-            exit_code=exit_code,
-            mission_title=mission_title,
-            duration_minutes=duration_minutes,
-            result=dict(result),
-        )
-    except Exception as e:
-        print(f"[hooks] post_mission hook error: {e}", file=sys.stderr)
-        return {"_fire_post_mission_hook": str(e)}
+    from app.hooks import fire_hook
+    return fire_hook(
+        "post_mission",
+        instance_dir=instance_dir,
+        project_name=project_name,
+        project_path=project_path,
+        exit_code=exit_code,
+        mission_title=mission_title,
+        duration_minutes=duration_minutes,
+        result=dict(result),
+    )
 
 
 def run_post_mission(
@@ -930,6 +925,7 @@ def run_post_mission(
         _deadline_timer.cancel()
 
 
+@_breaker.guard("commit_instance", default=False)
 def commit_instance(instance_dir: str, message: str = "") -> bool:
     """Commit and push instance directory changes.
 
@@ -940,30 +936,26 @@ def commit_instance(instance_dir: str, message: str = "") -> bool:
     Returns:
         True if a commit was created.
     """
-    try:
-        from app.git_sync import run_git
+    from app.git_sync import run_git
 
-        run_git(instance_dir, "add", "-A")
+    run_git(instance_dir, "add", "-A")
 
-        # Check if there are staged changes
-        status = run_git(instance_dir, "diff", "--cached", "--name-only")
-        if not status:
-            return False  # No changes
+    # Check if there are staged changes
+    status = run_git(instance_dir, "diff", "--cached", "--name-only")
+    if not status:
+        return False  # No changes
 
-        if not message:
-            message = f"koan: {datetime.now().strftime('%Y-%m-%d-%H:%M')}"
-        run_git(instance_dir, "commit", "-m", message)
+    if not message:
+        message = f"koan: {datetime.now().strftime('%Y-%m-%d-%H:%M')}"
+    run_git(instance_dir, "commit", "-m", message)
 
-        # Push to the current branch — skip if HEAD is detached
-        branch = run_git(instance_dir, "rev-parse", "--abbrev-ref", "HEAD")
-        if not branch or branch == "HEAD":
-            print("[commit_instance] Skipping push: detached HEAD", file=sys.stderr)
-            return True
-        run_git(instance_dir, "push", "origin", branch)
+    # Push to the current branch — skip if HEAD is detached
+    branch = run_git(instance_dir, "rev-parse", "--abbrev-ref", "HEAD")
+    if not branch or branch == "HEAD":
+        print("[commit_instance] Skipping push: detached HEAD", file=sys.stderr)
         return True
-    except Exception as e:
-        print(f"[commit_instance] Instance commit failed: {e}", file=sys.stderr)
-        return False
+    run_git(instance_dir, "push", "origin", branch)
+    return True
 
 
 # --- CLI interface ---
