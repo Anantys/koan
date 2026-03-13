@@ -18,9 +18,31 @@ def _read_live_progress(instance_dir):
     return content
 
 
+def _format_progress(content):
+    """Format progress for Telegram: wrap activity lines in a code block.
+
+    The pending.md format is:
+        # Mission: ...
+        Project: ...
+        Started: ...
+        ---
+        HH:MM — did X
+        HH:MM — did Y
+
+    Everything after '---' is wrapped in a code block for clean rendering.
+    """
+    parts = content.split("\n---\n", 1)
+    if len(parts) < 2 or not parts[1].strip():
+        return content
+
+    header = parts[0]
+    activity = parts[1].strip()
+    return f"{header}\n\n```\n{activity}\n```"
+
+
 def handle(ctx):
     """Handle /live command — show live progress of current mission."""
     progress = _read_live_progress(ctx.instance_dir)
     if not progress:
         return "No mission running."
-    return progress
+    return _format_progress(progress)

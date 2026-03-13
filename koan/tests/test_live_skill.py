@@ -96,6 +96,62 @@ class TestReadLiveProgress:
             assert f"Step {i}" in result
 
 
+class TestFormatProgress:
+    """Tests for _format_progress — code block wrapping of activity lines."""
+
+    def test_wraps_activity_in_code_block(self):
+        mod = _load_handler()
+        content = (
+            "# Mission: fix bug\n"
+            "Project: koan\n"
+            "\n"
+            "---\n"
+            "10:00 — Investigating\n"
+            "10:05 — Found root cause"
+        )
+        result = mod._format_progress(content)
+        assert "```\n10:00 — Investigating\n10:05 — Found root cause\n```" in result
+
+    def test_header_preserved_outside_code_block(self):
+        mod = _load_handler()
+        content = (
+            "# Mission: fix bug\n"
+            "Project: koan\n"
+            "\n"
+            "---\n"
+            "10:00 — Investigating"
+        )
+        result = mod._format_progress(content)
+        assert result.startswith("# Mission: fix bug\nProject: koan")
+        assert "```" in result
+
+    def test_no_separator_returns_content_as_is(self):
+        mod = _load_handler()
+        content = "# Mission: fix bug\nProject: koan"
+        result = mod._format_progress(content)
+        assert result == content
+
+    def test_empty_activity_returns_content_as_is(self):
+        mod = _load_handler()
+        content = "# Mission: fix bug\n\n---\n"
+        result = mod._format_progress(content)
+        assert "```" not in result
+
+    def test_multiple_separators_only_splits_on_first(self):
+        mod = _load_handler()
+        content = (
+            "# Mission: fix\n"
+            "\n"
+            "---\n"
+            "10:00 — Step 1\n"
+            "---\n"
+            "10:05 — Step 2"
+        )
+        result = mod._format_progress(content)
+        # The second --- should be inside the code block
+        assert "```\n10:00 — Step 1\n---\n10:05 — Step 2\n```" in result
+
+
 class TestHandleLive:
     """Tests for handle() — the /live command entry point."""
 
