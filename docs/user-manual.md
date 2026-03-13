@@ -252,6 +252,19 @@ These features turn Kōan from a task runner into a full development workflow pa
 
 ### Code Operations
 
+**`/brainstorm`** — Decompose a broad topic into multiple linked GitHub issues grouped under a master tracking issue.
+
+- **Usage:** `/brainstorm <topic>`, `/brainstorm <project> <topic>`, `/brainstorm <topic> --tag <label>`
+- **GitHub @mention:** `@koan-bot /brainstorm <topic>` on an issue
+
+<details>
+<summary>Use cases</summary>
+
+- `/brainstorm Improve caching strategy for API responses` — Creates 3-8 sub-issues + master issue
+- `/brainstorm koan Add observability and monitoring` — Target a specific project
+- `/brainstorm Refactor auth module --tag auth-refactor` — With explicit tag for grouping
+</details>
+
 **`/plan`** — Deep-think an idea and produce a structured implementation plan as a GitHub issue.
 
 - **Usage:** `/plan <idea>`, `/plan <project> <idea>`, `/plan <issue-url>` (iterate on existing)
@@ -729,10 +742,11 @@ See [koan/skills/README.md](../koan/skills/README.md) for the full authoring gui
 
 ### GitHub @mention Integration
 
-Nine skills can be triggered by commenting `@koan-bot <command>` on GitHub issues and PRs:
+Ten skills can be triggered by commenting `@koan-bot <command>` on GitHub issues and PRs:
 
 | Skill | GitHub trigger |
 |-------|---------------|
+| `/brainstorm` | `@koan-bot /brainstorm <topic>` on an issue |
 | `/implement` | `@koan-bot /implement` on an issue |
 | `/fix` | `@koan-bot /fix` on an issue |
 | `/review` | `@koan-bot /review` on a PR |
@@ -945,6 +959,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/projects` | `/proj` | B | List configured projects |
 | `/focus [duration]` | — | B | Lock agent to one project |
 | `/unfocus` | — | B | Exit focus mode |
+| `/brainstorm <topic>` | — | I | Decompose topic into linked sub-issues + master issue |
 | `/plan <desc>` | — | I | Create a structured implementation plan |
 | `/implement <issue>` | `/impl` | I | Implement a GitHub issue |
 | `/fix <issue>` | — | I | Full bug-fix pipeline (understand → plan → test → fix → PR) |
@@ -987,7 +1002,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/incident <error>` | — | P | Triage a production error |
 | `/scaffold-skill <scope> <name> <desc>` | `/scaffold`, `/new-skill` | P | Generate SKILL.md + handler.py for a new custom skill |
 
-Skills marked with GitHub @mention support: `/plan`, `/implement`, `/fix`, `/review`, `/rebase`, `/recreate`, `/refactor`, `/profile`. See [GitHub Commands](github-commands.md) for details.
+Skills marked with GitHub @mention support: `/brainstorm`, `/plan`, `/implement`, `/fix`, `/review`, `/rebase`, `/recreate`, `/refactor`, `/profile`. See [GitHub Commands](github-commands.md) for details.
 
 ---
 

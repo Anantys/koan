@@ -50,6 +50,7 @@ _SKILL_RUNNERS = {
     "tech-debt": "skills.core.tech_debt.tech_debt_runner",
     "dead-code": "skills.core.dead_code.dead_code_runner",
     "profile": "skills.core.profile.profile_runner",
+    "brainstorm": "skills.core.brainstorm.brainstorm_runner",
     "claudemd": "app.claudemd_refresh",
     "claude": "app.claudemd_refresh",
     "claude.md": "app.claudemd_refresh",
@@ -194,6 +195,7 @@ def build_skill_command(
 
     # Dispatch to command-specific builder
     _COMMAND_BUILDERS = {
+        "brainstorm": lambda: _build_brainstorm_cmd(base_cmd, args, project_path),
         "plan": lambda: _build_plan_cmd(base_cmd, args, project_path),
         "implement": lambda: _build_implement_cmd(base_cmd, args, project_path),
         "fix": lambda: _build_implement_cmd(base_cmd, args, project_path),
@@ -258,6 +260,26 @@ def _extract_pr_or_issue_url_and_context(args: str) -> Optional[Tuple[str, str]]
     url = match.group(0)
     context = args[match.end():].strip()
     return url, context
+
+
+def _build_brainstorm_cmd(
+    base_cmd: List[str], args: str, project_path: str,
+) -> List[str]:
+    """Build brainstorm_runner command."""
+    cmd = base_cmd + ["--project-path", project_path]
+
+    # Extract --tag if present
+    tag_match = re.search(r'--tag\s+(\S+)', args)
+    if tag_match:
+        cmd.extend(["--tag", tag_match.group(1)])
+        # Remove --tag from args to get the topic
+        topic = args[:tag_match.start()].rstrip() + args[tag_match.end():]
+        topic = topic.strip()
+    else:
+        topic = args.strip()
+
+    cmd.extend(["--topic", topic])
+    return cmd
 
 
 def _build_plan_cmd(
