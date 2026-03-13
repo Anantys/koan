@@ -580,6 +580,45 @@ def api_progress_stream():
     )
 
 
+@app.route("/api/state/stream")
+def api_state_stream():
+    """SSE stream of agent state changes.
+
+    Polls signal files every 2s, sends an event when state changes.
+    Sends a heartbeat comment every 15s to keep the connection alive.
+    """
+    def generate():
+        last_json = None
+        heartbeat_counter = 0
+
+        while True:
+            try:
+                state = get_agent_state()
+                state_json = json.dumps(state, sort_keys=True)
+                if state_json != last_json:
+                    last_json = state_json
+                    yield f"data: {json.dumps(state)}\n\n"
+                    heartbeat_counter = 0
+            except OSError:
+                pass
+
+            heartbeat_counter += 1
+            if heartbeat_counter >= 8:  # 8 * 2s = 16s ~ 15s heartbeat
+                yield ": heartbeat\n\n"
+                heartbeat_counter = 0
+
+            time.sleep(2)
+
+    return Response(
+        generate(),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @app.route("/usage")
 def usage_page():
     """Usage tracking page — per-project and per-model token breakdown."""
