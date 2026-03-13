@@ -248,6 +248,31 @@ def _handle_help_command(
     return True
 
 
+def _resolve_project_from_url(url: str) -> Optional[str]:
+    """Resolve project name from a GitHub URL's owner/repo.
+
+    Parses the URL to extract owner and repo, then looks up the
+    corresponding project. Returns the project name or None if the
+    URL cannot be parsed or the repo is not a known project.
+    """
+    match = re.search(
+        r'https?://github\.com/([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)',
+        url,
+    )
+    if not match:
+        return None
+
+    owner, repo = match.group(1), match.group(2)
+
+    from app.utils import project_name_for_path, resolve_project_path
+
+    project_path = resolve_project_path(repo, owner=owner)
+    if not project_path:
+        return None
+
+    return project_name_for_path(project_path)
+
+
 def _extract_url_from_context(context: str) -> Optional[Tuple[str, str]]:
     """Extract URL from context text if present.
     
@@ -299,6 +324,14 @@ def build_mission_from_command(
     url_in_context = _extract_url_from_context(context)
     if url_in_context:
         web_url, context = url_in_context
+
+        # Re-resolve project when context URL points to a different repo.
+        # Without this, a command like "@bot plan <other-repo-url>" posted
+        # on repo A would tag the mission with project A but the URL targets
+        # repo B — causing the plan to run in the wrong project directory.
+        resolved = _resolve_project_from_url(web_url)
+        if resolved:
+            project_name = resolved
 
     # Build mission text
     parts = [f"/{command_name}"]

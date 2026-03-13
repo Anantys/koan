@@ -239,14 +239,37 @@ def _extract_issue_url_and_context(args: str) -> Optional[Tuple[str, str]]:
     return issue_url, context
 
 
+def _extract_pr_or_issue_url_and_context(args: str) -> Optional[Tuple[str, str]]:
+    """Extract PR or issue URL and remaining context from arguments.
+
+    Unlike _extract_issue_url_and_context (issue-only), this matches
+    both /issues/ and /pull/ URLs. Used by /plan which can iterate on
+    either type.
+
+    Returns:
+        Tuple of (url, context) or None if no URL found.
+    """
+    match = re.search(
+        r'https?://github\.com/[^/]+/[^/]+/(?:issues|pull)/\d+',
+        args,
+    )
+    if not match:
+        return None
+    url = match.group(0)
+    context = args[match.end():].strip()
+    return url, context
+
+
 def _build_plan_cmd(
     base_cmd: List[str], args: str, project_path: str,
 ) -> List[str]:
     """Build plan_runner command."""
     cmd = base_cmd + ["--project-path", project_path]
 
-    # Detect issue URL vs free-text idea
-    url_and_context = _extract_issue_url_and_context(args)
+    # Detect issue or PR URL vs free-text idea.
+    # PR URLs are accepted: GitHub's issues API works for PRs too,
+    # so plan_runner can fetch PR title/body/comments the same way.
+    url_and_context = _extract_pr_or_issue_url_and_context(args)
     if url_and_context:
         issue_url, context = url_and_context
         cmd.extend(["--issue-url", issue_url])

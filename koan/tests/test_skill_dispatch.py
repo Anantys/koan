@@ -174,6 +174,34 @@ class TestBuildSkillCommand:
         cmd = self._build("plan", url)
         assert "--context" not in cmd
 
+    def test_plan_with_pr_url(self):
+        """PR URLs should be handled as --issue-url, not --idea."""
+        url = "https://github.com/metacpan/metacpan-grep-front-end/pull/75"
+        cmd = self._build("plan", url)
+        assert cmd is not None
+        assert "--issue-url" in cmd
+        assert url in cmd
+        assert "--idea" not in cmd
+
+    def test_plan_with_pr_url_and_fragment(self):
+        """PR URL with #issuecomment fragment should match."""
+        url = "https://github.com/owner/repo/pull/75#issuecomment-123"
+        cmd = self._build("plan", url)
+        assert cmd is not None
+        assert "--issue-url" in cmd
+        # Fragment is included in the URL passed to plan_runner
+        assert "https://github.com/owner/repo/pull/75" in " ".join(cmd)
+
+    def test_plan_with_pr_url_and_context(self):
+        """PR URL with trailing context should pass --context."""
+        args = "https://github.com/owner/repo/pull/75 focus on security"
+        cmd = self._build("plan", args)
+        assert cmd is not None
+        assert "--issue-url" in cmd
+        assert "--context" in cmd
+        ctx_idx = cmd.index("--context")
+        assert cmd[ctx_idx + 1] == "focus on security"
+
     def test_rebase(self):
         url = "https://github.com/sukria/koan/pull/42"
         cmd = self._build("rebase", url)

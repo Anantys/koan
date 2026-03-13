@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 from app.github import run_gh, issue_create, api, fetch_issue_with_comments
-from app.github_url_parser import parse_issue_url
+from app.github_url_parser import parse_github_url, parse_issue_url
 from app.prompts import load_prompt_or_skill
 
 # Label used to tag plan issues for searchability
@@ -137,11 +137,12 @@ def _run_issue_plan(
     skill_dir: Optional[Path],
     context: Optional[str] = None,
 ) -> Tuple[bool, str]:
-    """Read an existing issue + comments, generate updated plan, post comment."""
+    """Read an existing issue/PR + comments, generate updated plan, post comment."""
     try:
-        owner, repo, issue_number = parse_issue_url(issue_url)
+        # Accept both issue and PR URLs — GitHub's issues API works for PRs too.
+        owner, repo, _url_type, issue_number = parse_github_url(issue_url)
     except ValueError:
-        return False, f"Invalid issue URL: {issue_url}"
+        return False, f"Invalid GitHub URL: {issue_url}"
 
     notify_fn(f"\U0001f4d6 Reading issue #{issue_number} ({owner}/{repo})...")
 
