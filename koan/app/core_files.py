@@ -25,9 +25,10 @@ CORE_PATHS = (
 )
 
 # Paths relative to a *project* working directory that must survive.
-# Checked when the project IS the koan repo itself.
+# Checked when project_path is provided (i.e. for every project).
 PROJECT_CORE_PATHS = (
     ".env",
+    "CLAUDE.md",
 )
 
 

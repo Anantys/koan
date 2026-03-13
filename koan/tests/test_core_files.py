@@ -28,10 +28,11 @@ def fake_koan_root(tmp_path):
 
 @pytest.fixture
 def fake_project(tmp_path):
-    """Create a minimal project directory with .env."""
+    """Create a minimal project directory with .env and CLAUDE.md."""
     proj = tmp_path / "myproject"
     proj.mkdir()
     (proj / ".env").write_text("SECRET=xxx\n")
+    (proj / "CLAUDE.md").write_text("# Project\n")
     return proj
 
 
@@ -61,6 +62,7 @@ class TestSnapshotCoreFiles:
     def test_with_project_path(self, fake_koan_root, fake_project):
         snap = snapshot_core_files(str(fake_koan_root), str(fake_project))
         assert "project:.env" in snap
+        assert "project:CLAUDE.md" in snap
 
     def test_project_env_missing(self, fake_koan_root, tmp_path):
         proj = tmp_path / "noproj"
@@ -105,8 +107,14 @@ class TestCheckCoreFiles:
         before = snapshot_core_files(str(fake_koan_root), str(fake_project))
         (fake_project / ".env").unlink()
         warnings = check_core_files(str(fake_koan_root), before, str(fake_project))
-        assert len(warnings) == 1
-        assert "Project file disappeared: .env" in warnings[0]
+        assert any("Project file disappeared: .env" in w for w in warnings)
+
+    def test_project_claudemd_removed(self, fake_koan_root, fake_project):
+        before = snapshot_core_files(str(fake_koan_root), str(fake_project))
+        assert "project:CLAUDE.md" in before
+        (fake_project / "CLAUDE.md").unlink()
+        warnings = check_core_files(str(fake_koan_root), before, str(fake_project))
+        assert any("Project file disappeared: CLAUDE.md" in w for w in warnings)
 
     def test_file_added_no_warning(self, fake_koan_root):
         """Adding new files should not trigger warnings."""

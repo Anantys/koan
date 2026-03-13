@@ -982,6 +982,7 @@ def _handle_skill_dispatch(
             if skill_integrity:
                 log_integrity_warnings(skill_integrity)
                 log("error", f"Core file integrity check failed after skill: {len(skill_integrity)} file(s) missing")
+                exit_code = 1
         except KeyboardInterrupt:
             log("error", "Skill dispatch interrupted by user")
             _finalize_mission(instance, mission_title, project_name, 1)
@@ -1471,12 +1472,6 @@ def _run_iteration(
         )
         _debug_log(f"[run] cli: exit_code={claude_exit}")
 
-        # Verify core files survived the mission
-        integrity_warnings = check_core_files(koan_root, core_snapshot, project_path)
-        if integrity_warnings:
-            log_integrity_warnings(integrity_warnings)
-            log("error", f"Core file integrity check failed: {len(integrity_warnings)} file(s) missing")
-
         # --- Mission retry on transient CLI errors ---
         # One retry for missions, zero for autonomous (they're lower-priority).
         # Only retry if HEAD didn't move (no commits produced).
@@ -1493,6 +1488,13 @@ def _run_iteration(
                 run_num=run_num,
                 has_mission=bool(mission_title),
             )
+
+        # Verify core files survived the mission (after retry, so result is final)
+        integrity_warnings = check_core_files(koan_root, core_snapshot, project_path)
+        if integrity_warnings:
+            log_integrity_warnings(integrity_warnings)
+            log("error", f"Core file integrity check failed: {len(integrity_warnings)} file(s) missing")
+            claude_exit = 1
 
         # Parse and display output
         try:
