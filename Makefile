@@ -157,7 +157,7 @@ install:
 	@echo "→ Starting Kōan Setup Wizard..."
 	@$(PYTHON) -m venv $(VENV) 2>/dev/null || true
 	@$(VENV)/bin/pip install -q flask 2>/dev/null || pip3 install -q flask 2>/dev/null
-	@cd koan && KOAN_ROOT=$(PWD) PYTHONPATH=. $(PYTHON) app/setup_wizard.py
+	@cd koan && KOAN_ROOT=$(PWD) PYTHONPATH=. ../$(PYTHON) app/setup_wizard.py
 
 onboard: setup
 	@cd koan && KOAN_ROOT=$(PWD) PYTHONPATH=. ../$(PYTHON) -m app.onboarding $(ARGS)
