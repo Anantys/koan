@@ -314,16 +314,85 @@ def get_project_submit_to_repository(config: dict, project_name: str) -> dict:
 
 
 def save_projects_config(koan_root: str, config: dict) -> None:
-    """Write config back to projects.yaml atomically."""
+    """Write config back to projects.yaml atomically, preserving comments.
+
+    Uses ruamel.yaml to round-trip the existing file so that user comments
+    and formatting are kept intact. Falls back to plain pyyaml if ruamel
+    is unavailable.
+    """
     from app.utils import atomic_write
 
     config_path = Path(koan_root) / "projects.yaml"
+
+    try:
+        from ruamel.yaml import YAML
+        import io
+
+        ry = YAML()
+        ry.preserve_quotes = True
+
+        # Load existing file to preserve its comments
+        existing = None
+        if config_path.exists():
+            with open(config_path, "r") as f:
+                raw = f.read()
+            if raw.strip():
+                existing = ry.load(raw)
+
+        if existing is not None and isinstance(existing, dict):
+            _deep_merge_yaml(existing, config)
+            data = existing
+        else:
+            data = config
+
+        stream = io.StringIO()
+        ry.dump(data, stream)
+        content = stream.getvalue()
+
+        # Add header only for brand-new files / non-dict existing content
+        if (existing is None or not isinstance(existing, dict)) and not content.startswith("#"):
+            header = (
+                "# projects.yaml — Project configuration for Kōan\n"
+                "# Auto-managed — manual edits are preserved.\n\n"
+            )
+            content = header + content
+
+        atomic_write(config_path, content)
+        return
+    except ImportError:
+        pass
+
+    # Fallback: plain pyyaml (loses comments)
     header = (
         "# projects.yaml — Project configuration for Kōan\n"
         "# Auto-managed — manual edits are preserved.\n\n"
     )
     content = header + yaml.dump(config, default_flow_style=False, sort_keys=False)
     atomic_write(config_path, content)
+
+
+def _deep_merge_yaml(target, source):
+    """Recursively merge source dict into target, preserving target's comments.
+
+    - Existing keys are updated in-place (comments on those keys survive).
+    - New keys from source are added.
+    - Keys removed from source are deleted from target.
+    """
+    # Update / add keys from source
+    for key, value in source.items():
+        if (
+            key in target
+            and isinstance(target[key], dict)
+            and isinstance(value, dict)
+        ):
+            _deep_merge_yaml(target[key], value)
+        else:
+            target[key] = value
+
+    # Remove keys not in source
+    for key in list(target.keys()):
+        if key not in source:
+            del target[key]
 
 
 def ensure_github_urls(koan_root: str) -> List[str]:

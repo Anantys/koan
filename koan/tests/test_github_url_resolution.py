@@ -389,6 +389,135 @@ class TestSaveProjectsConfig:
                 save_projects_config(str(tmp_path), config)
 
 
+class TestSaveProjectsConfigComments:
+    """Tests for comment preservation in save_projects_config()."""
+
+    def test_preserves_inline_comments(self, tmp_path):
+        from app.projects_config import save_projects_config, load_projects_config
+
+        yaml_with_comments = (
+            "# Main config header\n"
+            "# Second header line\n\n"
+            "projects:\n"
+            "  myapp:\n"
+            "    path: /tmp/myapp  # project root\n"
+            "    exploration: true  # enable autonomous work\n"
+        )
+        (tmp_path / "projects.yaml").write_text(yaml_with_comments)
+
+        config = load_projects_config(str(tmp_path))
+        config["projects"]["myapp"]["exploration"] = False
+        save_projects_config(str(tmp_path), config)
+
+        saved = (tmp_path / "projects.yaml").read_text()
+        assert "# Main config header" in saved
+        assert "# Second header line" in saved
+        assert "# project root" in saved
+        assert "exploration: false" in saved
+
+    def test_preserves_block_comments(self, tmp_path):
+        from app.projects_config import save_projects_config, load_projects_config
+
+        yaml_with_comments = (
+            "# projects.yaml — my custom header\n"
+            "\n"
+            "# Default settings for all projects\n"
+            "defaults:\n"
+            "  exploration: true\n"
+            "\n"
+            "# Project list\n"
+            "projects:\n"
+            "  # My main app\n"
+            "  webapp:\n"
+            "    path: /tmp/webapp\n"
+        )
+        (tmp_path / "projects.yaml").write_text(yaml_with_comments)
+
+        config = load_projects_config(str(tmp_path))
+        config["projects"]["webapp"]["github_url"] = "user/webapp"
+        save_projects_config(str(tmp_path), config)
+
+        saved = (tmp_path / "projects.yaml").read_text()
+        assert "# projects.yaml — my custom header" in saved
+        assert "# Default settings for all projects" in saved
+        assert "# Project list" in saved
+        assert "# My main app" in saved
+        assert "github_url: user/webapp" in saved
+
+    def test_preserves_comments_on_new_field_addition(self, tmp_path):
+        from app.projects_config import save_projects_config, load_projects_config
+
+        yaml_with_comments = (
+            "# Config with comments\n"
+            "projects:\n"
+            "  app1:\n"
+            "    path: /tmp/app1  # first project\n"
+            "  app2:\n"
+            "    path: /tmp/app2  # second project\n"
+        )
+        (tmp_path / "projects.yaml").write_text(yaml_with_comments)
+
+        config = load_projects_config(str(tmp_path))
+        config["projects"]["app1"]["exploration"] = False
+        save_projects_config(str(tmp_path), config)
+
+        saved = (tmp_path / "projects.yaml").read_text()
+        assert "# first project" in saved
+        assert "# second project" in saved
+        assert "exploration: false" in saved
+
+    def test_new_file_gets_header(self, tmp_path):
+        from app.projects_config import save_projects_config
+
+        config = {"projects": {"newapp": {"path": "/tmp/newapp"}}}
+        save_projects_config(str(tmp_path), config)
+
+        saved = (tmp_path / "projects.yaml").read_text()
+        assert "Kōan" in saved
+        assert "projects:" in saved
+
+    def test_roundtrip_preserves_full_structure(self, tmp_path):
+        from app.projects_config import save_projects_config, load_projects_config
+
+        yaml_content = (
+            "# ===== Kōan projects =====\n"
+            "# Edit this file to configure your projects.\n"
+            "# Comments like this one will be preserved!\n"
+            "\n"
+            "defaults:\n"
+            "  # Global settings\n"
+            "  exploration: true  # allow autonomous exploration\n"
+            "  git_auto_merge:\n"
+            "    enabled: false  # manual merge only\n"
+            "\n"
+            "projects:\n"
+            "  # ---- Production apps ----\n"
+            "  webapp:\n"
+            "    path: /tmp/webapp\n"
+            "    exploration: false  # too risky for autonomous\n"
+            "\n"
+            "  # ---- Internal tools ----\n"
+            "  toolbox:\n"
+            "    path: /tmp/toolbox\n"
+        )
+        (tmp_path / "projects.yaml").write_text(yaml_content)
+
+        config = load_projects_config(str(tmp_path))
+        config["projects"]["webapp"]["exploration"] = True
+        save_projects_config(str(tmp_path), config)
+
+        saved = (tmp_path / "projects.yaml").read_text()
+        assert "# ===== Kōan projects =====" in saved
+        assert "# Edit this file to configure your projects." in saved
+        assert "# Comments like this one will be preserved!" in saved
+        assert "# Global settings" in saved
+        assert "# allow autonomous exploration" in saved
+        assert "# manual merge only" in saved
+        assert "# ---- Production apps ----" in saved
+        assert "# ---- Internal tools ----" in saved
+        assert "exploration: true" in saved  # updated value
+
+
 class TestEnsureGithubUrls:
     """Tests for ensure_github_urls() — auto-populating github_url."""
 
