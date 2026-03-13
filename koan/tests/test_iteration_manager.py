@@ -1328,6 +1328,12 @@ class TestFilterExplorationProjectsPrLimit:
         from app.github import _pr_count_cache
         _pr_count_cache.clear()
 
+    @pytest.fixture(autouse=True)
+    def _mock_batch(self):
+        """Disable batch GraphQL so tests exercise the sequential fallback path."""
+        with patch("app.github.batch_count_open_prs", return_value={}):
+            yield
+
     @patch("app.github.get_gh_username", return_value="koan-bot")
     @patch("app.github.count_open_prs", return_value=3)
     def test_under_limit_included(self, mock_count, mock_user, koan_root):
@@ -1668,6 +1674,122 @@ projects:
         assert mock_count.call_count == 1
 
 
+# === Tests: _filter_exploration_projects with batch GraphQL path ===
+
+
+class TestFilterExplorationProjectsBatchPath:
+    """Tests that verify the batch GraphQL path in _filter_exploration_projects."""
+
+    def setup_method(self):
+        from app.github import _pr_count_cache
+        _pr_count_cache.clear()
+
+    @patch("app.github.get_gh_username", return_value="koan-bot")
+    @patch("app.github.batch_count_open_prs")
+    def test_batch_provides_counts(self, mock_batch, mock_user, koan_root):
+        """When batch succeeds, no sequential fallback needed."""
+        mock_batch.return_value = {"owner/koan": 3}
+        (koan_root / "projects.yaml").write_text("""
+projects:
+  koan:
+    path: /path/to/koan
+    github_url: owner/koan
+    max_open_prs: 5
+""")
+        result = _filter_exploration_projects(
+            [("koan", "/path/to/koan")], str(koan_root),
+        )
+        assert len(result.projects) == 1
+        mock_batch.assert_called_once()
+
+    @patch("app.github.get_gh_username", return_value="koan-bot")
+    @patch("app.github.batch_count_open_prs")
+    def test_batch_at_limit_excludes(self, mock_batch, mock_user, koan_root):
+        """Batch reports count at limit → project excluded."""
+        mock_batch.return_value = {"owner/koan": 10}
+        (koan_root / "projects.yaml").write_text("""
+projects:
+  koan:
+    path: /path/to/koan
+    github_url: owner/koan
+    max_open_prs: 10
+""")
+        result = _filter_exploration_projects(
+            [("koan", "/path/to/koan")], str(koan_root),
+        )
+        assert result.projects == []
+        assert result.pr_limited == ["koan"]
+
+    @patch("app.github.get_gh_username", return_value="koan-bot")
+    @patch("app.github.batch_count_open_prs")
+    def test_batch_multiple_repos_summed(self, mock_batch, mock_user, koan_root):
+        """Batch sums counts across multiple URLs for the same project."""
+        mock_batch.return_value = {"owner/koan": 2, "upstream/koan": 4}
+        (koan_root / "projects.yaml").write_text("""
+projects:
+  koan:
+    path: /path/to/koan
+    github_url: owner/koan
+    max_open_prs: 5
+    github_urls:
+    - owner/koan
+    - upstream/koan
+""")
+        result = _filter_exploration_projects(
+            [("koan", "/path/to/koan")], str(koan_root),
+        )
+        # 2 + 4 = 6, over limit of 5
+        assert result.projects == []
+        assert result.pr_limited == ["koan"]
+
+    @patch("app.github.get_gh_username", return_value="koan-bot")
+    @patch("app.github.cached_count_open_prs", return_value=8)
+    @patch("app.github.batch_count_open_prs", return_value={})
+    def test_batch_failure_falls_back_to_sequential(
+        self, mock_batch, mock_cached, mock_user, koan_root,
+    ):
+        """When batch returns empty, falls back to cached_count_open_prs."""
+        (koan_root / "projects.yaml").write_text("""
+projects:
+  koan:
+    path: /path/to/koan
+    github_url: owner/koan
+    max_open_prs: 5
+""")
+        result = _filter_exploration_projects(
+            [("koan", "/path/to/koan")], str(koan_root),
+        )
+        assert result.projects == []
+        assert result.pr_limited == ["koan"]
+        mock_cached.assert_called_once_with("owner/koan", "koan-bot")
+
+    @patch("app.github.get_gh_username", return_value="koan-bot")
+    @patch("app.github.batch_count_open_prs")
+    def test_batch_receives_all_repos(self, mock_batch, mock_user, koan_root):
+        """Batch is called with deduplicated repos from all projects."""
+        mock_batch.return_value = {
+            "owner/koan": 1,
+            "owner/backend": 2,
+        }
+        (koan_root / "projects.yaml").write_text("""
+projects:
+  koan:
+    path: /path/to/koan
+    github_url: owner/koan
+    max_open_prs: 5
+  backend:
+    path: /path/to/backend
+    github_url: owner/backend
+    max_open_prs: 5
+  webapp:
+    path: /path/to/webapp
+""")
+        _filter_exploration_projects(PROJECTS_LIST, str(koan_root))
+        # Should have called batch with both repos (webapp has no URL)
+        repos_arg = mock_batch.call_args[0][0]
+        assert set(repos_arg) == {"owner/koan", "owner/backend"}
+
+
 # === Tests: _filter_exploration_projects with deep_hours PR limit relaxation ===
 
 
@@ -1677,6 +1799,12 @@ class TestFilterExplorationProjectsDeepHours:
         """Clear the PR count cache between tests."""
         from app.github import _pr_count_cache
         _pr_count_cache.clear()
+
+    @pytest.fixture(autouse=True)
+    def _mock_batch(self):
+        """Disable batch GraphQL so tests exercise the sequential fallback path."""
+        with patch("app.github.batch_count_open_prs", return_value={}):
+            yield
 
     @patch("app.github.get_gh_username", return_value="koan-bot")
     @patch("app.github.count_open_prs", return_value=10)

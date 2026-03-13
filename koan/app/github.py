@@ -276,6 +276,66 @@ def cached_count_open_prs(github_url: str, author: str) -> int:
     return result
 
 
+def batch_count_open_prs(repos: list, author: str) -> Dict[str, int]:
+    """Count open PRs across multiple repos in a single GraphQL call.
+
+    Uses GitHub's ``search`` API with aliased queries to fetch PR counts
+    for all repos at once, instead of one ``gh pr list`` per repo.
+
+    Args:
+        repos: List of repository identifiers in ``owner/repo`` format.
+        author: GitHub username to filter by.
+
+    Returns:
+        Dict mapping ``owner/repo`` → open PR count.
+        Repos that errored individually are omitted from the result.
+        On total failure, returns an empty dict (caller should fall back).
+    """
+    if not repos or not author:
+        return {}
+
+    # Deduplicate while preserving association
+    unique_repos = list(dict.fromkeys(repos))
+
+    # Build aliased GraphQL query
+    fragments = []
+    alias_map = {}  # alias -> repo
+    for i, repo in enumerate(unique_repos):
+        alias = f"r{i}"
+        alias_map[alias] = repo
+        # Escape quotes in repo name (defensive)
+        safe_repo = repo.replace('"', '\\"')
+        safe_author = author.replace('"', '\\"')
+        fragments.append(
+            f'{alias}: search(query: "repo:{safe_repo} is:pr is:open '
+            f'author:{safe_author}", type: ISSUE, first: 1) {{ issueCount }}'
+        )
+
+    query = "query { " + " ".join(fragments) + " }"
+
+    try:
+        output = run_gh(
+            "api", "graphql",
+            "-f", f"query={query}",
+            timeout=20,
+        )
+        data = json.loads(output)
+        results = {}
+        now = time.monotonic()
+        for alias, repo in alias_map.items():
+            node = data.get("data", {}).get(alias)
+            if node is not None:
+                count = node.get("issueCount", -1)
+                results[repo] = count
+                # Populate the TTL cache so cached_count_open_prs benefits
+                cache_key = f"{repo}:{author}"
+                _pr_count_cache[cache_key] = (count, now)
+        return results
+    except (RuntimeError, subprocess.TimeoutExpired, json.JSONDecodeError,
+            OSError, TypeError, KeyError):
+        return {}
+
+
 def count_open_prs(repo: str, author: str, cwd: str = None) -> int:
     """Count open pull requests by a specific author in a repository.
 

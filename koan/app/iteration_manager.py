@@ -450,9 +450,12 @@ def _filter_exploration_projects(
     if skip_pr_limit:
         return FilterResult(projects=exploration_enabled, pr_limited=[])
 
-    from app.github import get_gh_username, cached_count_open_prs
+    from app.github import get_gh_username, batch_count_open_prs, cached_count_open_prs
     author = get_gh_username()
 
+    # Phase 1: Collect all repos that need PR counts
+    # Projects with limit=0, no author, or no URLs skip the PR check entirely
+    projects_needing_check = {}  # name -> (path, limit, urls_to_check)
     filtered = []
     pr_limited = []
 
@@ -463,11 +466,9 @@ def _filter_exploration_projects(
             continue
 
         if not author:
-            # Can't determine author — fail-open, include project
             filtered.append((name, path))
             continue
 
-        # Collect all github URLs for this project (primary + extras)
         project_cfg = config.get("projects", {}).get(name, {}) or {}
         urls_to_check = set()
         primary_url = project_cfg.get("github_url", "")
@@ -483,17 +484,35 @@ def _filter_exploration_projects(
             filtered.append((name, path))
             continue
 
-        # Sum open PRs across all repos (PRs on fork vs upstream are distinct)
+        projects_needing_check[name] = (path, limit, urls_to_check)
+
+    if not projects_needing_check:
+        return FilterResult(projects=filtered, pr_limited=pr_limited)
+
+    # Phase 2: Batch-fetch PR counts for all repos in one GraphQL call
+    all_repos = []
+    for _, (_, _, urls) in projects_needing_check.items():
+        all_repos.extend(urls)
+    all_repos = list(dict.fromkeys(all_repos))  # deduplicate, preserve order
+
+    batch_results = batch_count_open_prs(all_repos, author)
+
+    # Phase 3: Evaluate limits using batch results (fall back to sequential on miss)
+    for name, (path, limit, urls_to_check) in projects_needing_check.items():
         total_open = 0
-        any_error = True  # assume error until we get a valid count
+        any_error = True
+
         for url in urls_to_check:
-            count = cached_count_open_prs(url, author)
+            if url in batch_results:
+                count = batch_results[url]
+            else:
+                # Batch missed this repo — fall back to individual query
+                count = cached_count_open_prs(url, author)
             if count >= 0:
                 total_open += count
                 any_error = False
 
         if any_error:
-            # All URLs errored — fail-open, include project
             filtered.append((name, path))
             continue
 

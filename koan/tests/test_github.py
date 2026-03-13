@@ -9,7 +9,7 @@ import pytest
 from app.github import (
     run_gh, pr_create, issue_create, api,
     get_gh_username, count_open_prs, cached_count_open_prs,
-    fetch_issue_with_comments, detect_parent_repo,
+    batch_count_open_prs, fetch_issue_with_comments, detect_parent_repo,
 )
 import app.github as github_module
 
@@ -348,6 +348,95 @@ class TestCountOpenPrs:
     @patch("app.github.run_gh", return_value="")
     def test_empty_output_returns_negative_one(self, mock_gh):
         assert count_open_prs("owner/repo", "koan-bot") == -1
+
+
+# ---------------------------------------------------------------------------
+# batch_count_open_prs
+# ---------------------------------------------------------------------------
+
+
+class TestBatchCountOpenPrs:
+
+    def setup_method(self):
+        from app.github import _pr_count_cache
+        _pr_count_cache.clear()
+
+    @patch("app.github.run_gh")
+    def test_single_repo(self, mock_gh):
+        mock_gh.return_value = json.dumps({
+            "data": {"r0": {"issueCount": 3}},
+        })
+        result = batch_count_open_prs(["owner/repo"], "koan-bot")
+        assert result == {"owner/repo": 3}
+        mock_gh.assert_called_once()
+        # Verify GraphQL query structure
+        call_args = mock_gh.call_args
+        assert call_args[0][:2] == ("api", "graphql")
+
+    @patch("app.github.run_gh")
+    def test_multiple_repos(self, mock_gh):
+        mock_gh.return_value = json.dumps({
+            "data": {
+                "r0": {"issueCount": 2},
+                "r1": {"issueCount": 5},
+                "r2": {"issueCount": 0},
+            },
+        })
+        repos = ["owner/alpha", "owner/beta", "other/gamma"]
+        result = batch_count_open_prs(repos, "koan-bot")
+        assert result == {
+            "owner/alpha": 2,
+            "owner/beta": 5,
+            "other/gamma": 0,
+        }
+        # Single GraphQL call for all repos
+        assert mock_gh.call_count == 1
+
+    @patch("app.github.run_gh")
+    def test_populates_cache(self, mock_gh):
+        from app.github import _pr_count_cache
+        mock_gh.return_value = json.dumps({
+            "data": {"r0": {"issueCount": 7}},
+        })
+        batch_count_open_prs(["owner/repo"], "koan-bot")
+        assert "owner/repo:koan-bot" in _pr_count_cache
+        assert _pr_count_cache["owner/repo:koan-bot"][0] == 7
+
+    @patch("app.github.run_gh", side_effect=RuntimeError("auth error"))
+    def test_returns_empty_on_error(self, mock_gh):
+        result = batch_count_open_prs(["owner/repo"], "koan-bot")
+        assert result == {}
+
+    def test_empty_repos_returns_empty(self):
+        assert batch_count_open_prs([], "koan-bot") == {}
+
+    def test_empty_author_returns_empty(self):
+        assert batch_count_open_prs(["owner/repo"], "") == {}
+
+    @patch("app.github.run_gh")
+    def test_deduplicates_repos(self, mock_gh):
+        mock_gh.return_value = json.dumps({
+            "data": {"r0": {"issueCount": 4}},
+        })
+        result = batch_count_open_prs(
+            ["owner/repo", "owner/repo", "owner/repo"], "koan-bot",
+        )
+        assert result == {"owner/repo": 4}
+        # Query should only have one alias (r0)
+        query_arg = mock_gh.call_args[0][3]  # -f arg value
+        assert "r1:" not in query_arg
+
+    @patch("app.github.run_gh")
+    def test_partial_response_returns_available(self, mock_gh):
+        """If GraphQL returns data for some repos but not all."""
+        mock_gh.return_value = json.dumps({
+            "data": {
+                "r0": {"issueCount": 3},
+                "r1": None,
+            },
+        })
+        result = batch_count_open_prs(["owner/a", "owner/b"], "koan-bot")
+        assert result == {"owner/a": 3}
 
 
 # ---------------------------------------------------------------------------
