@@ -1896,6 +1896,97 @@ class TestBuildMissionEdgeCases:
         mission = build_mission_from_command(skill, "check", "", notif, "proj")
         assert mission == "- [project:proj] /check"
 
+    @patch("app.github_command_handler._resolve_project_from_url", return_value="grep")
+    def test_context_url_cross_repo_resolves_project(self, mock_resolve):
+        """When context URL points to a different repo, project tag should update."""
+        skill = Skill(
+            name="plan", scope="core", github_enabled=True,
+            github_context_aware=True,
+            commands=[SkillCommand(name="plan")],
+        )
+        # Notification from investmindr (project: backend)
+        notif = {"subject": {"url": "https://api.github.com/repos/Anantys/investmindr/pulls/100"}}
+        # Context URL points to metacpan (project: grep)
+        context = "https://github.com/metacpan/metacpan-grep-front-end/pull/75"
+        mission = build_mission_from_command(
+            skill, "plan", context, notif, "backend"
+        )
+        # Project should be re-resolved to grep, not stay as backend
+        assert "[project:grep]" in mission
+        assert "[project:backend]" not in mission
+        assert "metacpan-grep-front-end/pull/75" in mission
+
+    @patch("app.github_command_handler._resolve_project_from_url", return_value=None)
+    def test_context_url_cross_repo_unknown_keeps_original(self, mock_resolve):
+        """When context URL repo is unknown, keep the original project."""
+        skill = Skill(
+            name="plan", scope="core", github_enabled=True,
+            github_context_aware=True,
+            commands=[SkillCommand(name="plan")],
+        )
+        notif = {"subject": {"url": "https://api.github.com/repos/o/r/pulls/1"}}
+        context = "https://github.com/unknown/repo/issues/5"
+        mission = build_mission_from_command(
+            skill, "plan", context, notif, "original"
+        )
+        # Should keep original project since URL repo is unknown
+        assert "[project:original]" in mission
+
+    def test_no_context_url_keeps_original_project(self):
+        """Without a context URL, project tag stays from notification."""
+        skill = Skill(
+            name="rebase", scope="core", github_enabled=True,
+            github_context_aware=False,
+            commands=[SkillCommand(name="rebase")],
+        )
+        notif = {"subject": {"url": "https://api.github.com/repos/o/r/pulls/1"}}
+        mission = build_mission_from_command(
+            skill, "rebase", "", notif, "backend"
+        )
+        assert "[project:backend]" in mission
+
+
+# ---------------------------------------------------------------------------
+# _resolve_project_from_url
+# ---------------------------------------------------------------------------
+
+
+class TestResolveProjectFromUrl:
+    @patch("app.utils.resolve_project_path", return_value="/path/to/grep")
+    @patch("app.utils.project_name_for_path", return_value="grep")
+    def test_resolves_from_pr_url(self, mock_name, mock_resolve):
+        from app.github_command_handler import _resolve_project_from_url
+        result = _resolve_project_from_url(
+            "https://github.com/metacpan/metacpan-grep-front-end/pull/75"
+        )
+        assert result == "grep"
+        mock_resolve.assert_called_with("metacpan-grep-front-end", owner="metacpan")
+
+    @patch("app.utils.resolve_project_path", return_value="/path/to/proj")
+    @patch("app.utils.project_name_for_path", return_value="proj")
+    def test_resolves_from_issue_url(self, mock_name, mock_resolve):
+        from app.github_command_handler import _resolve_project_from_url
+        result = _resolve_project_from_url(
+            "https://github.com/owner/myrepo/issues/42"
+        )
+        assert result == "proj"
+
+    @patch("app.utils.resolve_project_path", return_value=None)
+    def test_unknown_repo_returns_none(self, mock_resolve):
+        from app.github_command_handler import _resolve_project_from_url
+        result = _resolve_project_from_url(
+            "https://github.com/unknown/repo/pull/1"
+        )
+        assert result is None
+
+    def test_non_github_url_returns_none(self):
+        from app.github_command_handler import _resolve_project_from_url
+        assert _resolve_project_from_url("https://example.com/foo") is None
+
+    def test_empty_string_returns_none(self):
+        from app.github_command_handler import _resolve_project_from_url
+        assert _resolve_project_from_url("") is None
+
 
 # ---------------------------------------------------------------------------
 # validate_command — additional edge cases
