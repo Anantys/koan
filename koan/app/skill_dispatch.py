@@ -440,6 +440,27 @@ def _build_incident_cmd(
     return cmd
 
 
+def cleanup_skill_temp_files(skill_cmd: List[str]) -> None:
+    """Remove temp files created by skill command builders.
+
+    Currently handles:
+    - ``--error-file`` temp files from ``_build_incident_cmd()``
+
+    Safe to call on any skill_cmd — silently skips if no temp files found.
+    """
+    import os
+
+    for i, token in enumerate(skill_cmd):
+        if token == "--error-file" and i + 1 < len(skill_cmd):
+            path = skill_cmd[i + 1]
+            # Only remove files we created (koan-incident-* in temp dir)
+            if "/koan-incident-" in path:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+
+
 def validate_skill_args(command: str, args: str) -> Optional[str]:
     """Return a human-readable error if args are invalid for a known command.
 

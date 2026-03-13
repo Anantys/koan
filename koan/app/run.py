@@ -988,6 +988,10 @@ def _handle_skill_dispatch(
             raise
         except Exception as e:
             log("error", f"Skill dispatch exception: {e}\n{traceback.format_exc()}")
+        finally:
+            # Clean up temp files created by skill command builders
+            from app.skill_dispatch import cleanup_skill_temp_files
+            cleanup_skill_temp_files(skill_cmd)
 
         _notify_mission_end(
             instance, project_name, run_num, max_runs,

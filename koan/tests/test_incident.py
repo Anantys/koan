@@ -435,6 +435,61 @@ class TestSkillDispatch:
         assert "--error-file" in cmd
         assert "--instance-dir" in cmd
 
+    def test_build_incident_cmd_temp_file_created(self, tmp_path):
+        """Verify the temp file created by _build_incident_cmd actually exists on disk."""
+        from app.skill_dispatch import build_skill_command
+        cmd = build_skill_command(
+            command="incident",
+            args="RuntimeError: boom",
+            project_name="myproject",
+            project_path="/path/myproject",
+            koan_root="/koan",
+            instance_dir=str(tmp_path),
+        )
+        idx = cmd.index("--error-file")
+        tmp_file = Path(cmd[idx + 1])
+        assert tmp_file.exists()
+        assert tmp_file.read_text() == "RuntimeError: boom"
+        # Cleanup for test hygiene
+        tmp_file.unlink()
+
+    def test_cleanup_skill_temp_files_removes_incident_file(self, tmp_path):
+        """cleanup_skill_temp_files removes koan-incident-* temp files."""
+        import tempfile
+        from app.skill_dispatch import cleanup_skill_temp_files
+        fd, path = tempfile.mkstemp(prefix="koan-incident-", suffix=".txt")
+        with open(fd, "w") as f:
+            f.write("error text")
+        assert Path(path).exists()
+
+        cmd = ["python", "-m", "skills.core.incident.incident_runner",
+               "--project-path", "/p", "--error-file", path]
+        cleanup_skill_temp_files(cmd)
+        assert not Path(path).exists()
+
+    def test_cleanup_skill_temp_files_ignores_non_incident(self, tmp_path):
+        """cleanup_skill_temp_files does not remove non-koan-incident files."""
+        from app.skill_dispatch import cleanup_skill_temp_files
+        regular_file = tmp_path / "regular.txt"
+        regular_file.write_text("keep me")
+
+        cmd = ["python", "-m", "runner", "--error-file", str(regular_file)]
+        cleanup_skill_temp_files(cmd)
+        assert regular_file.exists()
+
+    def test_cleanup_skill_temp_files_no_error_file(self):
+        """cleanup_skill_temp_files is a no-op when no --error-file in cmd."""
+        from app.skill_dispatch import cleanup_skill_temp_files
+        cmd = ["python", "-m", "runner", "--project-path", "/p"]
+        cleanup_skill_temp_files(cmd)  # Should not raise
+
+    def test_cleanup_skill_temp_files_missing_file(self, tmp_path):
+        """cleanup_skill_temp_files handles already-deleted temp files gracefully."""
+        from app.skill_dispatch import cleanup_skill_temp_files
+        cmd = ["python", "-m", "runner", "--error-file",
+               "/tmp/koan-incident-gone-12345.txt"]
+        cleanup_skill_temp_files(cmd)  # Should not raise
+
 
 # ---------------------------------------------------------------------------
 # Prompt file tests
