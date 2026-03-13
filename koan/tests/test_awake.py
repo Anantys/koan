@@ -1580,24 +1580,20 @@ class TestPauseCommand:
 
     @patch("app.command_handlers.send_telegram")
     def test_resume_with_quota_reason(self, mock_send, tmp_path):
-        """Resume cleans up both pause and pause-reason files, reports quota reason."""
-        (tmp_path / ".koan-pause").write_text("PAUSE")
-        (tmp_path / ".koan-pause-reason").write_text("quota\n1234567890")
+        """Resume cleans up pause file and reports quota reason."""
+        (tmp_path / ".koan-pause").write_text("quota\n1234567890")
         with patch("app.command_handlers.KOAN_ROOT", tmp_path):
             handle_resume()
         assert not (tmp_path / ".koan-pause").exists()
-        assert not (tmp_path / ".koan-pause-reason").exists()
         assert "quota" in mock_send.call_args[0][0].lower()
 
     @patch("app.command_handlers.send_telegram")
     def test_resume_with_max_runs_reason(self, mock_send, tmp_path):
-        """Resume cleans up both files and reports max_runs reason."""
-        (tmp_path / ".koan-pause").write_text("PAUSE")
-        (tmp_path / ".koan-pause-reason").write_text("max_runs\n1234567890")
+        """Resume cleans up pause file and reports max_runs reason."""
+        (tmp_path / ".koan-pause").write_text("max_runs\n1234567890")
         with patch("app.command_handlers.KOAN_ROOT", tmp_path):
             handle_resume()
         assert not (tmp_path / ".koan-pause").exists()
-        assert not (tmp_path / ".koan-pause-reason").exists()
         assert "max_runs" in mock_send.call_args[0][0].lower()
 
     @patch("app.command_handlers.send_telegram")
@@ -1614,8 +1610,7 @@ class TestPauseCommand:
     @patch("app.command_handlers.send_telegram")
     def test_resume_quota_resets_session_counters(self, mock_send, mock_reset, tmp_path):
         """Resume from quota pause should reset internal session counters."""
-        (tmp_path / ".koan-pause").write_text("PAUSE")
-        (tmp_path / ".koan-pause-reason").write_text("quota\n9999999999\nresets 7pm")
+        (tmp_path / ".koan-pause").write_text("quota\n9999999999\nresets 7pm")
         with patch("app.command_handlers.KOAN_ROOT", tmp_path):
             handle_resume()
         mock_reset.assert_called_once()
@@ -1624,8 +1619,7 @@ class TestPauseCommand:
     @patch("app.command_handlers.send_telegram")
     def test_resume_max_runs_does_not_reset_session(self, mock_send, mock_reset, tmp_path):
         """Resume from max_runs should NOT reset session counters."""
-        (tmp_path / ".koan-pause").write_text("PAUSE")
-        (tmp_path / ".koan-pause-reason").write_text("max_runs\n1234567890")
+        (tmp_path / ".koan-pause").write_text("max_runs\n1234567890")
         with patch("app.command_handlers.KOAN_ROOT", tmp_path):
             handle_resume()
         mock_reset.assert_not_called()
@@ -1642,9 +1636,8 @@ class TestPauseCommand:
     @patch("app.command_handlers.send_telegram")
     def test_resume_quota_message_includes_counter_info(self, mock_send, tmp_path):
         """Resume message from quota should mention that counters were cleared."""
-        (tmp_path / ".koan-pause").write_text("PAUSE")
         future_ts = str(int(time.time()) + 3600)
-        (tmp_path / ".koan-pause-reason").write_text(f"quota\n{future_ts}\nresets 7pm")
+        (tmp_path / ".koan-pause").write_text(f"quota\n{future_ts}\nresets 7pm")
         with patch("app.command_handlers.KOAN_ROOT", tmp_path), \
              patch("app.command_handlers._reset_session_counters"):
             handle_resume()
@@ -1654,9 +1647,8 @@ class TestPauseCommand:
     @patch("app.command_handlers.send_telegram")
     def test_resume_quota_past_reset_time(self, mock_send, tmp_path):
         """Resume after reset time should confirm quota reset."""
-        (tmp_path / ".koan-pause").write_text("PAUSE")
         past_ts = str(int(time.time()) - 3600)  # 1h ago
-        (tmp_path / ".koan-pause-reason").write_text(f"quota\n{past_ts}\nresets 7pm")
+        (tmp_path / ".koan-pause").write_text(f"quota\n{past_ts}\nresets 7pm")
         with patch("app.command_handlers.KOAN_ROOT", tmp_path), \
              patch("app.command_handlers._reset_session_counters"):
             handle_resume()
@@ -1676,8 +1668,7 @@ class TestPauseCommand:
 
     def test_status_shows_paused_with_quota_reason(self, tmp_path):
         """Status shows Paused with quota reason."""
-        (tmp_path / ".koan-pause").write_text("PAUSE")
-        (tmp_path / ".koan-pause-reason").write_text("quota\n1234567890")
+        (tmp_path / ".koan-pause").write_text("quota\n1234567890")
         (tmp_path / "instance").mkdir()
         (tmp_path / "instance" / "missions.md").write_text(
             "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n"
@@ -1688,8 +1679,7 @@ class TestPauseCommand:
 
     def test_status_shows_paused_with_max_runs_reason(self, tmp_path):
         """Status shows Paused with max_runs reason."""
-        (tmp_path / ".koan-pause").write_text("PAUSE")
-        (tmp_path / ".koan-pause-reason").write_text("max_runs\n1234567890")
+        (tmp_path / ".koan-pause").write_text("max_runs\n1234567890")
         (tmp_path / "instance").mkdir()
         (tmp_path / "instance" / "missions.md").write_text(
             "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n"

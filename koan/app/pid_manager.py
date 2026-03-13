@@ -31,7 +31,6 @@ from typing import Optional, IO
 
 from app.signals import (
     PAUSE_FILE,
-    PAUSE_REASON_FILE,
     PROJECT_FILE,
     STATUS_FILE,
     STOP_FILE,
@@ -327,7 +326,7 @@ def start_runner(koan_root: Path, verify_timeout: float = DEFAULT_VERIFY_TIMEOUT
     Returns (success: bool, message: str).
     """
     # Clear stop and pause signals so run.py starts fresh
-    for signal_file in (STOP_FILE, PAUSE_FILE, PAUSE_REASON_FILE):
+    for signal_file in (STOP_FILE, PAUSE_FILE):
         (koan_root / signal_file).unlink(missing_ok=True)
 
     return _launch_python_process(koan_root, "app/run.py", "run", verify_timeout)
@@ -400,8 +399,8 @@ def get_status_processes(koan_root: Path) -> tuple:
 def _read_runner_state(koan_root: Path) -> dict:
     """Read the runner's current state from signal files.
 
-    Gathers information from .koan-status, .koan-pause, .koan-pause-reason,
-    and .koan-project to build a complete picture of the runner state.
+    Gathers information from .koan-status, .koan-pause, and .koan-project
+    to build a complete picture of the runner state.
 
     Returns a dict with keys: status, paused, pause_reason, project.
     All values are strings (empty string if unavailable).
@@ -418,12 +417,12 @@ def _read_runner_state(koan_root: Path) -> dict:
     pause_file = koan_root / PAUSE_FILE
     if pause_file.exists():
         state["paused"] = True
-        reason_file = koan_root / PAUSE_REASON_FILE
-        if reason_file.exists():
-            try:
-                state["pause_reason"] = reason_file.read_text().strip().split("\n")[0]
-            except OSError:
-                pass
+        try:
+            content = pause_file.read_text().strip()
+            if content:
+                state["pause_reason"] = content.split("\n")[0]
+        except OSError:
+            pass
 
     project_file = koan_root / PROJECT_FILE
     if project_file.exists():

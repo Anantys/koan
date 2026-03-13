@@ -196,16 +196,14 @@ class TestHandleStatus:
         assert "/resume" in result
 
     def test_paused_quota_reason(self, koan_root, instance_dir):
-        (koan_root / ".koan-pause").touch()
-        (koan_root / ".koan-pause-reason").write_text("quota\n1234567890")
+        (koan_root / ".koan-pause").write_text("quota\n1234567890\n")
         ctx = _make_ctx(koan_root, instance_dir)
         with patch("skills.core.status.handler._needs_ollama", return_value=False):
             result = _handle_status(ctx)
         assert "quota exhausted" in result
 
     def test_paused_max_runs_reason(self, koan_root, instance_dir):
-        (koan_root / ".koan-pause").touch()
-        (koan_root / ".koan-pause-reason").write_text("max_runs\n1234567890")
+        (koan_root / ".koan-pause").write_text("max_runs\n1234567890\n")
         ctx = _make_ctx(koan_root, instance_dir)
         with patch("skills.core.status.handler._needs_ollama", return_value=False):
             result = _handle_status(ctx)

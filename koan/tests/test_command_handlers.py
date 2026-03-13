@@ -88,7 +88,7 @@ class TestHandleCommandRouting:
 
     def test_pause_when_already_paused(self, patch_bridge_state, mock_send):
         from app.command_handlers import handle_command
-        (patch_bridge_state / ".koan-pause").write_text("PAUSE")
+        (patch_bridge_state / ".koan-pause").touch()
         handle_command("/pause")
         mock_send.assert_called_once()
         assert "Already paused" in mock_send.call_args[0][0]
@@ -393,7 +393,7 @@ class TestHandleResume:
 
     def test_resume_manual_pause(self, patch_bridge_state, mock_send):
         from app.command_handlers import handle_resume
-        (patch_bridge_state / ".koan-pause").write_text("PAUSE")
+        (patch_bridge_state / ".koan-pause").touch()
         handle_resume()
         assert not (patch_bridge_state / ".koan-pause").exists()
         mock_send.assert_called_once()
@@ -401,11 +401,9 @@ class TestHandleResume:
 
     def test_resume_max_runs_pause(self, patch_bridge_state, mock_send):
         from app.command_handlers import handle_resume
-        (patch_bridge_state / ".koan-pause").write_text("PAUSE")
-        (patch_bridge_state / ".koan-pause-reason").write_text("max_runs\n")
+        (patch_bridge_state / ".koan-pause").write_text("max_runs\n")
         handle_resume()
         assert not (patch_bridge_state / ".koan-pause").exists()
-        assert not (patch_bridge_state / ".koan-pause-reason").exists()
         mock_send.assert_called_once()
         assert "max_runs" in mock_send.call_args[0][0]
 
@@ -414,10 +412,9 @@ class TestHandleResume:
         self, mock_reset, patch_bridge_state, mock_send
     ):
         from app.command_handlers import handle_resume
-        (patch_bridge_state / ".koan-pause").write_text("PAUSE")
         # Quota reason with a far future timestamp
         future_ts = int(time.time()) + 7200
-        (patch_bridge_state / ".koan-pause-reason").write_text(
+        (patch_bridge_state / ".koan-pause").write_text(
             f"quota\n{future_ts}\nresets at 10am"
         )
         handle_resume()
@@ -429,10 +426,9 @@ class TestHandleResume:
         self, mock_reset, patch_bridge_state, mock_send
     ):
         from app.command_handlers import handle_resume
-        (patch_bridge_state / ".koan-pause").write_text("PAUSE")
         # Quota reason with past timestamp (expired)
         past_ts = int(time.time()) - 3600
-        (patch_bridge_state / ".koan-pause-reason").write_text(
+        (patch_bridge_state / ".koan-pause").write_text(
             f"quota\n{past_ts}\nalready reset"
         )
         handle_resume()
@@ -460,7 +456,7 @@ class TestHandleStart:
         self, mock_pid, mock_resume, patch_bridge_state, mock_send
     ):
         from app.command_handlers import _handle_start
-        (patch_bridge_state / ".koan-pause").write_text("PAUSE")
+        (patch_bridge_state / ".koan-pause").touch()
         _handle_start()
         mock_resume.assert_called_once()
 
@@ -968,38 +964,40 @@ class TestResetSessionCounters:
 class TestPauseUsesPauseManager:
     """Tests that /pause creates proper pause state via pause_manager."""
 
-    def test_pause_creates_reason_file(self, patch_bridge_state, mock_send):
-        """Verify /pause creates .koan-pause-reason with 'manual' reason."""
+    def test_pause_creates_reason_in_pause_file(self, patch_bridge_state, mock_send):
+        """Verify /pause creates .koan-pause with 'manual' reason."""
         from app.command_handlers import handle_command
         handle_command("/pause")
-        reason_file = patch_bridge_state / ".koan-pause-reason"
-        assert reason_file.exists(), ".koan-pause-reason should exist"
-        content = reason_file.read_text()
+        pause_file = patch_bridge_state / ".koan-pause"
+        assert pause_file.exists(), ".koan-pause should exist"
+        content = pause_file.read_text()
         assert "manual" in content
 
-    def test_pause_reason_contains_display_info(self, patch_bridge_state, mock_send):
-        """Verify the reason file contains human-readable display info."""
+    def test_pause_file_contains_display_info(self, patch_bridge_state, mock_send):
+        """Verify the pause file contains human-readable display info."""
         from app.command_handlers import handle_command
         handle_command("/pause")
-        reason_file = patch_bridge_state / ".koan-pause-reason"
-        content = reason_file.read_text()
+        pause_file = patch_bridge_state / ".koan-pause"
+        content = pause_file.read_text()
         assert "Telegram" in content or "paused" in content
 
-    def test_pause_reason_has_timestamp(self, patch_bridge_state, mock_send):
-        """Verify the reason file contains a valid UNIX timestamp."""
+    def test_pause_file_has_timestamp(self, patch_bridge_state, mock_send):
+        """Verify the pause file contains a valid UNIX timestamp."""
         from app.command_handlers import handle_command
         handle_command("/pause")
-        reason_file = patch_bridge_state / ".koan-pause-reason"
-        lines = reason_file.read_text().strip().splitlines()
+        pause_file = patch_bridge_state / ".koan-pause"
+        lines = pause_file.read_text().strip().splitlines()
         assert len(lines) >= 2
         timestamp = int(lines[1].strip())
         assert timestamp > 0
 
-    def test_sleep_alias_creates_reason_file(self, patch_bridge_state, mock_send):
-        """/sleep should also create .koan-pause-reason like /pause."""
+    def test_sleep_alias_creates_pause_file_with_reason(self, patch_bridge_state, mock_send):
+        """/sleep should also create .koan-pause with reason like /pause."""
         from app.command_handlers import handle_command
         handle_command("/sleep")
-        assert (patch_bridge_state / ".koan-pause-reason").exists()
+        pause_file = patch_bridge_state / ".koan-pause"
+        assert pause_file.exists()
+        assert "manual" in pause_file.read_text()
 
     def test_pause_survives_check_and_resume(self, patch_bridge_state, mock_send):
         """Pause created via /pause should NOT be cleaned as orphan."""
@@ -1032,10 +1030,9 @@ class TestHandleResumeEdgeCases:
     def test_resume_quota_with_empty_timestamp_line(
         self, mock_reset, patch_bridge_state, mock_send
     ):
-        """Pause-reason file with empty second line should not crash."""
+        """Pause file with empty second line should not crash."""
         from app.command_handlers import handle_resume
-        (patch_bridge_state / ".koan-pause").write_text("PAUSE")
-        (patch_bridge_state / ".koan-pause-reason").write_text("quota\n\nresets at 10am")
+        (patch_bridge_state / ".koan-pause").write_text("quota\n\nresets at 10am")
         handle_resume()
         # Should handle gracefully — empty line means no timestamp
         assert not (patch_bridge_state / ".koan-pause").exists()
@@ -1045,10 +1042,9 @@ class TestHandleResumeEdgeCases:
     def test_resume_quota_with_garbage_timestamp(
         self, mock_reset, patch_bridge_state, mock_send
     ):
-        """Pause-reason file with non-numeric timestamp should not crash."""
+        """Pause file with non-numeric timestamp should not crash."""
         from app.command_handlers import handle_resume
-        (patch_bridge_state / ".koan-pause").write_text("PAUSE")
-        (patch_bridge_state / ".koan-pause-reason").write_text("quota\nnot-a-number\nresets")
+        (patch_bridge_state / ".koan-pause").write_text("quota\nnot-a-number\nresets")
         handle_resume()
         assert not (patch_bridge_state / ".koan-pause").exists()
         mock_send.assert_called_once()
@@ -1056,20 +1052,18 @@ class TestHandleResumeEdgeCases:
         assert "Quota should be reset" in mock_send.call_args[0][0]
 
     def test_resume_with_whitespace_in_reason_file(self, patch_bridge_state, mock_send):
-        """Reason file with extra whitespace should still parse correctly."""
+        """Pause file with extra whitespace should still parse correctly."""
         from app.command_handlers import handle_resume
-        (patch_bridge_state / ".koan-pause").write_text("PAUSE")
-        (patch_bridge_state / ".koan-pause-reason").write_text("  manual  \n  \n")
+        (patch_bridge_state / ".koan-pause").write_text("  manual  \n  \n")
         handle_resume()
         assert not (patch_bridge_state / ".koan-pause").exists()
         mock_send.assert_called_once()
         assert "Unpaused" in mock_send.call_args[0][0]
 
     def test_resume_with_only_reason_no_timestamp(self, patch_bridge_state, mock_send):
-        """Reason file with just the reason, no timestamp line."""
+        """Pause file with just the reason, no timestamp line."""
         from app.command_handlers import handle_resume
-        (patch_bridge_state / ".koan-pause").write_text("PAUSE")
-        (patch_bridge_state / ".koan-pause-reason").write_text("manual")
+        (patch_bridge_state / ".koan-pause").write_text("manual")
         handle_resume()
         assert not (patch_bridge_state / ".koan-pause").exists()
         mock_send.assert_called_once()

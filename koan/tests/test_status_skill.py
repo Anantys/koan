@@ -91,8 +91,7 @@ class TestHandleStatus:
         """Pause with quota reason shows specific message."""
         instance = tmp_path / "instance"
         instance.mkdir()
-        (tmp_path / ".koan-pause").touch()
-        (tmp_path / ".koan-pause-reason").write_text("quota\n2026-02-07T12:00:00\nResets at 12:00")
+        (tmp_path / ".koan-pause").write_text("quota\n1234567890\nResets at 12:00")
         from skills.core.status.handler import _handle_status
         ctx = _make_ctx("status", instance, tmp_path)
         result = _handle_status(ctx)
@@ -102,8 +101,7 @@ class TestHandleStatus:
         """Pause with max_runs reason shows specific message."""
         instance = tmp_path / "instance"
         instance.mkdir()
-        (tmp_path / ".koan-pause").touch()
-        (tmp_path / ".koan-pause-reason").write_text("max_runs\n2026-02-07T12:00:00\n")
+        (tmp_path / ".koan-pause").write_text("max_runs\n1234567890\n")
         from skills.core.status.handler import _handle_status
         ctx = _make_ctx("status", instance, tmp_path)
         result = _handle_status(ctx)

@@ -290,14 +290,13 @@ def _format_agent_state(koan_root):
 
     pause_file = koan_root / ".koan-pause"
     stop_file = koan_root / ".koan-stop"
-    pause_reason_file = koan_root / ".koan-pause-reason"
 
     if stop_file.exists():
         lines.append("  State: stopping")
     elif pause_file.exists():
-        reason = ""
-        if pause_reason_file.exists():
-            reason = pause_reason_file.read_text().strip().split("\n")[0]
+        from app.pause_manager import get_pause_state
+        state = get_pause_state(str(koan_root))
+        reason = state.reason if state else ""
         if reason == "quota":
             lines.append("  State: paused (quota exhausted)")
         elif reason == "max_runs":

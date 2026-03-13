@@ -159,8 +159,7 @@ class TestQuotaHandler:
 
         ctx = _make_ctx(tmp_path)
         _write_usage_state(ctx.instance_dir)
-        (tmp_path / ".koan-pause").write_text("1234567890")
-        (tmp_path / ".koan-pause-reason").write_text("quota")
+        (tmp_path / ".koan-pause").write_text("quota\n1234567890\n")
         result = handle(ctx)
         assert "paused" in result
         assert "quota" in result
@@ -491,15 +490,13 @@ class TestFormatAgentState:
 
     def test_paused_with_quota_reason(self, tmp_path):
         from skills.core.quota.handler import _format_agent_state
-        (tmp_path / ".koan-pause").write_text("123")
-        (tmp_path / ".koan-pause-reason").write_text("quota")
+        (tmp_path / ".koan-pause").write_text("quota\n1234567890\n")
         result = _format_agent_state(tmp_path)
         assert "quota exhausted" in result
 
     def test_paused_with_max_runs_reason(self, tmp_path):
         from skills.core.quota.handler import _format_agent_state
-        (tmp_path / ".koan-pause").write_text("123")
-        (tmp_path / ".koan-pause-reason").write_text("max_runs")
+        (tmp_path / ".koan-pause").write_text("max_runs\n1234567890\n")
         result = _format_agent_state(tmp_path)
         assert "max runs" in result
 

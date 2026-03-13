@@ -701,16 +701,15 @@ class TestReadRunnerState:
         assert state["paused"] is True
 
     def test_reads_pause_reason(self, tmp_path):
-        (tmp_path / ".koan-pause").write_text("PAUSE")
-        (tmp_path / ".koan-pause-reason").write_text("quota\n1234567890")
+        (tmp_path / ".koan-pause").write_text("quota\n1234567890")
         state = _read_runner_state(tmp_path)
         assert state["pause_reason"] == "quota"
 
-    def test_pause_reason_without_pause_file(self, tmp_path):
-        """Pause reason file without .koan-pause should not set paused."""
-        (tmp_path / ".koan-pause-reason").write_text("quota")
+    def test_pause_without_reason_content(self, tmp_path):
+        """Empty .koan-pause should set paused but no reason."""
+        (tmp_path / ".koan-pause").write_text("")
         state = _read_runner_state(tmp_path)
-        assert state["paused"] is False
+        assert state["paused"] is True
         assert state["pause_reason"] == ""
 
     def test_strips_whitespace(self, tmp_path):
@@ -767,8 +766,7 @@ class TestFormatStatusAll:
     def test_runner_paused_quota(self, tmp_path):
         """When paused for quota, show pause reason."""
         (tmp_path / ".koan-pid-run").write_text(str(os.getpid()))
-        (tmp_path / ".koan-pause").write_text("PAUSE")
-        (tmp_path / ".koan-pause-reason").write_text("quota\n1234567890")
+        (tmp_path / ".koan-pause").write_text("quota\n1234567890\n")
 
         with patch("app.pid_manager._detect_provider", return_value="claude"):
             lines = format_status_all(tmp_path)
@@ -778,8 +776,7 @@ class TestFormatStatusAll:
 
     def test_runner_paused_max_runs(self, tmp_path):
         (tmp_path / ".koan-pid-run").write_text(str(os.getpid()))
-        (tmp_path / ".koan-pause").write_text("PAUSE")
-        (tmp_path / ".koan-pause-reason").write_text("max_runs\n1234567890")
+        (tmp_path / ".koan-pause").write_text("max_runs\n1234567890\n")
 
         with patch("app.pid_manager._detect_provider", return_value="claude"):
             lines = format_status_all(tmp_path)
@@ -789,8 +786,7 @@ class TestFormatStatusAll:
 
     def test_runner_paused_errors(self, tmp_path):
         (tmp_path / ".koan-pid-run").write_text(str(os.getpid()))
-        (tmp_path / ".koan-pause").write_text("PAUSE")
-        (tmp_path / ".koan-pause-reason").write_text("errors")
+        (tmp_path / ".koan-pause").write_text("errors")
 
         with patch("app.pid_manager._detect_provider", return_value="claude"):
             lines = format_status_all(tmp_path)
@@ -1966,28 +1962,23 @@ class TestStartRunnerClearsPause:
 
         assert not pause_file.exists()
 
-    def test_clears_pause_reason_on_start(self, tmp_path):
-        """start_runner removes .koan-pause-reason alongside .koan-pause."""
+    def test_clears_pause_with_reason_on_start(self, tmp_path):
+        """start_runner removes .koan-pause (which contains reason data)."""
         pause_file = tmp_path / ".koan-pause"
-        pause_file.write_text("2026-02-24T14:00:00")
-        reason_file = tmp_path / ".koan-pause-reason"
-        reason_file.write_text("errors")
+        pause_file.write_text("errors\n1234567890\n")
 
         with patch("app.pid_manager.subprocess.Popen"), \
              patch("app.pid_manager.check_pidfile", side_effect=[None] * 10):
             start_runner(tmp_path, verify_timeout=0.5)
 
         assert not pause_file.exists()
-        assert not reason_file.exists()
 
     def test_clears_all_signals_on_start(self, tmp_path):
-        """start_runner clears stop, pause, and pause-reason together."""
+        """start_runner clears stop and pause together."""
         stop_file = tmp_path / ".koan-stop"
         stop_file.write_text("STOP")
         pause_file = tmp_path / ".koan-pause"
-        pause_file.write_text("2026-02-24T14:00:00")
-        reason_file = tmp_path / ".koan-pause-reason"
-        reason_file.write_text("manual")
+        pause_file.write_text("manual\n1234567890\n")
 
         with patch("app.pid_manager.subprocess.Popen"), \
              patch("app.pid_manager.check_pidfile", side_effect=[None] * 10):
@@ -1995,7 +1986,6 @@ class TestStartRunnerClearsPause:
 
         assert not stop_file.exists()
         assert not pause_file.exists()
-        assert not reason_file.exists()
 
     def test_no_error_when_pause_files_absent(self, tmp_path):
         """start_runner doesn't crash if pause files don't exist."""

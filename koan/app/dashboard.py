@@ -39,7 +39,6 @@ from app.conversation_history import (
 from app.signals import (
     DAILY_REPORT_FILE,
     PAUSE_FILE,
-    PAUSE_REASON_FILE,
     QUOTA_RESET_FILE,
     STATUS_FILE,
     STOP_FILE,
@@ -88,24 +87,20 @@ def get_signal_status() -> dict:
         "reset_time": "",
     }
 
-    # Read pause reason file for detailed status
-    pause_reason_file = KOAN_ROOT / PAUSE_REASON_FILE
-    if pause_reason_file.exists():
-        try:
-            lines = pause_reason_file.read_text().strip().split("\n")
-            status["pause_reason"] = lines[0] if lines else ""
-            if len(lines) > 2:
-                status["reset_time"] = lines[2]  # Human-readable reset info
-            elif len(lines) > 1:
-                # Try to format the timestamp
+    # Read pause reason from .koan-pause content
+    if status["paused"]:
+        from app.pause_manager import get_pause_state
+        state = get_pause_state(str(KOAN_ROOT))
+        if state:
+            status["pause_reason"] = state.reason
+            if state.display:
+                status["reset_time"] = state.display
+            elif state.timestamp:
                 try:
                     from app.reset_parser import time_until_reset
-                    ts = int(lines[1])
-                    status["reset_time"] = f"in ~{time_until_reset(ts)}"
+                    status["reset_time"] = f"in ~{time_until_reset(state.timestamp)}"
                 except (ValueError, ImportError):
                     pass
-        except OSError:
-            pass
 
     status_file = KOAN_ROOT / STATUS_FILE
     if status_file.exists():

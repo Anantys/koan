@@ -220,18 +220,18 @@ def handle_start_on_pause(koan_root: str):
     if not get_start_on_pause():
         return
 
+    from app.pause_manager import create_pause, get_pause_state, is_paused
+
     koan_root_path = Path(koan_root)
-    reason_file = koan_root_path / ".koan-pause-reason"
-    if reason_file.exists():
-        try:
-            first_line = reason_file.read_text().strip().splitlines()[0]
-        except (OSError, IndexError):
-            first_line = ""
-        if first_line != "manual":
-            reason_file.unlink(missing_ok=True)
-    if not (koan_root_path / ".koan-pause").exists():
+    if is_paused(koan_root):
+        # Preserve manual pauses; clear stale non-manual pauses and re-create
+        # a clean pause file (no lingering auto-resume reason).
+        state = get_pause_state(koan_root)
+        if state and state.reason != "manual":
+            create_pause(koan_root, "start_on_pause")
+    else:
         log("pause", "start_on_pause=true in config. Entering pause mode.")
-        (koan_root_path / ".koan-pause").touch()
+        create_pause(koan_root, "start_on_pause")
 
 
 def setup_git_identity():

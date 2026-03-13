@@ -37,7 +37,7 @@ class TestGetPauseState:
 
         assert get_pause_state(str(tmp_path)) is None
 
-    def test_returns_none_when_no_reason_file(self, tmp_path):
+    def test_returns_none_when_empty_file(self, tmp_path):
         from app.pause_manager import get_pause_state
 
         (tmp_path / ".koan-pause").touch()
@@ -46,8 +46,7 @@ class TestGetPauseState:
     def test_reads_quota_pause(self, tmp_path):
         from app.pause_manager import get_pause_state
 
-        (tmp_path / ".koan-pause").touch()
-        (tmp_path / ".koan-pause-reason").write_text("quota\n1707000000\nresets 10am\n")
+        (tmp_path / ".koan-pause").write_text("quota\n1707000000\nresets 10am\n")
 
         state = get_pause_state(str(tmp_path))
         assert state is not None
@@ -59,8 +58,7 @@ class TestGetPauseState:
     def test_reads_max_runs_pause(self, tmp_path):
         from app.pause_manager import get_pause_state
 
-        (tmp_path / ".koan-pause").touch()
-        (tmp_path / ".koan-pause-reason").write_text("max_runs\n1707000000\n\n")
+        (tmp_path / ".koan-pause").write_text("max_runs\n1707000000\n\n")
 
         state = get_pause_state(str(tmp_path))
         assert state is not None
@@ -71,8 +69,7 @@ class TestGetPauseState:
     def test_handles_missing_lines(self, tmp_path):
         from app.pause_manager import get_pause_state
 
-        (tmp_path / ".koan-pause").touch()
-        (tmp_path / ".koan-pause-reason").write_text("quota\n")
+        (tmp_path / ".koan-pause").write_text("quota\n")
 
         state = get_pause_state(str(tmp_path))
         assert state is not None
@@ -83,8 +80,7 @@ class TestGetPauseState:
     def test_handles_reason_only(self, tmp_path):
         from app.pause_manager import get_pause_state
 
-        (tmp_path / ".koan-pause").touch()
-        (tmp_path / ".koan-pause-reason").write_text("manual\n")
+        (tmp_path / ".koan-pause").write_text("manual\n")
 
         state = get_pause_state(str(tmp_path))
         assert state is not None
@@ -94,8 +90,7 @@ class TestGetPauseState:
     def test_handles_invalid_timestamp(self, tmp_path):
         from app.pause_manager import get_pause_state
 
-        (tmp_path / ".koan-pause").touch()
-        (tmp_path / ".koan-pause-reason").write_text("quota\nnot_a_number\ninfo\n")
+        (tmp_path / ".koan-pause").write_text("quota\nnot_a_number\ninfo\n")
 
         state = get_pause_state(str(tmp_path))
         assert state is not None
@@ -103,19 +98,17 @@ class TestGetPauseState:
         assert state.timestamp == 0
         assert state.display == "info"
 
-    def test_handles_empty_reason_file(self, tmp_path):
+    def test_handles_empty_file(self, tmp_path):
         from app.pause_manager import get_pause_state
 
-        (tmp_path / ".koan-pause").touch()
-        (tmp_path / ".koan-pause-reason").write_text("")
+        (tmp_path / ".koan-pause").write_text("")
 
         assert get_pause_state(str(tmp_path)) is None
 
     def test_strips_whitespace(self, tmp_path):
         from app.pause_manager import get_pause_state
 
-        (tmp_path / ".koan-pause").touch()
-        (tmp_path / ".koan-pause-reason").write_text("  quota  \n  1707000000  \n  resets 10am  \n")
+        (tmp_path / ".koan-pause").write_text("  quota  \n  1707000000  \n  resets 10am  \n")
 
         state = get_pause_state(str(tmp_path))
         assert state.reason == "quota"
@@ -203,20 +196,19 @@ class TestShouldAutoResume:
 class TestCreatePause:
     """Test create_pause function."""
 
-    def test_creates_both_files(self, tmp_path):
+    def test_creates_file(self, tmp_path):
         from app.pause_manager import create_pause
 
         create_pause(str(tmp_path), "quota", 1707000000, "resets 10am")
 
         assert (tmp_path / ".koan-pause").exists()
-        assert (tmp_path / ".koan-pause-reason").exists()
 
     def test_writes_correct_format(self, tmp_path):
         from app.pause_manager import create_pause
 
         create_pause(str(tmp_path), "quota", 1707000000, "resets 10am")
 
-        content = (tmp_path / ".koan-pause-reason").read_text()
+        content = (tmp_path / ".koan-pause").read_text()
         lines = content.strip().splitlines()
         assert lines[0] == "quota"
         assert lines[1] == "1707000000"
@@ -227,7 +219,7 @@ class TestCreatePause:
 
         create_pause(str(tmp_path), "max_runs", 1707000000)
 
-        content = (tmp_path / ".koan-pause-reason").read_text()
+        content = (tmp_path / ".koan-pause").read_text()
         lines = content.strip().splitlines()
         assert lines[0] == "max_runs"
         assert lines[1] == "1707000000"
@@ -241,7 +233,7 @@ class TestCreatePause:
         create_pause(str(tmp_path), "max_runs")
         after = int(time.time())
 
-        content = (tmp_path / ".koan-pause-reason").read_text()
+        content = (tmp_path / ".koan-pause").read_text()
         ts = int(content.strip().splitlines()[1])
         assert before <= ts <= after
 
@@ -250,7 +242,7 @@ class TestCreatePause:
 
         create_pause(str(tmp_path), "max_runs", 1000, "")
 
-        content = (tmp_path / ".koan-pause-reason").read_text()
+        content = (tmp_path / ".koan-pause").read_text()
         lines = content.splitlines()
         assert len(lines) >= 3
         assert lines[2] == ""
@@ -261,7 +253,7 @@ class TestCreatePause:
         create_pause(str(tmp_path), "quota", 1000, "old")
         create_pause(str(tmp_path), "max_runs", 2000, "new")
 
-        content = (tmp_path / ".koan-pause-reason").read_text()
+        content = (tmp_path / ".koan-pause").read_text()
         lines = content.strip().splitlines()
         assert lines[0] == "max_runs"
         assert lines[1] == "2000"
@@ -271,18 +263,16 @@ class TestCreatePause:
 class TestRemovePause:
     """Test remove_pause function."""
 
-    def test_removes_both_files(self, tmp_path):
+    def test_removes_pause_file(self, tmp_path):
         from app.pause_manager import remove_pause
 
-        (tmp_path / ".koan-pause").touch()
-        (tmp_path / ".koan-pause-reason").write_text("quota\n1000\ninfo\n")
+        (tmp_path / ".koan-pause").write_text("quota\n1000\ninfo\n")
 
         remove_pause(str(tmp_path))
 
         assert not (tmp_path / ".koan-pause").exists()
-        assert not (tmp_path / ".koan-pause-reason").exists()
 
-    def test_removes_pause_without_reason(self, tmp_path):
+    def test_removes_empty_pause(self, tmp_path):
         from app.pause_manager import remove_pause
 
         (tmp_path / ".koan-pause").touch()
@@ -297,36 +287,6 @@ class TestRemovePause:
         # Should not raise
         remove_pause(str(tmp_path))
 
-    def test_removes_reason_before_pause(self, tmp_path):
-        """Reason file must be removed before the pause signal file.
-
-        If interrupted between the two removals, the system should still
-        report as paused (reason gone + pause present) rather than the
-        reverse (pause gone + orphan reason file).
-        """
-        from app.pause_manager import is_paused, remove_pause
-
-        pause_file = tmp_path / ".koan-pause"
-        reason_file = tmp_path / ".koan-pause-reason"
-        pause_file.touch()
-        reason_file.write_text("quota\n1000\ninfo\n")
-
-        from unittest.mock import patch
-
-        removal_order = []
-        original_remove = os.remove
-
-        def tracking_remove(path):
-            name = os.path.basename(path)
-            removal_order.append(name)
-            original_remove(path)
-
-        with patch("app.pause_manager.os.remove", side_effect=tracking_remove):
-            remove_pause(str(tmp_path))
-
-        assert removal_order == [".koan-pause-reason", ".koan-pause"], \
-            "reason file must be removed before the pause signal file"
-
 
 class TestCheckAndResume:
     """Test check_and_resume function."""
@@ -336,19 +296,18 @@ class TestCheckAndResume:
 
         assert check_and_resume(str(tmp_path)) is None
 
-    def test_orphan_pause_stays_paused(self, tmp_path):
+    def test_empty_pause_stays_paused(self, tmp_path):
         from app.pause_manager import check_and_resume, is_paused
 
         (tmp_path / ".koan-pause").touch()
         msg = check_and_resume(str(tmp_path))
-        assert msg is None, "Orphan pause should stay paused"
+        assert msg is None, "Empty pause file should stay paused"
         assert is_paused(str(tmp_path)), "Pause file should remain"
 
     def test_auto_resumes_quota_past_reset(self, tmp_path, monkeypatch):
         from app.pause_manager import check_and_resume
 
-        (tmp_path / ".koan-pause").touch()
-        (tmp_path / ".koan-pause-reason").write_text("quota\n1000\nresets 10am\n")
+        (tmp_path / ".koan-pause").write_text("quota\n1000\nresets 10am\n")
 
         # Mock time to be past reset
         monkeypatch.setattr("app.pause_manager.time.time", lambda: 2000)
@@ -358,13 +317,11 @@ class TestCheckAndResume:
         assert "quota reset time reached" in msg
         assert "resets 10am" in msg
         assert not (tmp_path / ".koan-pause").exists()
-        assert not (tmp_path / ".koan-pause-reason").exists()
 
     def test_stays_paused_before_quota_reset(self, tmp_path, monkeypatch):
         from app.pause_manager import check_and_resume
 
-        (tmp_path / ".koan-pause").touch()
-        (tmp_path / ".koan-pause-reason").write_text("quota\n5000\nresets 10am\n")
+        (tmp_path / ".koan-pause").write_text("quota\n5000\nresets 10am\n")
 
         monkeypatch.setattr("app.pause_manager.time.time", lambda: 1000)
 
@@ -376,8 +333,7 @@ class TestCheckAndResume:
         from app.pause_manager import check_and_resume
 
         pause_time = 1000
-        (tmp_path / ".koan-pause").touch()
-        (tmp_path / ".koan-pause-reason").write_text(f"max_runs\n{pause_time}\n\n")
+        (tmp_path / ".koan-pause").write_text(f"max_runs\n{pause_time}\n\n")
 
         monkeypatch.setattr("app.pause_manager.time.time", lambda: pause_time + 5 * 3600)
 
@@ -390,8 +346,7 @@ class TestCheckAndResume:
         from app.pause_manager import check_and_resume
 
         pause_time = 1000
-        (tmp_path / ".koan-pause").touch()
-        (tmp_path / ".koan-pause-reason").write_text(f"max_runs\n{pause_time}\n\n")
+        (tmp_path / ".koan-pause").write_text(f"max_runs\n{pause_time}\n\n")
 
         monkeypatch.setattr("app.pause_manager.time.time", lambda: pause_time + 3600)
 
@@ -580,39 +535,35 @@ class TestCLI:
         assert result.returncode == 1
 
 
-class TestOrphanPauseStaysPaused:
-    """Tests for orphan .koan-pause handling (missing reason file).
+class TestEmptyPauseStaysPaused:
+    """Tests for empty .koan-pause handling (no reason content).
 
-    Orphan .koan-pause files (missing or empty reason) stay paused as a safe
-    default.  The user can always /resume manually.  The old behavior
-    auto-resumed orphans, which overrode user-initiated /pause when the
-    reason file was lost (e.g. start_on_pause cleanup, crash).
+    Empty .koan-pause files (e.g. touch-created) stay paused as a safe
+    default.  The user can always /resume manually.
     """
 
-    def test_orphan_pause_stays_paused(self, tmp_path):
-        """Orphan .koan-pause with no reason file should stay paused."""
+    def test_empty_pause_stays_paused(self, tmp_path):
+        """Empty .koan-pause should stay paused."""
         from app.pause_manager import check_and_resume, is_paused
 
         (tmp_path / ".koan-pause").touch()
-        # No .koan-pause-reason
 
         msg = check_and_resume(str(tmp_path))
-        assert msg is None, "Orphan pause should stay paused (safe default)"
+        assert msg is None, "Empty pause should stay paused (safe default)"
         assert is_paused(str(tmp_path)), "Pause file should still exist"
 
-    def test_orphan_pause_with_empty_reason_file(self, tmp_path):
-        """Orphan .koan-pause with empty reason file should stay paused."""
+    def test_empty_content_stays_paused(self, tmp_path):
+        """Explicitly empty .koan-pause should stay paused."""
         from app.pause_manager import check_and_resume, is_paused
 
-        (tmp_path / ".koan-pause").touch()
-        (tmp_path / ".koan-pause-reason").write_text("")
+        (tmp_path / ".koan-pause").write_text("")
 
         msg = check_and_resume(str(tmp_path))
-        assert msg is None, "Orphan pause should stay paused"
+        assert msg is None, "Empty pause should stay paused"
         assert is_paused(str(tmp_path))
 
-    def test_orphan_stays_paused_repeatedly(self, tmp_path):
-        """Calling check_and_resume on orphan always returns None."""
+    def test_empty_stays_paused_repeatedly(self, tmp_path):
+        """Calling check_and_resume on empty pause always returns None."""
         from app.pause_manager import check_and_resume, is_paused
 
         (tmp_path / ".koan-pause").touch()
@@ -622,35 +573,19 @@ class TestOrphanPauseStaysPaused:
             assert msg is None
             assert is_paused(str(tmp_path))
 
-    def test_normal_pause_not_treated_as_orphan(self, tmp_path, monkeypatch):
-        """A valid pause (with reason file) should NOT be treated as orphan."""
+    def test_normal_pause_not_treated_as_empty(self, tmp_path, monkeypatch):
+        """A valid pause (with content) should NOT be treated as empty."""
         from app.pause_manager import check_and_resume, create_pause
 
         create_pause(str(tmp_path), "quota", 9999999999, "future")
         monkeypatch.setattr("app.pause_manager.time.time", lambda: 1000)
 
         msg = check_and_resume(str(tmp_path))
-        assert msg is None  # Still paused, not orphan
+        assert msg is None  # Still paused, not empty
         assert (tmp_path / ".koan-pause").exists()
 
-    def test_orphan_pause_lifecycle(self, tmp_path):
-        """Full lifecycle: create pause, delete reason, stays paused."""
-        from app.pause_manager import check_and_resume, create_pause, is_paused
-
-        create_pause(str(tmp_path), "quota", 9999999999, "future")
-        assert is_paused(str(tmp_path)) is True
-
-        # Simulate crash: reason file deleted but pause file remains
-        (tmp_path / ".koan-pause-reason").unlink()
-        assert is_paused(str(tmp_path)) is True  # Still "paused"
-
-        # check_and_resume should NOT auto-resume — stays paused
-        msg = check_and_resume(str(tmp_path))
-        assert msg is None
-        assert is_paused(str(tmp_path)) is True
-
-    def test_orphan_cleared_by_manual_resume(self, tmp_path):
-        """Orphan pause can be cleared via remove_pause (like /resume does)."""
+    def test_empty_cleared_by_manual_resume(self, tmp_path):
+        """Empty pause can be cleared via remove_pause (like /resume does)."""
         from app.pause_manager import check_and_resume, is_paused, remove_pause
 
         (tmp_path / ".koan-pause").touch()
@@ -721,24 +656,6 @@ class TestManualPauseNeverAutoResumes:
         # Only remove_pause (triggered by /resume) clears it
         remove_pause(str(tmp_path))
         assert not is_paused(str(tmp_path))
-
-    def test_manual_pause_survives_start_on_pause_reason_deletion(self, tmp_path):
-        """Regression: start_on_pause deleting reason should not override manual pause.
-
-        Even if something removes the reason file, the orphan handler
-        should not auto-resume — it stays paused as a safe default.
-        """
-        from app.pause_manager import check_and_resume, create_pause, is_paused
-
-        create_pause(str(tmp_path), "manual", 1000, "paused via Telegram")
-
-        # Simulate start_on_pause deleting reason file
-        (tmp_path / ".koan-pause-reason").unlink()
-
-        # Orphan should stay paused (not auto-resume)
-        msg = check_and_resume(str(tmp_path))
-        assert msg is None
-        assert is_paused(str(tmp_path))
 
     def test_system_pauses_still_auto_resume(self, tmp_path, monkeypatch):
         """Non-manual pauses (quota, max_runs) still auto-resume as before."""
@@ -813,21 +730,16 @@ class TestBudgetLoopRegression:
 class TestCreatePauseAtomicWrite:
     """Test that create_pause uses atomic_write for thread safety."""
 
-    def test_uses_atomic_write_for_both_files(self, tmp_path):
+    def test_uses_atomic_write_for_single_file(self, tmp_path):
         from unittest.mock import patch
 
         from app.pause_manager import create_pause
 
         with patch("app.utils.atomic_write") as mock_aw:
             create_pause(str(tmp_path), "quota", 1707000000, "resets 10am")
-            assert mock_aw.call_count == 2
-            # First call: reason file
-            reason_path = str(mock_aw.call_args_list[0][0][0])
-            assert reason_path.endswith(".koan-pause-reason")
+            assert mock_aw.call_count == 1
+            pause_path = str(mock_aw.call_args_list[0][0][0])
+            assert pause_path.endswith(".koan-pause")
             content = mock_aw.call_args_list[0][0][1]
             assert "quota" in content
             assert "1707000000" in content
-            # Second call: pause signal file (atomic, not touch())
-            pause_path = str(mock_aw.call_args_list[1][0][0])
-            assert pause_path.endswith(".koan-pause")
-            assert mock_aw.call_args_list[1][0][1] == ""

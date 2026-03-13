@@ -204,8 +204,7 @@ class TestBuildStartupStatus:
 
     def test_paused_with_quota_reason_and_display(self, tmp_path):
         from app.run import _build_startup_status
-        (tmp_path / ".koan-pause").touch()
-        (tmp_path / ".koan-pause-reason").write_text("quota\n1739300000\nresets 10am (Europe/Paris)\n")
+        (tmp_path / ".koan-pause").write_text("quota\n1739300000\nresets 10am (Europe/Paris)\n")
         result = _build_startup_status(str(tmp_path))
         assert "Paused" in result
         assert "quota" in result
@@ -214,24 +213,22 @@ class TestBuildStartupStatus:
 
     def test_paused_with_max_runs_no_display(self, tmp_path):
         from app.run import _build_startup_status
-        (tmp_path / ".koan-pause").touch()
-        (tmp_path / ".koan-pause-reason").write_text("max_runs\n1739300000\n\n")
+        (tmp_path / ".koan-pause").write_text("max_runs\n1739300000\n\n")
         result = _build_startup_status(str(tmp_path))
         assert "Paused" in result
         assert "max_runs" in result
         assert "/resume" in result
 
-    def test_paused_with_no_reason_file(self, tmp_path):
+    def test_paused_with_no_reason(self, tmp_path):
         from app.run import _build_startup_status
         (tmp_path / ".koan-pause").touch()
         result = _build_startup_status(str(tmp_path))
         assert "Paused" in result
         assert "/resume" in result
 
-    def test_paused_with_empty_reason_file(self, tmp_path):
+    def test_paused_with_empty_pause_file(self, tmp_path):
         from app.run import _build_startup_status
-        (tmp_path / ".koan-pause").touch()
-        (tmp_path / ".koan-pause-reason").write_text("")
+        (tmp_path / ".koan-pause").write_text("")
         result = _build_startup_status(str(tmp_path))
         assert "Paused" in result
         assert "/resume" in result
@@ -243,9 +240,9 @@ class TestBuildStartupStatus:
 
 class TestStartOnPause:
     """Tests for the start_on_pause logic in run_startup().
-    
-    Tests the behavior of removing stale .koan-pause-reason files and creating
-    .koan-pause files when start_on_pause is enabled.
+
+    Tests the behavior of creating .koan-pause with start_on_pause reason
+    and overwriting stale non-manual reasons when start_on_pause is enabled.
     """
 
     def _apply_start_on_pause_logic(self, koan_root, start_on_pause_enabled):
@@ -253,103 +250,107 @@ class TestStartOnPause:
 
         This directly tests the logic block without mocking 18+ unrelated functions.
         """
-        # Direct implementation of the logic from run_startup
-        if start_on_pause_enabled:
-            koan_root_path = Path(koan_root)
-            reason_file = koan_root_path / ".koan-pause-reason"
-            if reason_file.exists():
-                try:
-                    first_line = reason_file.read_text().strip().splitlines()[0]
-                except (OSError, IndexError):
-                    first_line = ""
-                if first_line != "manual":
-                    reason_file.unlink(missing_ok=True)
-            if not (koan_root_path / ".koan-pause").exists():
-                (koan_root_path / ".koan-pause").touch()
+        # Direct implementation of the logic from startup_manager.handle_start_on_pause
+        if not start_on_pause_enabled:
+            return
+
+        from app.pause_manager import create_pause, get_pause_state, is_paused
+
+        if is_paused(str(koan_root)):
+            state = get_pause_state(str(koan_root))
+            if state and state.reason != "manual":
+                create_pause(str(koan_root), "start_on_pause")
+        else:
+            create_pause(str(koan_root), "start_on_pause")
 
     def test_creates_pause_file_when_enabled(self, koan_root):
         """start_on_pause=true should create .koan-pause."""
         assert not (koan_root / ".koan-pause").exists()
         self._apply_start_on_pause_logic(koan_root, True)
         assert (koan_root / ".koan-pause").exists()
+        content = (koan_root / ".koan-pause").read_text()
+        assert content.startswith("start_on_pause")
 
     def test_no_pause_file_when_disabled(self, koan_root):
         """start_on_pause=false should not create .koan-pause."""
         self._apply_start_on_pause_logic(koan_root, False)
         assert not (koan_root / ".koan-pause").exists()
 
-    def test_removes_stale_reason_file(self, koan_root):
-        """start_on_pause should remove stale .koan-pause-reason to prevent auto-resume."""
-        (koan_root / ".koan-pause-reason").write_text("quota\n1700000000\nresets 10am\n")
+    def test_overwrites_stale_quota_reason(self, koan_root):
+        """start_on_pause should overwrite quota reason with start_on_pause."""
+        (koan_root / ".koan-pause").write_text("quota\n1700000000\nresets 10am\n")
         self._apply_start_on_pause_logic(koan_root, True)
         assert (koan_root / ".koan-pause").exists()
-        assert not (koan_root / ".koan-pause-reason").exists()
+        content = (koan_root / ".koan-pause").read_text()
+        assert content.startswith("start_on_pause")
 
-    def test_removes_stale_reason_even_when_pause_exists(self, koan_root):
-        """When .koan-pause already exists, should still remove stale reason file."""
-        (koan_root / ".koan-pause").touch()
-        (koan_root / ".koan-pause-reason").write_text("max_runs\n1700000000\n\n")
+    def test_overwrites_stale_max_runs_reason(self, koan_root):
+        """When .koan-pause has max_runs reason, should overwrite with start_on_pause."""
+        (koan_root / ".koan-pause").write_text("max_runs\n1700000000\n\n")
         self._apply_start_on_pause_logic(koan_root, True)
         assert (koan_root / ".koan-pause").exists()
-        assert not (koan_root / ".koan-pause-reason").exists()
+        content = (koan_root / ".koan-pause").read_text()
+        assert content.startswith("start_on_pause")
 
-    def test_no_reason_cleanup_when_disabled(self, koan_root):
-        """start_on_pause=false should not touch existing reason file."""
-        (koan_root / ".koan-pause").touch()
-        (koan_root / ".koan-pause-reason").write_text("quota\n1700000000\nresets 10am\n")
+    def test_no_change_when_disabled(self, koan_root):
+        """start_on_pause=false should not touch existing pause file."""
+        (koan_root / ".koan-pause").write_text("quota\n1700000000\nresets 10am\n")
         self._apply_start_on_pause_logic(koan_root, False)
-        # Both files should remain untouched
+        # File should remain untouched
         assert (koan_root / ".koan-pause").exists()
-        assert (koan_root / ".koan-pause-reason").exists()
+        content = (koan_root / ".koan-pause").read_text()
+        assert content.startswith("quota")
 
     def test_preserves_manual_pause_reason(self, koan_root):
-        """start_on_pause=true should NOT delete manual pause reason files."""
-        (koan_root / ".koan-pause").touch()
-        (koan_root / ".koan-pause-reason").write_text("manual\n1700000000\npaused via Telegram\n")
+        """start_on_pause=true should NOT overwrite manual pause."""
+        (koan_root / ".koan-pause").write_text("manual\n1700000000\npaused via Telegram\n")
         self._apply_start_on_pause_logic(koan_root, True)
         assert (koan_root / ".koan-pause").exists()
-        assert (koan_root / ".koan-pause-reason").exists()
-        content = (koan_root / ".koan-pause-reason").read_text()
+        content = (koan_root / ".koan-pause").read_text()
         assert content.startswith("manual")
 
-    def test_removes_quota_reason_but_not_manual(self, koan_root):
-        """Quota reason is removed but manual reason is preserved."""
-        # First: quota gets removed
-        (koan_root / ".koan-pause").touch()
-        (koan_root / ".koan-pause-reason").write_text("quota\n1700000000\nresets 10am\n")
+    def test_overwrites_quota_but_not_manual(self, koan_root):
+        """Quota reason is overwritten but manual reason is preserved."""
+        # First: quota gets overwritten
+        (koan_root / ".koan-pause").write_text("quota\n1700000000\nresets 10am\n")
         self._apply_start_on_pause_logic(koan_root, True)
-        assert not (koan_root / ".koan-pause-reason").exists()
+        content = (koan_root / ".koan-pause").read_text()
+        assert content.startswith("start_on_pause")
 
         # Reset
         (koan_root / ".koan-pause").unlink(missing_ok=True)
 
         # Second: manual is preserved
-        (koan_root / ".koan-pause").touch()
-        (koan_root / ".koan-pause-reason").write_text("manual\n1700000000\n\n")
+        (koan_root / ".koan-pause").write_text("manual\n1700000000\n\n")
         self._apply_start_on_pause_logic(koan_root, True)
-        assert (koan_root / ".koan-pause-reason").exists()
+        content = (koan_root / ".koan-pause").read_text()
+        assert content.startswith("manual")
 
-    def test_handles_corrupted_reason_file(self, koan_root):
-        """Corrupted reason file (unreadable first line) should be removed."""
-        (koan_root / ".koan-pause").touch()
-        (koan_root / ".koan-pause-reason").write_text("\n\n")
+    def test_handles_corrupted_pause_file(self, koan_root):
+        """Corrupted pause file (unparseable content) is preserved as-is.
+
+        When get_pause_state returns None (unparseable), the safe default
+        is to leave the file untouched — it's already paused, and we can't
+        determine intent.
+        """
+        (koan_root / ".koan-pause").write_text("\n\n")
         self._apply_start_on_pause_logic(koan_root, True)
-        # Empty first line ≠ "manual" → should be removed
-        assert not (koan_root / ".koan-pause-reason").exists()
+        # Unparseable state → preserved (safe default: stay paused as-is)
+        assert (koan_root / ".koan-pause").exists()
 
-    def test_orphan_pause_stays_paused(self, koan_root):
-        """Orphan .koan-pause (no reason file) should stay paused.
+    def test_empty_pause_stays_paused(self, koan_root):
+        """Empty .koan-pause (no reason content) should stay paused.
 
         The safe default is to stay paused — the user can always /resume.
         Previously, orphans auto-resumed, which overrode user-initiated
-        /pause when the reason file was lost.
+        /pause when the reason content was missing.
         """
         from app.pause_manager import check_and_resume, is_paused
 
         (koan_root / ".koan-pause").touch()
-        # No reason file = orphan state (crash, partial cleanup, etc.)
+        # No reason content = empty pause (crash, partial cleanup, etc.)
         result = check_and_resume(str(koan_root))
-        assert result is None, "Orphan pause should stay paused"
+        assert result is None, "Empty pause should stay paused"
         assert is_paused(str(koan_root)), "Pause file should remain"
 
 

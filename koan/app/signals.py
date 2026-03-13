@@ -17,7 +17,6 @@ RESTART_FILE = ".koan-restart"
 # -- Pause / quota signals ----------------------------------------------------
 
 PAUSE_FILE = ".koan-pause"
-PAUSE_REASON_FILE = ".koan-pause-reason"
 QUOTA_RESET_FILE = ".koan-quota-reset"
 
 # -- Status / heartbeat -------------------------------------------------------

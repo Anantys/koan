@@ -467,10 +467,9 @@ class TestHandleQuotaExhaustion:
         )
 
         assert os.path.isfile(str(tmp_path / ".koan-pause"))
-        assert os.path.isfile(str(tmp_path / ".koan-pause-reason"))
 
-        reason_content = (tmp_path / ".koan-pause-reason").read_text()
-        assert "quota" in reason_content
+        pause_content = (tmp_path / ".koan-pause").read_text()
+        assert "quota" in pause_content
 
     def test_writes_journal_entry(self, tmp_path):
         from app.quota_handler import handle_quota_exhaustion

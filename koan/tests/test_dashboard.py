@@ -481,23 +481,20 @@ class TestSignalStatusPause:
             assert status["paused"] is True
 
     def test_pause_reason_quota(self, tmp_path):
-        (tmp_path / ".koan-pause").write_text("1")
-        (tmp_path / ".koan-pause-reason").write_text("quota\n")
+        (tmp_path / ".koan-pause").write_text("quota\n")
         with patch.object(dashboard, "KOAN_ROOT", tmp_path):
             status = dashboard.get_signal_status()
             assert status["pause_reason"] == "quota"
 
     def test_pause_reason_max_runs(self, tmp_path):
-        (tmp_path / ".koan-pause").write_text("1")
-        (tmp_path / ".koan-pause-reason").write_text("max_runs\n")
+        (tmp_path / ".koan-pause").write_text("max_runs\n")
         with patch.object(dashboard, "KOAN_ROOT", tmp_path):
             status = dashboard.get_signal_status()
             assert status["pause_reason"] == "max_runs"
 
     def test_pause_reason_with_timestamp_line(self, tmp_path):
-        """Pause reason file with 2 lines: reason + unix timestamp."""
-        (tmp_path / ".koan-pause").write_text("1")
-        (tmp_path / ".koan-pause-reason").write_text("quota\n1740000000\n")
+        """Pause file with 2 lines: reason + unix timestamp."""
+        (tmp_path / ".koan-pause").write_text("quota\n1740000000\n")
         with patch.object(dashboard, "KOAN_ROOT", tmp_path), \
              patch("app.reset_parser.time_until_reset", return_value="2h30m"):
             status = dashboard.get_signal_status()
@@ -505,9 +502,8 @@ class TestSignalStatusPause:
             assert "2h30m" in status["reset_time"]
 
     def test_pause_reason_with_three_lines(self, tmp_path):
-        """Pause reason with human-readable reset on line 3."""
-        (tmp_path / ".koan-pause").write_text("1")
-        (tmp_path / ".koan-pause-reason").write_text(
+        """Pause file with human-readable reset on line 3."""
+        (tmp_path / ".koan-pause").write_text(
             "quota\n1740000000\nResets at 15:30\n"
         )
         with patch.object(dashboard, "KOAN_ROOT", tmp_path):
@@ -516,8 +512,7 @@ class TestSignalStatusPause:
 
     def test_pause_reason_bad_timestamp(self, tmp_path):
         """Non-numeric timestamp — should not crash."""
-        (tmp_path / ".koan-pause").write_text("1")
-        (tmp_path / ".koan-pause-reason").write_text("quota\nnot-a-number\n")
+        (tmp_path / ".koan-pause").write_text("quota\nnot-a-number\n")
         with patch.object(dashboard, "KOAN_ROOT", tmp_path):
             status = dashboard.get_signal_status()
             assert status["pause_reason"] == "quota"
@@ -526,17 +521,15 @@ class TestSignalStatusPause:
 
     def test_pause_reason_import_error(self, tmp_path):
         """Missing reset_parser module — should not crash."""
-        (tmp_path / ".koan-pause").write_text("1")
-        (tmp_path / ".koan-pause-reason").write_text("quota\n1740000000\n")
+        (tmp_path / ".koan-pause").write_text("quota\n1740000000\n")
         with patch.object(dashboard, "KOAN_ROOT", tmp_path), \
              patch.dict("sys.modules", {"app.reset_parser": None}):
             status = dashboard.get_signal_status()
             assert status["pause_reason"] == "quota"
 
     def test_pause_reason_empty_file(self, tmp_path):
-        """Empty pause-reason file."""
-        (tmp_path / ".koan-pause").write_text("1")
-        (tmp_path / ".koan-pause-reason").write_text("")
+        """Empty pause file (legacy touch-created)."""
+        (tmp_path / ".koan-pause").write_text("")
         with patch.object(dashboard, "KOAN_ROOT", tmp_path):
             status = dashboard.get_signal_status()
             assert status["pause_reason"] == ""

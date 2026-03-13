@@ -19,7 +19,7 @@ from app.bridge_state import (
     _reset_registry,
 )
 from app.notify import TypingIndicator, send_telegram
-from app.signals import PAUSE_FILE, PAUSE_REASON_FILE, QUOTA_RESET_FILE, STOP_FILE
+from app.signals import PAUSE_FILE, QUOTA_RESET_FILE, STOP_FILE
 from app.skills import Skill, SkillContext, execute_skill
 from app.utils import (
     parse_project as _parse_project,
@@ -529,29 +529,19 @@ def _reset_session_counters():
 
 def handle_resume():
     """Resume from pause or quota exhaustion."""
+    from app.pause_manager import get_pause_state, remove_pause
+
     pause_file = KOAN_ROOT / PAUSE_FILE
-    pause_reason_file = KOAN_ROOT / PAUSE_REASON_FILE
     quota_file = KOAN_ROOT / QUOTA_RESET_FILE  # Legacy, kept for compat
 
     if pause_file.exists():
         # Read pause reason and reset info for better messaging
-        reason = "manual"
-        reset_timestamp = None
-        reset_display = ""
+        state = get_pause_state(str(KOAN_ROOT))
+        reason = state.reason if state else "manual"
+        reset_timestamp = state.timestamp if state and state.timestamp else None
+        reset_display = state.display if state else ""
 
-        if pause_reason_file.exists():
-            lines = pause_reason_file.read_text().strip().split("\n")
-            reason = lines[0].strip() if lines else "manual"
-            if len(lines) > 1 and lines[1].strip():
-                try:
-                    reset_timestamp = int(lines[1].strip())
-                except ValueError:
-                    pass
-            if len(lines) > 2:
-                reset_display = lines[2]
-
-        pause_file.unlink(missing_ok=True)
-        pause_reason_file.unlink(missing_ok=True)
+        remove_pause(str(KOAN_ROOT))
 
         if reason == "quota":
             # Reset internal session counters so the estimator doesn't

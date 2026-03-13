@@ -393,25 +393,27 @@ class TestHandleStartOnPause:
     @patch("app.utils.get_start_on_pause", return_value=True)
     def test_preserves_manual_pause(self, mock_config, koan_root):
         from app.startup_manager import handle_start_on_pause
-        (koan_root / ".koan-pause").touch()
-        (koan_root / ".koan-pause-reason").write_text("manual\n")
+        (koan_root / ".koan-pause").write_text("manual\n1234567890\n")
         handle_start_on_pause(str(koan_root))
-        # Manual pause reason preserved
-        assert (koan_root / ".koan-pause-reason").exists()
+        # Manual pause preserved — content still starts with "manual"
+        content = (koan_root / ".koan-pause").read_text()
+        assert content.startswith("manual")
 
     @patch("app.utils.get_start_on_pause", return_value=True)
-    def test_removes_quota_reason(self, mock_config, koan_root):
+    def test_overwrites_quota_reason(self, mock_config, koan_root):
         from app.startup_manager import handle_start_on_pause
-        (koan_root / ".koan-pause-reason").write_text("quota\n1234567890\nresets 10am")
+        (koan_root / ".koan-pause").write_text("quota\n1234567890\nresets 10am")
         handle_start_on_pause(str(koan_root))
-        assert not (koan_root / ".koan-pause-reason").exists()
+        content = (koan_root / ".koan-pause").read_text()
+        assert content.startswith("start_on_pause")
 
     @patch("app.utils.get_start_on_pause", return_value=True)
-    def test_removes_max_runs_reason(self, mock_config, koan_root):
+    def test_overwrites_max_runs_reason(self, mock_config, koan_root):
         from app.startup_manager import handle_start_on_pause
-        (koan_root / ".koan-pause-reason").write_text("max_runs\n")
+        (koan_root / ".koan-pause").write_text("max_runs\n1234567890\n")
         handle_start_on_pause(str(koan_root))
-        assert not (koan_root / ".koan-pause-reason").exists()
+        content = (koan_root / ".koan-pause").read_text()
+        assert content.startswith("start_on_pause")
 
     @patch("app.utils.get_start_on_pause", return_value=True)
     def test_noop_if_already_paused(self, mock_config, koan_root, capsys):
