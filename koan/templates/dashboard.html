@@ -7,16 +7,12 @@
     <div class="card">
         <div class="stat-label">Status</div>
         <div class="stat-value" style="font-size:1.3rem;">
-            {% if state == 'running' %}
-                <span class="badge badge-green">{{ state_label }}</span>
-            {% elif state == 'paused' %}
-                <span class="badge badge-orange">{{ state_label }}</span>
-            {% elif state == 'stopped' %}
-                <span class="badge badge-red">{{ state_label }}</span>
-            {% else %}
-                <span class="badge badge-muted">{{ state_label }}</span>
-            {% endif %}
+            <span id="state-badge" class="badge badge-{{ agent_state.badge_color }}">
+                <span id="activity-dot" class="activity-dot activity-dot-{{ agent_state.state }}"></span>
+                <span id="state-label">{{ state_label }}</span>
+            </span>
         </div>
+        <div id="state-elapsed" class="stat-detail"></div>
     </div>
     <div class="card">
         <div class="stat-label">Pending</div>
@@ -31,6 +27,12 @@
         <div class="stat-value">{{ done_count }}</div>
     </div>
 </div>
+
+{% if agent_state.focus %}
+<div class="card card-focus">
+    <span id="focus-indicator">Focused — <span id="focus-remaining">{{ agent_state.focus.remaining }}</span> remaining</span>
+</div>
+{% endif %}
 
 {% if missions.in_progress %}
 <h2>In Progress</h2>
@@ -51,14 +53,95 @@
 {% endif %}
 
 <script>
-// Auto-refresh status every 10s
-setInterval(() => {
-    fetch('/api/status')
-        .then(r => r.json())
-        .then(data => {
-            // Could update DOM here; for now just check if page needs reload
-        })
-        .catch(() => {});
-}, 10000);
+(function() {
+    const badgeEl = document.getElementById('state-badge');
+    const labelEl = document.getElementById('state-label');
+    const dotEl = document.getElementById('activity-dot');
+    const elapsedEl = document.getElementById('state-elapsed');
+
+    // Badge color CSS class mapping
+    const colorClasses = ['badge-green', 'badge-orange', 'badge-red', 'badge-blue', 'badge-muted'];
+    const dotClasses = ['activity-dot-working', 'activity-dot-sleeping', 'activity-dot-contemplating',
+                        'activity-dot-paused', 'activity-dot-stopped', 'activity-dot-error_recovery',
+                        'activity-dot-idle'];
+
+    let lastElapsed = {{ agent_state.elapsed }};
+    let lastUpdate = Date.now();
+
+    function formatElapsed(seconds) {
+        if (seconds < 60) return seconds + 's ago';
+        if (seconds < 3600) return Math.floor(seconds / 60) + 'm ago';
+        return Math.floor(seconds / 3600) + 'h ago';
+    }
+
+    function updateElapsed() {
+        const now = Date.now();
+        const delta = Math.floor((now - lastUpdate) / 1000);
+        const current = lastElapsed + delta;
+        elapsedEl.textContent = current > 0 ? formatElapsed(current) : '';
+    }
+
+    // Tick elapsed locally between SSE updates
+    setInterval(updateElapsed, 5000);
+    updateElapsed();
+
+    function applyState(data) {
+        // Update label
+        labelEl.textContent = data.label;
+
+        // Update badge color
+        colorClasses.forEach(c => badgeEl.classList.remove(c));
+        badgeEl.classList.add('badge-' + data.badge_color);
+
+        // Update activity dot
+        dotClasses.forEach(c => dotEl.classList.remove(c));
+        dotEl.classList.add('activity-dot-' + data.state);
+
+        // Update elapsed tracking
+        lastElapsed = data.elapsed;
+        lastUpdate = Date.now();
+        updateElapsed();
+
+        // Update focus indicator if present
+        const focusEl = document.getElementById('focus-indicator');
+        if (focusEl) {
+            if (data.focus) {
+                focusEl.parentElement.style.display = '';
+                document.getElementById('focus-remaining').textContent = data.focus.remaining;
+            } else {
+                focusEl.parentElement.style.display = 'none';
+            }
+        }
+    }
+
+    // SSE connection for live state updates
+    function connectSSE() {
+        const source = new EventSource('/api/state/stream');
+        source.onmessage = function(event) {
+            try {
+                const data = JSON.parse(event.data);
+                applyState(data);
+            } catch (e) {}
+        };
+        source.onerror = function() {
+            source.close();
+            // Reconnect after 3s
+            setTimeout(connectSSE, 3000);
+        };
+    }
+    connectSSE();
+
+    // Fallback: poll /api/status every 10s in case SSE fails
+    setInterval(() => {
+        fetch('/api/status')
+            .then(r => r.json())
+            .then(data => {
+                if (data.agent_state) {
+                    applyState(data.agent_state);
+                }
+            })
+            .catch(() => {});
+    }, 10000);
+})();
 </script>
 {% endblock %}

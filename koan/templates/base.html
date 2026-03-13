@@ -199,6 +199,47 @@
             flex-direction: column;
             gap: 0.25rem;
         }
+        .stat-detail {
+            font-size: 0.7rem;
+            color: var(--text-muted);
+            margin-top: 0.25rem;
+        }
+        .card-focus {
+            background: rgba(88, 166, 255, 0.08);
+            border-color: rgba(88, 166, 255, 0.3);
+            font-size: 0.85rem;
+            color: var(--accent);
+            margin-bottom: 1.5rem;
+        }
+        .activity-dot {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-right: 6px;
+            vertical-align: middle;
+        }
+        .activity-dot-working {
+            background: var(--green);
+            animation: pulse 1.5s ease-in-out infinite;
+        }
+        .activity-dot-sleeping, .activity-dot-contemplating {
+            background: var(--accent);
+        }
+        .activity-dot-paused {
+            background: var(--orange);
+        }
+        .activity-dot-stopped, .activity-dot-error_recovery {
+            background: var(--red);
+        }
+        .activity-dot-idle {
+            background: var(--text-muted);
+            opacity: 0.5;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.4; transform: scale(0.8); }
+        }
         .loading { opacity: 0.5; }
         .spinner {
             display: inline-block;
