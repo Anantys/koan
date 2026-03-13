@@ -29,10 +29,42 @@
 </div>
 
 {% if agent_state.focus %}
-<div class="card card-focus">
+<div class="card card-focus" id="focus-card">
     <span id="focus-indicator">Focused — <span id="focus-remaining">{{ agent_state.focus.remaining }}</span> remaining</span>
 </div>
+{% else %}
+<div class="card card-focus" id="focus-card" style="display:none;">
+    <span id="focus-indicator">Focused — <span id="focus-remaining"></span> remaining</span>
+</div>
 {% endif %}
+
+<div id="state-detail" class="card state-detail" {% if agent_state.state == 'idle' %}style="display:none;"{% endif %}>
+    <div class="state-detail-grid">
+        <div id="detail-project" class="detail-item" {% if not agent_state.project %}style="display:none;"{% endif %}>
+            <span class="detail-key">Project</span>
+            <span class="detail-val" id="detail-project-val">{{ agent_state.project }}</span>
+        </div>
+        <div id="detail-run" class="detail-item" {% if not agent_state.run_info %}style="display:none;"{% endif %}>
+            <span class="detail-key">Run</span>
+            <span class="detail-val" id="detail-run-val">{{ agent_state.run_info }}</span>
+        </div>
+        <div id="detail-mode" class="detail-item" {% if not agent_state.autonomous_mode %}style="display:none;"{% endif %}>
+            <span class="detail-key">Mode</span>
+            <span class="detail-val" id="detail-mode-val">{{ agent_state.autonomous_mode }}</span>
+        </div>
+        <div id="detail-pause" class="detail-item" {% if agent_state.state != 'paused' %}style="display:none;"{% endif %}>
+            <span class="detail-key">Pause reason</span>
+            <span class="detail-val" id="detail-pause-val">{{ agent_state.pause_reason }}{% if agent_state.reset_time %} — {{ agent_state.reset_time }}{% endif %}</span>
+        </div>
+        <div id="detail-focus" class="detail-item" {% if not agent_state.focus %}style="display:none;"{% endif %}>
+            <span class="detail-key">Focus</span>
+            <span class="detail-val" id="detail-focus-val">{% if agent_state.focus %}{{ agent_state.focus.remaining }} remaining{% endif %}</span>
+        </div>
+    </div>
+    <div class="detail-link">
+        <a href="/progress">View live output &rarr;</a>
+    </div>
+</div>
 
 {% if missions.in_progress %}
 <h2>In Progress</h2>
@@ -102,14 +134,53 @@
         lastUpdate = Date.now();
         updateElapsed();
 
-        // Update focus indicator if present
-        const focusEl = document.getElementById('focus-indicator');
-        if (focusEl) {
+        // Update focus card
+        const focusCard = document.getElementById('focus-card');
+        if (focusCard) {
             if (data.focus) {
-                focusEl.parentElement.style.display = '';
+                focusCard.style.display = '';
                 document.getElementById('focus-remaining').textContent = data.focus.remaining;
             } else {
-                focusEl.parentElement.style.display = 'none';
+                focusCard.style.display = 'none';
+            }
+        }
+
+        // Update detail panel
+        const detailPanel = document.getElementById('state-detail');
+        if (detailPanel) {
+            detailPanel.style.display = data.state === 'idle' ? 'none' : '';
+
+            function showDetail(id, val) {
+                const el = document.getElementById(id);
+                if (el) {
+                    el.style.display = val ? '' : 'none';
+                    const valEl = document.getElementById(id + '-val');
+                    if (valEl) valEl.textContent = val;
+                }
+            }
+
+            showDetail('detail-project', data.project);
+            showDetail('detail-run', data.run_info);
+            showDetail('detail-mode', data.autonomous_mode);
+
+            const pauseEl = document.getElementById('detail-pause');
+            if (pauseEl) {
+                pauseEl.style.display = data.state === 'paused' ? '' : 'none';
+                const pauseVal = document.getElementById('detail-pause-val');
+                if (pauseVal) {
+                    let txt = data.pause_reason || '';
+                    if (data.reset_time) txt += ' — ' + data.reset_time;
+                    pauseVal.textContent = txt;
+                }
+            }
+
+            const focusDetail = document.getElementById('detail-focus');
+            if (focusDetail) {
+                focusDetail.style.display = data.focus ? '' : 'none';
+                const focusVal = document.getElementById('detail-focus-val');
+                if (focusVal && data.focus) {
+                    focusVal.textContent = data.focus.remaining + ' remaining';
+                }
             }
         }
     }

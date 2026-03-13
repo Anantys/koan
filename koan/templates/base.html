@@ -211,6 +211,40 @@
             color: var(--accent);
             margin-bottom: 1.5rem;
         }
+        .state-detail {
+            margin-bottom: 1.5rem;
+        }
+        .state-detail-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 0.5rem 1.5rem;
+        }
+        .detail-item {
+            display: flex;
+            flex-direction: column;
+            gap: 0.1rem;
+        }
+        .detail-key {
+            font-size: 0.7rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+        .detail-val {
+            font-family: var(--mono);
+            font-size: 0.85rem;
+        }
+        .detail-link {
+            margin-top: 0.75rem;
+            font-size: 0.8rem;
+        }
+        .detail-link a {
+            color: var(--accent);
+            text-decoration: none;
+        }
+        .detail-link a:hover {
+            text-decoration: underline;
+        }
         .activity-dot {
             display: inline-block;
             width: 8px;
