@@ -126,6 +126,21 @@ TOOL_DEFINITIONS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "skill",
+            "description": "Execute a user-installed skill by name.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill": {"type": "string", "description": "The skill name to invoke"},
+                    "args": {"type": "string", "description": "Optional arguments for the skill"},
+                },
+                "required": ["skill"],
+            },
+        },
+    },
 ]
 
 # Re-use the canonical tool name mapping from the provider package
