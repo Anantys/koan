@@ -18,7 +18,7 @@ class TestConstants:
         assert isinstance(CLAUDE_TOOLS, set)
 
     def test_claude_tools_contains_core_tools(self):
-        expected = {"Bash", "Read", "Write", "Glob", "Grep", "Edit"}
+        expected = {"Bash", "Read", "Write", "Glob", "Grep", "Edit", "Skill"}
         assert CLAUDE_TOOLS == expected
 
     def test_tool_name_map_is_a_dict(self):
