@@ -600,15 +600,16 @@ class TestRunIterationIntegration:
         assert "from app.git_prep import prepare_project_branch" in source
         assert "prepare_project_branch(project_path, project_name, koan_root)" in source
 
-    def test_git_prep_is_non_fatal(self):
-        """Git prep failure is wrapped in try/except — never blocks missions."""
+    def test_git_prep_failure_aborts_iteration(self):
+        """Git prep failure aborts the iteration — returns False."""
         import inspect
         from app import run
 
         source = inspect.getsource(run)
-        # Find the git prep block — it should be in a try/except
+        # Find the git prep block — it should abort on failure
         idx = source.find("prepare_project_branch(project_path")
         assert idx > 0
-        # The try block should be nearby (within ~200 chars before)
-        preceding = source[max(0, idx - 300):idx]
-        assert "try:" in preceding
+        # After the call, there should be a return False on failure
+        following = source[idx:idx + 600]
+        assert "return False" in following
+        assert "abort" in following.lower()

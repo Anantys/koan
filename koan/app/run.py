@@ -1332,10 +1332,18 @@ def _run_iteration(
             log("git", f"Stashed uncommitted changes in {project_name}")
         if not prep.success:
             log("error", f"Git prep failed for {project_name}: {prep.error}")
+            if mission_title:
+                _update_mission_in_file(instance, mission_title, failed=True)
+                _notify(instance, f"❌ [{project_name}] Git prep failed, aborting mission: {mission_title[:60]}")
+            return False  # abort — branch state is unreliable
         else:
             log("git", f"Ready on {prep.base_branch} from {prep.remote_used}")
     except Exception as e:
         log("error", f"Git prep error for {project_name}: {e}\n{traceback.format_exc()}")
+        if mission_title:
+            _update_mission_in_file(instance, mission_title, failed=True)
+            _notify(instance, f"❌ [{project_name}] Git prep error, aborting mission: {mission_title[:60]}")
+        return False  # abort — branch state is unreliable
 
     # --- Mark mission as In Progress ---
     # Save the original title before skill dispatch may translate it.

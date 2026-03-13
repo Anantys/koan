@@ -5126,19 +5126,70 @@ class TestRunIterationPaths:
             mocks["run_claude_task"].assert_not_called()
             assert result is True
 
-    # --- Git prep failure does not block execution ---
+    # --- Git prep failure aborts execution ---
 
-    def test_git_prep_failure_does_not_block_execution(self, tmp_path):
-        """Git prep error → continue with Claude execution."""
+    def test_git_prep_exception_aborts_execution(self, tmp_path):
+        """Git prep exception → abort, do NOT run Claude."""
         plan = self._make_plan("autonomous", mission_title="")
         with self._patched_iteration(
             tmp_path, plan,
             prepare_project_branch=MagicMock(side_effect=RuntimeError("git broke")),
         ) as mocks:
             result = self._call(tmp_path)
-            # Claude should still run even though git prep failed
-            mocks["run_claude_task"].assert_called_once()
-            assert result is True
+            mocks["run_claude_task"].assert_not_called()
+            assert result is False
+
+    def test_git_prep_failure_aborts_execution(self, tmp_path):
+        """Git prep returns success=False → abort, do NOT run Claude."""
+        from app.git_prep import PrepResult
+        plan = self._make_plan("autonomous", mission_title="")
+        with self._patched_iteration(
+            tmp_path, plan,
+            prepare_project_branch=MagicMock(
+                return_value=PrepResult(success=False, error="fetch failed")
+            ),
+        ) as mocks:
+            result = self._call(tmp_path)
+            mocks["run_claude_task"].assert_not_called()
+            assert result is False
+
+    @patch("app.run._update_mission_in_file")
+    def test_git_prep_failure_fails_mission(self, mock_update, tmp_path):
+        """Git prep failure with a mission → mission is marked failed."""
+        from app.git_prep import PrepResult
+        title = "fix the thing"
+        plan = self._make_plan("mission", mission_title=title)
+        with self._patched_iteration(
+            tmp_path, plan,
+            prepare_project_branch=MagicMock(
+                return_value=PrepResult(success=False, error="checkout failed")
+            ),
+        ) as mocks:
+            result = self._call(tmp_path)
+            assert result is False
+            mock_update.assert_called_once_with(
+                str(Path(tmp_path) / "instance"), title, failed=True
+            )
+            # Notification sent about the failure
+            mocks["_notify"].assert_called_once()
+            assert "Git prep failed" in mocks["_notify"].call_args[0][1]
+
+    @patch("app.run._update_mission_in_file")
+    def test_git_prep_exception_fails_mission(self, mock_update, tmp_path):
+        """Git prep exception with a mission → mission is marked failed."""
+        title = "deploy the widget"
+        plan = self._make_plan("mission", mission_title=title)
+        with self._patched_iteration(
+            tmp_path, plan,
+            prepare_project_branch=MagicMock(side_effect=RuntimeError("git broke")),
+        ) as mocks:
+            result = self._call(tmp_path)
+            assert result is False
+            mock_update.assert_called_once_with(
+                str(Path(tmp_path) / "instance"), title, failed=True
+            )
+            mocks["_notify"].assert_called_once()
+            assert "Git prep error" in mocks["_notify"].call_args[0][1]
 
     # --- Temp files cleaned up on exception ---
 
