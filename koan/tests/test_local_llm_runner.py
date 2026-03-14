@@ -570,7 +570,7 @@ class TestToolDefinitions:
 
     def test_all_koan_tools_mapped(self):
         """Every Koan canonical tool has a mapping."""
-        for tool in ["Read", "Write", "Edit", "Glob", "Grep", "Bash"]:
+        for tool in ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "Skill"]:
             assert tool in TOOL_NAME_MAP
 
     def test_all_mapped_tools_exist(self):
