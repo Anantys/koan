@@ -42,7 +42,13 @@ You are implementing a plan from a GitHub issue. Your job is to read the plan ca
 
 9. **If the additional context specifies a subset** (e.g., "Phase 1 to 3"), only implement the specified phases. Skip the others.
 
-10. **Push and create a draft PR** after all phases are complete:
+10. **Update documentation and config files** (if your changes affect user-facing behavior):
+    - **Skip this step** if your changes are purely internal refactors with no user-visible impact.
+    - **User docs**: Check for `README.md`, `docs/`, and `documentation/` directories at the project root. If any exist and your changes affect commands, configuration, features, or usage — update the relevant sections. Don't generate documentation from scratch for undocumented projects.
+    - **Config files**: If you introduced new configuration keys (YAML, TOML, JSON, etc.), add inline comments explaining each new key's purpose, expected type, default value, and valid options. Match the commenting style already present in the file. Also update any sample/example config files (e.g., `*.example.yaml`, `instance.example/`) to include the new keys with documented defaults.
+    - Commit doc/config updates as part of the current phase or as a dedicated follow-up commit.
+
+11. **Push and create a draft PR** after all phases are complete:
     - Push the branch to origin: `git push -u origin HEAD`
     - Create a draft PR using `gh pr create --draft`:
       ```bash
