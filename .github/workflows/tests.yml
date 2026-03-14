@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       group:
-        description: "Test group to run (fast, slow-1, slow-2, or blank for all)"
+        description: "Test group to run (fast, slow-1, slow-2, slow-3, or blank for all)"
         required: false
         type: string
 
@@ -30,18 +30,23 @@ jobs:
             marker: "slow"
             files: >-
               tests/test_pid_manager.py
-              tests/test_awake.py
-              tests/test_command_handlers.py
           - name: slow-2
             marker: "slow"
             files: >-
-              tests/test_plan_runner.py
               tests/test_deep_research.py
+              tests/test_plan_runner.py
               tests/test_loop_manager.py
+          - name: slow-3
+            marker: "slow"
+            files: >-
               tests/test_run.py
+              tests/test_awake.py
+              tests/test_command_handlers.py
               tests/test_cli_journal_streamer.py
               tests/test_github_command_handler.py
               tests/test_notify.py
+              tests/test_github_intent.py
+              tests/test_github_subscribe.py
 
     name: test (${{ matrix.group.name }})
 
