@@ -1,4 +1,4 @@
-"""Koan done skill — list merged PRs from the last 24 hours."""
+"""Koan done skill — list merged and open PRs from the last 24 hours."""
 
 import json
 import re
@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 
 def handle(ctx):
-    """Handle /done command — list recently merged PRs across projects."""
+    """Handle /done command — list recently merged and open PRs across projects."""
     args = ctx.args.strip() if ctx.args else ""
     project_filter, hours = _parse_args(args)
 
@@ -31,24 +31,26 @@ def handle(ctx):
         projects = matched
 
     since = datetime.now(timezone.utc) - timedelta(hours=hours)
-    all_prs = []
+    # {project_name: {"merged": [...], "open": [...]}}
+    by_project = {}
 
     for name, path in projects:
         repo = _get_repo_slug(name, path)
         if not repo:
             continue
 
-        prs = _fetch_merged_prs(repo, author, since)
-        for pr in prs:
-            pr["project"] = name
-        all_prs.extend(prs)
+        merged = _fetch_merged_prs(repo, author, since)
+        opened = _fetch_open_prs(repo, author, since)
 
-    if not all_prs:
+        if merged or opened:
+            by_project[name] = {"merged": merged, "open": opened}
+
+    if not by_project:
         period = f"{hours}h" if hours != 24 else "24h"
         scope = f" for {project_filter}" if project_filter else ""
-        return f"No merged PRs in the last {period}{scope}."
+        return f"No activity in the last {period}{scope}."
 
-    return _format_output(all_prs, hours)
+    return _format_output(by_project, hours)
 
 
 def _parse_args(args):
@@ -110,7 +112,6 @@ def _fetch_merged_prs(repo, author, since):
         prs = json.loads(output)
         if not isinstance(prs, list):
             return []
-        # Filter by merge date (belt and suspenders — search filter may not be exact)
         result = []
         for pr in prs:
             merged_at = pr.get("mergedAt", "")
@@ -131,28 +132,91 @@ def _fetch_merged_prs(repo, author, since):
         return []
 
 
-def _format_output(prs, hours):
-    """Format PR list for Telegram output."""
+def _fetch_open_prs(repo, author, since):
+    """Fetch open PRs for a repo created since a given datetime.
+
+    Returns:
+        List of dicts with keys: number, title, url, created_at.
+    """
+    from app.github import run_gh
+
+    since_str = since.strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        output = run_gh(
+            "pr", "list",
+            "--repo", repo,
+            "--state", "open",
+            "--author", author,
+            "--search", f"created:>={since_str}",
+            "--json", "number,title,url,createdAt",
+            "--limit", "50",
+            timeout=15,
+        )
+    except (RuntimeError, OSError):
+        return []
+
+    if not output:
+        return []
+
+    try:
+        prs = json.loads(output)
+        if not isinstance(prs, list):
+            return []
+        result = []
+        for pr in prs:
+            created_at = pr.get("createdAt", "")
+            if created_at:
+                try:
+                    created_dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                    if created_dt >= since:
+                        result.append({
+                            "number": pr.get("number", 0),
+                            "title": pr.get("title", ""),
+                            "url": pr.get("url", ""),
+                            "created_at": created_at,
+                        })
+                except (ValueError, TypeError):
+                    pass
+        return result
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+
+def _format_output(by_project, hours):
+    """Format PR list for Telegram output, grouped by project."""
     period = f"{hours}h" if hours != 24 else "24h"
 
-    # Group by project
-    by_project = {}
-    for pr in prs:
-        proj = pr["project"]
-        by_project.setdefault(proj, []).append(pr)
+    total_merged = sum(len(v["merged"]) for v in by_project.values())
+    total_open = sum(len(v["open"]) for v in by_project.values())
 
-    lines = [f"Merged PRs (last {period}): {len(prs)}"]
+    # Build summary line
+    parts = []
+    if total_merged:
+        parts.append(f"{total_merged} merged")
+    if total_open:
+        parts.append(f"{total_open} open")
+    summary = ", ".join(parts)
+
+    lines = [f"Work (last {period}): {summary}"]
     lines.append("")
 
     for project in sorted(by_project):
-        project_prs = by_project[project]
-        if len(by_project) > 1:
-            lines.append(f"{project}:")
+        data = by_project[project]
+        lines.append(f"{project}:")
 
-        for pr in project_prs:
-            title = pr["title"]
-            if len(title) > 70:
-                title = title[:67] + "..."
-            lines.append(f"  #{pr['number']} {title}")
+        for pr in data["merged"]:
+            title = _truncate_title(pr["title"])
+            lines.append(f"  ✅ #{pr['number']} {title}")
+
+        for pr in data["open"]:
+            title = _truncate_title(pr["title"])
+            lines.append(f"  ⏳ #{pr['number']} {title}")
 
     return "\n".join(lines)
+
+
+def _truncate_title(title):
+    """Truncate title to 70 chars max."""
+    if len(title) > 70:
+        return title[:67] + "..."
+    return title
