@@ -395,6 +395,35 @@ class TestGetMissionTimeout:
             assert get_mission_timeout() == 0
 
 
+# --- get_post_mission_timeout ---
+
+
+class TestGetPostMissionTimeout:
+    def test_default(self):
+        from app.config import get_post_mission_timeout
+
+        with _mock_config({}):
+            assert get_post_mission_timeout() == 300
+
+    def test_custom(self):
+        from app.config import get_post_mission_timeout
+
+        with _mock_config({"post_mission_timeout": 600}):
+            assert get_post_mission_timeout() == 600
+
+    def test_string_parsed(self):
+        from app.config import get_post_mission_timeout
+
+        with _mock_config({"post_mission_timeout": "120"}):
+            assert get_post_mission_timeout() == 120
+
+    def test_invalid_returns_default(self):
+        from app.config import get_post_mission_timeout
+
+        with _mock_config({"post_mission_timeout": "nope"}):
+            assert get_post_mission_timeout() == 300
+
+
 # --- build_claude_flags ---
 
 
