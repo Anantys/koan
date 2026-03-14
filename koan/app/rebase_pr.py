@@ -50,6 +50,18 @@ def fetch_pr_context(owner: str, repo: str, pr_number: str) -> dict:
         "title,body,headRefName,baseRefName,state,author,url,headRepositoryOwner",
     )
 
+    # Fetch review comment count from REST API for pending review detection.
+    # GitHub counts pending (unsubmitted) review comments in PR metadata but
+    # the comments endpoints don't return them to other users.
+    try:
+        count_json = run_gh(
+            "api", f"repos/{full_repo}/pulls/{pr_number}",
+            "--jq", ".review_comments",
+        )
+        api_review_comment_count = int(count_json.strip()) if count_json.strip() else 0
+    except (RuntimeError, ValueError):
+        api_review_comment_count = 0
+
     # Fetch PR diff (may fail for very large PRs — GitHub HTTP 406)
     try:
         diff = run_gh("pr", "diff", pr_number, "--repo", full_repo)
@@ -91,6 +103,13 @@ def fetch_pr_context(owner: str, repo: str, pr_number: str) -> dict:
     except (json.JSONDecodeError, TypeError):
         metadata = {}
 
+    # Detect pending (unsubmitted) reviews: GitHub counts pending review
+    # comments in the PR metadata but the API doesn't return them to other
+    # users.  When the count is positive but fetched comments are empty,
+    # there are invisible pending reviews.
+    fetched_comment_count = len(comments_json.strip().splitlines()) if comments_json.strip() else 0
+    has_pending_reviews = api_review_comment_count > 0 and fetched_comment_count == 0
+
     return {
         "title": metadata.get("title", ""),
         "body": metadata.get("body", ""),
@@ -104,6 +123,7 @@ def fetch_pr_context(owner: str, repo: str, pr_number: str) -> dict:
         "review_comments": truncate_text(comments_json, 4000),
         "reviews": truncate_text(reviews_json, 3000),
         "issue_comments": truncate_text(issue_comments, 3000),
+        "has_pending_reviews": has_pending_reviews,
     }
 
 
@@ -219,6 +239,15 @@ def run_rebase(
 
     if not context["branch"]:
         return False, "Could not determine PR branch name."
+
+    # Abort if there are pending (unsubmitted) reviews we cannot read
+    if context.get("has_pending_reviews"):
+        return False, (
+            f"PR #{pr_number} has pending (unsubmitted) review comments that "
+            f"are invisible to the API. Please submit or discard the pending "
+            f"review on GitHub before triggering /rebase, so the feedback "
+            f"can be read and applied."
+        )
 
     branch = context["branch"]
     base = context["base"]
