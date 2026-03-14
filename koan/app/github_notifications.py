@@ -88,10 +88,13 @@ def fetch_unread_notifications(known_repos: Optional[Set[str]] = None,
         FetchResult with actionable and drain lists.
     """
     try:
-        extra = ["--paginate"]
+        # Build endpoint with query params directly in the URL.
+        # Using -f flags would cause gh to send a POST (with JSON body)
+        # instead of GET, resulting in 404 from the notifications endpoint.
+        endpoint = "notifications"
         if since:
-            extra.extend(["-f", f"since={since}", "-f", "all=true"])
-        raw = api("notifications", extra_args=extra)
+            endpoint = f"notifications?since={since}&all=true"
+        raw = api(endpoint, extra_args=["--paginate"])
     except (RuntimeError, subprocess.TimeoutExpired, OSError) as e:
         log.debug("GitHub API: failed to fetch notifications: %s", e)
         return FetchResult([], [])

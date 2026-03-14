@@ -263,7 +263,7 @@ class TestFetchUnreadNotifications:
 
     @patch("app.github_notifications.api")
     def test_since_parameter_passes_all_true(self, mock_api):
-        """When since is provided, all=true is passed to include read notifications."""
+        """When since is provided, all=true is passed as query params in endpoint URL."""
         notifications = [
             {"reason": "mention", "repository": {"full_name": "owner/repo"}},
         ]
@@ -272,12 +272,12 @@ class TestFetchUnreadNotifications:
         result = fetch_unread_notifications(since="2026-03-08T17:00:00Z")
         assert len(result.actionable) == 1
 
-        # Verify the API was called with since and all=true
+        # Verify the API was called with since and all=true in the endpoint URL
+        # (not as -f flags, which would cause gh to send POST instead of GET)
         call_args = mock_api.call_args
-        extra_args = call_args[1].get("extra_args", call_args[0][1] if len(call_args[0]) > 1 else [])
-        assert "-f" in extra_args
-        assert "since=2026-03-08T17:00:00Z" in extra_args
-        assert "all=true" in extra_args
+        endpoint = call_args[0][0]
+        assert "since=2026-03-08T17:00:00Z" in endpoint
+        assert "all=true" in endpoint
 
     @patch("app.github_notifications.api")
     def test_no_since_parameter_omits_all_true(self, mock_api):
@@ -287,8 +287,9 @@ class TestFetchUnreadNotifications:
         fetch_unread_notifications()
 
         call_args = mock_api.call_args
-        extra_args = call_args[1].get("extra_args", call_args[0][1] if len(call_args[0]) > 1 else [])
-        assert "all=true" not in extra_args
+        endpoint = call_args[0][0]
+        assert "all=true" not in endpoint
+        assert endpoint == "notifications"
 
     @patch("app.github_notifications.api")
     def test_since_none_same_as_no_since(self, mock_api):
@@ -298,8 +299,9 @@ class TestFetchUnreadNotifications:
         fetch_unread_notifications(since=None)
 
         call_args = mock_api.call_args
-        extra_args = call_args[1].get("extra_args", call_args[0][1] if len(call_args[0]) > 1 else [])
-        assert "all=true" not in extra_args
+        endpoint = call_args[0][0]
+        assert "all=true" not in endpoint
+        assert endpoint == "notifications"
 
 
 class TestCheckAlreadyProcessed:
