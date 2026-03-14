@@ -1,6 +1,136 @@
 {% extends "base.html" %}
 {% block title %}Kōan — Missions{% endblock %}
 {% block content %}
+<style>
+    .pending-item {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.5rem 0.5rem;
+        border-bottom: 1px solid var(--border);
+        font-family: var(--mono);
+        font-size: 0.85rem;
+        transition: background 0.15s;
+    }
+    .pending-item:last-child { border-bottom: none; }
+    .pending-item.drag-over {
+        border-top: 2px solid var(--accent);
+    }
+    .pending-item .drag-handle {
+        cursor: grab;
+        color: var(--text-muted);
+        user-select: none;
+        font-size: 1rem;
+        flex-shrink: 0;
+        padding: 0 0.25rem;
+    }
+    .pending-item .drag-handle:active { cursor: grabbing; }
+    .pending-item.dragging { opacity: 0.4; }
+    .pending-item .position-num {
+        color: var(--text-muted);
+        font-size: 0.75rem;
+        min-width: 1.5rem;
+        flex-shrink: 0;
+    }
+    .pending-item .mission-text {
+        flex: 1;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        cursor: pointer;
+    }
+    .pending-item .mission-text:hover { color: var(--accent); }
+    .pending-item .actions {
+        display: flex;
+        gap: 0.25rem;
+        flex-shrink: 0;
+        opacity: 0;
+        transition: opacity 0.15s;
+    }
+    .pending-item:hover .actions { opacity: 1; }
+    .action-btn {
+        background: none;
+        border: 1px solid var(--border);
+        color: var(--text-muted);
+        padding: 0.15rem 0.4rem;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 0.75rem;
+        line-height: 1;
+    }
+    .action-btn:hover { color: var(--text); border-color: var(--text-muted); background: none; }
+    .action-btn.cancel-btn:hover { color: var(--red); border-color: var(--red); }
+    .action-btn.cancel-btn.confirm { color: var(--red); border-color: var(--red); }
+    .action-btn.promote-btn:hover { color: var(--green); border-color: var(--green); }
+    .edit-input {
+        flex: 1;
+        padding: 0.25rem 0.5rem;
+        background: var(--bg);
+        border: 1px solid var(--accent);
+        border-radius: 4px;
+        color: var(--text);
+        font-family: var(--mono);
+        font-size: 0.85rem;
+        outline: none;
+    }
+    .tag-dropdown {
+        position: absolute;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        padding: 0.25rem 0;
+        z-index: 10;
+        min-width: 120px;
+    }
+    .tag-dropdown div {
+        padding: 0.3rem 0.75rem;
+        cursor: pointer;
+        font-size: 0.8rem;
+    }
+    .tag-dropdown div:hover { background: rgba(88, 166, 255, 0.1); }
+    .in-progress-item {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+    }
+    .pulse {
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--green);
+        animation: pulse-anim 1.5s infinite;
+        flex-shrink: 0;
+    }
+    @keyframes pulse-anim {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.3; }
+    }
+    .timing { font-size: 0.7rem; color: var(--text-muted); margin-left: 0.5rem; }
+    .toast {
+        position: fixed;
+        bottom: 2rem;
+        right: 2rem;
+        padding: 0.75rem 1.25rem;
+        border-radius: 6px;
+        font-size: 0.85rem;
+        z-index: 100;
+        animation: toast-in 0.3s ease;
+    }
+    .toast.success { background: rgba(63, 185, 80, 0.2); border: 1px solid var(--green); color: var(--green); }
+    .toast.error { background: rgba(248, 81, 73, 0.2); border: 1px solid var(--red); color: var(--red); }
+    @keyframes toast-in { from { opacity: 0; transform: translateY(1rem); } to { opacity: 1; transform: translateY(0); } }
+    .empty-state {
+        color: var(--text-muted);
+        font-style: italic;
+        padding: 1rem 0;
+    }
+    /* Mobile: show move buttons instead of drag */
+    @media (max-width: 640px) {
+        .pending-item .actions { opacity: 1; }
+        .pending-item .drag-handle { display: none; }
+    }
+</style>
+
 <h1>Missions</h1>
 
 <div class="card">
@@ -14,29 +144,53 @@
     </form>
 </div>
 
+<div id="in-progress-section">
 {% if missions.in_progress %}
 <h2>In Progress</h2>
 {% for m in missions.in_progress %}
 <div class="card">
-    <pre>{% if not selected_project %}{{ m|project_badge|safe }}{% endif %}{{ m|strip_project_tag }}</pre>
+    <div class="in-progress-item">
+        <span class="pulse"></span>
+        <pre style="flex:1;">{% if not selected_project %}{{ m|project_badge|safe }}{% endif %}{{ m|strip_project_tag }}</pre>
+    </div>
 </div>
 {% endfor %}
 {% endif %}
+</div>
 
+<div id="pending-section">
+<h2>Pending (<span id="pending-count">{{ missions.pending|length }}</span>)</h2>
 {% if missions.pending %}
-<h2>Pending ({{ missions.pending|length }})</h2>
+<div class="card" id="pending-list">
 {% for m in missions.pending %}
-<div class="card">
-    <div class="mission-item">{% if not selected_project %}{{ m|project_badge|safe }}{% endif %}{{ m|strip_project_tag }}</div>
-</div>
+    <div class="pending-item" draggable="true" data-position="{{ loop.index }}">
+        <span class="drag-handle" title="Drag to reorder">&#x2630;</span>
+        <span class="position-num">#{{ loop.index }}</span>
+        <span class="mission-text" title="Click to edit">{% if not selected_project %}{{ m|project_badge|safe }}{% endif %}{{ m|strip_project_tag }}</span>
+        <span class="actions">
+            {% if loop.index != 1 %}
+            <button class="action-btn promote-btn" title="Move to top" data-action="promote" data-position="{{ loop.index }}">&#x2191;</button>
+            {% endif %}
+            <button class="action-btn tag-btn" title="Tag project" data-action="tag" data-position="{{ loop.index }}">&#x1F3F7;</button>
+            <button class="action-btn cancel-btn" title="Cancel mission" data-action="cancel" data-position="{{ loop.index }}">&#x2715;</button>
+        </span>
+    </div>
 {% endfor %}
+</div>
+{% else %}
+<div class="card"><div class="empty-state">No pending missions</div></div>
 {% endif %}
+</div>
 
+<div id="done-section">
 {% if missions.done %}
 <h2>Done ({{ missions.done|length }})</h2>
 <div class="card">
 {% for m in missions.done[:20] %}
-    <div class="mission-item" style="color: var(--text-muted);">{% if not selected_project %}{{ m|project_badge|safe }}{% endif %}{{ m|strip_project_tag }}</div>
+    <div class="mission-item" style="color: var(--text-muted);">
+        {% if '❌' in m %}<span class="badge badge-red">failed</span> {% elif '✅' in m %}<span class="badge badge-green">done</span> {% endif %}
+        {% if not selected_project %}{{ m|project_badge|safe }}{% endif %}{{ m|strip_project_tag }}
+    </div>
 {% endfor %}
 {% if missions.done|length > 20 %}
     <div class="mission-item" style="color: var(--text-muted); font-style: italic;">
@@ -45,4 +199,333 @@
 {% endif %}
 </div>
 {% endif %}
+</div>
+
+<script>
+(function() {
+    const projectsList = {{ projects|default([])|tojson }};
+    let isEditing = false;
+    let isDragging = false;
+
+    // --- Toast notifications ---
+    function showToast(message, type) {
+        const t = document.createElement('div');
+        t.className = 'toast ' + type;
+        t.textContent = message;
+        document.body.appendChild(t);
+        setTimeout(() => t.remove(), 3000);
+    }
+
+    // --- API helpers ---
+    async function apiCall(url, body) {
+        try {
+            const resp = await fetch(url, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(body),
+            });
+            const data = await resp.json();
+            if (!data.ok) {
+                showToast(data.error || 'Error', 'error');
+                return null;
+            }
+            return data;
+        } catch (e) {
+            showToast('Network error', 'error');
+            return null;
+        }
+    }
+
+    // --- Re-render pending list from JSON ---
+    function renderPending(items) {
+        const list = document.getElementById('pending-list');
+        const section = document.getElementById('pending-section');
+        const count = document.getElementById('pending-count');
+        count.textContent = items.length;
+
+        if (!items.length) {
+            if (list) list.innerHTML = '<div class="empty-state">No pending missions</div>';
+            return;
+        }
+
+        // Rebuild items
+        let html = '';
+        items.forEach((text, i) => {
+            const pos = i + 1;
+            const stripped = text.replace(/\s*\[(?:project|projet):[a-zA-Z0-9_-]+\]\s*/g, ' ').trim();
+            const tagMatch = text.match(/\[(?:project|projet):([a-zA-Z0-9_-]+)\]/);
+            const badge = tagMatch ? '<span class="badge badge-blue">' + tagMatch[1] + '</span> ' : '';
+            const promoteBtn = pos > 1
+                ? '<button class="action-btn promote-btn" title="Move to top" data-action="promote" data-position="' + pos + '">&#x2191;</button>'
+                : '';
+            html += '<div class="pending-item" draggable="true" data-position="' + pos + '">'
+                + '<span class="drag-handle" title="Drag to reorder">&#x2630;</span>'
+                + '<span class="position-num">#' + pos + '</span>'
+                + '<span class="mission-text" title="Click to edit">' + badge + escapeHtml(stripped) + '</span>'
+                + '<span class="actions">'
+                + promoteBtn
+                + '<button class="action-btn tag-btn" title="Tag project" data-action="tag" data-position="' + pos + '">&#x1F3F7;</button>'
+                + '<button class="action-btn cancel-btn" title="Cancel mission" data-action="cancel" data-position="' + pos + '">&#x2715;</button>'
+                + '</span></div>';
+        });
+
+        if (list) {
+            list.innerHTML = html;
+        } else {
+            const card = document.createElement('div');
+            card.className = 'card';
+            card.id = 'pending-list';
+            card.innerHTML = html;
+            section.appendChild(card);
+        }
+        attachDnD();
+        attachActions();
+    }
+
+    function escapeHtml(t) {
+        const d = document.createElement('div');
+        d.textContent = t;
+        return d.innerHTML;
+    }
+
+    // --- Drag and Drop ---
+    let dragSrcPos = null;
+
+    function attachDnD() {
+        const items = document.querySelectorAll('#pending-list .pending-item[draggable]');
+        items.forEach(item => {
+            item.addEventListener('dragstart', onDragStart);
+            item.addEventListener('dragover', onDragOver);
+            item.addEventListener('drop', onDrop);
+            item.addEventListener('dragend', onDragEnd);
+            item.addEventListener('dragleave', onDragLeave);
+        });
+    }
+
+    function onDragStart(e) {
+        isDragging = true;
+        dragSrcPos = parseInt(this.dataset.position);
+        this.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', dragSrcPos);
+    }
+
+    function onDragOver(e) {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        this.classList.add('drag-over');
+    }
+
+    function onDragLeave() {
+        this.classList.remove('drag-over');
+    }
+
+    async function onDrop(e) {
+        e.preventDefault();
+        this.classList.remove('drag-over');
+        const targetPos = parseInt(this.dataset.position);
+        if (dragSrcPos === targetPos) return;
+
+        const data = await apiCall('/api/missions/reorder', {position: dragSrcPos, target: targetPos});
+        if (data) {
+            renderPending(data.pending);
+            showToast('Reordered', 'success');
+        }
+    }
+
+    function onDragEnd() {
+        isDragging = false;
+        document.querySelectorAll('.pending-item').forEach(el => {
+            el.classList.remove('dragging', 'drag-over');
+        });
+    }
+
+    // --- Quick Actions ---
+    function attachActions() {
+        document.querySelectorAll('#pending-list .action-btn').forEach(btn => {
+            btn.addEventListener('click', onAction);
+        });
+        document.querySelectorAll('#pending-list .mission-text').forEach(el => {
+            el.addEventListener('click', onEditClick);
+        });
+    }
+
+    async function onAction(e) {
+        e.stopPropagation();
+        const btn = e.currentTarget;
+        const action = btn.dataset.action;
+        const pos = parseInt(btn.dataset.position);
+
+        if (action === 'cancel') {
+            if (!btn.classList.contains('confirm')) {
+                btn.classList.add('confirm');
+                btn.textContent = '?';
+                btn.title = 'Click again to confirm';
+                setTimeout(() => {
+                    btn.classList.remove('confirm');
+                    btn.innerHTML = '&#x2715;';
+                    btn.title = 'Cancel mission';
+                }, 3000);
+                return;
+            }
+            const data = await apiCall('/api/missions/cancel', {position: pos});
+            if (data) {
+                renderPending(data.pending);
+                showToast('Cancelled', 'success');
+            }
+        } else if (action === 'promote') {
+            const data = await apiCall('/api/missions/reorder', {position: pos, target: 1});
+            if (data) {
+                renderPending(data.pending);
+                showToast('Promoted to #1', 'success');
+            }
+        } else if (action === 'tag') {
+            showTagDropdown(btn, pos);
+        }
+    }
+
+    // --- Tag dropdown ---
+    function showTagDropdown(anchorBtn, position) {
+        // Remove any existing dropdown
+        document.querySelectorAll('.tag-dropdown').forEach(d => d.remove());
+
+        if (!projectsList.length) {
+            showToast('No projects configured', 'error');
+            return;
+        }
+
+        const dd = document.createElement('div');
+        dd.className = 'tag-dropdown';
+        projectsList.forEach(name => {
+            const opt = document.createElement('div');
+            opt.textContent = name;
+            opt.addEventListener('click', async () => {
+                dd.remove();
+                // Get current mission text and prepend tag
+                const item = document.querySelector('.pending-item[data-position="' + position + '"]');
+                if (!item) return;
+                const textEl = item.querySelector('.mission-text');
+                let rawText = textEl.textContent.trim();
+                // Don't duplicate existing tag
+                if (rawText.match(/\[(?:project|projet):[a-zA-Z0-9_-]+\]/)) {
+                    rawText = rawText.replace(/\[(?:project|projet):[a-zA-Z0-9_-]+\]\s*/, '');
+                }
+                const newText = '[project:' + name + '] ' + rawText;
+                const data = await apiCall('/api/missions/edit', {position: position, text: newText});
+                if (data) {
+                    renderPending(data.pending);
+                    showToast('Tagged [' + name + ']', 'success');
+                }
+            });
+            dd.appendChild(opt);
+        });
+
+        // Position near the button
+        const rect = anchorBtn.getBoundingClientRect();
+        dd.style.position = 'fixed';
+        dd.style.top = (rect.bottom + 4) + 'px';
+        dd.style.left = rect.left + 'px';
+        document.body.appendChild(dd);
+
+        // Close on click outside
+        setTimeout(() => {
+            document.addEventListener('click', function close(ev) {
+                if (!dd.contains(ev.target)) {
+                    dd.remove();
+                    document.removeEventListener('click', close);
+                }
+            });
+        }, 0);
+    }
+
+    // --- Inline Edit ---
+    function onEditClick(e) {
+        if (isEditing) return;
+        isEditing = true;
+
+        const textEl = e.currentTarget;
+        const item = textEl.closest('.pending-item');
+        const pos = parseInt(item.dataset.position);
+        const currentText = textEl.textContent.trim();
+
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.className = 'edit-input';
+        input.value = currentText;
+
+        textEl.style.display = 'none';
+        item.insertBefore(input, textEl.nextSibling);
+        input.focus();
+        input.select();
+
+        async function save() {
+            const newText = input.value.trim();
+            if (newText && newText !== currentText) {
+                const data = await apiCall('/api/missions/edit', {position: pos, text: newText});
+                if (data) {
+                    renderPending(data.pending);
+                    showToast('Updated', 'success');
+                } else {
+                    cancel();
+                }
+            } else {
+                cancel();
+            }
+            isEditing = false;
+        }
+
+        function cancel() {
+            input.remove();
+            textEl.style.display = '';
+            isEditing = false;
+        }
+
+        input.addEventListener('keydown', (ev) => {
+            if (ev.key === 'Enter') { ev.preventDefault(); save(); }
+            if (ev.key === 'Escape') { ev.preventDefault(); cancel(); }
+        });
+        input.addEventListener('blur', () => {
+            // Small delay so click events on other elements fire first
+            setTimeout(() => { if (isEditing) save(); }, 150);
+        });
+    }
+
+    // --- Auto-refresh (poll every 10s) ---
+    let refreshTimer = null;
+
+    async function refreshMissions() {
+        if (isEditing || isDragging) return;
+        try {
+            const resp = await fetch('/api/missions');
+            const data = await resp.json();
+            renderPending(data.pending);
+            // Update in-progress section
+            const ipSection = document.getElementById('in-progress-section');
+            if (data.in_progress && data.in_progress.length) {
+                let html = '<h2>In Progress</h2>';
+                data.in_progress.forEach(m => {
+                    const stripped = m.replace(/\s*\[(?:project|projet):[a-zA-Z0-9_-]+\]\s*/g, ' ').trim();
+                    const tagMatch = m.match(/\[(?:project|projet):([a-zA-Z0-9_-]+)\]/);
+                    const badge = tagMatch ? '<span class="badge badge-blue">' + tagMatch[1] + '</span> ' : '';
+                    html += '<div class="card"><div class="in-progress-item">'
+                        + '<span class="pulse"></span>'
+                        + '<pre style="flex:1;">' + badge + escapeHtml(stripped) + '</pre>'
+                        + '</div></div>';
+                });
+                ipSection.innerHTML = html;
+            } else {
+                ipSection.innerHTML = '';
+            }
+        } catch (e) {
+            // silently ignore refresh errors
+        }
+    }
+
+    refreshTimer = setInterval(refreshMissions, 10000);
+
+    // --- Init ---
+    attachDnD();
+    attachActions();
+})();
+</script>
 {% endblock %}
