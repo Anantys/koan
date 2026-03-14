@@ -25,7 +25,7 @@ def _parse_repo_url(args: str) -> Optional[Tuple[str, str, str]]:
     if re.search(r'github\.com/[^/\s]+/[^/\s]+/(?:issues|pull)/\d+', args):
         return None
 
-    match = re.search(r'https?://github\.com/([^/\s]+)/([^/\s]+?)(?:\.git)?\b', args)
+    match = re.search(r'https?://github\.com/([^/\s]+)/([^/\s]+?)(?:\.git)?(?=/|\s|$)', args)
     if not match:
         return None
 
