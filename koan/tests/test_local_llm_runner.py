@@ -367,7 +367,7 @@ class TestRunAgent:
             prompt="Just answer",
             base_url="http://localhost:11434/v1",
             model="test-model",
-            disallowed_tools=["Read", "Write", "Edit", "Glob", "Grep", "Bash"],
+            disallowed_tools=["Read", "Write", "Edit", "Glob", "Grep", "Bash", "Skill"],
         )
         call_kwargs = mock_api.call_args
         tools = call_kwargs.kwargs.get("tools") or call_kwargs[1].get("tools")
