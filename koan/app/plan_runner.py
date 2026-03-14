@@ -197,20 +197,211 @@ def _run_issue_plan(
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+# Minimum phase count and line count below which review is skipped.
+# Single-phase plans under this line threshold are considered trivially simple.
+_REVIEW_SKIP_PHASES = 2   # skip if fewer than this many phases
+_REVIEW_SKIP_LINES = 20   # skip if plan body is shorter than this
+
+
+def _is_simple_plan(plan_text: str) -> bool:
+    """Return True if the plan is trivially simple and doesn't need review.
+
+    Skips review for single-phase plans with fewer than _REVIEW_SKIP_LINES
+    lines — e.g. "rename function X to Y" doesn't need a subagent review.
+    """
+    phase_count = len(re.findall(r'^#{1,4}\s*Phase\b', plan_text, re.MULTILINE | re.IGNORECASE))
+    if phase_count >= _REVIEW_SKIP_PHASES:
+        return False
+    line_count = len([l for l in plan_text.splitlines() if l.strip()])
+    return line_count < _REVIEW_SKIP_LINES
+
+
+def _review_plan(plan_text: str, project_path: str, skill_dir) -> Tuple[bool, str]:
+    """Run a lightweight subagent to review plan quality.
+
+    Args:
+        plan_text: The generated plan text to review.
+        project_path: Project directory (for run_command cwd).
+        skill_dir: Skill directory for loading the review prompt.
+
+    Returns:
+        (approved, issues) tuple:
+          - approved=True, issues="" when APPROVED
+          - approved=False, issues=<bullet list> when ISSUES_FOUND
+          - approved=True, issues="" on reviewer error (fail open)
+    """
+    from app.cli_provider import run_command
+
+    try:
+        prompt = load_prompt_or_skill(skill_dir, "plan-review", PLAN=plan_text)
+    except Exception as e:
+        print(f"[plan_runner] Review prompt load failed: {e}", file=sys.stderr)
+        return True, ""
+
+    try:
+        output = run_command(
+            prompt, project_path,
+            allowed_tools=["Read", "Glob", "Grep"],
+            model_key="lightweight",
+            max_turns=3,
+            timeout=120,
+        )
+    except Exception as e:
+        print(f"[plan_runner] Review subagent failed: {e} — skipping review", file=sys.stderr)
+        return True, ""
+
+    if not output:
+        return True, ""
+
+    first_line = output.strip().splitlines()[0].strip() if output.strip() else ""
+
+    if first_line.upper().startswith("APPROVED"):
+        return True, ""
+
+    if first_line.upper().startswith("ISSUES_FOUND"):
+        # Everything after the first line is the list of issues
+        rest = "\n".join(output.strip().splitlines()[1:]).strip()
+        return False, rest
+
+    # Malformed reviewer output — fail open rather than block
+    print(
+        f"[plan_runner] Review returned unexpected output (treating as approved): "
+        f"{first_line!r}",
+        file=sys.stderr,
+    )
+    return True, ""
+
+
+def _review_loop(
+    plan_text: str,
+    project_path: str,
+    idea: str,
+    context: str,
+    skill_dir,
+    max_rounds: int = 3,
+    is_iteration: bool = False,
+    issue_context: str = "",
+) -> str:
+    """Iteratively review and re-generate a plan until approved or rounds exhausted.
+
+    Args:
+        plan_text: Initial plan text to review.
+        project_path: Project directory.
+        idea: Original idea string (for new plans).
+        context: User context string (for new plans).
+        skill_dir: Skill directory.
+        max_rounds: Maximum review+regen cycles.
+        is_iteration: If True, re-generate using plan-iterate prompt.
+        issue_context: Issue context string (for iteration plans).
+
+    Returns:
+        Final plan text (best version after review loop).
+    """
+    current_plan = plan_text
+    prev_issues: Optional[str] = None
+
+    for round_num in range(1, max_rounds + 1):
+        approved, issues = _review_plan(current_plan, project_path, skill_dir)
+
+        if approved:
+            print(f"[plan_runner] Review round {round_num}: APPROVED", file=sys.stderr)
+            return current_plan
+
+        print(f"[plan_runner] Review round {round_num}: ISSUES_FOUND", file=sys.stderr)
+        if issues:
+            print(f"[plan_runner] Issues:\n{issues}", file=sys.stderr)
+
+        if round_num == max_rounds:
+            print(
+                f"[plan_runner] Max review rounds ({max_rounds}) exhausted — "
+                "posting best version with warning",
+                file=sys.stderr,
+            )
+            return current_plan + _review_warning_note(issues, max_rounds)
+
+        # Note if the same issues recur
+        if prev_issues and prev_issues == issues:
+            print(
+                "[plan_runner] Same issues persisted from previous round — "
+                "regenerating with stronger context",
+                file=sys.stderr,
+            )
+        prev_issues = issues
+
+        # Re-generate with reviewer feedback appended
+        feedback_context = (context or "") + f"\n\n## Review Feedback\n\n{issues}"
+        try:
+            if is_iteration:
+                new_plan = _run_claude_plan(
+                    load_prompt_or_skill(
+                        skill_dir, "plan-iterate",
+                        ISSUE_CONTEXT=issue_context + f"\n\n## Review Feedback\n\n{issues}",
+                    ),
+                    project_path,
+                )
+            else:
+                new_plan = _run_claude_plan(
+                    load_prompt_or_skill(
+                        skill_dir, "plan", IDEA=idea, CONTEXT=feedback_context,
+                    ),
+                    project_path,
+                )
+        except Exception as e:
+            print(f"[plan_runner] Re-generation failed: {e} — keeping previous plan", file=sys.stderr)
+            return current_plan
+
+        if new_plan:
+            current_plan = new_plan
+        else:
+            print("[plan_runner] Re-generation returned empty — keeping previous plan", file=sys.stderr)
+
+    return current_plan
+
+
+def _review_warning_note(issues: str, max_rounds: int) -> str:
+    """Build the warning note appended to a plan when review rounds are exhausted."""
+    return (
+        f"\n\n> ⚠️ Plan review flagged unresolved items after {max_rounds} rounds "
+        f"— human review recommended.\n>\n"
+        + "\n".join(f"> - {line.lstrip('- ')}" for line in issues.splitlines() if line.strip())
+    )
+
+
 def _generate_plan(project_path, idea, context="", skill_dir=None):
     """Run Claude to generate a structured plan for a new idea."""
-    prompt = load_prompt_or_skill(skill_dir, "plan", IDEA=idea, CONTEXT=context)
+    from app.config import get_plan_review_config
 
-    return _run_claude_plan(prompt, project_path)
+    prompt = load_prompt_or_skill(skill_dir, "plan", IDEA=idea, CONTEXT=context)
+    plan = _run_claude_plan(prompt, project_path)
+
+    review_cfg = get_plan_review_config()
+    if review_cfg["enabled"] and not _is_simple_plan(plan):
+        plan = _review_loop(
+            plan, project_path, idea=idea, context=context, skill_dir=skill_dir,
+            max_rounds=review_cfg["max_rounds"],
+        )
+
+    return plan
 
 
 def _generate_iteration_plan(project_path, issue_context, skill_dir=None):
     """Run Claude to generate an updated plan based on issue + comments."""
+    from app.config import get_plan_review_config
+
     prompt = load_prompt_or_skill(
         skill_dir, "plan-iterate", ISSUE_CONTEXT=issue_context
     )
+    plan = _run_claude_plan(prompt, project_path)
 
-    return _run_claude_plan(prompt, project_path)
+    review_cfg = get_plan_review_config()
+    if review_cfg["enabled"] and not _is_simple_plan(plan):
+        plan = _review_loop(
+            plan, project_path, idea="", context="", skill_dir=skill_dir,
+            max_rounds=review_cfg["max_rounds"],
+            is_iteration=True, issue_context=issue_context,
+        )
+
+    return plan
 
 
 # Regex matching preamble transition lines — everything up to and including
