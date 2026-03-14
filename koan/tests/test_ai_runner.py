@@ -109,6 +109,32 @@ class TestRunCommand:
         run_command("test", "/my/project", allowed_tools=["Read"])
         assert mock_run.call_args[1]["cwd"] == "/my/project"
 
+    @patch("app.config.get_model_config", return_value={"chat": "sonnet", "fallback": ""})
+    @patch("app.provider.build_full_command", return_value=["claude", "-p", "test"])
+    @patch("app.provider.subprocess.run")
+    def test_strips_max_turns_error_from_output(self, mock_run, mock_cmd, mock_model):
+        from app.cli_provider import run_command
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="Error: Reached max turns (1)",
+            stderr="",
+        )
+        result = run_command("test", "/tmp", allowed_tools=[])
+        assert result == ""
+
+    @patch("app.config.get_model_config", return_value={"chat": "sonnet", "fallback": ""})
+    @patch("app.provider.build_full_command", return_value=["claude", "-p", "test"])
+    @patch("app.provider.subprocess.run")
+    def test_strips_max_turns_preserves_real_content(self, mock_run, mock_cmd, mock_model):
+        from app.cli_provider import run_command
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="Real output here\nError: Reached max turns (5)\n",
+            stderr="",
+        )
+        result = run_command("test", "/tmp", allowed_tools=[])
+        assert result == "Real output here"
+
 
 # ---------------------------------------------------------------------------
 # run_exploration

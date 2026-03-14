@@ -552,6 +552,19 @@ class TestGeneratePRSummary:
             )
             assert result == "summary"
 
+    def test_fallback_when_max_turns_noise_stripped(self):
+        """When run_command returns empty after strip_cli_noise, fallback is used."""
+        with patch(f"{_IMPL_MODULE}.load_prompt_or_skill",
+                    return_value="prompt"), \
+             patch("app.cli_provider.run_command", return_value=""):
+            result = _generate_pr_summary(
+                "/project", "Title", "http://issue/1",
+                ["feat: add dashboard"],
+                skill_dir=Path("/skill"),
+            )
+            assert "http://issue/1" in result
+            assert "feat: add dashboard" in result
+
 
 # ---------------------------------------------------------------------------
 # submit_draft_pr (shared via app.pr_submit)

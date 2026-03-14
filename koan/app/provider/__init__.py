@@ -229,4 +229,5 @@ def run_command(
             f"CLI invocation failed: {result.stderr[:300]}"
         )
 
-    return result.stdout.strip()
+    from app.claude_step import strip_cli_noise
+    return strip_cli_noise(result.stdout.strip())
