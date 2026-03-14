@@ -74,6 +74,9 @@ class TestValidateProjects:
         p2 = tmp_path / "proj2"
         p1.mkdir()
         p2.mkdir()
+        # Initialize as git repos
+        subprocess.run(["git", "init"], cwd=p1, capture_output=True)
+        subprocess.run(["git", "init"], cwd=p2, capture_output=True)
 
         result = validate_projects([("proj1", str(p1)), ("proj2", str(p2))])
         assert result is None
@@ -115,8 +118,36 @@ class TestValidateProjects:
     def test_single_valid_project(self, tmp_path):
         from app.loop_manager import validate_projects
 
+        subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True)
         result = validate_projects([("koan", str(tmp_path))])
         assert result is None
+
+    def test_non_git_directory(self, tmp_path):
+        """A valid directory that is not a git repo should be rejected."""
+        from app.loop_manager import validate_projects
+
+        proj = tmp_path / "not-a-repo"
+        proj.mkdir()
+
+        result = validate_projects([("myproj", str(proj))])
+        assert result is not None
+        assert "not a git repository" in result
+        assert "myproj" in result
+
+    def test_mixed_git_and_non_git(self, tmp_path):
+        """First project is a git repo, second is not — should catch the second."""
+        from app.loop_manager import validate_projects
+
+        p1 = tmp_path / "repo"
+        p2 = tmp_path / "plain"
+        p1.mkdir()
+        p2.mkdir()
+        subprocess.run(["git", "init"], cwd=p1, capture_output=True)
+
+        result = validate_projects([("repo", str(p1)), ("plain", str(p2))])
+        assert result is not None
+        assert "plain" in result
+        assert "not a git repository" in result
 
 
 # --- Test lookup_project ---
@@ -1639,6 +1670,7 @@ class TestCLI:
         """Test validate-projects CLI."""
         proj = tmp_path / "myproj"
         proj.mkdir()
+        subprocess.run(["git", "init"], cwd=proj, capture_output=True)
         monkeypatch.setenv("KOAN_PROJECTS", f"myproj:{proj}")
 
         result = subprocess.run(

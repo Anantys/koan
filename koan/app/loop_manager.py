@@ -82,6 +82,19 @@ def validate_projects(
         if not os.path.isdir(path):
             return f"Project '{name}' path does not exist: {path}"
 
+        # Verify the project path is a git repository
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "--git-dir"],
+                cwd=path,
+                capture_output=True,
+                timeout=5,
+            )
+            if result.returncode != 0:
+                return f"Project '{name}' is not a git repository: {path}"
+        except (OSError, subprocess.TimeoutExpired):
+            return f"Project '{name}' is not a git repository: {path}"
+
     return None
 
 
