@@ -667,7 +667,10 @@ def _quarantine_mission(text: str, reason: str, source: str = "unknown"):
 
 def handle_mission(text: str):
     """Append to missions.md with optional project tag."""
-    from app.missions import extract_now_flag
+    from app.missions import extract_now_flag, sanitize_mission_text
+
+    # Sanitize multi-line input (e.g. from Telegram) into a single line
+    text = sanitize_mission_text(text)
 
     # Check for --now flag in first 5 words (queue at top instead of bottom)
     urgent, text = extract_now_flag(text)

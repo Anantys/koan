@@ -452,7 +452,9 @@ def missions_page():
 @app.route("/missions/add", methods=["POST"])
 def add_mission():
     """Add a new mission to pending."""
-    text = request.form.get("mission", "").strip()
+    from app.missions import sanitize_mission_text
+
+    text = sanitize_mission_text(request.form.get("mission", ""))
     project = request.form.get("project", "").strip()
     if not text:
         return redirect(url_for("missions_page"))
@@ -486,6 +488,9 @@ def chat_send():
 
     if mode == "mission":
         # Queue as mission (same logic as awake.py)
+        from app.missions import sanitize_mission_text
+
+        text = sanitize_mission_text(text)
         project, mission_text = parse_project(text)
         if project:
             entry = f"- [project:{project}] {mission_text}"

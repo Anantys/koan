@@ -60,6 +60,19 @@ def stamp_started(entry: str) -> str:
     return f"{entry} {_STARTED_MARKER}({_now_iso()})"
 
 
+def sanitize_mission_text(text: str) -> str:
+    """Sanitize user-submitted mission text for safe embedding in missions.md.
+
+    Collapses newlines and carriage returns into spaces and strips leading/trailing
+    whitespace so a multi-line Telegram message becomes a single markdown list item.
+    """
+    # Replace \r\n, \r, \n with a single space
+    text = re.sub(r"\r\n|\r|\n", " ", text)
+    # Collapse multiple consecutive spaces into one
+    text = re.sub(r"  +", " ", text)
+    return text.strip()
+
+
 def _parse_ts(pattern: re.Pattern, text: str, fmt: str = _TS_FORMAT) -> Optional[datetime]:
     """Parse a single timestamp from *text* using *pattern*, or return None."""
     match = pattern.search(text)
@@ -270,6 +283,9 @@ def insert_mission(content: str, entry: str, *, urgent: bool = False) -> str:
     """
     if not content:
         content = DEFAULT_SKELETON
+
+    # Sanitize newlines in the entry to keep it on one line
+    entry = re.sub(r"\r\n|\r|\n", " ", entry)
 
     # Add queued timestamp if not already present
     if _QUEUED_MARKER not in entry:

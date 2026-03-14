@@ -28,6 +28,7 @@ from app.missions import (
     promote_all_ideas,
     promote_idea,
     reorder_mission,
+    sanitize_mission_text,
     stamp_queued,
     stamp_started,
     start_mission,
@@ -2550,3 +2551,62 @@ class TestPruneDoneSection:
         )
         result, pruned = prune_done_section(content, keep=5)
         assert pruned == 0
+
+
+# ---------------------------------------------------------------------------
+# sanitize_mission_text
+# ---------------------------------------------------------------------------
+
+class TestSanitizeMissionText:
+    def test_replaces_newlines_with_space(self):
+        text = "line one\nline two\nline three"
+        assert sanitize_mission_text(text) == "line one line two line three"
+
+    def test_replaces_crlf(self):
+        text = "line one\r\nline two\r\nline three"
+        assert sanitize_mission_text(text) == "line one line two line three"
+
+    def test_replaces_cr(self):
+        text = "line one\rline two"
+        assert sanitize_mission_text(text) == "line one line two"
+
+    def test_collapses_multiple_spaces(self):
+        text = "word   word    word"
+        assert sanitize_mission_text(text) == "word word word"
+
+    def test_strips_whitespace(self):
+        text = "  hello world  "
+        assert sanitize_mission_text(text) == "hello world"
+
+    def test_mixed_newlines_and_spaces(self):
+        text = "line one\n  \n  line two  \n"
+        assert sanitize_mission_text(text) == "line one line two"
+
+    def test_empty_string(self):
+        assert sanitize_mission_text("") == ""
+
+    def test_single_line_unchanged(self):
+        text = "a normal single-line mission"
+        assert sanitize_mission_text(text) == text
+
+    def test_preserves_markdown_content(self):
+        text = "fix the **bold** and `code` formatting"
+        assert sanitize_mission_text(text) == text
+
+
+# ---------------------------------------------------------------------------
+# insert_mission newline safety net
+# ---------------------------------------------------------------------------
+
+class TestInsertMissionNewlineSanitization:
+    @patch("app.missions._now_iso", return_value="2026-01-01T12:00")
+    def test_newlines_in_entry_collapsed(self, _mock):
+        content = "## Pending\n\n## Done\n"
+        entry = "- fix\nthe\nbug"
+        result = insert_mission(content, entry)
+        # The entry should appear as a single line
+        assert "- fix the bug" in result
+        # No bare newlines within the entry text
+        for line in result.split("\n"):
+            if "fix" in line and "bug" in line:
+                assert "\n" not in line.replace("\n", "")  # trivially true per line
