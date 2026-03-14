@@ -181,6 +181,34 @@ class TestRecoverMissions:
         assert "Complex Project" in content
         assert "Another Complex" in content
 
+    def test_simple_mission_after_complex_not_recovered(self, instance_dir):
+        """A simple '- ' mission after a complex block (no ### separator) stays in-progress.
+
+        This is an intentional trade-off of header-to-header tracking: simple
+        missions placed after a complex block without their own ### header are
+        treated as part of the complex mission and are NOT recovered.
+        """
+        missions = instance_dir / "missions.md"
+        missions.write_text(
+            _missions(
+                in_progress=(
+                    "### Complex Project\n"
+                    "- ~~Step 1~~ done\n"
+                    "- Step 2 in progress\n"
+                    "\n"
+                    "- Simple orphan task\n"
+                )
+            )
+        )
+
+        count = recover_missions(str(instance_dir))
+        # Simple orphan is absorbed by the complex block — intentionally not recovered
+        assert count == 0
+
+        content = missions.read_text()
+        assert "Simple orphan task" in content
+        assert "Complex Project" in content
+
     def test_removes_aucune_placeholder(self, instance_dir):
         """The (none) placeholder is removed from pending when missions are added."""
         missions = instance_dir / "missions.md"
