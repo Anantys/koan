@@ -465,6 +465,7 @@ class TestFetchPrContext:
                 "author": {"login": "sukria"},
                 "url": "https://github.com/sukria/koan/pull/42",
             })),
+            MagicMock(returncode=0, stdout="1"),  # review_comments count
             MagicMock(returncode=0, stdout="+added line"),
             MagicMock(returncode=0, stdout="[auth.py:10] @reviewer: Fix this"),
             MagicMock(returncode=0, stdout="@reviewer (CHANGES_REQUESTED): Please fix"),
@@ -481,11 +482,13 @@ class TestFetchPrContext:
         assert "Fix this" in context["review_comments"]
         assert "Please fix" in context["reviews"]
         assert "Will do" in context["issue_comments"]
+        assert context["has_pending_reviews"] is False  # comments fetched OK
 
     @patch("app.github.subprocess.run")
     def test_handles_empty_responses(self, mock_run):
         mock_run.side_effect = [
             MagicMock(returncode=0, stdout=json.dumps({"title": "T", "headRefName": "br"})),
+            MagicMock(returncode=0, stdout="0"),  # review_comments count
             MagicMock(returncode=0, stdout=""),
             MagicMock(returncode=0, stdout=""),
             MagicMock(returncode=0, stdout=""),
@@ -495,11 +498,13 @@ class TestFetchPrContext:
         assert context["branch"] == "br"
         assert context["diff"] == ""
         assert context["review_comments"] == ""
+        assert context["has_pending_reviews"] is False
 
     @patch("app.github.subprocess.run")
     def test_handles_invalid_json(self, mock_run):
         mock_run.side_effect = [
             MagicMock(returncode=0, stdout="not json"),
+            MagicMock(returncode=0, stdout="0"),  # review_comments count
             MagicMock(returncode=0, stdout=""),
             MagicMock(returncode=0, stdout=""),
             MagicMock(returncode=0, stdout=""),
@@ -522,6 +527,7 @@ class TestFetchPrContext:
                 "author": {"login": "dev"},
                 "url": "https://github.com/o/r/pull/1",
             })),
+            MagicMock(returncode=0, stdout="0"),  # review_comments count
             # Diff fails (HTTP 406 — too large)
             MagicMock(returncode=1, stderr="HTTP 406: diff exceeded maximum"),
             # Comments succeed
@@ -543,6 +549,7 @@ class TestFetchPrContext:
                 "state": "OPEN", "author": {"login": "dev"},
                 "url": "https://github.com/o/r/pull/1",
             })),
+            MagicMock(returncode=0, stdout="0"),  # review_comments count
             MagicMock(returncode=0, stdout="+diff"),
             # All comment APIs fail
             MagicMock(returncode=1, stderr="rate limited"),
@@ -555,6 +562,60 @@ class TestFetchPrContext:
         assert context["review_comments"] == ""
         assert context["reviews"] == ""
         assert context["issue_comments"] == ""
+
+    @patch("app.github.subprocess.run")
+    def test_detects_pending_reviews(self, mock_run):
+        """Detect when GitHub reports review comments but API returns empty."""
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout=json.dumps({
+                "title": "PR", "headRefName": "br", "baseRefName": "main",
+                "state": "OPEN", "author": {"login": "dev"},
+                "url": "https://github.com/o/r/pull/1",
+            })),
+            MagicMock(returncode=0, stdout="2"),  # API says 2 review comments
+            MagicMock(returncode=0, stdout="+diff"),
+            MagicMock(returncode=0, stdout=""),    # but comments endpoint returns empty
+            MagicMock(returncode=0, stdout=""),
+            MagicMock(returncode=0, stdout=""),
+        ]
+        context = fetch_pr_context("o", "r", "1")
+        assert context["has_pending_reviews"] is True
+
+    @patch("app.github.subprocess.run")
+    def test_no_pending_reviews_when_comments_fetched(self, mock_run):
+        """No pending flag when review comments are successfully fetched."""
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout=json.dumps({
+                "title": "PR", "headRefName": "br", "baseRefName": "main",
+                "state": "OPEN", "author": {"login": "dev"},
+                "url": "https://github.com/o/r/pull/1",
+            })),
+            MagicMock(returncode=0, stdout="1"),  # API says 1 review comment
+            MagicMock(returncode=0, stdout="+diff"),
+            MagicMock(returncode=0, stdout="[file.py:10] @reviewer: Fix this"),  # fetched OK
+            MagicMock(returncode=0, stdout=""),
+            MagicMock(returncode=0, stdout=""),
+        ]
+        context = fetch_pr_context("o", "r", "1")
+        assert context["has_pending_reviews"] is False
+
+    @patch("app.github.subprocess.run")
+    def test_pending_review_count_fetch_failure_graceful(self, mock_run):
+        """If the review_comments count fetch fails, assume no pending reviews."""
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout=json.dumps({
+                "title": "PR", "headRefName": "br", "baseRefName": "main",
+                "state": "OPEN", "author": {"login": "dev"},
+                "url": "https://github.com/o/r/pull/1",
+            })),
+            MagicMock(returncode=1, stderr="rate limited"),  # count fetch fails
+            MagicMock(returncode=0, stdout="+diff"),
+            MagicMock(returncode=0, stdout=""),
+            MagicMock(returncode=0, stdout=""),
+            MagicMock(returncode=0, stdout=""),
+        ]
+        context = fetch_pr_context("o", "r", "1")
+        assert context["has_pending_reviews"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -752,6 +813,21 @@ class TestRunRebase:
             success, summary = run_rebase("o", "r", "1", "/p", notify_fn=notify)
             assert success is True
             assert "Comment failed" in summary
+
+    @patch("app.rebase_pr.fetch_pr_context")
+    def test_aborts_on_pending_reviews(self, mock_ctx):
+        """Rebase should abort when pending (unsubmitted) reviews are detected."""
+        mock_ctx.return_value = {
+            "title": "T", "body": "", "branch": "feat",
+            "base": "main", "state": "", "author": "", "url": "",
+            "diff": "", "review_comments": "", "reviews": "", "issue_comments": "",
+            "has_pending_reviews": True,
+        }
+        notify = MagicMock()
+        success, summary = run_rebase("o", "r", "1", "/p", notify_fn=notify)
+        assert success is False
+        assert "pending" in summary.lower()
+        assert "submit" in summary.lower()
 
     @patch("app.rebase_pr._safe_checkout")
     @patch("app.rebase_pr.run_gh")
