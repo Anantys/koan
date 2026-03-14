@@ -333,6 +333,29 @@ def get_mission_timeout() -> int:
     return _safe_int(config.get("mission_timeout", 3600), 3600)
 
 
+def get_plan_review_config() -> dict:
+    """Get plan review loop configuration from config.yaml.
+
+    Controls whether a lightweight subagent reviews generated plans before
+    they are posted to GitHub, and how many re-generation rounds are allowed.
+
+    Config key: plan_review (default: enabled=True, max_rounds=3)
+
+    Returns:
+        Dict with keys:
+          - enabled (bool): Whether the review loop runs (default: True)
+          - max_rounds (int): Maximum re-generation rounds (default: 3)
+    """
+    config = _load_config()
+    plan_review = config.get("plan_review", {})
+    if not isinstance(plan_review, dict):
+        plan_review = {}
+    return {
+        "enabled": bool(plan_review.get("enabled", True)),
+        "max_rounds": _safe_int(plan_review.get("max_rounds", 3), 3),
+    }
+
+
 def get_contemplative_chance() -> int:
     """Get probability (0-100) of triggering contemplative mode on autonomous runs.
 

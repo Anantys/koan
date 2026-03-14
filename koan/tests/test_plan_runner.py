@@ -26,6 +26,10 @@ from app.plan_runner import (
     _run_issue_plan,
     _PLAN_LABEL,
     main,
+    _review_plan,
+    _review_loop,
+    _is_simple_plan,
+    _review_warning_note,
 )
 
 pytestmark = pytest.mark.slow
@@ -1136,3 +1140,201 @@ class TestMainCLI:
             _, kwargs = mock.call_args
             assert kwargs["idea"] == "Add feature"
             assert kwargs["context"] == "Must support dark mode"
+
+
+# ---------------------------------------------------------------------------
+# _is_simple_plan
+# ---------------------------------------------------------------------------
+
+class TestIsSimplePlan:
+    def test_single_phase_short_plan_is_simple(self):
+        plan = "Rename function foo to bar in utils.py\n\nEdit the file."
+        assert _is_simple_plan(plan)
+
+    def test_multi_phase_plan_is_not_simple(self):
+        plan = (
+            "Implement feature\n\n"
+            "#### Phase 1\nDo this.\n\n"
+            "#### Phase 2\nDo that.\n"
+        )
+        assert not _is_simple_plan(plan)
+
+    def test_single_phase_long_plan_is_not_simple(self):
+        # Single phase but many lines — not simple enough to skip review
+        plan = "#### Phase 1\n" + "\n".join(f"Step {i}" for i in range(25))
+        assert not _is_simple_plan(plan)
+
+    def test_empty_plan_is_simple(self):
+        assert _is_simple_plan("")
+
+    def test_exactly_two_phases_not_simple(self):
+        plan = (
+            "Title\n\n"
+            "#### Phase 1\nDo A.\n\n"
+            "#### Phase 2\nDo B.\n"
+        )
+        assert not _is_simple_plan(plan)
+
+
+# ---------------------------------------------------------------------------
+# _review_plan
+# ---------------------------------------------------------------------------
+
+class TestReviewPlan:
+    def _skill_dir(self):
+        from pathlib import Path
+        return Path(__file__).resolve().parent.parent / "skills" / "core" / "plan"
+
+    def test_approved_on_approved_output(self):
+        with patch("app.cli_provider.run_command", return_value="APPROVED\n"):
+            approved, issues = _review_plan("## Plan\nStep 1", "/project", self._skill_dir())
+        assert approved
+        assert issues == ""
+
+    def test_issues_found_returns_false_and_issues(self):
+        reviewer_output = "ISSUES_FOUND\n- Phase 1: no file path\n- Phase 2: missing tests"
+        with patch("app.cli_provider.run_command", return_value=reviewer_output):
+            approved, issues = _review_plan("## Plan\nStep 1", "/project", self._skill_dir())
+        assert not approved
+        assert "no file path" in issues
+
+    def test_malformed_output_treated_as_approved(self):
+        with patch("app.cli_provider.run_command", return_value="Maybe looks ok"):
+            approved, issues = _review_plan("## Plan\nStep 1", "/project", self._skill_dir())
+        assert approved
+
+    def test_run_command_exception_fails_open(self):
+        with patch("app.cli_provider.run_command", side_effect=RuntimeError("timeout")):
+            approved, issues = _review_plan("## Plan", "/project", self._skill_dir())
+        assert approved
+
+    def test_empty_output_treated_as_approved(self):
+        with patch("app.cli_provider.run_command", return_value=""):
+            approved, issues = _review_plan("## Plan", "/project", self._skill_dir())
+        assert approved
+
+
+# ---------------------------------------------------------------------------
+# _review_loop
+# ---------------------------------------------------------------------------
+
+class TestReviewLoop:
+    def _skill_dir(self):
+        from pathlib import Path
+        return Path(__file__).resolve().parent.parent / "skills" / "core" / "plan"
+
+    def test_approved_first_round_returns_plan(self):
+        with patch("app.plan_runner._review_plan", return_value=(True, "")) as mock_review:
+            result = _review_loop(
+                "my plan", "/project", idea="idea", context="", skill_dir=self._skill_dir(),
+                max_rounds=3,
+            )
+        assert result == "my plan"
+        assert mock_review.call_count == 1
+
+    def test_approved_second_round_after_regen(self):
+        review_results = [(False, "- Missing file path"), (True, "")]
+        with patch("app.plan_runner._review_plan", side_effect=review_results), \
+             patch("app.plan_runner._run_claude_plan", return_value="improved plan"):
+            result = _review_loop(
+                "initial plan", "/project", idea="idea", context="",
+                skill_dir=self._skill_dir(), max_rounds=3,
+            )
+        assert result == "improved plan"
+
+    def test_max_rounds_exhausted_returns_plan_with_warning(self):
+        review_results = [
+            (False, "- Phase 1: no file path"),
+            (False, "- Phase 1: no file path"),
+            (False, "- Phase 1: no file path"),
+        ]
+        with patch("app.plan_runner._review_plan", side_effect=review_results), \
+             patch("app.plan_runner._run_claude_plan", return_value="regen plan"):
+            result = _review_loop(
+                "initial plan", "/project", idea="idea", context="",
+                skill_dir=self._skill_dir(), max_rounds=3,
+            )
+        assert "⚠️" in result
+        assert "human review recommended" in result
+
+    def test_regen_failure_keeps_previous_plan(self):
+        with patch("app.plan_runner._review_plan", return_value=(False, "- issue")), \
+             patch("app.plan_runner._run_claude_plan", side_effect=RuntimeError("boom")):
+            result = _review_loop(
+                "original plan", "/project", idea="idea", context="",
+                skill_dir=self._skill_dir(), max_rounds=2,
+            )
+        # Should not crash; should contain warning after max rounds
+        assert "original plan" in result or "⚠️" in result
+
+    def test_regen_empty_keeps_previous_plan(self):
+        review_results = [(False, "- issue"), (True, "")]
+        with patch("app.plan_runner._review_plan", side_effect=review_results), \
+             patch("app.plan_runner._run_claude_plan", return_value=""):
+            result = _review_loop(
+                "original plan", "/project", idea="idea", context="",
+                skill_dir=self._skill_dir(), max_rounds=3,
+            )
+        # Empty regen keeps original; then approved on round 2 with original
+        assert result == "original plan"
+
+    def test_iteration_mode_uses_plan_iterate_prompt(self):
+        with patch("app.plan_runner._review_plan", side_effect=[(False, "- issue"), (True, "")]), \
+             patch("app.plan_runner._run_claude_plan", return_value="iter plan") as mock_run, \
+             patch("app.plan_runner.load_prompt_or_skill", return_value="prompt text") as mock_load:
+            result = _review_loop(
+                "initial", "/project", idea="", context="",
+                skill_dir=self._skill_dir(), max_rounds=3,
+                is_iteration=True, issue_context="issue ctx",
+            )
+        # Should have called load_prompt_or_skill with "plan-iterate"
+        calls = [c[0][1] for c in mock_load.call_args_list]
+        assert "plan-iterate" in calls
+
+
+# ---------------------------------------------------------------------------
+# _generate_plan — review loop integration
+# ---------------------------------------------------------------------------
+
+class TestGeneratePlanWithReview:
+    def _skill_dir(self):
+        from pathlib import Path
+        return Path(__file__).resolve().parent.parent / "skills" / "core" / "plan"
+
+    def test_review_skipped_for_simple_plan(self):
+        short_plan = "Do one thing quickly."
+        with patch("app.plan_runner._run_claude_plan", return_value=short_plan), \
+             patch("app.plan_runner._review_loop") as mock_loop, \
+             patch("app.config.get_plan_review_config",
+                   return_value={"enabled": True, "max_rounds": 3}):
+            result = _generate_plan("/project", "rename X", skill_dir=self._skill_dir())
+        mock_loop.assert_not_called()
+        assert result == short_plan
+
+    def test_review_runs_for_multi_phase_plan(self):
+        big_plan = (
+            "Multi-phase feature\n\n"
+            "#### Phase 1\nDo A.\n\n"
+            "#### Phase 2\nDo B.\n"
+        )
+        reviewed_plan = big_plan + "\n(reviewed)"
+        with patch("app.plan_runner._run_claude_plan", return_value=big_plan), \
+             patch("app.plan_runner._review_loop", return_value=reviewed_plan) as mock_loop, \
+             patch("app.config.get_plan_review_config",
+                   return_value={"enabled": True, "max_rounds": 3}):
+            result = _generate_plan("/project", "big feature", skill_dir=self._skill_dir())
+        mock_loop.assert_called_once()
+        assert result == reviewed_plan
+
+    def test_review_disabled_skips_loop(self):
+        big_plan = (
+            "Multi-phase feature\n\n"
+            "#### Phase 1\nDo A.\n\n"
+            "#### Phase 2\nDo B.\n"
+        )
+        with patch("app.plan_runner._run_claude_plan", return_value=big_plan), \
+             patch("app.plan_runner._review_loop") as mock_loop, \
+             patch("app.config.get_plan_review_config",
+                   return_value={"enabled": False, "max_rounds": 3}):
+            _generate_plan("/project", "big feature", skill_dir=self._skill_dir())
+        mock_loop.assert_not_called()

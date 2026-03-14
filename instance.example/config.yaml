@@ -170,6 +170,15 @@ usage:
 #   - github: override authorized_users for GitHub @mention commands
 # See projects.example.yaml for documentation and examples.
 
+# Plan review loop — validates generated plans before posting to GitHub
+# A lightweight subagent (Haiku) reviews each plan for missing file paths,
+# TODO placeholders, oversized phases, scope creep, and missing tests.
+# If issues are found, the plan is re-generated with reviewer feedback
+# (up to max_rounds times). Disable if the extra latency is unwanted.
+# plan_review:
+#   enabled: true       # Run review loop after plan generation (default: true)
+#   max_rounds: 3       # Maximum re-generation rounds per plan (default: 3)
+
 # Prompt injection guard — scans incoming missions for suspicious patterns
 # Detects instruction overrides, role confusion, secret extraction, shell injection.
 # Complements outbox_scanner (output defense) with input-side defense.
