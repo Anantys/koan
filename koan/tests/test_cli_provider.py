@@ -112,6 +112,11 @@ class TestClaudeProvider:
         assert self.provider.build_model_args(model="haiku") == ["--model", "haiku"]
         assert self.provider.build_model_args(fallback="sonnet") == ["--fallback-model", "sonnet"]
 
+    def test_model_args_same_skips_fallback(self):
+        """When fallback equals model, skip --fallback-model to avoid CLI rejection."""
+        result = self.provider.build_model_args(model="sonnet", fallback="sonnet")
+        assert result == ["--model", "sonnet"]
+
     def test_output_args_json(self):
         assert self.provider.build_output_args("json") == ["--output-format", "json"]
 

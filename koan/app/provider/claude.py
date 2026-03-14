@@ -38,7 +38,7 @@ class ClaudeProvider(CLIProvider):
         flags: List[str] = []
         if model:
             flags.extend(["--model", model])
-        if fallback:
+        if fallback and fallback != model:
             flags.extend(["--fallback-model", fallback])
         return flags
 
