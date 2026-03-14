@@ -453,7 +453,9 @@ def missions_page():
     selected_project = request.args.get("project", "")
     missions = parse_missions()
     filtered = _filter_missions_by_project(missions, selected_project)
-    return render_template("missions.html", missions=filtered, selected_project=selected_project)
+    projects = [name for name, _path in get_known_projects()]
+    return render_template("missions.html", missions=filtered,
+                           selected_project=selected_project, projects=projects)
 
 
 @app.route("/missions/add", methods=["POST"])
