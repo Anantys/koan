@@ -77,7 +77,9 @@ class HookRegistry:
         failures: Dict[str, str] = {}
         handlers = self._handlers.get(event, [])
         for handler in handlers:
-            handler_name = getattr(handler, "__name__", repr(handler))
+            func_name = getattr(handler, "__name__", repr(handler))
+            module_name = getattr(handler, "__module__", "")
+            handler_name = f"{module_name}.{func_name}" if module_name else func_name
             try:
                 handler(kwargs)
             except Exception as exc:

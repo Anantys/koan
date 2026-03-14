@@ -194,9 +194,9 @@ class TestHookFire:
         # Should not raise
         failures = registry.fire("post_mission")
         captured = capsys.readouterr()
-        assert "[hooks] Error in post_mission handler handler" in captured.err
+        assert "[hooks] Error in post_mission handler koan_hook_crasher.handler" in captured.err
         assert "boom" in captured.err
-        assert failures == {"handler": "boom"}
+        assert failures == {"koan_hook_crasher.handler": "boom"}
 
     def test_fire_error_doesnt_block_other_hooks(self, hooks_dir, capsys):
         _write_hook(hooks_dir, "hook_a_crash", (
@@ -215,7 +215,7 @@ class TestHookFire:
         assert sys.modules["koan_hook_hook_b_ok"].called is True
         captured = capsys.readouterr()
         assert "fail" in captured.err
-        assert failures == {"handler": "fail"}
+        assert failures == {"koan_hook_hook_a_crash.handler": "fail"}
 
     def test_fire_returns_empty_dict_on_success(self, hooks_dir):
         _write_hook(hooks_dir, "ok_hook", (
@@ -243,8 +243,8 @@ class TestHookFire:
         registry = HookRegistry(hooks_dir)
         failures = registry.fire("test_event")
         assert len(failures) == 2
-        assert "explode" in failures
-        assert "kaboom" in failures
+        assert "koan_hook_hook_x.explode" in failures
+        assert "koan_hook_hook_y.kaboom" in failures
 
     def test_fire_unknown_event(self, hooks_dir):
         _write_hook(hooks_dir, "hook", (
