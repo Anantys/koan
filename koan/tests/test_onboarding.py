@@ -109,6 +109,49 @@ class TestInputHelpers:
             result = ask_path("path")
             assert result == ""
 
+    def test_pause_non_interactive_skips(self):
+        from app.onboarding import pause
+
+        with patch("app.onboarding._is_interactive", False):
+            # Should return immediately without blocking
+            pause()
+
+    def test_pause_interactive_waits_for_enter(self):
+        from app.onboarding import pause
+
+        with patch("app.onboarding._is_interactive", True), patch(
+            "builtins.input", return_value=""
+        ) as mock_input:
+            pause()
+            mock_input.assert_called_once()
+
+    def test_pause_handles_eof(self):
+        from app.onboarding import pause
+
+        with patch("app.onboarding._is_interactive", True), patch(
+            "builtins.input", side_effect=EOFError
+        ):
+            pause()  # Should not raise
+
+    def test_pause_handles_keyboard_interrupt(self):
+        from app.onboarding import pause
+
+        with patch("app.onboarding._is_interactive", True), patch(
+            "builtins.input", side_effect=KeyboardInterrupt
+        ):
+            pause()  # Should not raise
+
+    def test_pause_custom_message(self):
+        from app.onboarding import pause
+
+        with patch("app.onboarding._is_interactive", True), patch(
+            "builtins.input", return_value=""
+        ) as mock_input:
+            pause("Press Enter to begin →")
+            # Verify the custom message appears in the prompt
+            call_arg = mock_input.call_args[0][0]
+            assert "Press Enter to begin" in call_arg
+
 
 class TestColorHelpers:
     """Tests for terminal color helpers."""
@@ -372,6 +415,79 @@ class TestStepDeployment:
             state = onb.OnboardingState()
             result = onb.step_deployment(state)
             assert result.data["deployment_method"] == "terminal"
+
+
+class TestWelcomePage:
+    """Tests for the welcome page shown on first run."""
+
+    def test_welcome_shown_on_fresh_start(self, onboarding_root, capsys):
+        """Welcome message is printed when no steps are completed."""
+        import app.onboarding as onb
+
+        root = Path(onboarding_root)
+        # Pre-create everything so steps complete instantly
+        (root / "instance").mkdir(exist_ok=True)
+        (root / "instance" / "config.yaml").write_text("max_runs_per_day: 20\n")
+        (root / "instance" / "soul.md").write_text("# Soul\n")
+        (root / ".env").write_text(
+            "KOAN_TELEGRAM_TOKEN=123:ABC\nKOAN_TELEGRAM_CHAT_ID=456\n"
+        )
+        (root / ".venv").mkdir(exist_ok=True)
+        (root / "projects.yaml").write_text("projects:\n  test:\n    path: /tmp\n")
+        checkpoint = root / ".koan-onboarding.json"
+
+        with patch.object(onb, "KOAN_ROOT", root), patch.object(
+            onb, "CHECKPOINT_FILE", checkpoint
+        ), patch("app.onboarding._is_interactive", False), patch(
+            "app.setup_wizard.ENV_FILE", root / ".env"
+        ), patch("app.setup_wizard.KOAN_ROOT", root), patch(
+            "app.setup_wizard.INSTANCE_DIR", root / "instance"
+        ), patch("app.setup_wizard.INSTANCE_EXAMPLE", root / "instance.example"), patch(
+            "app.setup_wizard.ENV_EXAMPLE", root / "env.example"
+        ), patch("app.onboarding._run_cmd") as mock_cmd:
+            mock_cmd.return_value = MagicMock(returncode=0, stdout="user\n")
+            onb.run_onboarding(force=True)
+
+        captured = capsys.readouterr()
+        assert "Welcome!" in captured.out
+        assert "Ctrl-C" in captured.out
+
+    def test_resume_message_on_existing_checkpoint(self, onboarding_root, capsys):
+        """Resuming shows different message than fresh start."""
+        import app.onboarding as onb
+
+        root = Path(onboarding_root)
+        (root / "instance").mkdir(exist_ok=True)
+        (root / "instance" / "config.yaml").write_text("max_runs_per_day: 20\n")
+        (root / "instance" / "soul.md").write_text("# Soul\n")
+        (root / ".env").write_text(
+            "KOAN_TELEGRAM_TOKEN=123:ABC\nKOAN_TELEGRAM_CHAT_ID=456\n"
+        )
+        (root / ".venv").mkdir(exist_ok=True)
+        (root / "projects.yaml").write_text("projects:\n  test:\n    path: /tmp\n")
+        checkpoint = root / ".koan-onboarding.json"
+
+        # Create a checkpoint with some completed steps
+        state = onb.OnboardingState()
+        state.mark_complete("prerequisites")
+        state.mark_complete("instance_init")
+        state.save(checkpoint)
+
+        with patch.object(onb, "KOAN_ROOT", root), patch.object(
+            onb, "CHECKPOINT_FILE", checkpoint
+        ), patch("app.onboarding._is_interactive", False), patch(
+            "app.setup_wizard.ENV_FILE", root / ".env"
+        ), patch("app.setup_wizard.KOAN_ROOT", root), patch(
+            "app.setup_wizard.INSTANCE_DIR", root / "instance"
+        ), patch("app.setup_wizard.INSTANCE_EXAMPLE", root / "instance.example"), patch(
+            "app.setup_wizard.ENV_EXAMPLE", root / "env.example"
+        ), patch("app.onboarding._run_cmd") as mock_cmd:
+            mock_cmd.return_value = MagicMock(returncode=0, stdout="user\n")
+            onb.run_onboarding()
+
+        captured = capsys.readouterr()
+        assert "Resuming" in captured.out
+        assert "Welcome!" not in captured.out
 
 
 class TestRunOnboarding:

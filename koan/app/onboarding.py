@@ -141,6 +141,16 @@ def ask_path(prompt: str, must_exist: bool = True) -> str:
     return expanded
 
 
+def pause(message: str = "Press Enter to continue →") -> None:
+    """Wait for the user to press Enter before proceeding."""
+    if not _is_interactive:
+        return
+    try:
+        input(f"\n  {dim(message)} ")
+    except (EOFError, KeyboardInterrupt):
+        print()
+
+
 # ---------------------------------------------------------------------------
 # Onboarding state
 # ---------------------------------------------------------------------------
@@ -261,6 +271,8 @@ def step_prerequisites(state: OnboardingState) -> OnboardingState:
 
     state.data["has_claude"] = bool(claude)
     state.data["has_gh"] = bool(gh)
+
+    pause()
     return state
 
 
@@ -285,6 +297,7 @@ def step_instance_init(state: OnboardingState) -> OnboardingState:
 
     if instance_dir.exists() and env_file.exists():
         print(f"  {green('✓')} Instance directory and .env already exist.")
+        pause()
         return state
 
     print(f"  Creating instance directory and .env file...")
@@ -308,6 +321,7 @@ def step_instance_init(state: OnboardingState) -> OnboardingState:
     update_env_var("KOAN_ROOT", str(KOAN_ROOT))
     print(f"  {green('✓')} Set KOAN_ROOT={KOAN_ROOT}")
 
+    pause()
     return state
 
 
@@ -324,6 +338,7 @@ def step_venv(state: OnboardingState) -> OnboardingState:
     venv_marker = KOAN_ROOT / ".venv" / ".installed"
     if venv_marker.exists():
         print(f"  {green('✓')} Virtual environment already set up.")
+        pause()
         return state
 
     print(f"  Running {bold('make setup')} to create virtual environment...")
@@ -346,6 +361,7 @@ def step_venv(state: OnboardingState) -> OnboardingState:
     except FileNotFoundError:
         print(f"\n  {red('✗')} make not found. Run: pip install -r koan/requirements.txt")
 
+    pause()
     return state
 
 
@@ -976,6 +992,19 @@ def run_onboarding(force: bool = False) -> None:
         print()
 
     state = OnboardingState.load(CHECKPOINT_FILE)
+
+    # Welcome page — explain what's about to happen
+    if not state.completed_steps:
+        print(f"  {bold('Welcome!')} This wizard will walk you through setting up Kōan.")
+        print(f"  It takes about 5 minutes. Progress is saved after each step.")
+        print()
+        print(f"  {dim('Navigation: follow the prompts at each step.')}")
+        print(f"  {dim('You can press Ctrl-C at any time to save and quit.')}")
+        pause("Press Enter to begin →")
+    else:
+        completed = len(state.completed_steps)
+        print(f"  {dim(f'Resuming from step {completed + 1} (progress loaded)')}")
+        print()
 
     total = len(STEPS)
     for i, step in enumerate(STEPS, 1):
