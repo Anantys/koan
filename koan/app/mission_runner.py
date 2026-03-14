@@ -661,184 +661,185 @@ def run_post_mission(
     _deadline_timer.daemon = True
     _deadline_timer.start()
 
-    def _report(step: str) -> None:
-        if status_callback:
-            status_callback(step)
+    try:
+        def _report(step: str) -> None:
+            if status_callback:
+                status_callback(step)
 
-    # 1. Update token usage from JSON output
-    _report("updating usage stats")
-    usage_state = os.path.join(instance_dir, "usage_state.json")
-    usage_md = os.path.join(instance_dir, "usage.md")
-    result["usage_updated"] = update_usage(stdout_file, usage_state, usage_md)
-    tracker.record("usage_update", "success" if result["usage_updated"] else "fail")
+        # 1. Update token usage from JSON output
+        _report("updating usage stats")
+        usage_state = os.path.join(instance_dir, "usage_state.json")
+        usage_md = os.path.join(instance_dir, "usage.md")
+        result["usage_updated"] = update_usage(stdout_file, usage_state, usage_md)
+        tracker.record("usage_update", "success" if result["usage_updated"] else "fail")
 
-    # 1b. Record structured usage to JSONL cost tracker
-    _record_cost_event(
-        instance_dir, project_name, stdout_file,
-        autonomous_mode, mission_title,
-    )
+        # 1b. Record structured usage to JSONL cost tracker
+        _record_cost_event(
+            instance_dir, project_name, stdout_file,
+            autonomous_mode, mission_title,
+        )
 
-    # 2. Compute duration (needed for quota early-return, reflection, and outcome tracking)
-    if start_time > 0:
-        duration_minutes = (int(datetime.now().timestamp()) - start_time) // 60
-    else:
-        duration_minutes = 0
+        # 2. Compute duration (needed for quota early-return, reflection, and outcome tracking)
+        if start_time > 0:
+            duration_minutes = (int(datetime.now().timestamp()) - start_time) // 60
+        else:
+            duration_minutes = 0
 
-    # 3. Check for quota exhaustion
-    _report("checking quota")
-    from app.quota_handler import handle_quota_exhaustion
+        # 3. Check for quota exhaustion
+        _report("checking quota")
+        from app.quota_handler import handle_quota_exhaustion
 
-    koan_root = os.environ.get("KOAN_ROOT", str(Path(instance_dir).parent))
-    quota_result = handle_quota_exhaustion(
-        koan_root=koan_root,
-        instance_dir=instance_dir,
-        project_name=project_name,
-        run_count=run_num,
-        stdout_file=stdout_file,
-        stderr_file=stderr_file,
-    )
-    if quota_result is not None:
-        result["quota_exhausted"] = True
-        result["quota_info"] = quota_result
-        tracker.record("quota_check", "success", "quota exhausted — early return")
-        # Record session outcome BEFORE early return so the session tracker
-        # doesn't lose visibility on quota-limited sessions (which biases
-        # staleness calculations toward "stale" for productive projects).
+        koan_root = os.environ.get("KOAN_ROOT", str(Path(instance_dir).parent))
+        quota_result = handle_quota_exhaustion(
+            koan_root=koan_root,
+            instance_dir=instance_dir,
+            project_name=project_name,
+            run_count=run_num,
+            stdout_file=stdout_file,
+            stderr_file=stderr_file,
+        )
+        if quota_result is not None:
+            result["quota_exhausted"] = True
+            result["quota_info"] = quota_result
+            tracker.record("quota_check", "success", "quota exhausted — early return")
+            # Record session outcome BEFORE early return so the session tracker
+            # doesn't lose visibility on quota-limited sessions (which biases
+            # staleness calculations toward "stale" for productive projects).
+            pending_content = _read_pending_content(instance_dir)
+            if not pending_content.strip():
+                pending_content = _read_stdout_summary(stdout_file)
+            _record_session_outcome(
+                instance_dir, project_name, autonomous_mode,
+                duration_minutes, pending_content,
+                mission_title=mission_title,
+            )
+            # Fire post_mission hooks before early return so hooks see quota events
+            _fire_post_mission_hook(
+                instance_dir, project_name, project_path,
+                exit_code, mission_title, duration_minutes, result,
+            )
+            result["pipeline_steps"] = tracker.to_dict()
+            _write_pipeline_summary(instance_dir, project_name, tracker, mission_title)
+            return result  # Early return — no further processing on quota exhaustion
+        tracker.record("quota_check", "success", "no exhaustion")
+
+        # 4. Archive pending.md if agent didn't clean up
+        _report("archiving journal")
+        # Read pending content before archival for session outcome tracking.
+        # When the agent follows Mission Completion Checklist, it deletes
+        # pending.md before exiting — so we fall back to stdout content.
         pending_content = _read_pending_content(instance_dir)
         if not pending_content.strip():
             pending_content = _read_stdout_summary(stdout_file)
+        result["pending_archived"] = archive_pending(instance_dir, project_name, run_num)
+        tracker.record("journal_archive", "success" if result["pending_archived"] else "skipped",
+                        "archived" if result["pending_archived"] else "nothing to archive")
+
+        # 5. Post-mission processing (only on success)
+        if exit_code == 0:
+            verify_result = None
+            quality_report = {}
+            lint_result = None
+
+            # Mission verification (RARV Verify phase — semantic checks)
+            _report("verifying mission output")
+            verify_result = tracker.run_step(
+                "verification",
+                _run_mission_verification,
+                project_path, mission_title, exit_code, instance_dir,
+                pipeline_expired=_pipeline_expired,
+            )
+            if verify_result is not None:
+                result["verification"] = {
+                    "passed": verify_result.passed,
+                    "summary": verify_result.summary,
+                    "warnings": len(verify_result.warnings),
+                    "failures": len(verify_result.failures),
+                }
+
+            # Quality pipeline (scan, tests, branch hygiene, PR enrichment)
+            _report("running quality pipeline")
+            quality_report = tracker.run_step(
+                "quality_pipeline",
+                _run_quality_pipeline,
+                instance_dir, project_name, project_path, _report,
+                pipeline_expired=_pipeline_expired,
+            )
+            if quality_report is None:
+                quality_report = {}
+            result["quality"] = quality_report
+
+            # Lint gate
+            _report("running lint gate")
+            lint_result = tracker.run_step(
+                "lint_gate",
+                _run_lint_gate,
+                instance_dir, project_name, project_path,
+                pipeline_expired=_pipeline_expired,
+            )
+            if lint_result is not None:
+                result["lint_passed"] = lint_result.passed
+
+            # Reflection
+            _report("running reflection")
+            reflection_result = tracker.run_step(
+                "reflection",
+                trigger_reflection,
+                instance_dir,
+                mission_title if mission_title else f"Autonomous {autonomous_mode} on {project_name}",
+                duration_minutes,
+                project_name=project_name,
+                pipeline_expired=_pipeline_expired,
+            )
+            result["reflection_written"] = bool(reflection_result)
+
+            # Auto-merge check (respects quality gate + lint gate + verification)
+            _report("checking auto-merge")
+            lint_blocking = lint_result is not None and not lint_result.passed and _is_lint_blocking(instance_dir, project_name)
+            verify_blocking = verify_result is not None and not verify_result.passed
+            merge_result = tracker.run_step(
+                "auto_merge",
+                check_auto_merge,
+                instance_dir, project_name, project_path,
+                quality_report=quality_report,
+                lint_blocked=lint_blocking,
+                verify_blocked=verify_blocking,
+                pipeline_expired=_pipeline_expired,
+            )
+            result["auto_merge_branch"] = merge_result
+        else:
+            # Non-zero exit — skip success-only steps
+            for step in ("verification", "quality_pipeline", "lint_gate", "reflection", "auto_merge"):
+                tracker.record(step, "skipped", "non-zero exit code")
+
+        # 7. Record session outcome for staleness tracking
+        # Always runs — even after deadline — since it's a fast local write.
+        _report("recording session outcome")
         _record_session_outcome(
             instance_dir, project_name, autonomous_mode,
             duration_minutes, pending_content,
             mission_title=mission_title,
         )
-        # Fire post_mission hooks before early return so hooks see quota events
-        _fire_post_mission_hook(
-            instance_dir, project_name, project_path,
-            exit_code, mission_title, duration_minutes, result,
-        )
+        tracker.record("session_outcome", "success")
+
+        # 8. Fire post-mission hooks
+        if not _pipeline_expired.is_set():
+            _report("running hooks")
+            _fire_post_mission_hook(
+                instance_dir, project_name, project_path,
+                exit_code, mission_title, duration_minutes, result,
+            )
+            tracker.record("hooks", "success")
+        else:
+            tracker.record("hooks", "timeout", "pipeline deadline exceeded")
+
+        # Write pipeline summary to journal and include in result
         result["pipeline_steps"] = tracker.to_dict()
         _write_pipeline_summary(instance_dir, project_name, tracker, mission_title)
+
+        return result
+    finally:
         _deadline_timer.cancel()
-        return result  # Early return — no further processing on quota exhaustion
-    tracker.record("quota_check", "success", "no exhaustion")
-
-    # 4. Archive pending.md if agent didn't clean up
-    _report("archiving journal")
-    # Read pending content before archival for session outcome tracking.
-    # When the agent follows Mission Completion Checklist, it deletes
-    # pending.md before exiting — so we fall back to stdout content.
-    pending_content = _read_pending_content(instance_dir)
-    if not pending_content.strip():
-        pending_content = _read_stdout_summary(stdout_file)
-    result["pending_archived"] = archive_pending(instance_dir, project_name, run_num)
-    tracker.record("journal_archive", "success" if result["pending_archived"] else "skipped",
-                    "archived" if result["pending_archived"] else "nothing to archive")
-
-    # 5. Post-mission processing (only on success)
-    if exit_code == 0:
-        verify_result = None
-        quality_report = {}
-        lint_result = None
-
-        # Mission verification (RARV Verify phase — semantic checks)
-        _report("verifying mission output")
-        verify_result = tracker.run_step(
-            "verification",
-            _run_mission_verification,
-            project_path, mission_title, exit_code, instance_dir,
-            pipeline_expired=_pipeline_expired,
-        )
-        if verify_result is not None:
-            result["verification"] = {
-                "passed": verify_result.passed,
-                "summary": verify_result.summary,
-                "warnings": len(verify_result.warnings),
-                "failures": len(verify_result.failures),
-            }
-
-        # Quality pipeline (scan, tests, branch hygiene, PR enrichment)
-        _report("running quality pipeline")
-        quality_report = tracker.run_step(
-            "quality_pipeline",
-            _run_quality_pipeline,
-            instance_dir, project_name, project_path, _report,
-            pipeline_expired=_pipeline_expired,
-        )
-        if quality_report is None:
-            quality_report = {}
-        result["quality"] = quality_report
-
-        # Lint gate
-        _report("running lint gate")
-        lint_result = tracker.run_step(
-            "lint_gate",
-            _run_lint_gate,
-            instance_dir, project_name, project_path,
-            pipeline_expired=_pipeline_expired,
-        )
-        if lint_result is not None:
-            result["lint_passed"] = lint_result.passed
-
-        # Reflection
-        _report("running reflection")
-        reflection_result = tracker.run_step(
-            "reflection",
-            trigger_reflection,
-            instance_dir,
-            mission_title if mission_title else f"Autonomous {autonomous_mode} on {project_name}",
-            duration_minutes,
-            project_name=project_name,
-            pipeline_expired=_pipeline_expired,
-        )
-        result["reflection_written"] = bool(reflection_result)
-
-        # Auto-merge check (respects quality gate + lint gate + verification)
-        _report("checking auto-merge")
-        lint_blocking = lint_result is not None and not lint_result.passed and _is_lint_blocking(instance_dir, project_name)
-        verify_blocking = verify_result is not None and not verify_result.passed
-        merge_result = tracker.run_step(
-            "auto_merge",
-            check_auto_merge,
-            instance_dir, project_name, project_path,
-            quality_report=quality_report,
-            lint_blocked=lint_blocking,
-            verify_blocked=verify_blocking,
-            pipeline_expired=_pipeline_expired,
-        )
-        result["auto_merge_branch"] = merge_result
-    else:
-        # Non-zero exit — skip success-only steps
-        for step in ("verification", "quality_pipeline", "lint_gate", "reflection", "auto_merge"):
-            tracker.record(step, "skipped", "non-zero exit code")
-
-    # 7. Record session outcome for staleness tracking
-    # Always runs — even after deadline — since it's a fast local write.
-    _report("recording session outcome")
-    _record_session_outcome(
-        instance_dir, project_name, autonomous_mode,
-        duration_minutes, pending_content,
-        mission_title=mission_title,
-    )
-    tracker.record("session_outcome", "success")
-
-    # 8. Fire post-mission hooks
-    if not _pipeline_expired.is_set():
-        _report("running hooks")
-        _fire_post_mission_hook(
-            instance_dir, project_name, project_path,
-            exit_code, mission_title, duration_minutes, result,
-        )
-        tracker.record("hooks", "success")
-    else:
-        tracker.record("hooks", "timeout", "pipeline deadline exceeded")
-
-    # Write pipeline summary to journal and include in result
-    result["pipeline_steps"] = tracker.to_dict()
-    _write_pipeline_summary(instance_dir, project_name, tracker, mission_title)
-
-    _deadline_timer.cancel()
-    return result
 
 
 def commit_instance(instance_dir: str, message: str = "") -> bool:
