@@ -28,6 +28,8 @@ from app.github_config import (
     get_github_authorized_users,
     get_github_nickname,
     get_github_reply_enabled,
+    get_github_subscribe_enabled,
+    get_github_subscribe_max_per_cycle,
 )
 from app.github_notifications import (
     add_reaction,
@@ -629,6 +631,12 @@ def process_single_notification(
     # Early exit checks + fetch comment (single API call)
     comment = _fetch_and_filter_comment(notification, bot_username, max_age_hours)
     if not comment:
+        # No @mention found — try subscription path for subscribed/author notifications
+        if _try_subscription_notification(
+            notification, config, projects_config, bot_username,
+        ):
+            mark_notification_read(str(notification.get("id", "")))
+            return True, None
         return False, None
 
     comment_author = comment.get("user", {}).get("login", "")
@@ -788,6 +796,137 @@ def post_error_reply(
         return True
     except RuntimeError:
         return False
+
+
+def _fetch_new_comments_since(
+    owner: str,
+    repo: str,
+    issue_number: str,
+    since_comment_id: Optional[int],
+    bot_username: str,
+) -> List[dict]:
+    """Fetch comments on a thread that are newer than since_comment_id.
+
+    Filters out comments from the bot itself to avoid self-reply loops.
+
+    Returns:
+        List of comment dicts from other users, newest last.
+    """
+    import json as _json
+
+    from app.github import api as gh_api
+
+    try:
+        raw = gh_api(
+            f"repos/{owner}/{repo}/issues/{issue_number}/comments",
+            jq='[.[] | {id: .id, body: .body, user_login: .user.login}]',
+        )
+        comments = _json.loads(raw) if raw else []
+    except (RuntimeError, ValueError):
+        return []
+
+    if not isinstance(comments, list):
+        return []
+
+    # Filter: only comments after since_comment_id, not from the bot
+    result = []
+    for c in comments:
+        cid = c.get("id", 0)
+        author = c.get("user_login", "")
+        if author.lower() == bot_username.lower():
+            continue
+        if since_comment_id is not None and cid <= since_comment_id:
+            continue
+        result.append(c)
+
+    return result
+
+
+def _try_subscription_notification(
+    notification: dict,
+    config: dict,
+    projects_config: Optional[dict],
+    bot_username: str,
+) -> bool:
+    """Handle a subscription/author notification by queuing a /reply mission.
+
+    Called when:
+    - subscribe_enabled is True
+    - notification reason is 'subscribed' or 'author'
+    - no @mention was found (standard command path returned None)
+
+    Returns True if a /reply mission was queued.
+    """
+    import os
+    from pathlib import Path
+
+    reason = notification.get("reason", "")
+    if reason not in ("subscribed", "author"):
+        return False
+
+    if not get_github_subscribe_enabled(config):
+        return False
+
+    # Resolve project
+    project_info = resolve_project_from_notification(notification)
+    if not project_info:
+        return False
+
+    project_name, owner, repo = project_info
+    issue_number = extract_issue_number_from_notification(notification)
+    if not issue_number:
+        return False
+
+    koan_root = os.environ.get("KOAN_ROOT", "")
+    if not koan_root:
+        return False
+    instance_dir = Path(koan_root) / "instance"
+
+    from app.thread_subscriptions import (
+        get_last_replied_comment_id,
+        has_pending_mission,
+        make_thread_key,
+        set_pending_mission,
+    )
+
+    thread_key = make_thread_key(owner, repo, issue_number)
+
+    # Already have a pending mission for this thread
+    if has_pending_mission(instance_dir, thread_key):
+        log.debug("GitHub subscribe: pending mission exists for %s", thread_key)
+        return False
+
+    # Check for new comments since our last reply
+    last_id = get_last_replied_comment_id(instance_dir, thread_key)
+    new_comments = _fetch_new_comments_since(
+        owner, repo, issue_number, last_id, bot_username,
+    )
+    if not new_comments:
+        log.debug("GitHub subscribe: no new comments on %s", thread_key)
+        return False
+
+    # Build web URL for the thread
+    subject_url = notification.get("subject", {}).get("url", "")
+    web_url = api_url_to_web_url(subject_url) if subject_url else ""
+    if not web_url:
+        web_url = f"https://github.com/{owner}/{repo}/issues/{issue_number}"
+
+    # Queue /reply mission
+    mission_entry = f"- [project:{project_name}] /reply {web_url}"
+    log.info("GitHub subscribe: queuing reply mission for %s", thread_key)
+
+    from app.utils import insert_pending_mission
+
+    missions_path = Path(koan_root) / "instance" / "missions.md"
+    try:
+        insert_pending_mission(missions_path, mission_entry)
+    except OSError as e:
+        log.warning("GitHub subscribe: failed to insert mission: %s", e)
+        return False
+
+    # Mark as pending to prevent duplicate missions
+    set_pending_mission(instance_dir, thread_key, True)
+    return True
 
 
 def _notify_github_question(
