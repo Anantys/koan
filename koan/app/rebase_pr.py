@@ -21,11 +21,15 @@ from typing import List, Optional, Tuple
 
 from app.claude_step import (
     _build_pr_prompt,
+    _fetch_failed_logs,
     _get_current_branch,
     _get_diffstat,
     _run_git,
     _safe_checkout,
+    commit_if_changes,
     run_claude,
+    run_claude_step,
+    wait_for_ci,
 )
 from app.github import run_gh
 from app.prompts import load_prompt, load_prompt_or_skill, load_skill_prompt  # noqa: F401 — safety import
@@ -303,10 +307,24 @@ def run_rebase(
             "\n".join(f"- {a}" for a in actions_log)
         )
 
-    # ── Step 7: Comment on the PR ─────────────────────────────────────
+    # ── Step 7: Check CI and fix failures ──────────────────────────────
+    ci_section = _run_ci_check_and_fix(
+        branch=branch,
+        base=base,
+        full_repo=full_repo,
+        pr_number=pr_number,
+        project_path=project_path,
+        context=context,
+        actions_log=actions_log,
+        notify_fn=notify_fn,
+        skill_dir=skill_dir,
+    )
+
+    # ── Step 8: Comment on the PR ─────────────────────────────────────
     comment_body = _build_rebase_comment(
         pr_number, branch, base, actions_log, context,
         diffstat=diffstat,
+        ci_section=ci_section,
     )
 
     try:
@@ -582,6 +600,130 @@ def _build_conflict_resolution_prompt(
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+MAX_CI_FIX_ATTEMPTS = 2
+
+
+def _run_ci_check_and_fix(
+    branch: str,
+    base: str,
+    full_repo: str,
+    pr_number: str,
+    project_path: str,
+    context: dict,
+    actions_log: List[str],
+    notify_fn,
+    skill_dir: Optional[Path] = None,
+) -> str:
+    """Poll CI after push, attempt fixes if failing. Returns CI section for PR comment."""
+
+    notify_fn(f"Checking CI on `{branch}`...")
+    ci_status, run_id, ci_logs = wait_for_ci(branch, full_repo)
+
+    if ci_status == "none":
+        actions_log.append("No CI runs found")
+        return ""
+
+    if ci_status == "success":
+        actions_log.append("CI passed")
+        return "CI passed."
+
+    if ci_status == "timeout":
+        actions_log.append("CI polling timed out")
+        return "CI still running (timed out waiting)."
+
+    # CI failed — attempt fixes
+    for attempt in range(1, MAX_CI_FIX_ATTEMPTS + 1):
+        notify_fn(f"CI failed. Fix attempt {attempt}/{MAX_CI_FIX_ATTEMPTS}...")
+        actions_log.append(f"CI failed (attempt {attempt})")
+
+        # Build CI fix prompt
+        rebase_remote = "origin"
+        diff = ""
+        try:
+            diff = _run_git(
+                ["git", "diff", f"{rebase_remote}/{base}..HEAD"],
+                cwd=project_path, timeout=30,
+            )
+        except Exception:
+            pass
+        diff = truncate_text(diff, 8000)
+
+        ci_fix_prompt = _build_ci_fix_prompt(
+            context, ci_logs, diff, skill_dir=skill_dir,
+        )
+
+        # Run Claude to fix the CI failures
+        fixed = run_claude_step(
+            prompt=ci_fix_prompt,
+            project_path=project_path,
+            commit_msg=f"fix: resolve CI failures on #{pr_number} (attempt {attempt})",
+            success_label=f"Applied CI fix (attempt {attempt})",
+            failure_label=f"CI fix step failed (attempt {attempt})",
+            actions_log=actions_log,
+            max_turns=15,
+        )
+
+        if not fixed:
+            # Claude didn't produce changes — nothing to push
+            break
+
+        # Force-push the fix
+        try:
+            _run_git(
+                ["git", "push", "origin", branch, "--force-with-lease"],
+                cwd=project_path,
+            )
+        except Exception:
+            try:
+                _run_git(
+                    ["git", "push", "origin", branch, "--force"],
+                    cwd=project_path,
+                )
+            except Exception as e:
+                actions_log.append(f"Push after CI fix failed: {str(e)[:100]}")
+                break
+
+        actions_log.append(f"Pushed CI fix (attempt {attempt})")
+
+        # Re-check CI
+        notify_fn(f"Re-checking CI after fix attempt {attempt}...")
+        ci_status, run_id, ci_logs = wait_for_ci(branch, full_repo)
+
+        if ci_status == "success":
+            actions_log.append(f"CI passed after fix attempt {attempt}")
+            return f"CI failed initially, fixed on attempt {attempt}."
+
+        if ci_status in ("none", "timeout"):
+            actions_log.append(f"CI {ci_status} after fix attempt {attempt}")
+            return f"CI fix pushed (attempt {attempt}), CI status: {ci_status}."
+
+    # Exhausted retries — report failure with log excerpt
+    log_excerpt = ci_logs[:2000] if ci_logs else "(no logs available)"
+    actions_log.append(f"CI still failing after {MAX_CI_FIX_ATTEMPTS} fix attempts")
+    return (
+        f"CI still failing after {MAX_CI_FIX_ATTEMPTS} fix attempts.\n\n"
+        f"<details><summary>Last failure logs</summary>\n\n"
+        f"```\n{log_excerpt}\n```\n\n</details>"
+    )
+
+
+def _build_ci_fix_prompt(
+    context: dict,
+    ci_logs: str,
+    diff: str,
+    skill_dir: Optional[Path] = None,
+) -> str:
+    """Build a prompt for Claude to fix CI failures."""
+    kwargs = dict(
+        TITLE=context.get("title", ""),
+        BRANCH=context.get("branch", ""),
+        BASE=context.get("base", ""),
+        CI_LOGS=truncate_text(ci_logs, 6000),
+        DIFF=truncate_text(diff, 8000),
+    )
+    return load_prompt_or_skill(skill_dir, "ci_fix", **kwargs)
+
+
 def _build_rebase_prompt(context: dict, skill_dir: Optional[Path] = None) -> str:
     """Build a prompt for Claude to analyze and apply review feedback."""
     return _build_pr_prompt("rebase", context, skill_dir=skill_dir)
@@ -711,6 +853,7 @@ def _build_rebase_comment(
     actions_log: List[str],
     context: dict,
     diffstat: str = "",
+    ci_section: str = "",
 ) -> str:
     """Build a markdown comment summarizing the rebase."""
     title = context.get("title", f"PR #{pr_number}")
@@ -743,6 +886,10 @@ def _build_rebase_comment(
         parts.append("Review feedback was analyzed and applied.\n")
 
     parts.append(f"### Actions\n\n{actions_md}\n")
+
+    if ci_section:
+        parts.append(f"### CI\n\n{ci_section}\n")
+
     parts.append("---\n_Automated by Kōan_")
 
     return "\n".join(parts)

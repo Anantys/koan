@@ -15,6 +15,7 @@ from app.rebase_pr import (
     build_comment_summary,
     run_rebase,
     _apply_review_feedback,
+    _build_ci_fix_prompt,
     _build_rebase_comment,
     _build_rebase_prompt,
     _checkout_pr_branch,
@@ -24,9 +25,11 @@ from app.rebase_pr import (
     _ordered_remotes,
     _push_with_fallback,
     _rebase_with_conflict_resolution,
+    _run_ci_check_and_fix,
     _safe_checkout,
+    MAX_CI_FIX_ATTEMPTS,
 )
-from app.claude_step import _is_permission_error
+from app.claude_step import _is_permission_error, wait_for_ci
 
 
 # ---------------------------------------------------------------------------
@@ -1210,6 +1213,7 @@ class TestMain:
 
 
 # ---------------------------------------------------------------------------
+<<<<<<< HEAD
 # --onto rebase (cross-fork PR support)
 # ---------------------------------------------------------------------------
 
@@ -1477,3 +1481,160 @@ class TestPushWithFallbackHeadRemote:
         push_cmds = [c for c in calls if "push" in c]
         # Should have tried myfork first (both lease and force), then origin
         assert any(c[2] == "origin" for c in push_cmds)
+||||||| parent of 64dc7a1 (feat: add CI-aware fixup pipeline to /rebase)
+=======
+# CI checking and fixing
+# ---------------------------------------------------------------------------
+
+class TestWaitForCi:
+    """Tests for wait_for_ci() in claude_step."""
+
+    @patch("app.claude_step.time.sleep")
+    @patch("app.claude_step.run_gh")
+    def test_ci_passes(self, mock_gh, mock_sleep):
+        mock_gh.return_value = json.dumps([{
+            "databaseId": 123,
+            "status": "completed",
+            "conclusion": "success",
+        }])
+        status, run_id, logs = wait_for_ci("koan/fix", "owner/repo", timeout=60)
+        assert status == "success"
+        assert run_id == 123
+        assert logs == ""
+
+    @patch("app.claude_step.time.sleep")
+    @patch("app.claude_step.run_gh")
+    def test_no_ci_runs(self, mock_gh, mock_sleep):
+        mock_gh.return_value = "[]"
+        status, run_id, logs = wait_for_ci("koan/fix", "owner/repo", timeout=60)
+        assert status == "none"
+        assert run_id is None
+
+    @patch("app.claude_step.time.sleep")
+    @patch("app.claude_step._fetch_failed_logs", return_value="error in test_foo")
+    @patch("app.claude_step.run_gh")
+    def test_ci_fails(self, mock_gh, mock_fetch_logs, mock_sleep):
+        mock_gh.return_value = json.dumps([{
+            "databaseId": 456,
+            "status": "completed",
+            "conclusion": "failure",
+        }])
+        status, run_id, logs = wait_for_ci("koan/fix", "owner/repo", timeout=60)
+        assert status == "failure"
+        assert run_id == 456
+        assert "error in test_foo" in logs
+
+    @patch("app.claude_step.time.time")
+    @patch("app.claude_step.time.sleep")
+    @patch("app.claude_step.run_gh")
+    def test_ci_timeout(self, mock_gh, mock_sleep, mock_time):
+        # Simulate time progression past deadline
+        mock_time.side_effect = [0, 100, 200, 700]  # deadline=600, exceeds on 3rd check
+        mock_gh.return_value = json.dumps([{
+            "databaseId": 789,
+            "status": "in_progress",
+            "conclusion": "",
+        }])
+        status, run_id, logs = wait_for_ci("koan/fix", "owner/repo", timeout=600)
+        assert status == "timeout"
+
+
+class TestRunCiCheckAndFix:
+    """Tests for _run_ci_check_and_fix() in rebase_pr."""
+
+    def _make_context(self):
+        return {
+            "title": "Fix bug",
+            "branch": "koan/fix",
+            "base": "main",
+            "body": "",
+            "diff": "",
+        }
+
+    @patch("app.rebase_pr.wait_for_ci", return_value=("success", 100, ""))
+    def test_ci_passes_no_fix_needed(self, mock_wait):
+        actions = []
+        result = _run_ci_check_and_fix(
+            "koan/fix", "main", "owner/repo", "42", "/project",
+            self._make_context(), actions, lambda m: None,
+        )
+        assert "CI passed" in result
+        assert "CI passed" in actions
+
+    @patch("app.rebase_pr.wait_for_ci", return_value=("none", None, ""))
+    def test_no_ci_runs(self, mock_wait):
+        actions = []
+        result = _run_ci_check_and_fix(
+            "koan/fix", "main", "owner/repo", "42", "/project",
+            self._make_context(), actions, lambda m: None,
+        )
+        assert result == ""
+        assert "No CI runs found" in actions
+
+    @patch("app.rebase_pr._run_git")
+    @patch("app.rebase_pr.run_claude_step", return_value=True)
+    @patch("app.rebase_pr.load_prompt_or_skill", return_value="fix prompt")
+    @patch("app.rebase_pr.wait_for_ci")
+    def test_ci_fails_then_fixed(self, mock_wait, mock_prompt, mock_claude, mock_git):
+        mock_wait.side_effect = [
+            ("failure", 456, "test_foo FAILED"),  # initial failure
+            ("success", 457, ""),                  # passes after fix
+        ]
+        actions = []
+        result = _run_ci_check_and_fix(
+            "koan/fix", "main", "owner/repo", "42", "/project",
+            self._make_context(), actions, lambda m: None,
+        )
+        assert "fixed on attempt 1" in result
+        mock_claude.assert_called_once()
+
+    @patch("app.rebase_pr._run_git")
+    @patch("app.rebase_pr.run_claude_step", return_value=True)
+    @patch("app.rebase_pr.load_prompt_or_skill", return_value="fix prompt")
+    @patch("app.rebase_pr.wait_for_ci")
+    def test_ci_fails_exhausts_retries(self, mock_wait, mock_prompt, mock_claude, mock_git):
+        mock_wait.return_value = ("failure", 456, "persistent error")
+        actions = []
+        result = _run_ci_check_and_fix(
+            "koan/fix", "main", "owner/repo", "42", "/project",
+            self._make_context(), actions, lambda m: None,
+        )
+        assert f"after {MAX_CI_FIX_ATTEMPTS} fix attempts" in result
+        assert mock_claude.call_count == MAX_CI_FIX_ATTEMPTS
+
+    @patch("app.rebase_pr.run_claude_step", return_value=False)
+    @patch("app.rebase_pr.load_prompt_or_skill", return_value="fix prompt")
+    @patch("app.rebase_pr.wait_for_ci", return_value=("failure", 456, "error"))
+    def test_ci_fails_claude_no_changes(self, mock_wait, mock_prompt, mock_claude):
+        """When Claude can't produce a fix, stop retrying."""
+        actions = []
+        result = _run_ci_check_and_fix(
+            "koan/fix", "main", "owner/repo", "42", "/project",
+            self._make_context(), actions, lambda m: None,
+        )
+        # Should stop after first failed attempt since Claude produced no changes
+        mock_claude.assert_called_once()
+
+
+class TestBuildRebaseCommentWithCi:
+    """Tests for CI section in _build_rebase_comment."""
+
+    def test_ci_section_included(self):
+        result = _build_rebase_comment(
+            "42", "koan/fix", "main",
+            ["Rebased onto origin/main"],
+            {"title": "Fix bug"},
+            ci_section="CI passed.",
+        )
+        assert "### CI" in result
+        assert "CI passed." in result
+
+    def test_no_ci_section_when_empty(self):
+        result = _build_rebase_comment(
+            "42", "koan/fix", "main",
+            ["Rebased onto origin/main"],
+            {"title": "Fix bug"},
+            ci_section="",
+        )
+        assert "### CI" not in result
+>>>>>>> 64dc7a1 (feat: add CI-aware fixup pipeline to /rebase)

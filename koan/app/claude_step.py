@@ -6,12 +6,14 @@ used by pr_review.py, rebase_pr.py, recreate_pr.py, and other
 pipeline modules.
 """
 
+import json
 import re
 import shlex
 import subprocess
 import sys
+import time
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from app.cli_provider import build_full_command, run_command
 from app.config import get_model_config
@@ -316,6 +318,88 @@ def _safe_checkout(branch: str, project_path: str) -> None:
         _run_git(["git", "checkout", branch], cwd=project_path)
     except Exception as e:
         print(f"[claude_step] Safe checkout failed for {branch}: {e}", file=sys.stderr)
+
+
+def wait_for_ci(
+    branch: str,
+    full_repo: str,
+    *,
+    timeout: int = 600,
+    poll_interval: int = 30,
+) -> Tuple[str, Optional[int], str]:
+    """Poll GitHub Actions CI for a branch until completion or timeout.
+
+    Args:
+        branch: Branch name to check CI for.
+        full_repo: "owner/repo" string.
+        timeout: Max seconds to wait (default 10 min).
+        poll_interval: Seconds between polls (default 30s).
+
+    Returns:
+        (status, run_id, logs) where:
+        - status: "success", "failure", "timeout", or "none"
+        - run_id: GitHub Actions run ID (None if no runs found)
+        - logs: Failed job logs (empty unless status is "failure")
+    """
+    deadline = time.time() + timeout
+
+    # Wait a few seconds for GitHub to register the push
+    time.sleep(min(10, poll_interval))
+
+    while time.time() < deadline:
+        try:
+            raw = run_gh(
+                "run", "list",
+                "--branch", branch,
+                "--repo", full_repo,
+                "--json", "databaseId,status,conclusion",
+                "--limit", "1",
+            )
+            runs = json.loads(raw) if raw.strip() else []
+        except Exception as e:
+            print(f"[claude_step] CI poll error: {e}", file=sys.stderr)
+            time.sleep(poll_interval)
+            continue
+
+        if not runs:
+            # No CI runs found for this branch — common for repos without CI
+            return ("none", None, "")
+
+        run = runs[0]
+        run_id = run.get("databaseId")
+        status = run.get("status", "").lower()
+        conclusion = run.get("conclusion", "").lower()
+
+        if status == "completed":
+            if conclusion == "success":
+                return ("success", run_id, "")
+
+            # CI failed — fetch logs for failed jobs
+            logs = _fetch_failed_logs(run_id, full_repo)
+            return ("failure", run_id, logs)
+
+        # Still running — wait and poll again
+        time.sleep(poll_interval)
+
+    return ("timeout", None, "")
+
+
+def _fetch_failed_logs(run_id: int, full_repo: str, max_chars: int = 8000) -> str:
+    """Fetch logs for failed jobs in a GitHub Actions run.
+
+    Returns truncated log output for context.
+    """
+    try:
+        raw = run_gh(
+            "run", "view", str(run_id),
+            "--repo", full_repo,
+            "--log-failed",
+        )
+        if len(raw) > max_chars:
+            return "... (truncated)\n" + raw[-max_chars:]
+        return raw
+    except Exception as e:
+        return f"(Could not fetch logs: {e})"
 
 
 def _is_permission_error(error_msg: str) -> bool:
