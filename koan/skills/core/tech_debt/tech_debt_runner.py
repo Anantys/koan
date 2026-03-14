@@ -30,7 +30,7 @@ def build_tech_debt_prompt(
 ) -> str:
     """Build a prompt for Claude to scan for tech debt."""
     return load_prompt_or_skill(
-        skill_dir, "tech-debt",
+        skill_dir, "tech_debt",
         PROJECT_NAME=project_name,
     )
 
@@ -130,7 +130,7 @@ def _save_report(
     learnings_dir = instance_dir / "memory" / "projects" / project_name
     learnings_dir.mkdir(parents=True, exist_ok=True)
 
-    report_path = learnings_dir / "tech-debt.md"
+    report_path = learnings_dir / "tech_debt.md"
 
     timestamp = _dt.now().strftime("%Y-%m-%d %H:%M")
     header = f"<!-- Last scan: {timestamp} -->\n"
@@ -180,7 +180,7 @@ def run_tech_debt(
         project_name: Project name for labeling.
         instance_dir: Path to instance directory.
         notify_fn: Optional callback for progress notifications.
-        skill_dir: Optional path to the tech-debt skill directory for prompts.
+        skill_dir: Optional path to the tech_debt skill directory for prompts.
         queue_missions: Whether to queue suggested missions (default True).
 
     Returns:

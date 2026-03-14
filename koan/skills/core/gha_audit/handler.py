@@ -1,4 +1,4 @@
-"""Koan /gha-audit skill -- scan GitHub Actions workflows for security issues."""
+"""Koan /gha_audit skill -- scan GitHub Actions workflows for security issues."""
 
 import re
 from pathlib import Path
@@ -300,10 +300,10 @@ def _resolve_project_path(project_name):
 # ---------------------------------------------------------------------------
 
 def handle(ctx):
-    """Handle /gha-audit command — scan workflows for security issues.
+    """Handle /gha_audit command — scan workflows for security issues.
 
     Usage:
-        /gha-audit [project-name]
+        /gha_audit [project-name]
 
     Scans .github/workflows/*.yml in the given project (or the first
     known project) for security vulnerabilities.
@@ -312,7 +312,7 @@ def handle(ctx):
 
     if args in ("-h", "--help", "help"):
         return (
-            "Usage: /gha-audit [project-name]\n\n"
+            "Usage: /gha_audit [project-name]\n\n"
             "Scans .github/workflows/*.yml for:\n"
             "• Expression injection (${{ }} in run: blocks)\n"
             "• Unpinned actions (supply chain risk)\n"
@@ -342,7 +342,7 @@ def handle(ctx):
                 project_label = first_project
 
     if not project_path:
-        return "\u274c No project found. Usage: /gha-audit <project-name>"
+        return "\u274c No project found. Usage: /gha_audit <project-name>"
 
     project_dir = Path(project_path)
     workflows_dir = project_dir / ".github" / "workflows"

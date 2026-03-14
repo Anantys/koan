@@ -1,4 +1,4 @@
-"""Skill handler for /scaffold-skill — generate SKILL.md + handler.py from a description."""
+"""Skill handler for /scaffold_skill — generate SKILL.md + handler.py from a description."""
 
 import re
 import subprocess
@@ -7,8 +7,9 @@ from typing import Optional, Tuple
 
 from app.bridge_log import log
 
-# Skill name validation: alphanumeric + hyphens, must start with a letter/digit
-_SKILL_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9-]*$")
+# Skill name validation: alphanumeric + underscores, must start with a letter/digit.
+# Hyphens are NOT allowed — they break Telegram command parsing.
+_SKILL_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_]*$")
 
 # Max description length for single-turn generation
 _MAX_DESCRIPTION_LENGTH = 500
@@ -19,8 +20,8 @@ def handle(ctx) -> Optional[str]:
     args = ctx.args.strip() if ctx.args else ""
     if not args:
         return (
-            "Usage: /scaffold-skill <scope> <name> <description>\n\n"
-            "Example: /scaffold-skill myteam deploy Deploy to production with rollback support"
+            "Usage: /scaffold_skill <scope> <name> <description>\n\n"
+            "Example: /scaffold_skill myteam deploy Deploy to production with rollback support"
         )
 
     scope, name, description, err = _parse_args(args)
@@ -36,7 +37,7 @@ def handle(ctx) -> Optional[str]:
 
     # Validate skill name
     if not _SKILL_NAME_RE.match(name):
-        return f"Invalid skill name '{name}'. Use letters, numbers, and hyphens."
+        return f"Invalid skill name '{name}'. Use letters, numbers, and underscores (no hyphens)."
 
     # Check for command name conflicts with existing skills
     conflict = _check_command_conflict(name, ctx.instance_dir)
@@ -108,7 +109,7 @@ def _parse_args(args: str) -> Tuple[str, str, str, Optional[str]]:
     if len(parts) < 3:
         return "", "", "", (
             "Not enough arguments.\n\n"
-            "Usage: /scaffold-skill <scope> <name> <description>"
+            "Usage: /scaffold_skill <scope> <name> <description>"
         )
     return parts[0], parts[1], parts[2], None
 

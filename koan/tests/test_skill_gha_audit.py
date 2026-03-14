@@ -1,4 +1,4 @@
-"""Tests for the /gha-audit skill — GitHub Actions security auditor."""
+"""Tests for the /gha_audit skill — GitHub Actions security auditor."""
 
 import textwrap
 from pathlib import Path
@@ -14,7 +14,7 @@ from app.skills import SkillContext
 # ---------------------------------------------------------------------------
 
 
-def _make_ctx(tmp_path, args="", command_name="gha-audit"):
+def _make_ctx(tmp_path, args="", command_name="gha_audit"):
     instance_dir = tmp_path / "instance"
     instance_dir.mkdir(exist_ok=True)
     return SkillContext(

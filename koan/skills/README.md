@@ -49,7 +49,7 @@ handler: handler.py
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `name` | yes | Skill identifier (matches directory name) |
+| `name` | yes | Skill identifier (matches directory name). **Must use underscores, not hyphens** — hyphens break Telegram command parsing. |
 | `scope` | no | Defaults to parent directory name |
 | `description` | no | One-line summary shown in `/help` |
 | `version` | no | Semver, defaults to `0.0.0` |

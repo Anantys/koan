@@ -194,10 +194,10 @@ Skills are pluggable commands — some are instant, others spawn Claude work ses
 | `/refactor` | Code cleanup and simplification |
 | `/check` | Project health checks |
 | `/claudemd` | Refresh a project's CLAUDE.md |
-| `/dead-code` | Find unused code |
-| `/tech-debt` | Technical debt report |
+| `/dead_code` | Find unused code |
+| `/tech_debt` | Technical debt report |
 | `/profile` | Queue a performance profiling mission |
-| `/scaffold-skill` | Generate a new skill from a description |
+| `/scaffold_skill` | Generate a new skill from a description |
 
 **🔀 pr** — Pull request management
 | `/pr` | Create a pull request |
@@ -232,7 +232,7 @@ Skills are pluggable commands — some are instant, others spawn Claude work ses
 **🔄 system** — Pause, stop, update, restart
 | `/shutdown` | Stop the agent |
 | `/update` | Self-update Kōan from upstream |
-| `/gha-audit` | Scan GitHub Actions for security vulnerabilities |
+| `/gha_audit` | Scan GitHub Actions for security vulnerabilities |
 | `/incident` | Log an incident |
 
 **[User Manual →](docs/user-manual.md)** — From beginner to power user, everything Kōan can do.

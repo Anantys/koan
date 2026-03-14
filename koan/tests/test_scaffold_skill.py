@@ -1,4 +1,4 @@
-"""Tests for the /scaffold-skill handler."""
+"""Tests for the /scaffold_skill handler."""
 
 import importlib.util
 import subprocess
@@ -9,9 +9,9 @@ import pytest
 
 from app.skills import SkillContext
 
-# Load the handler module from a hyphenated directory name
+# Load the handler module from the skill directory
 _HANDLER_PATH = (
-    Path(__file__).parent.parent / "skills" / "core" / "scaffold-skill" / "handler.py"
+    Path(__file__).parent.parent / "skills" / "core" / "scaffold_skill" / "handler.py"
 )
 _spec = importlib.util.spec_from_file_location("scaffold_skill_handler", str(_HANDLER_PATH))
 _handler_mod = importlib.util.module_from_spec(_spec)
@@ -34,7 +34,7 @@ def _make_ctx(tmp_path, args=""):
     ctx = MagicMock(spec=SkillContext)
     ctx.koan_root = tmp_path
     ctx.instance_dir = instance_dir
-    ctx.command_name = "scaffold-skill"
+    ctx.command_name = "scaffold_skill"
     ctx.args = args
     ctx.send_message = MagicMock()
     return ctx
@@ -184,7 +184,7 @@ class TestNoArgs:
         ctx = _make_ctx(tmp_path, "")
         result = handle(ctx)
         assert "Usage:" in result
-        assert "/scaffold-skill" in result
+        assert "/scaffold_skill" in result
 
     def test_whitespace_only_returns_usage(self, tmp_path):
         ctx = _make_ctx(tmp_path, "   ")

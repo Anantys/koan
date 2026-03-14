@@ -27,7 +27,7 @@ Complete reference for all Koan slash commands. Use these via Telegram, Slack, o
 | `/hourly <text>` | — | Schedule an hourly recurring mission |
 | `/weekly <text>` | — | Schedule a weekly recurring mission |
 | `/recurring` | — | List all recurring missions |
-| `/cancel_recurring <n>` | `/cancel-recurring` | Remove a recurring mission |
+| `/cancel_recurring <n>` | `/cancel_recurring` | Remove a recurring mission |
 
 ## Code & Project Operations
 
@@ -53,7 +53,7 @@ Skills marked **GitHub @mention** can be triggered by commenting `@koan-bot <com
 | `/ai <topic>` | `/ia` | Queue an AI exploration mission (deep, with codebase access) |
 | `/magic <topic>` | — | Instant creative exploration (quick, no mission queue) |
 | `/sparring` | — | Strategic challenge session — thinking, not code |
-| `/gha-audit [project]` | `/gha` | Scan GitHub Actions workflows for security vulnerabilities |
+| `/gha_audit [project]` | `/gha` | Scan GitHub Actions workflows for security vulnerabilities |
 | `/changelog [project]` | `/changes` | Generate changelog from recent commits and journal entries |
 | `/stats` | — | Show session outcome statistics per project |
 
@@ -79,7 +79,7 @@ Skills marked **GitHub @mention** can be triggered by commenting `@koan-bot <com
 | Command | Aliases | Description |
 |---------|---------|-------------|
 | `/projects` | `/proj` | List configured projects |
-| `/add_project <url>` | `/add-project` | Clone a GitHub repo and add it to the workspace |
+| `/add_project <url>` | `/add_project` | Clone a GitHub repo and add it to the workspace |
 | `/focus <project>` | — | Lock the agent to one project (suppress exploration) |
 | `/unfocus` | — | Exit focus mode |
 | `/explore [project]` | `/exploration`, `/noexplore` | Toggle per-project exploration mode |
@@ -99,7 +99,7 @@ Skills marked **GitHub @mention** can be triggered by commenting `@koan-bot <com
 
 ## Skill Types
 
-- **Instant** (`worker: false`) — Executes immediately, returns a response. Examples: `/status`, `/list`, `/gha-audit`.
+- **Instant** (`worker: false`) — Executes immediately, returns a response. Examples: `/status`, `/list`, `/gha_audit`.
 - **Worker** (`worker: true`) — Runs in a background thread (Claude calls, API requests). Examples: `/magic`, `/chat`, `/sparring`.
 - **Hybrid** (`audience: hybrid`) — Available from both Telegram/Slack and as agent-dispatched skills. Examples: `/plan`, `/implement`, `/review`.
 

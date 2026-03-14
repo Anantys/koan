@@ -599,10 +599,10 @@ class TestRegistryDiscovery:
         assert skill is not None, "Command '/add_project' not found in registry"
         assert skill.name == "add_project"
 
-    def test_backward_compat_alias(self):
-        """The old hyphenated name still resolves via alias."""
+    def test_underscore_alias(self):
+        """The underscore alias resolves correctly."""
         from app.skills import build_registry
         registry = build_registry()
-        skill = registry.find_by_command("add-project")
-        assert skill is not None, "Backward-compat alias 'add-project' not found"
+        skill = registry.find_by_command("add_project")
+        assert skill is not None, "Alias 'add_project' not found"
         assert skill.name == "add_project"

@@ -1,4 +1,4 @@
-"""Tests for the /tech-debt skill — handler and runner."""
+"""Tests for the /tech_debt skill — handler and runner."""
 
 import importlib.util
 from pathlib import Path
@@ -17,7 +17,7 @@ HANDLER_PATH = Path(__file__).parent.parent / "skills" / "core" / "tech_debt" / 
 
 
 def _load_handler():
-    """Load the tech-debt handler module dynamically."""
+    """Load the tech_debt handler module dynamically."""
     spec = importlib.util.spec_from_file_location("tech_debt_handler", str(HANDLER_PATH))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -39,7 +39,7 @@ def ctx(tmp_path):
     return SkillContext(
         koan_root=tmp_path,
         instance_dir=instance_dir,
-        command_name="tech-debt",
+        command_name="tech_debt",
         args="",
         send_message=MagicMock(),
     )
@@ -68,7 +68,7 @@ class TestHandleQueueMission:
         assert "myproject" in result
         mock_insert.assert_called_once()
         mission_entry = mock_insert.call_args[0][1]
-        assert "/tech-debt" in mission_entry
+        assert "/tech_debt" in mission_entry
         assert "[project:myproject]" in mission_entry
 
     @patch("app.utils.resolve_project_path", return_value="/path/koan")
@@ -256,7 +256,7 @@ class TestSaveReport:
     def test_no_score_header_when_none(self, tmp_path):
         _save_report(tmp_path, "proj", "Report", None)
 
-        content = (tmp_path / "memory" / "projects" / "proj" / "tech-debt.md").read_text()
+        content = (tmp_path / "memory" / "projects" / "proj" / "tech_debt.md").read_text()
         assert "Last scan:" in content
         assert "Debt score:" not in content
 
@@ -264,7 +264,7 @@ class TestSaveReport:
         _save_report(tmp_path, "proj", "Old report", 3)
         _save_report(tmp_path, "proj", "New report", 7)
 
-        content = (tmp_path / "memory" / "projects" / "proj" / "tech-debt.md").read_text()
+        content = (tmp_path / "memory" / "projects" / "proj" / "tech_debt.md").read_text()
         assert "New report" in content
         assert "Old report" not in content
 
@@ -343,7 +343,7 @@ class TestRunTechDebt:
             )
 
         assert success
-        assert "tech-debt.md" in summary
+        assert "tech_debt.md" in summary
         assert "5/10" in summary
         assert "3 missions queued" in summary
         # Notification calls: scan start + success
@@ -435,7 +435,7 @@ class TestRunTechDebt:
                 notify_fn=notify,
             )
 
-        report_path = instance_dir / "memory" / "projects" / "testproj" / "tech-debt.md"
+        report_path = instance_dir / "memory" / "projects" / "testproj" / "tech_debt.md"
         assert report_path.exists()
         content = report_path.read_text()
         assert "Tech Debt Report" in content
@@ -492,14 +492,14 @@ class TestCLI:
 class TestSkillDispatch:
     def test_tech_debt_in_runners(self):
         from app.skill_dispatch import _SKILL_RUNNERS
-        assert "tech-debt" in _SKILL_RUNNERS
-        assert _SKILL_RUNNERS["tech-debt"] == "skills.core.tech_debt.tech_debt_runner"
+        assert "tech_debt" in _SKILL_RUNNERS
+        assert _SKILL_RUNNERS["tech_debt"] == "skills.core.tech_debt.tech_debt_runner"
 
     def test_build_skill_command(self):
         from app.skill_dispatch import build_skill_command
 
         cmd = build_skill_command(
-            command="tech-debt",
+            command="tech_debt",
             args="",
             project_name="myproj",
             project_path="/path/myproj",
@@ -517,14 +517,14 @@ class TestSkillDispatch:
     def test_parse_skill_mission(self):
         from app.skill_dispatch import parse_skill_mission
 
-        project, command, args = parse_skill_mission("/tech-debt")
-        assert command == "tech-debt"
+        project, command, args = parse_skill_mission("/tech_debt")
+        assert command == "tech_debt"
         assert args == ""
 
     def test_parse_with_project_tag(self):
         from app.skill_dispatch import parse_skill_mission
 
-        project, command, args = parse_skill_mission("[project:koan] /tech-debt --no-queue")
+        project, command, args = parse_skill_mission("[project:koan] /tech_debt --no-queue")
         assert project == "koan"
-        assert command == "tech-debt"
+        assert command == "tech_debt"
         assert args == "--no-queue"

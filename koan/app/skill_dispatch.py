@@ -47,8 +47,8 @@ _SKILL_RUNNERS = {
     "review": "app.review_runner",
     "ai": "app.ai_runner",
     "check": "app.check_runner",
-    "tech-debt": "skills.core.tech_debt.tech_debt_runner",
-    "dead-code": "skills.core.dead_code.dead_code_runner",
+    "tech_debt": "skills.core.tech_debt.tech_debt_runner",
+    "dead_code": "skills.core.dead_code.dead_code_runner",
     "profile": "skills.core.profile.profile_runner",
     "brainstorm": "skills.core.brainstorm.brainstorm_runner",
     "claudemd": "app.claudemd_refresh",
@@ -204,10 +204,10 @@ def build_skill_command(
         "review": lambda: _build_review_cmd(base_cmd, args, project_path),
         "ai": lambda: _build_ai_cmd(base_cmd, project_name, project_path, instance_dir),
         "check": lambda: _build_check_cmd(base_cmd, args, instance_dir, koan_root),
-        "tech-debt": lambda: _build_tech_debt_cmd(
+        "tech_debt": lambda: _build_tech_debt_cmd(
             base_cmd, project_name, project_path, instance_dir,
         ),
-        "dead-code": lambda: _build_dead_code_cmd(
+        "dead_code": lambda: _build_dead_code_cmd(
             base_cmd, project_name, project_path, instance_dir,
         ),
         "profile": lambda: _build_profile_cmd(base_cmd, args, project_path, instance_dir),

@@ -393,16 +393,16 @@ These features turn Kōan from a task runner into a full development workflow pa
 - `/claudemd` — Refresh for the default/focused project
 </details>
 
-**`/gha-audit`** — Scan GitHub Actions workflows for security vulnerabilities.
+**`/gha_audit`** — Scan GitHub Actions workflows for security vulnerabilities.
 
-- **Usage:** `/gha-audit [project-name]`
+- **Usage:** `/gha_audit [project-name]`
 - **Aliases:** `/gha`
 
 <details>
 <summary>Use cases</summary>
 
-- `/gha-audit` — Quick security check of your CI/CD pipelines
-- `/gha-audit api` — Audit a specific project's workflows
+- `/gha_audit` — Quick security check of your CI/CD pipelines
+- `/gha_audit api` — Audit a specific project's workflows
 </details>
 
 **`/changelog`** — Generate a changelog from recent commits and journal entries.
@@ -448,7 +448,7 @@ Kōan supports recurring missions that automatically re-queue at set intervals.
 
 **`/cancel_recurring`** — Cancel a recurring mission.
 - **Usage:** `/cancel_recurring <n>` or `/cancel_recurring <keyword>`
-- **Aliases:** `/cancel-recurring`
+- **Aliases:** `/cancel_recurring`
 
 <details>
 <summary>Use cases</summary>
@@ -730,10 +730,10 @@ For prompt-only skills (no handler), put the prompt text after the YAML frontmat
 
 **Scaffold a skill from a description:**
 
-Instead of writing SKILL.md and handler.py by hand, use `/scaffold-skill` to generate them:
+Instead of writing SKILL.md and handler.py by hand, use `/scaffold_skill` to generate them:
 
 ```
-/scaffold-skill myteam deploy Deploy to production with rollback support
+/scaffold_skill myteam deploy Deploy to production with rollback support
 ```
 
 This invokes Claude to produce a valid SKILL.md + handler.py stub in `instance/skills/myteam/deploy/`, validated against the parser before writing. Restart the bridge to load the new skill.
@@ -850,7 +850,7 @@ See [docs/auto-update.md](auto-update.md) for details.
 **`/add_project`** — Clone a GitHub repo and add it to the workspace.
 
 - **Usage:** `/add_project <github-url> [name]`
-- **Aliases:** `/add-project`
+- **Aliases:** `/add_project`
 
 <details>
 <summary>Use cases</summary>
@@ -876,32 +876,32 @@ See [docs/auto-update.md](auto-update.md) for details.
 
 ### Tech Debt Scan
 
-**`/tech-debt`** — Scan a project for duplicated code, complex functions, testing gaps, and infrastructure issues. Produces a prioritized debt register saved to project learnings, and optionally queues the top improvement missions.
+**`/tech_debt`** — Scan a project for duplicated code, complex functions, testing gaps, and infrastructure issues. Produces a prioritized debt register saved to project learnings, and optionally queues the top improvement missions.
 
-- **Usage:** `/tech-debt [project-name] [--no-queue]`
+- **Usage:** `/tech_debt [project-name] [--no-queue]`
 - **Aliases:** `/td`, `/debt`
 
 <details>
 <summary>Use cases</summary>
 
-- `/tech-debt koan` — Scan the koan project for tech debt
+- `/tech_debt koan` — Scan the koan project for tech debt
 - `/td webapp --no-queue` — Scan without queuing follow-up missions
 - `/debt` — Scan the default project
 </details>
 
 ### Dead Code Scan
 
-**`/dead-code`** — Scan a project for unused imports, functions, classes, variables, and dead branches. Produces a certainty-classified report saved to project memory, and optionally queues the top removal missions.
+**`/dead_code`** — Scan a project for unused imports, functions, classes, variables, and dead branches. Produces a certainty-classified report saved to project memory, and optionally queues the top removal missions.
 
-- **Usage:** `/dead-code [project-name] [--no-queue]`
+- **Usage:** `/dead_code [project-name] [--no-queue]`
 - **Aliases:** `/dc`
 
 <details>
 <summary>Use cases</summary>
 
-- `/dead-code koan` — Scan the koan project for unused code
+- `/dead_code koan` — Scan the koan project for unused code
 - `/dc webapp --no-queue` — Scan without queuing follow-up missions
-- `/dead-code` — Scan the default project
+- `/dead_code` — Scan the default project
 </details>
 
 ### Incident Triage
@@ -970,13 +970,13 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/pr <PR>` | — | I | Review and update a GitHub PR |
 | `/check <url>` | `/inspect` | I | Run project health checks on a PR/issue |
 | `/claudemd [project]` | `/claude`, `/claude.md`, `/claude_md` | I | Refresh a project's CLAUDE.md |
-| `/gha-audit [project]` | `/gha` | I | Audit GitHub Actions for security issues |
+| `/gha_audit [project]` | `/gha` | I | Audit GitHub Actions for security issues |
 | `/changelog [project]` | `/changes` | I | Generate changelog from commits/journal |
 | `/daily <text>` | — | I | Schedule a daily recurring mission |
 | `/hourly <text>` | — | I | Schedule an hourly recurring mission |
 | `/weekly <text>` | — | I | Schedule a weekly recurring mission |
 | `/recurring` | — | I | List all recurring missions |
-| `/cancel_recurring <n>` | `/cancel-recurring` | I | Cancel a recurring mission |
+| `/cancel_recurring <n>` | `/cancel_recurring` | I | Cancel a recurring mission |
 | `/idea <text>` | `/buffer` | I | Add to the ideas backlog |
 | `/ideas` | — | I | List all ideas |
 | `/reflect <msg>` | `/think` | I | Write a reflection to the shared journal |
@@ -995,12 +995,12 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/shutdown` | — | P | Shutdown all processes |
 | `/update` | `/upgrade`, `/restart` | P | Update Kōan and restart |
 | `/snapshot` | — | P | Export memory state |
-| `/add_project <url>` | `/add-project` | P | Add a project from GitHub |
+| `/add_project <url>` | `/add_project` | P | Add a project from GitHub |
 | `/profile <project>` | `/perf`, `/benchmark` | P | Performance profiling mission |
-| `/tech-debt [project]` | `/td`, `/debt` | P | Scan project for tech debt |
-| `/dead-code [project]` | `/dc` | P | Scan for unused code |
+| `/tech_debt [project]` | `/td`, `/debt` | P | Scan project for tech debt |
+| `/dead_code [project]` | `/dc` | P | Scan for unused code |
 | `/incident <error>` | — | P | Triage a production error |
-| `/scaffold-skill <scope> <name> <desc>` | `/scaffold`, `/new-skill` | P | Generate SKILL.md + handler.py for a new custom skill |
+| `/scaffold_skill <scope> <name> <desc>` | `/scaffold`, `/new_skill` | P | Generate SKILL.md + handler.py for a new custom skill |
 
 Skills marked with GitHub @mention support: `/brainstorm`, `/plan`, `/implement`, `/fix`, `/review`, `/rebase`, `/recreate`, `/refactor`, `/profile`. See [GitHub Commands](github-commands.md) for details.
 

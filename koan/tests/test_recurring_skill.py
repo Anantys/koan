@@ -287,10 +287,10 @@ class TestSkillRegistration:
             assert skill is not None, f"Command '/{cmd}' not found in registry"
             assert skill.name == "recurring"
 
-    def test_backward_compat_alias(self):
-        """The old hyphenated name still resolves via alias."""
+    def test_underscore_alias(self):
+        """The underscore alias resolves correctly."""
         from app.skills import build_registry
         registry = build_registry()
-        skill = registry.find_by_command("cancel-recurring")
-        assert skill is not None, "Backward-compat alias 'cancel-recurring' not found"
+        skill = registry.find_by_command("cancel_recurring")
+        assert skill is not None, "Alias 'cancel_recurring' not found"
         assert skill.name == "recurring"

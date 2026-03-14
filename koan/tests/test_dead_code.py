@@ -1,4 +1,4 @@
-"""Tests for the /dead-code skill — handler and runner."""
+"""Tests for the /dead_code skill — handler and runner."""
 
 import importlib.util
 from pathlib import Path
@@ -17,7 +17,7 @@ HANDLER_PATH = Path(__file__).parent.parent / "skills" / "core" / "dead_code" / 
 
 
 def _load_handler():
-    """Load the dead-code handler module dynamically."""
+    """Load the dead_code handler module dynamically."""
     spec = importlib.util.spec_from_file_location("dead_code_handler", str(HANDLER_PATH))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -39,7 +39,7 @@ def ctx(tmp_path):
     return SkillContext(
         koan_root=tmp_path,
         instance_dir=instance_dir,
-        command_name="dead-code",
+        command_name="dead_code",
         args="",
         send_message=MagicMock(),
     )
@@ -59,7 +59,7 @@ class TestHandleRouting:
     def test_help_contains_examples(self, handler, ctx):
         ctx.args = "--help"
         result = handler.handle(ctx)
-        assert "/dead-code koan" in result
+        assert "/dead_code koan" in result
         assert "/dc" in result
 
     def test_help_mentions_no_queue(self, handler, ctx):
@@ -79,7 +79,7 @@ class TestHandleQueueMission:
         assert "myproject" in result
         mock_insert.assert_called_once()
         mission_entry = mock_insert.call_args[0][1]
-        assert "/dead-code" in mission_entry
+        assert "/dead_code" in mission_entry
         assert "[project:myproject]" in mission_entry
 
     @patch("app.utils.resolve_project_path", return_value="/path/koan")
@@ -321,7 +321,7 @@ class TestSaveReport:
     def test_no_score_header_when_none(self, tmp_path):
         _save_report(tmp_path, "proj", "Report", None)
 
-        content = (tmp_path / "memory" / "projects" / "proj" / "dead-code.md").read_text()
+        content = (tmp_path / "memory" / "projects" / "proj" / "dead_code.md").read_text()
         assert "Last scan:" in content
         assert "Dead code score:" not in content
 
@@ -329,13 +329,13 @@ class TestSaveReport:
         _save_report(tmp_path, "proj", "Old report", 3)
         _save_report(tmp_path, "proj", "New report", 7)
 
-        content = (tmp_path / "memory" / "projects" / "proj" / "dead-code.md").read_text()
+        content = (tmp_path / "memory" / "projects" / "proj" / "dead_code.md").read_text()
         assert "New report" in content
         assert "Old report" not in content
 
     def test_report_filename(self, tmp_path):
         report_path = _save_report(tmp_path, "proj", "Report", 5)
-        assert report_path.name == "dead-code.md"
+        assert report_path.name == "dead_code.md"
 
 
 class TestQueueMissions:
@@ -419,7 +419,7 @@ class TestRunDeadCode:
             )
 
         assert success
-        assert "dead-code.md" in summary
+        assert "dead_code.md" in summary
         assert "3/10" in summary
         assert "3 missions queued" in summary
         # Notification calls: scan start + success
@@ -511,7 +511,7 @@ class TestRunDeadCode:
                 notify_fn=notify,
             )
 
-        report_path = instance_dir / "memory" / "projects" / "testproj" / "dead-code.md"
+        report_path = instance_dir / "memory" / "projects" / "testproj" / "dead_code.md"
         assert report_path.exists()
         content = report_path.read_text()
         assert "Dead Code Report" in content
@@ -590,14 +590,14 @@ class TestCLI:
 class TestSkillDispatch:
     def test_dead_code_in_runners(self):
         from app.skill_dispatch import _SKILL_RUNNERS
-        assert "dead-code" in _SKILL_RUNNERS
-        assert _SKILL_RUNNERS["dead-code"] == "skills.core.dead_code.dead_code_runner"
+        assert "dead_code" in _SKILL_RUNNERS
+        assert _SKILL_RUNNERS["dead_code"] == "skills.core.dead_code.dead_code_runner"
 
     def test_build_skill_command(self):
         from app.skill_dispatch import build_skill_command
 
         cmd = build_skill_command(
-            command="dead-code",
+            command="dead_code",
             args="",
             project_name="myproj",
             project_path="/path/myproj",
@@ -615,14 +615,14 @@ class TestSkillDispatch:
     def test_parse_skill_mission(self):
         from app.skill_dispatch import parse_skill_mission
 
-        project, command, args = parse_skill_mission("/dead-code")
-        assert command == "dead-code"
+        project, command, args = parse_skill_mission("/dead_code")
+        assert command == "dead_code"
         assert args == ""
 
     def test_parse_with_project_tag(self):
         from app.skill_dispatch import parse_skill_mission
 
-        project, command, args = parse_skill_mission("[project:koan] /dead-code --no-queue")
+        project, command, args = parse_skill_mission("[project:koan] /dead_code --no-queue")
         assert project == "koan"
-        assert command == "dead-code"
+        assert command == "dead_code"
         assert args == "--no-queue"

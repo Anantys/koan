@@ -1,26 +1,26 @@
-"""Koan /dead-code skill -- queue a dead code scan mission."""
+"""Koan /dead_code skill -- queue a dead code scan mission."""
 
 
 def handle(ctx):
-    """Handle /dead-code command -- queue a dead code scan mission.
+    """Handle /dead_code command -- queue a dead code scan mission.
 
     Usage:
-        /dead-code              -- scan the default project
-        /dead-code <project>    -- scan a specific project
-        /dead-code --no-queue   -- scan without queuing follow-up missions
+        /dead_code              -- scan the default project
+        /dead_code <project>    -- scan a specific project
+        /dead_code --no-queue   -- scan without queuing follow-up missions
     """
     args = ctx.args.strip()
 
     if args in ("-h", "--help"):
         return (
-            "Usage: /dead-code [project-name] [--no-queue]\n\n"
+            "Usage: /dead_code [project-name] [--no-queue]\n\n"
             "Scans a project for unused imports, functions, classes, "
             "variables, and dead branches.\n"
             "Produces a report saved to project memory.\n\n"
             "Options:\n"
             "  --no-queue  Don't auto-queue suggested removal missions\n\n"
             "Examples:\n"
-            "  /dead-code koan\n"
+            "  /dead_code koan\n"
             "  /dc webapp --no-queue"
         )
 
@@ -58,7 +58,7 @@ def _queue_dead_code(ctx, project_name, no_queue):
         project_name = projects[0][0]
 
     suffix = " --no-queue" if no_queue else ""
-    mission_entry = f"- [project:{project_name}] /dead-code{suffix}"
+    mission_entry = f"- [project:{project_name}] /dead_code{suffix}"
     missions_path = ctx.instance_dir / "missions.md"
     insert_pending_mission(missions_path, mission_entry)
 
