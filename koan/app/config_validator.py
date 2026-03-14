@@ -48,6 +48,7 @@ CONFIG_SCHEMA: Dict[str, Any] = {
     "email": _NESTED,
     "messaging": _NESTED,
     "auto_update": _NESTED,
+    "dashboard": _NESTED,
 }
 
 # Sub-schemas for nested sections
@@ -121,6 +122,10 @@ SECTION_SCHEMAS: Dict[str, Dict[str, str]] = {
         "enabled": "bool",
         "check_interval": "int",
         "notify": "bool",
+    },
+    "dashboard": {
+        "enabled": "bool",
+        "port": "int",
     },
 }
 

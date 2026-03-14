@@ -253,7 +253,7 @@ def check_pidfile(koan_root: Path, process_name: str) -> Optional[int]:
     return None
 
 
-PROCESS_NAMES = ("run", "awake", "ollama")
+PROCESS_NAMES = ("run", "awake", "ollama", "dashboard")
 
 # Process startup verification timeouts
 DEFAULT_VERIFY_TIMEOUT = 3.0
@@ -385,15 +385,38 @@ def start_awake(koan_root: Path, verify_timeout: float = DEFAULT_VERIFY_TIMEOUT)
     return _launch_python_process(koan_root, "app/awake.py", "awake", verify_timeout)
 
 
+def start_dashboard(koan_root: Path, verify_timeout: float = DEFAULT_VERIFY_TIMEOUT) -> tuple:
+    """Start the web dashboard (dashboard.py) as a detached subprocess.
+
+    Only launched when ``dashboard.enabled: true`` in config.yaml.
+    Returns (success: bool, message: str).
+    """
+    return _launch_python_process(koan_root, "app/dashboard.py", "dashboard", verify_timeout)
+
+
+def _is_dashboard_enabled() -> bool:
+    """Check if dashboard is enabled in config.yaml."""
+    try:
+        from app.config import is_dashboard_enabled
+        return is_dashboard_enabled()
+    except (ImportError, OSError, ValueError):
+        return False
+
+
 def get_status_processes(koan_root: Path) -> tuple:
     """Return the process names to display in status output.
 
     Only includes ollama when the CLI provider is local/ollama.
+    Only includes dashboard when dashboard.enabled is true in config.
     """
     provider = _detect_provider(koan_root)
-    if _needs_ollama(provider):
-        return PROCESS_NAMES
-    return tuple(n for n in PROCESS_NAMES if n != "ollama")
+    dashboard = _is_dashboard_enabled()
+    names = list(PROCESS_NAMES)
+    if not _needs_ollama(provider):
+        names.remove("ollama")
+    if not dashboard:
+        names.remove("dashboard")
+    return tuple(names)
 
 
 def _read_runner_state(koan_root: Path) -> dict:
@@ -492,6 +515,14 @@ def format_status_all(koan_root: Path) -> list:
         else:
             lines.append("  ollama: not running")
 
+    # --- Dashboard (conditional) ---
+    if "dashboard" in process_names:
+        dash_pid = check_pidfile(koan_root, "dashboard")
+        if dash_pid:
+            lines.append(f"  dashboard: running (PID {dash_pid})")
+        else:
+            lines.append("  dashboard: not running")
+
     return lines
 
 
@@ -566,6 +597,11 @@ def start_all(koan_root: Path, provider: str = None) -> dict:
     # 3. Start agent loop (run.py)
     ok, msg = start_runner(koan_root)
     results["run"] = (ok, msg)
+
+    # 4. Start dashboard if enabled
+    if _is_dashboard_enabled():
+        ok, msg = start_dashboard(koan_root)
+        results["dashboard"] = (ok, msg)
 
     return results
 
@@ -680,7 +716,7 @@ def stop_processes(koan_root: Path, timeout: float = 5.0) -> dict:
 def _print_stack_results(results: dict) -> int:
     """Print stack start results and return exit code (0=ok, 1=failure)."""
     any_failed = False
-    for name in ("ollama", "awake", "run"):
+    for name in ("ollama", "awake", "run", "dashboard"):
         if name not in results:
             continue
         ok, msg = results[name]

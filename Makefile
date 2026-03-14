@@ -96,12 +96,16 @@ start: setup
 	fi
 	@launchctl bootstrap "gui/$$(id -u)" ~/Library/LaunchAgents/com.koan.awake.plist 2>/dev/null || true
 	@launchctl bootstrap "gui/$$(id -u)" ~/Library/LaunchAgents/com.koan.run.plist 2>/dev/null || true
+	@if [ -f ~/Library/LaunchAgents/com.koan.dashboard.plist ]; then \
+		launchctl bootstrap "gui/$$(id -u)" ~/Library/LaunchAgents/com.koan.dashboard.plist 2>/dev/null || true; \
+	fi
 	@cd koan && KOAN_ROOT=$(PWD) PYTHONPATH=. ../$(PYTHON) -c "from pathlib import Path; from app.pid_manager import _show_startup_banner; from app.utils import get_cli_provider_env; _show_startup_banner(Path('$(PWD)'), get_cli_provider_env())"
 	@echo "✓ Kōan started via launchd"
 
 stop:
 	@launchctl bootout "gui/$$(id -u)/com.koan.run" 2>/dev/null || true
 	@launchctl bootout "gui/$$(id -u)/com.koan.awake" 2>/dev/null || true
+	@launchctl bootout "gui/$$(id -u)/com.koan.dashboard" 2>/dev/null || true
 	@echo "✓ Kōan stopped"
 
 status:

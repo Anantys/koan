@@ -177,6 +177,13 @@ usage:
 #   enabled: true          # Master switch (default: true)
 #   block_mode: false      # false = warn + quarantine, true = reject mission entirely
 
+# Dashboard — web UI for monitoring and interacting with Kōan
+# When enabled, `make start` / `make stop` / `make restart` also manage
+# the dashboard process. You can always run it standalone with `make dashboard`.
+# dashboard:
+#   enabled: false          # Include dashboard in managed processes (default: false)
+#   port: 5001              # HTTP port (default: 5001)
+
 # Auto-update — automatically keep Kōan up to date
 # When enabled, Kōan periodically checks if upstream has new commits
 # and pulls + restarts automatically. Checks run at startup and every

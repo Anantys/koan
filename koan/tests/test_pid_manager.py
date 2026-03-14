@@ -33,9 +33,11 @@ from app.pid_manager import (
     start_ollama,
     start_all,
     start_stack,
+    start_dashboard,
     get_status_processes,
     format_status_all,
     _print_stack_results,
+    _is_dashboard_enabled,
     PROCESS_NAMES,
 )
 
@@ -1993,3 +1995,102 @@ class TestStartRunnerClearsPause:
              patch("app.pid_manager.check_pidfile", side_effect=[None] * 10):
             # Should not raise
             start_runner(tmp_path, verify_timeout=0.5)
+
+
+# ---------------------------------------------------------------------------
+# Dashboard config integration
+# ---------------------------------------------------------------------------
+
+class TestDashboardConfig:
+    """Tests for dashboard.enabled config flag in pid_manager."""
+
+    def test_process_names_includes_dashboard(self):
+        """PROCESS_NAMES tuple includes dashboard."""
+        assert "dashboard" in PROCESS_NAMES
+
+    def test_is_dashboard_enabled_false_by_default(self):
+        """Dashboard is disabled when config has no dashboard section."""
+        with patch("app.config._load_config", return_value={}):
+            assert not _is_dashboard_enabled()
+
+    def test_is_dashboard_enabled_true(self):
+        """Dashboard is enabled when config says so."""
+        with patch("app.config._load_config", return_value={"dashboard": {"enabled": True}}):
+            assert _is_dashboard_enabled()
+
+    def test_get_status_processes_excludes_dashboard_by_default(self, tmp_path):
+        """status processes should NOT include dashboard when disabled."""
+        with patch("app.pid_manager._detect_provider", return_value="claude"), \
+             patch("app.pid_manager._is_dashboard_enabled", return_value=False):
+            procs = get_status_processes(tmp_path)
+            assert "dashboard" not in procs
+            assert "run" in procs
+            assert "awake" in procs
+
+    def test_get_status_processes_includes_dashboard_when_enabled(self, tmp_path):
+        """status processes should include dashboard when enabled."""
+        with patch("app.pid_manager._detect_provider", return_value="claude"), \
+             patch("app.pid_manager._is_dashboard_enabled", return_value=True):
+            procs = get_status_processes(tmp_path)
+            assert "dashboard" in procs
+
+    def test_start_all_skips_dashboard_when_disabled(self, tmp_path):
+        """start_all should not start dashboard when disabled."""
+        with patch("app.pid_manager._detect_provider", return_value="claude"), \
+             patch("app.pid_manager._is_dashboard_enabled", return_value=False), \
+             patch("app.pid_manager.start_awake", return_value=(True, "ok")), \
+             patch("app.pid_manager.start_runner", return_value=(True, "ok")), \
+             patch("app.pid_manager.start_dashboard") as mock_dash, \
+             patch("app.pid_manager._show_startup_banner"):
+            results = start_all(tmp_path)
+            mock_dash.assert_not_called()
+            assert "dashboard" not in results
+
+    def test_start_all_starts_dashboard_when_enabled(self, tmp_path):
+        """start_all should start dashboard when enabled."""
+        with patch("app.pid_manager._detect_provider", return_value="claude"), \
+             patch("app.pid_manager._is_dashboard_enabled", return_value=True), \
+             patch("app.pid_manager.start_awake", return_value=(True, "ok")), \
+             patch("app.pid_manager.start_runner", return_value=(True, "ok")), \
+             patch("app.pid_manager.start_dashboard", return_value=(True, "Dashboard started")) as mock_dash, \
+             patch("app.pid_manager._show_startup_banner"):
+            results = start_all(tmp_path)
+            mock_dash.assert_called_once_with(tmp_path)
+            assert "dashboard" in results
+            assert results["dashboard"] == (True, "Dashboard started")
+
+    def test_format_status_shows_dashboard_when_enabled(self, tmp_path):
+        """format_status_all should show dashboard line when enabled."""
+        with patch("app.pid_manager.get_status_processes",
+                   return_value=("run", "awake", "dashboard")), \
+             patch("app.pid_manager.check_pidfile", return_value=None):
+            lines = format_status_all(tmp_path)
+            joined = "\n".join(lines)
+            assert "dashboard: not running" in joined
+
+    def test_format_status_hides_dashboard_when_disabled(self, tmp_path):
+        """format_status_all should not show dashboard when disabled."""
+        with patch("app.pid_manager.get_status_processes",
+                   return_value=("run", "awake")), \
+             patch("app.pid_manager.check_pidfile", return_value=None):
+            lines = format_status_all(tmp_path)
+            joined = "\n".join(lines)
+            assert "dashboard" not in joined
+
+    def test_stop_processes_handles_dashboard(self, tmp_path):
+        """stop_processes iterates over dashboard in PROCESS_NAMES."""
+        # Dashboard not running — should get "not_running"
+        with patch("app.pid_manager._bootout_launchd_service"):
+            results = stop_processes(tmp_path, timeout=0.5)
+            assert "dashboard" in results
+            assert results["dashboard"] == "not_running"
+
+    def test_print_stack_results_includes_dashboard(self):
+        """_print_stack_results should print dashboard entry if present."""
+        results = {
+            "awake": (True, "Bridge started"),
+            "run": (True, "Agent loop started"),
+            "dashboard": (True, "Dashboard started"),
+        }
+        exit_code = _print_stack_results(results)
+        assert exit_code == 0

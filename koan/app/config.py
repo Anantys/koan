@@ -209,6 +209,28 @@ def get_debug_enabled() -> bool:
     return bool(config.get("debug", False))
 
 
+def is_dashboard_enabled() -> bool:
+    """Check if dashboard is enabled for managed startup.
+
+    When True, ``make start`` / ``make stop`` / ``make restart`` also
+    manage the dashboard process alongside run and awake.
+    """
+    config = _load_config()
+    dashboard_cfg = config.get("dashboard", {})
+    if isinstance(dashboard_cfg, dict):
+        return bool(dashboard_cfg.get("enabled", False))
+    return False
+
+
+def get_dashboard_port() -> int:
+    """Return the configured dashboard port (default: 5001)."""
+    config = _load_config()
+    dashboard_cfg = config.get("dashboard", {})
+    if isinstance(dashboard_cfg, dict):
+        return int(dashboard_cfg.get("port", 5001))
+    return 5001
+
+
 def get_cli_output_journal() -> bool:
     """Check if CLI output journal streaming is enabled.
 

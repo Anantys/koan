@@ -593,6 +593,40 @@ class TestGetClaudeFlagsForRole:
 # --- backward compatibility ---
 
 
+class TestDashboardConfig:
+    """Tests for dashboard config getters."""
+
+    def test_dashboard_disabled_by_default(self):
+        from app.config import is_dashboard_enabled
+        with _mock_config({}):
+            assert not is_dashboard_enabled()
+
+    def test_dashboard_enabled(self):
+        from app.config import is_dashboard_enabled
+        with _mock_config({"dashboard": {"enabled": True}}):
+            assert is_dashboard_enabled()
+
+    def test_dashboard_disabled_explicitly(self):
+        from app.config import is_dashboard_enabled
+        with _mock_config({"dashboard": {"enabled": False}}):
+            assert not is_dashboard_enabled()
+
+    def test_dashboard_non_dict_value(self):
+        from app.config import is_dashboard_enabled
+        with _mock_config({"dashboard": "yes"}):
+            assert not is_dashboard_enabled()
+
+    def test_dashboard_port_default(self):
+        from app.config import get_dashboard_port
+        with _mock_config({}):
+            assert get_dashboard_port() == 5001
+
+    def test_dashboard_port_custom(self):
+        from app.config import get_dashboard_port
+        with _mock_config({"dashboard": {"port": 8080}}):
+            assert get_dashboard_port() == 8080
+
+
 class TestBackwardCompat:
     """Verify that importing from app.utils still works."""
 
