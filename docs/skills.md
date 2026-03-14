@@ -27,7 +27,7 @@ Complete reference for all Koan slash commands. Use these via Telegram, Slack, o
 | `/hourly <text>` | — | Schedule an hourly recurring mission |
 | `/weekly <text>` | — | Schedule a weekly recurring mission |
 | `/recurring` | — | List all recurring missions |
-| `/cancel_recurring <n>` | `/cancel_recurring` | Remove a recurring mission |
+| `/cancel_recurring <n>` | — | Remove a recurring mission |
 
 ## Code & Project Operations
 
@@ -79,7 +79,7 @@ Skills marked **GitHub @mention** can be triggered by commenting `@koan-bot <com
 | Command | Aliases | Description |
 |---------|---------|-------------|
 | `/projects` | `/proj` | List configured projects |
-| `/add_project <url>` | `/add_project` | Clone a GitHub repo and add it to the workspace |
+| `/add_project <url>` | — | Clone a GitHub repo and add it to the workspace |
 | `/focus <project>` | — | Lock the agent to one project (suppress exploration) |
 | `/unfocus` | — | Exit focus mode |
 | `/explore [project]` | `/exploration`, `/noexplore` | Toggle per-project exploration mode |

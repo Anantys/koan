@@ -448,7 +448,7 @@ Kōan supports recurring missions that automatically re-queue at set intervals.
 
 **`/cancel_recurring`** — Cancel a recurring mission.
 - **Usage:** `/cancel_recurring <n>` or `/cancel_recurring <keyword>`
-- **Aliases:** `/cancel_recurring`
+- **Aliases:** —
 
 <details>
 <summary>Use cases</summary>
@@ -850,7 +850,7 @@ See [docs/auto-update.md](auto-update.md) for details.
 **`/add_project`** — Clone a GitHub repo and add it to the workspace.
 
 - **Usage:** `/add_project <github-url> [name]`
-- **Aliases:** `/add_project`
+- **Aliases:** —
 
 <details>
 <summary>Use cases</summary>
