@@ -303,6 +303,52 @@ class TestFetchPrReviews:
         result = fetch_pr_reviews("/fake/path")
         assert len(result) == 0
 
+    @patch("subprocess.run")
+    def test_filters_open_prs(self, mock_run):
+        """Open PRs should be excluded — only merged/closed have review learnings."""
+        now = datetime.now(timezone.utc)
+        prs = [
+            {
+                "number": 1,
+                "title": "feat: open PR",
+                "createdAt": now.isoformat(),
+                "mergedAt": None,
+                "closedAt": None,
+                "headRefName": "koan/open-one",
+                "state": "OPEN",
+            },
+            {
+                "number": 2,
+                "title": "feat: merged PR",
+                "createdAt": now.isoformat(),
+                "mergedAt": now.isoformat(),
+                "closedAt": now.isoformat(),
+                "headRefName": "koan/merged-one",
+                "state": "MERGED",
+            },
+        ]
+        # Single call returns both open and merged — only merged should survive
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout=json.dumps(prs), stderr=""
+        )
+        result = fetch_pr_reviews("/fake/path")
+        assert len(result) == 1
+        assert result[0]["number"] == 2
+
+    @patch("subprocess.run")
+    def test_single_api_call(self, mock_run):
+        """Regression: should make ONE gh pr list call, not two (merged+closed)."""
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout="[]", stderr=""
+        )
+        fetch_pr_reviews("/fake/path")
+        # Only one subprocess.run call for gh pr list
+        pr_list_calls = [
+            c for c in mock_run.call_args_list
+            if "pr" in str(c) and "list" in str(c)
+        ]
+        assert len(pr_list_calls) == 1
+
     def test_import_error_returns_empty(self):
         with patch.dict("sys.modules", {"app.github": None}):
             result = fetch_pr_reviews("/fake/path")

@@ -58,34 +58,31 @@ def fetch_pr_reviews(
         print(f"[pr_review_learning] branch prefix lookup failed: {e}", file=sys.stderr)
         prefix = "koan/"
 
-    # Fetch merged + closed PRs (both contain review signals)
-    prs = []
-    for state in ("merged", "closed"):
-        try:
-            raw = run_gh(
-                "pr", "list",
-                "--state", state,
-                "--limit", str(limit),
-                "--json", "number,title,createdAt,mergedAt,closedAt,headRefName,state",
-                cwd=project_path,
-                timeout=15,
-            )
-            prs.extend(json.loads(raw))
-        except Exception as e:
-            print(f"[pr_review_learning] Failed to fetch {state} PRs: {e}",
-                  file=sys.stderr)
+    # Fetch all non-open PRs in a single call to avoid double-fetching
+    try:
+        raw = run_gh(
+            "pr", "list",
+            "--state", "all",
+            "--limit", str(limit),
+            "--json", "number,title,createdAt,mergedAt,closedAt,headRefName,state",
+            cwd=project_path,
+            timeout=15,
+        )
+        prs = json.loads(raw)
+    except Exception as e:
+        print(f"[pr_review_learning] Failed to fetch PRs: {e}", file=sys.stderr)
+        prs = []
 
-    # Filter to koan/* branches and recent PRs
+    # Filter to koan/* branches, non-open, and recent PRs
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(days=days)
 
     filtered = []
-    seen_numbers = set()
     for pr in prs:
-        num = pr.get("number")
-        if num in seen_numbers:
+        # Skip open PRs — only merged/closed have review learnings
+        state = (pr.get("state") or "").upper()
+        if state == "OPEN":
             continue
-        seen_numbers.add(num)
 
         branch = pr.get("headRefName", "")
         if not branch.startswith(prefix):
