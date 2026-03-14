@@ -750,16 +750,38 @@ def process_single_notification(
 
     # If skill is None but we have a command_name, it's an invalid command
     if skill is None:
-        # Try NLP intent classification if natural_language is enabled
-        nlp_result = _try_nlp_classification(
-            comment, config, projects_config, registry,
-            bot_username, project_name, owner, repo,
+        nlp_enabled = get_github_natural_language(
+            config, project_name, projects_config,
         )
-        if nlp_result:
-            nlp_skill, nlp_command, nlp_context = nlp_result
-            skill = nlp_skill
-            command_name = nlp_command
-            context = nlp_context
+
+        if nlp_enabled:
+            # Route to /gh_request — let it classify and dispatch properly.
+            # This replaces direct NLP→command mapping which broke when the
+            # classified command's args didn't match (e.g. /fix without issue URL).
+            gh_request_skill = validate_command("gh_request", registry)
+            if gh_request_skill:
+                nickname = get_github_nickname(config)
+                from app.github_reply import extract_mention_text
+                full_text = extract_mention_text(comment.get("body", ""), nickname)
+                if full_text:
+                    skill = gh_request_skill
+                    command_name = "gh_request"
+                    context = full_text
+                    log.info(
+                        "GitHub NLP: routing to /gh_request for %s/%s: %s",
+                        owner, repo, full_text[:80],
+                    )
+        else:
+            # Try NLP intent classification (legacy path for non-NLP projects)
+            nlp_result = _try_nlp_classification(
+                comment, config, projects_config, registry,
+                bot_username, project_name, owner, repo,
+            )
+            if nlp_result:
+                nlp_skill, nlp_command, nlp_context = nlp_result
+                skill = nlp_skill
+                command_name = nlp_command
+                context = nlp_context
 
     # If still no skill after NLP, fall through to reply/error
     if skill is None and command_name is not None and command_name != "help":
@@ -771,18 +793,7 @@ def process_single_notification(
         ):
             return False, None  # Reply posted instead of error
         mark_notification_read(str(notification.get("id", "")))
-        # When natural_language is enabled, use a friendly clarification
-        # instead of the rigid "Unknown command `X`" error
-        nlp_enabled = get_github_natural_language(
-            config, project_name, projects_config,
-        )
-        if nlp_enabled:
-            help_msg = (
-                "I wasn't sure what you'd like me to do. "
-                + format_help_list_message(registry, bot_username)
-            )
-        else:
-            help_msg = format_help_message(command_name, registry, bot_username)
+        help_msg = format_help_message(command_name, registry, bot_username)
         return False, help_msg
 
     # Check permissions

@@ -380,6 +380,19 @@ These features turn Kōan from a task runner into a full development workflow pa
 - `/check https://github.com/org/repo/pull/42` — Let Kōan decide what a PR needs
 </details>
 
+**`/gh_request`** — Route a natural-language GitHub request to the appropriate action.
+
+- **Usage:** `/gh_request <github-url> <request text>`
+- **GitHub @mention:** Used automatically when `natural_language: true` is enabled — free-form @mentions are routed here instead of failing with URL validation errors.
+
+<details>
+<summary>Use cases</summary>
+
+- `/gh_request https://github.com/org/repo/pull/42 can you review this?` — Classifies as `/review` and queues
+- `/gh_request https://github.com/org/repo/issues/10 please fix this` — Classifies as `/fix` and queues
+- `@koan-bot can you rebase this PR?` — Automatically routed to `/gh_request` when `natural_language` is on
+</details>
+
 ### Project Maintenance
 
 **`/claudemd`** — Refresh or create a project's `CLAUDE.md` based on recent architectural changes.
@@ -1033,6 +1046,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/recreate <PR>` | `/rc` | I | Re-implement a PR from scratch |
 | `/pr <PR>` | — | I | Review and update a GitHub PR |
 | `/check <url>` | `/inspect` | I | Run project health checks on a PR/issue |
+| `/gh_request <url> <text>` | — | I | Route natural-language GitHub request to the right skill |
 | `/claudemd [project]` | `/claude`, `/claude.md`, `/claude_md` | I | Refresh a project's CLAUDE.md |
 | `/gha_audit [project]` | `/gha` | I | Audit GitHub Actions for security issues |
 | `/changelog [project]` | `/changes` | I | Generate changelog from commits/journal |
@@ -1066,7 +1080,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/incident <error>` | — | P | Triage a production error |
 | `/scaffold_skill <scope> <name> <desc>` | `/scaffold`, `/new_skill` | P | Generate SKILL.md + handler.py for a new custom skill |
 
-Skills marked with GitHub @mention support: `/brainstorm`, `/plan`, `/implement`, `/fix`, `/review`, `/rebase`, `/recreate`, `/refactor`, `/profile`. See [GitHub Commands](github-commands.md) for details.
+Skills marked with GitHub @mention support: `/brainstorm`, `/plan`, `/implement`, `/fix`, `/review`, `/rebase`, `/recreate`, `/refactor`, `/profile`, `/gh_request`. See [GitHub Commands](github-commands.md) for details.
 
 ---
 
