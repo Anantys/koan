@@ -111,6 +111,29 @@ def get_github_max_check_interval(config: dict) -> int:
         return 180
 
 
+def get_github_subscribe_enabled(config: dict) -> bool:
+    """Check if thread subscription monitoring is enabled.
+
+    When enabled, Kōan monitors GitHub threads for new comments and
+    queues /reply missions for actionable ones.
+    """
+    github = config.get("github") or {}
+    return bool(github.get("subscribe_enabled", False))
+
+
+def get_github_subscribe_max_per_cycle(config: dict) -> int:
+    """Max subscription notifications to process per polling cycle.
+
+    Prevents excessive API usage when many threads are active.
+    Default: 5.
+    """
+    github = config.get("github") or {}
+    try:
+        return max(1, int(github.get("subscribe_max_per_cycle", 5)))
+    except (ValueError, TypeError):
+        return 5
+
+
 def validate_github_config(config: dict) -> Optional[str]:
     """Validate GitHub configuration at startup.
 
