@@ -211,3 +211,33 @@ class TestHandleRouting:
         result = handle(ctx)
 
         mock_batch.assert_called_once()
+
+    @patch(f"{_HANDLER}._handle_batch")
+    def test_hyphenated_repo_with_issues_path_routes_to_batch(self, mock_batch):
+        """Regression: hyphenated repo names with /issues path must batch correctly."""
+        mock_batch.return_value = "Queued 2 /fix missions"
+        ctx = self._make_ctx("https://github.com/cpan-authors/YAML-Syck/issues")
+        result = handle(ctx)
+
+        mock_batch.assert_called_once()
+        # Verify the parsed repo_match tuple has the full hyphenated name
+        call_args = mock_batch.call_args
+        repo_match = call_args[0][2]  # third positional arg
+        assert repo_match == ("https://github.com/cpan-authors/YAML-Syck", "cpan-authors", "YAML-Syck")
+
+    @patch(f"{_HANDLER}.queue_github_mission")
+    @patch(f"{_HANDLER}._list_open_issues")
+    @patch(f"{_HANDLER}.resolve_project_for_repo", return_value=("/path/to/YAML-Syck", "YAML-Syck"))
+    def test_batch_end_to_end_hyphenated_repo(self, mock_resolve, mock_list, mock_queue):
+        """End-to-end: /fix <hyphenated-repo>/issues queues missions for each issue."""
+        mock_list.return_value = [
+            {"number": 1, "title": "Bug one", "url": "https://github.com/cpan-authors/YAML-Syck/issues/1"},
+            {"number": 2, "title": "Bug two", "url": "https://github.com/cpan-authors/YAML-Syck/issues/2"},
+        ]
+        ctx = self._make_ctx("https://github.com/cpan-authors/YAML-Syck/issues")
+        result = handle(ctx)
+
+        mock_resolve.assert_called_once_with("YAML-Syck", owner="cpan-authors")
+        assert "2" in result
+        assert "cpan-authors/YAML-Syck" in result
+        assert mock_queue.call_count == 2
