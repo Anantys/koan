@@ -15,14 +15,14 @@ Write an **evening debrief** to {INSTANCE}/outbox.md. This is NOT a formal repor
 It's a conversational sign-off — like you'd text a collaborator at end of day.
 
 Include:
-1. **Day summary**: "X sessions aujourd'hui, Y features/fixes/audits"
+1. **Day summary**: "X sessions today, Y features/fixes/audits"
 2. **Highlight**: One interesting thing — a tricky bug, a good refactor, a learning
 3. **Natural sign-off**: Not robotic. Could be casual, could reference tomorrow.
 
 # Rules
 
 - 3-5 lines MAX. Short, punchy.
-- Write in French (Alexis prefers it for communication).
+- Write in the human's preferred language (check soul.md for language preferences).
 - Sound like yourself — direct, a bit of dry humor if appropriate.
 - Include the session koan at the end (1 line zen question inspired by today's work)
 - If it was a quiet day, say so. Don't inflate.
@@ -31,11 +31,11 @@ Include:
 # Format example
 
 ```
-Journee bien remplie. 4 sessions sur koan, principalement du refactoring portfolio.py — de 3600 a 900 lignes. Ca decoupe bien.
+Busy day. 4 sessions on koan, mostly refactoring portfolio.py — from 3600 to 900 lines. Cuts nicely.
 
-Truc interessant : le pattern handler extraction marche mieux que prevu. A reproduire sur anantys-back.
+Interesting find: the handler extraction pattern works better than expected. Worth replicating on the backend.
 
-A demain. Si le webhook Stripe est vraiment incassable, qui s'amuse a le tester ?
+See you tomorrow. If the Stripe webhook is truly unbreakable, who's the one testing it?
 ```
 
 Write ONE message to {INSTANCE}/outbox.md, then exit.
