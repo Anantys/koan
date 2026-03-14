@@ -29,9 +29,14 @@ SKILL.md format:
 import importlib.util
 import logging
 import re
+from collections import namedtuple
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+
+# Returned by _execute_handler() on unhandled exceptions so callers can
+# distinguish handler crashes from intentional error responses.
+SkillError = namedtuple("SkillError", ["skill_name", "exception", "message"])
 
 _log = logging.getLogger(__name__)
 
@@ -416,14 +421,14 @@ class SkillContext:
     handle_chat: Optional[Callable[[str], Any]] = None
 
 
-def execute_skill(skill: Skill, ctx: SkillContext) -> Optional[str]:
+def execute_skill(skill: Skill, ctx: SkillContext) -> Optional[Union[str, SkillError]]:
     """Execute a skill and return the response text.
 
     Handler-based skills: imports handler.py and calls handle(ctx).
     Prompt-based skills: returns the prompt body (caller sends to Claude).
 
     Returns:
-        Response text, or None if execution failed.
+        Response text, SkillError on handler crash, or None if no handler.
     """
     if skill.has_handler():
         return _execute_handler(skill, ctx)
@@ -432,7 +437,7 @@ def execute_skill(skill: Skill, ctx: SkillContext) -> Optional[str]:
     return None
 
 
-def _execute_handler(skill: Skill, ctx: SkillContext) -> Optional[str]:
+def _execute_handler(skill: Skill, ctx: SkillContext) -> Optional[Union[str, SkillError]]:
     """Load and execute a Python handler."""
     handler_path = skill.handler_path
     if handler_path is None:
@@ -455,7 +460,11 @@ def _execute_handler(skill: Skill, ctx: SkillContext) -> Optional[str]:
         return handle_fn(ctx)
     except Exception as e:
         _log.error("Skill handler %s failed: %s", skill.qualified_name, e, exc_info=True)
-        return f"Skill error ({skill.qualified_name}): {e}"
+        return SkillError(
+            skill_name=skill.qualified_name,
+            exception=e,
+            message=f"Skill error ({skill.qualified_name}): {e}",
+        )
 
 
 def _execute_prompt(skill: Skill, ctx: SkillContext) -> Optional[str]:
