@@ -1,0 +1,338 @@
+{% extends "base.html" %}
+{% block title %}Koan — Plans{% endblock %}
+{% block content %}
+<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.5rem;">
+    <h1 style="margin-bottom:0;">Plans</h1>
+    <div style="display:flex;align-items:center;gap:0.75rem;">
+        <select id="project-select" style="padding:0.35rem 0.5rem;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:0.8rem;cursor:pointer;">
+            <option value="">All projects</option>
+        </select>
+        <button id="refresh-btn" class="btn-secondary" style="font-size:0.8rem;padding:0.3rem 0.75rem;">
+            Refresh
+        </button>
+    </div>
+</div>
+
+<div id="plans-error" class="card" style="display:none;border-color:var(--red);color:var(--red);"></div>
+
+<div id="plans-loading" style="text-align:center;padding:3rem;color:var(--text-muted);">
+    <span class="spinner"></span> Loading plans...
+</div>
+
+<div id="plans-empty" style="display:none;text-align:center;padding:3rem;color:var(--text-muted);">
+    No open plan issues found. Plans are GitHub issues labeled <code style="font-family:var(--mono);background:var(--surface);padding:0.1rem 0.3rem;border-radius:3px;">plan</code>.
+</div>
+
+<div id="plans-list"></div>
+
+<!-- Plan detail panel (shown inline below the selected plan card) -->
+<div id="plan-detail" class="card" style="display:none;margin-top:0.5rem;">
+    <div id="detail-loading" style="color:var(--text-muted);text-align:center;padding:1rem;">
+        <span class="spinner"></span> Loading plan detail...
+    </div>
+    <div id="detail-content"></div>
+</div>
+
+<style>
+.plan-card {
+    cursor: pointer;
+    transition: border-color 0.15s;
+}
+.plan-card:hover {
+    border-color: var(--accent);
+}
+.plan-card.expanded {
+    border-color: var(--accent);
+}
+.progress-bar-wrap {
+    background: var(--bg);
+    border-radius: 4px;
+    height: 6px;
+    overflow: hidden;
+    margin-top: 0.4rem;
+}
+.progress-bar-fill {
+    height: 100%;
+    border-radius: 4px;
+    background: var(--green);
+    transition: width 0.3s;
+}
+.phase-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    padding: 0.35rem 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.85rem;
+}
+.phase-item:last-child { border-bottom: none; }
+.phase-check {
+    font-size: 1rem;
+    flex-shrink: 0;
+    line-height: 1.4;
+}
+.phase-title {
+    flex: 1;
+    font-family: var(--mono);
+    font-size: 0.82rem;
+    color: var(--text);
+}
+.plan-body-section {
+    margin-top: 0.75rem;
+}
+.plan-body-section summary {
+    cursor: pointer;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    padding: 0.25rem 0;
+    user-select: none;
+}
+.plan-body-section summary:hover { color: var(--text); }
+.plan-body-pre {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    white-space: pre-wrap;
+    word-break: break-word;
+    padding: 0.75rem;
+    background: var(--bg);
+    border-radius: 4px;
+    margin-top: 0.5rem;
+    line-height: 1.6;
+    max-height: 400px;
+    overflow-y: auto;
+}
+.linked-missions-section {
+    margin-top: 1rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid var(--border);
+}
+</style>
+
+<script>
+var expandedPlan = null;
+
+function escapeHtml(str) {
+    var d = document.createElement('div');
+    d.textContent = str || '';
+    return d.innerHTML;
+}
+
+function timeAgo(dateStr) {
+    if (!dateStr) return '';
+    var d = new Date(dateStr);
+    var now = new Date();
+    var diff = Math.floor((now - d) / 1000);
+    if (diff < 60) return diff + 's ago';
+    if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+    if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+    return Math.floor(diff / 86400) + 'd ago';
+}
+
+function renderProgressBar(progress) {
+    var pct = progress.percent || 0;
+    var color = pct === 100 ? 'var(--green)' : pct > 0 ? 'var(--accent)' : 'var(--border)';
+    var label = progress.total > 0
+        ? (progress.completed + '/' + progress.total + ' phases')
+        : 'No phases detected';
+    return '<div class="progress-bar-wrap"><div class="progress-bar-fill" style="width:' + pct + '%;background:' + color + ';"></div></div>' +
+        '<div style="font-size:0.7rem;color:var(--text-muted);margin-top:0.2rem;">' + label + '</div>';
+}
+
+function renderPhases(phases) {
+    if (!phases || phases.length === 0) {
+        return '<div style="color:var(--text-muted);font-size:0.85rem;">No phases detected in plan.</div>';
+    }
+    var html = '';
+    for (var i = 0; i < phases.length; i++) {
+        var p = phases[i];
+        html += '<div class="phase-item">' +
+            '<span class="phase-check">' + (p.completed ? '✅' : '⬜') + '</span>' +
+            '<span class="phase-title">' + escapeHtml(p.title) + '</span>' +
+            '</div>';
+    }
+    return html;
+}
+
+function loadPlans() {
+    var project = document.getElementById('project-select').value || '';
+    var url = '/api/plans';
+    if (project) url += '?project=' + encodeURIComponent(project);
+
+    document.getElementById('plans-loading').style.display = '';
+    document.getElementById('plans-empty').style.display = 'none';
+    document.getElementById('plans-error').style.display = 'none';
+    document.getElementById('plans-list').innerHTML = '';
+    document.getElementById('plan-detail').style.display = 'none';
+    expandedPlan = null;
+
+    fetch(url)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            document.getElementById('plans-loading').style.display = 'none';
+
+            var plans = data.plans || [];
+            if (plans.length === 0) {
+                document.getElementById('plans-empty').style.display = '';
+                return;
+            }
+
+            var html = '';
+            for (var i = 0; i < plans.length; i++) {
+                var plan = plans[i];
+                var p = plan.progress || {};
+                html += '<div class="card plan-card" id="plan-card-' + plan.project + '-' + plan.number + '" ' +
+                    'data-project="' + escapeHtml(plan.project) + '" data-number="' + plan.number + '" ' +
+                    'onclick="togglePlanDetail(\'' + escapeHtml(plan.project) + '\',' + plan.number + ',this)">' +
+                    '<div style="display:flex;align-items:flex-start;gap:0.75rem;">' +
+                    '<div style="flex:1;">' +
+                    '<div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.35rem;">' +
+                    '<span class="badge badge-blue">' + escapeHtml(plan.project) + '</span>' +
+                    '<span style="font-size:0.75rem;color:var(--text-muted);">#' + plan.number + '</span>' +
+                    '<span style="font-size:0.75rem;color:var(--text-muted);">' + timeAgo(plan.updatedAt) + '</span>' +
+                    '</div>' +
+                    '<div style="font-weight:500;margin-bottom:0.4rem;">' + escapeHtml(plan.title) + '</div>' +
+                    renderProgressBar(p) +
+                    '</div>' +
+                    '<a href="' + escapeHtml(plan.url) + '" target="_blank" ' +
+                    'style="font-size:0.75rem;color:var(--accent);text-decoration:none;white-space:nowrap;flex-shrink:0;" ' +
+                    'onclick="event.stopPropagation();">GitHub ↗</a>' +
+                    '</div>' +
+                    '</div>';
+            }
+            document.getElementById('plans-list').innerHTML = html;
+        })
+        .catch(function() {
+            document.getElementById('plans-loading').style.display = 'none';
+            document.getElementById('plans-error').textContent = 'Failed to fetch plan data.';
+            document.getElementById('plans-error').style.display = '';
+        });
+}
+
+function togglePlanDetail(project, number, cardEl) {
+    var key = project + '/' + number;
+    var detail = document.getElementById('plan-detail');
+
+    // Collapse if already expanded
+    if (expandedPlan === key) {
+        detail.style.display = 'none';
+        cardEl.classList.remove('expanded');
+        expandedPlan = null;
+        return;
+    }
+
+    // Collapse previously expanded
+    document.querySelectorAll('.plan-card.expanded').forEach(function(c) {
+        c.classList.remove('expanded');
+    });
+
+    expandedPlan = key;
+    cardEl.classList.add('expanded');
+
+    // Move detail panel after the clicked card
+    cardEl.parentNode.insertBefore(detail, cardEl.nextSibling);
+    detail.style.display = '';
+    document.getElementById('detail-loading').style.display = '';
+    document.getElementById('detail-content').innerHTML = '';
+
+    fetch('/api/plans/' + encodeURIComponent(project) + '/' + number)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            document.getElementById('detail-loading').style.display = 'none';
+
+            if (data.error) {
+                document.getElementById('detail-content').innerHTML =
+                    '<div style="color:var(--red);">' + escapeHtml(data.error) + '</div>';
+                return;
+            }
+
+            var progress = data.progress || {};
+            var phases = progress.phases || [];
+            var hasIterations = data.comments && data.comments.length > 0;
+            var iterLabel = hasIterations
+                ? 'Iteration ' + (data.comments.length + 1) + ' (latest comment)'
+                : 'Original plan';
+
+            var linkedHtml = '';
+            if (data.linked_missions && data.linked_missions.length > 0) {
+                linkedHtml = '<div class="linked-missions-section">' +
+                    '<div style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.5rem;">Linked Missions</div>';
+                for (var i = 0; i < data.linked_missions.length; i++) {
+                    linkedHtml += '<div style="font-family:var(--mono);font-size:0.8rem;padding:0.2rem 0;color:var(--text-muted);">' +
+                        escapeHtml(data.linked_missions[i]) + '</div>';
+                }
+                linkedHtml += '</div>';
+            }
+
+            var html = '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;">' +
+                '<div>' +
+                '<span class="badge badge-blue">' + escapeHtml(data.project) + '</span> ' +
+                '<strong>#' + data.number + '</strong> ' +
+                escapeHtml(data.title) +
+                '</div>' +
+                '<a href="' + escapeHtml(data.url) + '" target="_blank" ' +
+                'style="font-size:0.8rem;color:var(--accent);text-decoration:none;">View on GitHub ↗</a>' +
+                '</div>';
+
+            // Progress summary
+            if (progress.total > 0) {
+                html += '<div style="margin-bottom:1rem;">' +
+                    '<div style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.4rem;">' +
+                    'Progress — ' + iterLabel + '</div>' +
+                    renderProgressBar(progress) +
+                    '</div>';
+            }
+
+            // Phases tree
+            html += '<div style="margin-bottom:1rem;">' +
+                '<div style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.5rem;">Phases</div>' +
+                renderPhases(phases) +
+                '</div>';
+
+            // Full plan body (collapsible)
+            html += '<details class="plan-body-section">' +
+                '<summary>Full plan text (' + (hasIterations ? 'latest iteration' : 'original') + ')</summary>' +
+                '<pre class="plan-body-pre">' + escapeHtml(data.latest_body) + '</pre>' +
+                '</details>';
+
+            // Linked missions
+            html += linkedHtml;
+
+            document.getElementById('detail-content').innerHTML = html;
+        })
+        .catch(function() {
+            document.getElementById('detail-loading').style.display = 'none';
+            document.getElementById('detail-content').innerHTML =
+                '<div style="color:var(--red);">Failed to load plan detail.</div>';
+        });
+}
+
+// Populate project filter from projects API
+fetch('/api/projects')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        var sel = document.getElementById('project-select');
+        var projects = data.projects || [];
+        projects.forEach(function(p) {
+            var opt = document.createElement('option');
+            opt.value = p;
+            opt.textContent = p;
+            sel.appendChild(opt);
+        });
+        // Restore from URL params
+        var params = new URLSearchParams(window.location.search);
+        var current = params.get('project') || '';
+        if (current) sel.value = current;
+    })
+    .catch(function() {});
+
+document.getElementById('project-select').addEventListener('change', loadPlans);
+document.getElementById('refresh-btn').addEventListener('click', function() {
+    // Bust cache by reloading; server cache expires naturally
+    loadPlans();
+});
+
+// Initial load
+loadPlans();
+</script>
+{% endblock %}

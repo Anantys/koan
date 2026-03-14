@@ -1,5 +1,6 @@
 """Tests for koan/dashboard.py"""
 
+import json
 import shutil
 import subprocess
 
@@ -953,3 +954,200 @@ class TestApiMissionsEdit:
         resp = app_client.post("/api/missions/edit",
             json={"text": "Some text"})
         assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Plans — _parse_plan_progress unit tests
+# ---------------------------------------------------------------------------
+
+class TestParsePlanProgress:
+    """Unit tests for _parse_plan_progress()."""
+
+    _STANDARD_PLAN = """
+#### Phase 1: Backend endpoints
+
+- What: add routes
+- Done when: routes return JSON
+
+#### Phase 2: Frontend
+
+- What: build HTML page
+- Done when: page renders
+
+#### Phase 3: Tests
+
+✅ Written and passing
+"""
+
+    _COMPLETED_PHASE = """
+#### Phase 1: Setup
+
+✅ Environment configured
+"""
+
+    _CHECKBOX_PHASE = """
+#### Phase 1: Analysis
+
+- [x] Read codebase
+- [x] Understand structure
+"""
+
+    _DONE_TEXT_PHASE = """
+#### Phase 1: Research
+
+Done — findings documented
+"""
+
+    def test_extracts_phases(self):
+        result = dashboard._parse_plan_progress(self._STANDARD_PLAN)
+        assert result["total"] == 3
+        assert result["phases"][0]["title"] == "Backend endpoints"
+        assert result["phases"][1]["title"] == "Frontend"
+        assert result["phases"][2]["title"] == "Tests"
+
+    def test_detects_checkmark_completion(self):
+        result = dashboard._parse_plan_progress(self._COMPLETED_PHASE)
+        assert result["total"] == 1
+        assert result["completed"] == 1
+        assert result["phases"][0]["completed"] is True
+        assert result["percent"] == 100
+
+    def test_detects_checkbox_completion(self):
+        result = dashboard._parse_plan_progress(self._CHECKBOX_PHASE)
+        assert result["phases"][0]["completed"] is True
+
+    def test_detects_done_text_completion(self):
+        result = dashboard._parse_plan_progress(self._DONE_TEXT_PHASE)
+        assert result["phases"][0]["completed"] is True
+
+    def test_incomplete_phases(self):
+        result = dashboard._parse_plan_progress(self._STANDARD_PLAN)
+        # Phase 1 and 2 have no completion markers; Phase 3 has ✅
+        assert result["phases"][0]["completed"] is False
+        assert result["phases"][1]["completed"] is False
+        assert result["phases"][2]["completed"] is True
+        assert result["completed"] == 1
+        assert result["percent"] == 33
+
+    def test_empty_markdown(self):
+        result = dashboard._parse_plan_progress("")
+        assert result == {"phases": [], "completed": 0, "total": 0, "percent": 0}
+
+    def test_no_phases(self):
+        result = dashboard._parse_plan_progress("# Some title\n\nNo phases here.")
+        assert result["total"] == 0
+        assert result["percent"] == 0
+
+    def test_malformed_plan_best_effort(self):
+        """Plans that don't follow the strict format return gracefully."""
+        result = dashboard._parse_plan_progress("Random content\nwithout phases")
+        assert result["total"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Plans — API endpoint tests
+# ---------------------------------------------------------------------------
+
+class TestPlansPage:
+    """Tests for /plans page and /api/plans* endpoints."""
+
+    def test_plans_page_renders(self, app_client):
+        resp = app_client.get("/plans")
+        assert resp.status_code == 200
+        assert b"Plans" in resp.data
+
+    def test_api_plans_no_projects(self, app_client):
+        """When no projects are configured, returns empty plans list."""
+        with patch("app.utils.get_known_projects", return_value=[]):
+            resp = app_client.get("/api/plans")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["plans"] == []
+
+    def test_api_plans_skips_projects_without_github_url(self, app_client):
+        with patch("app.utils.get_known_projects", return_value=[("myproject", "/some/path")]), \
+             patch("app.dashboard._get_project_repo", return_value=None):
+            resp = app_client.get("/api/plans")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["plans"] == []
+
+    def test_api_plans_returns_plan_issues(self, app_client):
+        gh_response = json.dumps([{
+            "number": 42,
+            "title": "Feature X plan",
+            "state": "open",
+            "body": "#### Phase 1: Setup\n\nDo setup.\n\n#### Phase 2: Implement\n\n✅ Done",
+            "updatedAt": "2026-03-14T10:00:00Z",
+            "url": "https://github.com/owner/repo/issues/42",
+        }])
+        with patch("app.utils.get_known_projects", return_value=[("myproject", "/path")]), \
+             patch("app.dashboard._get_project_repo", return_value="owner/repo"), \
+             patch.dict("app.dashboard._plans_cache", {}, clear=True), \
+             patch("app.github.run_gh", return_value=gh_response):
+            resp = app_client.get("/api/plans")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert len(data["plans"]) == 1
+        plan = data["plans"][0]
+        assert plan["number"] == 42
+        assert plan["title"] == "Feature X plan"
+        assert plan["project"] == "myproject"
+        assert plan["progress"]["total"] == 2
+        assert plan["progress"]["completed"] == 1
+
+    def test_api_plans_project_filter(self, app_client):
+        """Project filter limits results to matching project."""
+        with patch("app.utils.get_known_projects",
+                   return_value=[("proj_a", "/a"), ("proj_b", "/b")]), \
+             patch("app.dashboard._get_project_repo", return_value="owner/repo"), \
+             patch.dict("app.dashboard._plans_cache", {}, clear=True), \
+             patch("app.github.run_gh", return_value="[]"):
+            resp = app_client.get("/api/plans?project=proj_a")
+        assert resp.status_code == 200
+        # Only proj_a was queried (proj_b skipped by filter)
+
+    def test_api_plan_detail_no_github_url(self, app_client):
+        with patch("app.dashboard._get_project_repo", return_value=None):
+            resp = app_client.get("/api/plans/myproject/42")
+        assert resp.status_code == 404
+
+    def test_api_plan_detail_returns_structure(self, app_client):
+        gh_response = json.dumps({
+            "number": 42,
+            "title": "Feature X plan",
+            "state": "open",
+            "body": "#### Phase 1: Setup\n\nDo setup.",
+            "url": "https://github.com/owner/repo/issues/42",
+            "updatedAt": "2026-03-14T10:00:00Z",
+            "comments": [
+                {"body": "#### Phase 1: Setup\n\n✅ Done.", "createdAt": "2026-03-14T11:00:00Z"}
+            ],
+        })
+        with patch("app.dashboard._get_project_repo", return_value="owner/repo"), \
+             patch("app.github.run_gh", return_value=gh_response), \
+             patch.object(dashboard, "MISSIONS_FILE", Path("/nonexistent/missions.md")):
+            resp = app_client.get("/api/plans/myproject/42")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["number"] == 42
+        assert data["title"] == "Feature X plan"
+        assert len(data["comments"]) == 1
+        # latest_body should be the last comment
+        assert "✅ Done" in data["latest_body"]
+        assert data["progress"]["completed"] == 1
+
+    def test_find_linked_missions(self, instance_dir):
+        """_find_linked_missions finds missions that reference an issue URL."""
+        missions_file = instance_dir / "missions.md"
+        missions_file.write_text(
+            "## Pending\n\n"
+            "- /plan https://github.com/owner/repo/issues/42\n"
+            "- Some unrelated mission\n"
+        )
+        with patch.object(dashboard, "MISSIONS_FILE", missions_file):
+            linked = dashboard._find_linked_missions(
+                "https://github.com/owner/repo/issues/42", 42
+            )
+        assert len(linked) == 1
+        assert "/plan" in linked[0]
