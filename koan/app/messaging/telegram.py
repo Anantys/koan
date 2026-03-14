@@ -4,8 +4,10 @@ Encapsulates all Telegram-specific logic: sending messages,
 polling updates, chunking, flood protection, and credential validation.
 """
 
+import html as html_mod
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -19,6 +21,45 @@ from app.messaging import register_provider
 
 FLOOD_WINDOW_SECONDS = 300  # 5 minutes
 MAX_MESSAGE_SIZE = DEFAULT_MAX_MESSAGE_SIZE
+
+# Pattern for markdown code blocks: ```optional_lang\ncode\n```
+_CODE_BLOCK_RE = re.compile(r'```(?:[a-zA-Z]*\n)?(.*?)```', re.DOTALL)
+
+
+def _markdown_to_html(text: str) -> str:
+    """Convert markdown code blocks to HTML for Telegram's parse_mode=HTML.
+
+    Replaces ``` blocks with <pre> tags and escapes HTML entities everywhere.
+    Non-code text is escaped so that <, >, & don't break Telegram's HTML parser.
+    """
+    parts = text.split("```")
+    if len(parts) < 3:
+        # No complete code block pair — return escaped plain text
+        return html_mod.escape(text)
+
+    result = []
+    for i, part in enumerate(parts):
+        if i % 2 == 0:
+            # Outside code block — escape HTML entities
+            result.append(html_mod.escape(part))
+        else:
+            # Inside code block — strip optional language identifier
+            content = part
+            if content and not content.startswith("\n"):
+                # First line might be a language tag (e.g., "python\ncode...")
+                first_newline = content.find("\n")
+                if first_newline >= 0:
+                    first_line = content[:first_newline].strip()
+                    if first_line.isalpha():
+                        content = content[first_newline + 1:]
+                    # else: no language tag, keep full content
+                else:
+                    # Single-line code block, no language tag
+                    pass
+
+            content = content.strip("\n")
+            result.append(f"<pre>{html_mod.escape(content)}</pre>")
+    return "".join(result)
 
 
 @register_provider("telegram")
@@ -206,6 +247,10 @@ class TelegramProvider(MessagingProvider):
         Retries each chunk up to 3 times with exponential backoff (1s/2s/4s)
         on transient network failures (connection errors, timeouts).
 
+        If the text contains markdown code blocks (```), they are converted to
+        HTML <pre> tags and sent with parse_mode=HTML so Telegram renders them
+        as monospace blocks.
+
         Internal method exposed for notify.py's test-only _send_raw_bypass_flood().
         Normal callers should use send_message() which includes flood protection.
         """
@@ -215,12 +260,18 @@ class TelegramProvider(MessagingProvider):
             print("[telegram] Not configured — cannot send.", file=sys.stderr)
             return False
 
+        # Auto-detect markdown code blocks and convert to HTML for rendering
+        parse_mode = None
+        if "```" in text:
+            text = _markdown_to_html(text)
+            parse_mode = "HTML"
+
         self._last_message_ids = []
         ok = True
         for chunk in self.chunk_message(text, max_size=MAX_MESSAGE_SIZE):
             try:
                 ok = ok and retry_with_backoff(
-                    lambda c=chunk: self._send_chunk(c),
+                    lambda c=chunk, pm=parse_mode: self._send_chunk(c, pm),
                     retryable=(requests.RequestException, ValueError),
                     label="telegram send",
                 )
@@ -230,11 +281,14 @@ class TelegramProvider(MessagingProvider):
                 ok = False
         return ok
 
-    def _send_chunk(self, chunk: str) -> bool:
+    def _send_chunk(self, chunk: str, parse_mode: str = None) -> bool:
         """Send a single chunk via Telegram API. Raises on network error."""
+        payload = {"chat_id": self._chat_id, "text": chunk}
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
         resp = requests.post(
             f"{self._api_base}/sendMessage",
-            json={"chat_id": self._chat_id, "text": chunk},
+            json=payload,
             timeout=10,
         )
         data = resp.json()

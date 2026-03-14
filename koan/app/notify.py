@@ -127,6 +127,13 @@ def _direct_send(text: str) -> bool:
 
     api_base = f"https://api.telegram.org/bot{bot_token}"
 
+    # Auto-detect markdown code blocks and convert to HTML for rendering
+    parse_mode = None
+    if "```" in text:
+        from app.messaging.telegram import _markdown_to_html
+        text = _markdown_to_html(text)
+        parse_mode = "HTML"
+
     # Use same chunking algorithm as MessagingProvider.chunk_message()
     # to ensure consistent behavior between provider and fallback path
     from app.messaging.base import DEFAULT_MAX_MESSAGE_SIZE
@@ -136,7 +143,7 @@ def _direct_send(text: str) -> bool:
     for chunk in chunks:
         try:
             ok = ok and retry_with_backoff(
-                lambda c=chunk: _direct_send_chunk(api_base, chat_id, c),
+                lambda c=chunk, pm=parse_mode: _direct_send_chunk(api_base, chat_id, c, pm),
                 retryable=(requests.RequestException, ValueError),
                 label="telegram direct send",
             )
@@ -146,13 +153,17 @@ def _direct_send(text: str) -> bool:
     return ok
 
 
-def _direct_send_chunk(api_base: str, chat_id: str, chunk: str) -> bool:
+def _direct_send_chunk(api_base: str, chat_id: str, chunk: str,
+                       parse_mode: str = None) -> bool:
     """Send a single message chunk via Telegram API. Raises on network error."""
     import requests
 
+    payload = {"chat_id": chat_id, "text": chunk}
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
     resp = requests.post(
         f"{api_base}/sendMessage",
-        json={"chat_id": chat_id, "text": chunk},
+        json=payload,
         timeout=10,
     )
     data = resp.json()
