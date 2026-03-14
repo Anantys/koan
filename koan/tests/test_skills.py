@@ -11,6 +11,7 @@ from app.skills import (
     Skill,
     SkillCommand,
     SkillContext,
+    SkillError,
     SkillRegistry,
     VALID_AUDIENCES,
     _parse_bool_flag,
@@ -641,7 +642,10 @@ class TestExecuteSkill:
 
         ctx = SkillContext(koan_root=tmp_path, instance_dir=tmp_path)
         result = execute_skill(skill, ctx)
-        assert "boom" in result
+        assert isinstance(result, SkillError)
+        assert result.skill_name == "koan.broken"
+        assert isinstance(result.exception, ValueError)
+        assert "boom" in result.message
 
     def test_no_handler_no_prompt(self, tmp_path):
         skill = Skill(name="empty", scope="koan")

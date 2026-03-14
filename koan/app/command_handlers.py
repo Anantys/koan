@@ -20,7 +20,7 @@ from app.bridge_state import (
 )
 from app.notify import TypingIndicator, send_telegram
 from app.signals import PAUSE_FILE, QUOTA_RESET_FILE, STOP_FILE
-from app.skills import Skill, SkillContext, execute_skill
+from app.skills import Skill, SkillContext, SkillError, execute_skill
 from app.utils import (
     parse_project as _parse_project,
     detect_project_from_text,
@@ -165,9 +165,7 @@ def _dispatch_skill(skill: Skill, command_name: str, command_args: str):
             try:
                 with TypingIndicator():
                     result = execute_skill(skill, ctx)
-                if result is not None:
-                    from app.text_utils import expand_github_refs_auto
-                    send_telegram(expand_github_refs_auto(result, command_args))
+                _handle_skill_result(result, command_name, command_args)
             except Exception as e:
                 log("error", f"Worker skill '{command_name}' failed: {e}")
                 try:
@@ -179,7 +177,15 @@ def _dispatch_skill(skill: Skill, command_name: str, command_args: str):
 
     # Standard skill execution
     result = execute_skill(skill, ctx)
-    if result is not None:
+    _handle_skill_result(result, command_name, command_args)
+
+
+def _handle_skill_result(result, command_name: str, command_args: str):
+    """Handle the result of a skill execution, logging errors and sending responses."""
+    if isinstance(result, SkillError):
+        log("error", f"Skill handler '{command_name}' crashed: {result.exception}")
+        send_telegram(result.message)
+    elif result is not None:
         from app.text_utils import expand_github_refs_auto
         send_telegram(expand_github_refs_auto(result, command_args))
 
