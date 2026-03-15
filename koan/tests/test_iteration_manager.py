@@ -270,6 +270,7 @@ class TestGetUsageDecision:
         assert len(result["display_lines"]) == 2
         assert "Session" in result["display_lines"][0]
         assert "Weekly" in result["display_lines"][1]
+        assert result.get("tracker_error") is None
 
     def test_high_usage_returns_wait(self, tmp_path):
         usage_md = tmp_path / "usage.md"
@@ -289,6 +290,16 @@ class TestGetUsageDecision:
         assert result["mode"] == "review"
         assert result["available_pct"] == 0
         assert "safe fallback" in result["reason"].lower() or "tracker error" in result["reason"].lower()
+        assert result["tracker_error"] == "tracker crash"
+
+    @patch("app.usage_tracker.UsageTracker", side_effect=ImportError("missing module"))
+    def test_tracker_error_surfaces_import_error(self, mock_tracker, tmp_path):
+        """ImportError in tracker also populates tracker_error for operator notification."""
+        usage_md = tmp_path / "usage.md"
+        usage_md.write_text("Session (5hr) : 50%\n")
+        result = _get_usage_decision(usage_md, 3, PROJECTS_STR)
+        assert result["mode"] == "review"
+        assert result["tracker_error"] == "missing module"
 
     def test_medium_usage_returns_implement(self, tmp_path):
         usage_md = tmp_path / "usage.md"
@@ -418,7 +429,7 @@ class TestMakeResult:
             "action", "project_name", "project_path", "mission_title",
             "autonomous_mode", "focus_area", "available_pct", "decision_reason",
             "display_lines", "recurring_injected", "focus_remaining",
-            "schedule_mode", "error",
+            "schedule_mode", "error", "tracker_error",
         }
         assert set(result.keys()) == expected_keys
 
@@ -632,6 +643,30 @@ class TestPlanIteration:
         assert result["project_path"] == "/path/to/koan"
         assert result["mission_title"] == "Fix auth bug"
         assert result["error"] is None
+        assert result["tracker_error"] is None
+
+    @patch("app.pick_mission.pick_mission", return_value="koan:Fix auth bug")
+    @patch("app.usage_estimator.cmd_refresh")
+    @patch("app.usage_tracker.UsageTracker", side_effect=ValueError("budget DB corrupted"))
+    def test_tracker_error_propagates_to_plan_result(self, mock_tracker, mock_refresh, mock_pick,
+                                                      instance_dir, koan_root, usage_state):
+        """When UsageTracker crashes, tracker_error surfaces in the plan result for notification."""
+        usage_md = instance_dir / "usage.md"
+        usage_md.write_text("Session (5hr) : 50%\n")
+
+        result = plan_iteration(
+            instance_dir=str(instance_dir),
+            koan_root=str(koan_root),
+            run_num=2,
+            count=1,
+            projects=PROJECTS_LIST,
+            last_project="koan",
+            usage_state_path=str(usage_state),
+        )
+
+        assert result["action"] == "mission"
+        assert result["autonomous_mode"] == "review"
+        assert result["tracker_error"] == "budget DB corrupted"
 
     @patch("app.pick_mission.pick_mission", return_value="")
     @patch("app.usage_estimator.cmd_refresh")

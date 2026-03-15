@@ -121,6 +121,7 @@ def _get_usage_decision(usage_md: Path, count: int, projects_str: str):
             "available_pct": 0,
             "reason": "Tracker error — safe fallback (review only)",
             "display_lines": [],
+            "tracker_error": str(e),
         }
 
 
@@ -545,7 +546,8 @@ def _make_result(*, action, project_name, project_path="",
                  mission_title="", autonomous_mode, focus_area="",
                  available_pct, decision_reason, display_lines,
                  recurring_injected, focus_remaining=None,
-                 schedule_mode="normal", error=None):
+                 schedule_mode="normal", error=None,
+                 tracker_error=None):
     """Build a standardised iteration-plan result dict."""
     return {
         "action": action,
@@ -561,6 +563,7 @@ def _make_result(*, action, project_name, project_path="",
         "focus_remaining": focus_remaining,
         "schedule_mode": schedule_mode,
         "error": error,
+        "tracker_error": tracker_error,
     }
 
 
@@ -673,6 +676,7 @@ def plan_iteration(
     available_pct = decision["available_pct"]
     decision_reason = decision["reason"]
     display_lines = decision["display_lines"]
+    tracker_error = decision.get("tracker_error")
     _log_iteration("koan", f"Usage decision: mode={autonomous_mode}, available={available_pct}%")
 
     # Step 2b: Check schedule and cap mode based on deep_hours config.
@@ -728,6 +732,7 @@ def plan_iteration(
                 recurring_injected=recurring_injected,
                 schedule_mode=schedule_state.mode if schedule_state else "normal",
                 error=f"Unknown project '{project_name}'. Known: {', '.join(known)}",
+                tracker_error=tracker_error,
             )
     else:
         # No mission — autonomous mode
@@ -748,6 +753,7 @@ def plan_iteration(
                 display_lines=display_lines,
                 recurring_injected=recurring_injected,
                 schedule_mode=schedule_state.mode if schedule_state else "normal",
+                tracker_error=tracker_error,
             )
 
         # Filter to exploration-enabled projects only
@@ -780,6 +786,7 @@ def plan_iteration(
                 display_lines=display_lines,
                 recurring_injected=recurring_injected,
                 schedule_mode=schedule_state.mode if schedule_state else "normal",
+                tracker_error=tracker_error,
             )
 
         project_name, project_path = _select_random_exploration_project(
@@ -822,6 +829,7 @@ def plan_iteration(
                 recurring_injected=recurring_injected,
                 focus_remaining=autonomous_decision.focus_remaining,
                 schedule_mode=schedule_state.mode if schedule_state else "normal",
+                tracker_error=tracker_error,
             )
 
         if action == "schedule_wait":
@@ -837,6 +845,7 @@ def plan_iteration(
                 display_lines=display_lines,
                 recurring_injected=recurring_injected,
                 schedule_mode="work",
+                tracker_error=tracker_error,
             )
 
     # Step 7: Resolve focus area
@@ -855,6 +864,7 @@ def plan_iteration(
         display_lines=display_lines,
         recurring_injected=recurring_injected,
         schedule_mode=schedule_state.mode if schedule_state else "normal",
+        tracker_error=tracker_error,
     )
 
 

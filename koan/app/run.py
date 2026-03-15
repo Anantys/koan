@@ -1223,6 +1223,9 @@ def _run_iteration(
         f"{', mission=' + plan['mission_title'][:60] if plan['mission_title'] else ''}")
     if plan.get("error"):
         log("error", f"Iteration plan error: {plan['error']}")
+    if plan.get("tracker_error"):
+        log("error", f"Usage tracker broken: {plan['tracker_error']} — hard-capped to review mode")
+        _notify(instance, f"⚠️ Budget tracker error: {plan['tracker_error']} — running in review-only mode until fixed")
 
     # Display usage
     log("quota", "Usage Status:")
