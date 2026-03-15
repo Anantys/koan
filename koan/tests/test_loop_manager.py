@@ -1926,3 +1926,103 @@ class TestBuildSkillRegistryCache:
         args = mock_build.call_args[0][0]
         assert len(args) == 1
         assert args[0] == skills_dir
+
+
+# --- Test notification processing cache ---
+
+
+class TestNotificationCache:
+    """Test the 24h notification processing cache in loop_manager."""
+
+    def setup_method(self):
+        from app.loop_manager import reset_github_backoff
+        reset_github_backoff()
+
+    def test_uncached_notification_is_not_cached(self):
+        from app.loop_manager import _is_notif_cached
+        notif = {"id": "100", "updated_at": "2026-03-15T10:00:00Z"}
+        assert not _is_notif_cached(notif)
+
+    def test_cached_notification_is_detected(self):
+        from app.loop_manager import _is_notif_cached, _cache_notif
+        notif = {"id": "100", "updated_at": "2026-03-15T10:00:00Z"}
+        _cache_notif(notif)
+        assert _is_notif_cached(notif)
+
+    def test_updated_at_change_invalidates_cache(self):
+        from app.loop_manager import _is_notif_cached, _cache_notif
+        notif = {"id": "100", "updated_at": "2026-03-15T10:00:00Z"}
+        _cache_notif(notif)
+        # Same thread, updated timestamp — should NOT be cached
+        updated_notif = {"id": "100", "updated_at": "2026-03-15T11:00:00Z"}
+        assert not _is_notif_cached(updated_notif)
+
+    def test_expired_entry_is_evicted(self):
+        import app.loop_manager as lm
+        from app.loop_manager import _is_notif_cached, _cache_notif, _notif_cache_lock
+        notif = {"id": "100", "updated_at": "2026-03-15T10:00:00Z"}
+        _cache_notif(notif)
+        # Manually age the entry past TTL
+        key = (str(notif["id"]), notif["updated_at"])
+        with _notif_cache_lock:
+            lm._notif_cache[key] = lm._notif_cache[key] - lm._NOTIF_CACHE_TTL - 1
+        assert not _is_notif_cached(notif)
+
+    def test_reset_github_backoff_clears_cache(self):
+        from app.loop_manager import _is_notif_cached, _cache_notif, reset_github_backoff
+        notif = {"id": "100", "updated_at": "2026-03-15T10:00:00Z"}
+        _cache_notif(notif)
+        assert _is_notif_cached(notif)
+        reset_github_backoff()
+        assert not _is_notif_cached(notif)
+
+    def test_cache_eviction_on_overflow(self):
+        import app.loop_manager as lm
+        from app.loop_manager import _cache_notif, _notif_cache_lock
+        # Fill cache beyond max
+        original_max = lm._NOTIF_CACHE_MAX
+        lm._NOTIF_CACHE_MAX = 5
+        try:
+            for i in range(7):
+                _cache_notif({"id": str(i), "updated_at": f"2026-03-15T{i:02d}:00:00Z"})
+            with _notif_cache_lock:
+                assert len(lm._notif_cache) <= 5
+        finally:
+            lm._NOTIF_CACHE_MAX = original_max
+
+    @patch("app.loop_manager._load_github_config")
+    @patch("app.loop_manager._build_skill_registry")
+    @patch("app.loop_manager._get_known_repos_from_projects")
+    @patch("app.utils.load_config")
+    def test_cached_notifications_skipped_in_processing(
+        self, mock_config, mock_repos, mock_registry, mock_gh_config, tmp_path
+    ):
+        """Cached notifications are not passed to process_single_notification."""
+        from app.github_notifications import FetchResult
+        from app.loop_manager import _cache_notif, process_github_notifications
+
+        mock_config.return_value = {}
+        mock_gh_config.return_value = {"bot_username": "bot", "max_age": 300}
+        mock_registry.return_value = MagicMock()
+        mock_repos.return_value = set()
+
+        notif1 = {"id": "1", "updated_at": "2026-03-15T10:00:00Z",
+                  "subject": {"url": "https://api.github.com/repos/o/r/issues/1"},
+                  "repository": {"full_name": "o/r"}}
+        notif2 = {"id": "2", "updated_at": "2026-03-15T10:00:00Z",
+                  "subject": {"url": "https://api.github.com/repos/o/r/issues/2"},
+                  "repository": {"full_name": "o/r"}}
+
+        # Pre-cache notif1
+        _cache_notif(notif1)
+
+        with patch("app.projects_config.load_projects_config", return_value={}), \
+             patch("app.github_notifications.fetch_unread_notifications",
+                   return_value=FetchResult([notif1, notif2], [])), \
+             patch("app.github_command_handler.process_single_notification",
+                   return_value=(True, None)) as mock_process:
+            process_github_notifications(str(tmp_path), str(tmp_path))
+
+        # Only notif2 should have been processed
+        assert mock_process.call_count == 1
+        assert mock_process.call_args[0][0]["id"] == "2"

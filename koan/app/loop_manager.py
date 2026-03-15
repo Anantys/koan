@@ -187,6 +187,16 @@ _github_config_cache = _GITHUB_CONFIG_UNSET
 _github_config_cache_mtime: float = 0
 _github_config_lock = threading.Lock()
 
+# --- Notification processing cache ---
+# Avoid re-processing the same notification repeatedly across loop iterations.
+# Key: (thread_id, updated_at) — naturally invalidates when the notification is
+# updated (e.g. a new comment arrives). Value: epoch timestamp of when cached.
+# Entries expire after _NOTIF_CACHE_TTL seconds.
+_NOTIF_CACHE_TTL = 86400  # 24 hours
+_NOTIF_CACHE_MAX = 2000
+_notif_cache: dict = {}
+_notif_cache_lock = threading.Lock()
+
 log = logging.getLogger(__name__)
 
 
@@ -203,6 +213,41 @@ def _github_log(message: str, level: str = "info") -> None:
         log.warning(message)
     else:
         log.info(message)
+
+
+def _notif_cache_key(notif: dict) -> tuple:
+    """Build a cache key from a notification's thread ID and updated_at."""
+    return (str(notif.get("id", "")), notif.get("updated_at", ""))
+
+
+def _is_notif_cached(notif: dict) -> bool:
+    """Check if a notification is in the processing cache and not expired."""
+    key = _notif_cache_key(notif)
+    with _notif_cache_lock:
+        cached_at = _notif_cache.get(key)
+        if cached_at is None:
+            return False
+        if time.time() - cached_at > _NOTIF_CACHE_TTL:
+            del _notif_cache[key]
+            return False
+        return True
+
+
+def _cache_notif(notif: dict) -> None:
+    """Add a notification to the processing cache."""
+    key = _notif_cache_key(notif)
+    now = time.time()
+    with _notif_cache_lock:
+        _notif_cache[key] = now
+        # Evict expired entries when cache is large
+        if len(_notif_cache) > _NOTIF_CACHE_MAX:
+            expired = [k for k, v in _notif_cache.items() if now - v > _NOTIF_CACHE_TTL]
+            for k in expired:
+                del _notif_cache[k]
+            # If still over limit, evict oldest
+            if len(_notif_cache) > _NOTIF_CACHE_MAX:
+                oldest_key = min(_notif_cache, key=_notif_cache.get)
+                del _notif_cache[oldest_key]
 
 
 def _get_config_mtime(koan_root: str) -> float:
@@ -394,6 +439,8 @@ def reset_github_backoff() -> None:
     with _github_config_lock:
         _github_config_cache = _GITHUB_CONFIG_UNSET
         _github_config_cache_mtime = 0
+    with _notif_cache_lock:
+        _notif_cache.clear()
 
 
 def process_github_notifications(
@@ -497,8 +544,19 @@ def process_github_notifications(
         else:
             log.debug("GitHub: no actionable notifications found")
 
+        # Filter out notifications we've already processed and cached.
+        # Cache key is (thread_id, updated_at) so new activity on a thread
+        # naturally invalidates the cache entry.
+        uncached = [n for n in notifications if not _is_notif_cached(n)]
+        cached_count = len(notifications) - len(uncached)
+        if cached_count > 0:
+            log.debug(
+                "GitHub: skipped %d cached notification(s), processing %d",
+                cached_count, len(uncached),
+            )
+
         missions_created = 0
-        for notif in notifications:
+        for notif in uncached:
             _log_notification(notif)
             success, error = process_single_notification(
                 notif, registry, config, projects_config,
@@ -516,6 +574,11 @@ def process_github_notifications(
                 repo = notif.get("repository", {}).get("full_name", "?")
                 _github_log(f"Notification error for {repo}: {error[:100]}", "warning")
                 _post_error_for_notification(notif, error)
+
+            # Cache after processing: prevents re-checking until updated_at changes.
+            # Applies to all outcomes — successful missions are also deduplicated
+            # by reaction checks, but caching avoids the API call entirely.
+            _cache_notif(notif)
 
         # Drain non-actionable notifications (ci_activity, review_requested,
         # etc.) to prevent accumulation that blocks future @mention detection.
