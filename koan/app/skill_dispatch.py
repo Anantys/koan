@@ -22,6 +22,7 @@ Scoped skills:
 
 import re
 import sys
+import threading
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -34,6 +35,7 @@ from app.utils import is_known_project
 # invocation.  This cache avoids that overhead.
 _cached_registry = None
 _cached_extra_dirs: Optional[tuple] = None
+_registry_lock = threading.Lock()
 
 
 # Mapping of skill command names to their CLI runner modules.
@@ -559,14 +561,16 @@ def translate_cli_skill_mission(
         return None
 
     # Look up skill in registry — cached to avoid rebuilding from filesystem
-    # on every mission check.
+    # on every mission check.  Lock protects against concurrent rebuild races
+    # when multiple missions start simultaneously.
     global _cached_registry, _cached_extra_dirs
     instance_skills_dir = instance_dir / "skills"
     extra = tuple(p for p in [instance_skills_dir] if p.is_dir())
-    if _cached_registry is None or extra != _cached_extra_dirs:
-        _cached_registry = build_registry(list(extra))
-        _cached_extra_dirs = extra
-    registry = _cached_registry
+    with _registry_lock:
+        if _cached_registry is None or extra != _cached_extra_dirs:
+            _cached_registry = build_registry(list(extra))
+            _cached_extra_dirs = extra
+        registry = _cached_registry
 
     skill = registry.get(scope, name)
     if skill is None or not skill.cli_skill:

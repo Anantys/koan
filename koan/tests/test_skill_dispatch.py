@@ -1125,3 +1125,66 @@ class TestSkillMissionFallthroughGuard:
         assert cmd_name == "nonexistent"
         err = validate_skill_args(cmd_name, cmd_args)
         assert err is None  # No specific error — it's just unknown
+
+
+# ---------------------------------------------------------------------------
+# Thread-safety of _cached_registry / _cached_extra_dirs
+# ---------------------------------------------------------------------------
+
+class TestRegistryCacheThreadSafety:
+    """Verify that concurrent calls to translate_cli_skill_mission don't race."""
+
+    def test_concurrent_translate_calls(self, tmp_path, monkeypatch):
+        """Multiple threads calling translate_cli_skill_mission should not
+        cause double-builds or corrupt the cache."""
+        import threading
+        from pathlib import Path
+        from unittest.mock import MagicMock
+        import app.skill_dispatch as sd
+
+        # Reset cache state
+        monkeypatch.setattr(sd, "_cached_registry", None)
+        monkeypatch.setattr(sd, "_cached_extra_dirs", None)
+
+        build_count = {"n": 0}
+        build_lock = threading.Lock()
+        fake_registry = MagicMock()
+        fake_registry.get.return_value = None  # no skill found
+
+        def slow_build_registry(extra_dirs):
+            with build_lock:
+                build_count["n"] += 1
+            # Simulate work to widen the race window
+            import time
+            time.sleep(0.01)
+            return fake_registry
+
+        monkeypatch.setattr("app.skills.build_registry", slow_build_registry)
+
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        (instance_dir / "skills").mkdir()
+
+        errors = []
+
+        def worker():
+            try:
+                sd.translate_cli_skill_mission(
+                    "/custom.myskill do stuff",
+                    koan_root=tmp_path,
+                    instance_dir=instance_dir,
+                )
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, f"Threads raised exceptions: {errors}"
+        # With the lock, build_registry should be called exactly once
+        assert build_count["n"] == 1, (
+            f"build_registry called {build_count['n']} times, expected 1"
+        )
