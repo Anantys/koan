@@ -568,8 +568,11 @@ def _drain_notifications(notifications: list) -> int:
     for notif in notifications[:_MAX_DRAIN_PER_CYCLE]:
         thread_id = str(notif.get("id", ""))
         if thread_id:
-            mark_notification_read(thread_id)
-            drained += 1
+            try:
+                mark_notification_read(thread_id)
+                drained += 1
+            except Exception:
+                log.warning("GitHub: failed to mark notification %s as read", thread_id)
     return drained
 
 

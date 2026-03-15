@@ -985,6 +985,21 @@ class TestDrainNotifications:
         assert result == _MAX_DRAIN_PER_CYCLE
         assert mock_mark.call_count == _MAX_DRAIN_PER_CYCLE
 
+    @patch("app.github_notifications.mark_notification_read")
+    def test_continues_after_api_failure(self, mock_mark):
+        from app.loop_manager import _drain_notifications
+
+        mock_mark.side_effect = [None, Exception("API error"), None]
+        notifications = [
+            {"id": "100", "reason": "ci_activity"},
+            {"id": "101", "reason": "review_requested"},
+            {"id": "102", "reason": "assign"},
+        ]
+        result = _drain_notifications(notifications)
+        # Should drain 2 (first and third succeed), skip the failed one
+        assert result == 2
+        assert mock_mark.call_count == 3
+
     @patch("app.loop_manager._load_github_config")
     @patch("app.loop_manager._build_skill_registry")
     @patch("app.loop_manager._get_known_repos_from_projects")
