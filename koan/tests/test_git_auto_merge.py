@@ -598,8 +598,8 @@ class TestPerformMerge:
             assert ok is False
             assert "pull" in err.lower()
 
-    def test_push_failure(self):
-        """Push failure after successful merge."""
+    def test_push_failure_resets_to_origin(self):
+        """Push failure after successful merge resets local to origin state."""
         calls = [
             (0, "", ""),   # git log
             (0, "", ""),   # checkout
@@ -607,12 +607,58 @@ class TestPerformMerge:
             (0, "", ""),   # merge --squash
             (0, "", ""),   # commit
             (1, "", "rejected"),  # push fails
+            (0, "", ""),   # reset --hard origin/main
             (0, "", ""),   # checkout main (finally)
         ]
-        with self._mock_git(calls):
+        with self._mock_git(calls) as mock:
             ok, err = perform_merge("/tmp", "koan/fix", "main", "squash")
             assert ok is False
             assert "push" in err.lower()
+            # reset --hard origin/main is call index 6 (after push at index 5)
+            reset_call = mock.call_args_list[6]
+            assert "reset" in str(reset_call)
+            assert "--hard" in str(reset_call)
+            assert "origin/main" in str(reset_call)
+
+    def test_push_failure_rebase_resets_to_origin(self):
+        """Push failure after successful rebase+ff-merge resets local to origin."""
+        calls = [
+            (0, "", ""),   # git log
+            (0, "", ""),   # checkout
+            (0, "", ""),   # pull
+            (0, "", ""),   # rebase ok
+            (0, "", ""),   # checkout main
+            (0, "", ""),   # merge --ff-only
+            (1, "", "rejected"),  # push fails
+            (0, "", ""),   # reset --hard origin/main
+            (0, "", ""),   # checkout main (finally)
+        ]
+        with self._mock_git(calls) as mock:
+            ok, err = perform_merge("/tmp", "koan/fix", "main", "rebase")
+            assert ok is False
+            assert "push" in err.lower()
+            reset_call = mock.call_args_list[7]
+            assert "reset" in str(reset_call)
+            assert "origin/main" in str(reset_call)
+
+    def test_push_failure_noff_resets_to_origin(self):
+        """Push failure after successful --no-ff merge resets local to origin."""
+        calls = [
+            (0, "", ""),   # git log
+            (0, "", ""),   # checkout
+            (0, "", ""),   # pull
+            (0, "", ""),   # merge --no-ff
+            (1, "", "rejected"),  # push fails
+            (0, "", ""),   # reset --hard origin/main
+            (0, "", ""),   # checkout main (finally)
+        ]
+        with self._mock_git(calls) as mock:
+            ok, err = perform_merge("/tmp", "koan/fix", "main", "merge")
+            assert ok is False
+            assert "push" in err.lower()
+            reset_call = mock.call_args_list[5]
+            assert "reset" in str(reset_call)
+            assert "origin/main" in str(reset_call)
 
     def test_rebase_ff_merge_failure(self):
         """After successful rebase, ff-merge fails."""

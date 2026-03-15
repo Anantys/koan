@@ -180,6 +180,8 @@ class GitAutoMerger:
 
         exit_code, _, stderr = run_git(self.project_path, "push", "origin", base_branch)
         if exit_code != 0:
+            # Undo the local merge commit to prevent re-merging on next run
+            run_git(self.project_path, "reset", "--hard", f"origin/{base_branch}")
             return False, f"Failed to push {base_branch}: {stderr}"
 
         return True, ""
