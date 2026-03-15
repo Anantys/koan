@@ -1062,6 +1062,7 @@ def api_plans():
     from app.utils import get_known_projects
 
     project_filter = request.args.get("project", "")
+    force_refresh = request.args.get("force", "") == "1"
     now = time.time()
     all_plans = []
     errors = []
@@ -1072,7 +1073,7 @@ def api_plans():
             continue
 
         cache_key = f"plans:{project_name}"
-        if cache_key in _plans_cache:
+        if not force_refresh and cache_key in _plans_cache:
             cached_ts, cached_data = _plans_cache[cache_key]
             if now - cached_ts < _PLANS_CACHE_TTL:
                 all_plans.extend(cached_data)

@@ -1107,6 +1107,34 @@ class TestPlansPage:
         assert resp.status_code == 200
         # Only proj_a was queried (proj_b skipped by filter)
 
+    def test_api_plans_force_refresh_bypasses_cache(self, app_client):
+        """force=1 query param bypasses the server-side cache."""
+        cached_plan = [{
+            "number": 1, "title": "Cached", "state": "open", "body": "",
+            "url": "", "updatedAt": "", "progress": {"phases": [], "completed": 0, "total": 0, "percent": 0},
+            "project": "myproject", "repo": "owner/repo",
+        }]
+        import time as _time
+        fresh_cache = {"plans:myproject": (_time.time(), cached_plan)}
+
+        fresh_gh = json.dumps([{
+            "number": 2, "title": "Fresh", "state": "open",
+            "body": "", "updatedAt": "", "url": "",
+        }])
+        with patch("app.utils.get_known_projects", return_value=[("myproject", "/p")]), \
+             patch("app.dashboard._get_project_repo", return_value="owner/repo"), \
+             patch.dict("app.dashboard._plans_cache", fresh_cache, clear=True), \
+             patch("app.github.run_gh", return_value=fresh_gh):
+            # Without force — should use cache
+            resp = app_client.get("/api/plans")
+            data = resp.get_json()
+            assert data["plans"][0]["title"] == "Cached"
+
+            # With force=1 — should bypass cache and fetch fresh
+            resp = app_client.get("/api/plans?force=1")
+            data = resp.get_json()
+            assert data["plans"][0]["title"] == "Fresh"
+
     def test_api_plan_detail_no_github_url(self, app_client):
         with patch("app.dashboard._get_project_repo", return_value=None):
             resp = app_client.get("/api/plans/myproject/42")

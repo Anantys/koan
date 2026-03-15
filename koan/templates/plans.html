@@ -154,10 +154,12 @@ function renderPhases(phases) {
     return html;
 }
 
-function loadPlans() {
+function loadPlans(force) {
     var project = document.getElementById('project-select').value || '';
-    var url = '/api/plans';
-    if (project) url += '?project=' + encodeURIComponent(project);
+    var params = [];
+    if (project) params.push('project=' + encodeURIComponent(project));
+    if (force) params.push('force=1');
+    var url = '/api/plans' + (params.length ? '?' + params.join('&') : '');
 
     document.getElementById('plans-loading').style.display = '';
     document.getElementById('plans-empty').style.display = 'none';
@@ -328,8 +330,7 @@ fetch('/api/projects')
 
 document.getElementById('project-select').addEventListener('change', loadPlans);
 document.getElementById('refresh-btn').addEventListener('click', function() {
-    // Bust cache by reloading; server cache expires naturally
-    loadPlans();
+    loadPlans(true);
 });
 
 // Initial load
