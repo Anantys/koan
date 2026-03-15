@@ -34,13 +34,28 @@ def _run_git(cmd: list, cwd: str = None, timeout: int = 60) -> str:
     return run_git_strict(*args, cwd=cwd, timeout=timeout)
 
 
-def _rebase_onto_target(base: str, project_path: str) -> Optional[str]:
-    """Rebase onto target branch, trying origin then upstream.
+def _rebase_onto_target(
+    base: str,
+    project_path: str,
+    preferred_remote: Optional[str] = None,
+) -> Optional[str]:
+    """Rebase onto target branch, trying *preferred_remote* first.
+
+    When *preferred_remote* is given (e.g. the remote matching the PR's
+    target repository), it is tried before the default ``origin`` /
+    ``upstream`` fallbacks.  This avoids rebasing onto a stale fork main
+    when the PR targets an upstream repo.
 
     Returns:
         Remote name used (e.g. "origin" or "upstream") on success, None on failure.
     """
-    for remote in ("origin", "upstream"):
+    remotes: list[str] = []
+    if preferred_remote:
+        remotes.append(preferred_remote)
+    for r in ("origin", "upstream"):
+        if r not in remotes:
+            remotes.append(r)
+    for remote in remotes:
         try:
             _run_git(["git", "fetch", remote, base], cwd=project_path)
             _run_git(

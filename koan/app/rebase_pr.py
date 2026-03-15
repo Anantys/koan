@@ -29,7 +29,7 @@ from app.claude_step import (
 )
 from app.github import run_gh
 from app.prompts import load_prompt, load_prompt_or_skill, load_skill_prompt  # noqa: F401 — safety import
-from app.utils import truncate_text
+from app.utils import _GITHUB_REMOTE_RE, truncate_text
 
 
 def fetch_pr_context(owner: str, repo: str, pr_number: str) -> dict:
@@ -102,6 +102,53 @@ def fetch_pr_context(owner: str, repo: str, pr_number: str) -> dict:
     }
 
 
+def _find_remote_for_repo(
+    owner: str, repo: str, project_path: str,
+) -> Optional[str]:
+    """Find the local git remote name that matches a GitHub owner/repo.
+
+    Compares each remote's URL against the target ``owner/repo`` (case-insensitive).
+    Returns the remote name (e.g. ``"upstream"``) or ``None`` if no match.
+    """
+    target = f"{owner}/{repo}".lower()
+    try:
+        result = subprocess.run(
+            ["git", "remote", "-v"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True, text=True, cwd=project_path, timeout=5,
+        )
+        if result.returncode != 0:
+            return None
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return None
+
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        remote_name, url = parts[0], parts[1]
+        match = _GITHUB_REMOTE_RE.search(url)
+        if match:
+            slug = f"{match.group(1)}/{match.group(2)}".lower()
+            if slug == target:
+                return remote_name
+    return None
+
+
+def _ordered_remotes(preferred: Optional[str]) -> List[str]:
+    """Return remote names to try, with *preferred* first if given.
+
+    Always includes both ``origin`` and ``upstream`` (de-duplicated).
+    """
+    remotes = []
+    if preferred:
+        remotes.append(preferred)
+    for r in ("origin", "upstream"):
+        if r not in remotes:
+            remotes.append(r)
+    return remotes
+
+
 def build_comment_summary(context: dict) -> str:
     """Build a human-readable summary of all PR feedback.
 
@@ -171,6 +218,10 @@ def run_rebase(
     branch = context["branch"]
     base = context["base"]
 
+    # Determine which local remote corresponds to the PR's target repo
+    # so we rebase against the correct upstream, not a stale fork.
+    base_remote = _find_remote_for_repo(owner, repo, project_path)
+
     # Log comment summary for awareness
     comment_summary = build_comment_summary(context)
     if comment_summary and "No comments" not in comment_summary:
@@ -192,6 +243,7 @@ def run_rebase(
     rebase_remote = _rebase_with_conflict_resolution(
         base, project_path, context, actions_log,
         notify_fn=notify_fn, skill_dir=skill_dir,
+        preferred_remote=base_remote,
     )
     if rebase_remote:
         actions_log.append(f"Rebased `{branch}` onto `{rebase_remote}/{base}`")
@@ -279,18 +331,20 @@ def _rebase_with_conflict_resolution(
     notify_fn=None,
     skill_dir: Optional[Path] = None,
     max_conflict_rounds: int = 5,
+    preferred_remote: Optional[str] = None,
 ) -> Optional[str]:
     """Rebase onto target branch, resolving conflicts via Claude if needed.
 
-    Tries origin then upstream.  When ``git rebase`` hits conflicts, Claude
-    is invoked to resolve the conflicted files, they are staged, and the
-    rebase is continued.  This loop repeats for up to *max_conflict_rounds*
-    per remote (one round per conflicting commit).
+    Tries the *preferred_remote* first (matched from the PR's target repo),
+    then falls back to ``origin`` and ``upstream``.  When ``git rebase`` hits
+    conflicts, Claude is invoked to resolve the conflicted files, they are
+    staged, and the rebase is continued.  This loop repeats for up to
+    *max_conflict_rounds* per remote (one round per conflicting commit).
 
     Returns:
         Remote name used (e.g. "origin") on success, None on total failure.
     """
-    for remote in ("origin", "upstream"):
+    for remote in _ordered_remotes(preferred_remote):
         try:
             _run_git(["git", "fetch", remote, base], cwd=project_path)
         except Exception as e:

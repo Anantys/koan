@@ -26,7 +26,7 @@ from app.claude_step import (
 )
 from app.github import run_gh
 from app.prompts import load_prompt_or_skill
-from app.rebase_pr import fetch_pr_context
+from app.rebase_pr import fetch_pr_context, _find_remote_for_repo
 
 # Matches skill names like `atoomic.refactor` or my.review (with or without backticks)
 _SKILL_RE = re.compile(r'`?([a-zA-Z0-9_-]+\.(?:refactor|review))\b`?')
@@ -211,6 +211,9 @@ def run_pr_review(
     branch = context["branch"]
     base = context["base"]
 
+    # Determine which local remote corresponds to the PR's target repo
+    base_remote = _find_remote_for_repo(owner, repo, project_path)
+
     # ── Step 2: Checkout and rebase onto target branch ────────────────
     notify_fn(f"Rebasing `{branch}` onto `{base}`...")
     try:
@@ -220,8 +223,8 @@ def run_pr_review(
     except Exception as e:
         return False, f"Failed to checkout branch {branch}: {e}"
 
-    # Rebase onto the upstream target branch (tries origin, then upstream)
-    rebase_remote = _rebase_onto_target(base, project_path)
+    # Rebase onto the upstream target branch (prefers the matched remote)
+    rebase_remote = _rebase_onto_target(base, project_path, preferred_remote=base_remote)
     if rebase_remote:
         actions_log.append(f"Rebased `{branch}` onto `{rebase_remote}/{base}`")
     else:

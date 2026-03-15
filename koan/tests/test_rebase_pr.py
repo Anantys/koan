@@ -18,8 +18,10 @@ from app.rebase_pr import (
     _build_rebase_comment,
     _build_rebase_prompt,
     _checkout_pr_branch,
+    _find_remote_for_repo,
     _get_current_branch,
     _is_conflict_failure,
+    _ordered_remotes,
     _push_with_fallback,
     _safe_checkout,
 )
@@ -273,6 +275,78 @@ class TestSafeCheckout:
     def test_fails_silently(self):
         with patch("app.claude_step.subprocess.run", side_effect=RuntimeError("oops")):
             _safe_checkout("main", "/project")  # Should not raise
+
+
+# ---------------------------------------------------------------------------
+# _find_remote_for_repo / _ordered_remotes
+# ---------------------------------------------------------------------------
+
+class TestFindRemoteForRepo:
+    """Test matching a GitHub owner/repo to a local git remote."""
+
+    @patch("app.rebase_pr.subprocess.run")
+    def test_finds_origin_https(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout=(
+                "origin\thttps://github.com/atoomic/Crypt-OpenSSL-RSA.git (fetch)\n"
+                "origin\thttps://github.com/atoomic/Crypt-OpenSSL-RSA.git (push)\n"
+                "upstream\thttps://github.com/cpan-authors/Crypt-OpenSSL-RSA.git (fetch)\n"
+                "upstream\thttps://github.com/cpan-authors/Crypt-OpenSSL-RSA.git (push)\n"
+            ),
+        )
+        assert _find_remote_for_repo(
+            "cpan-authors", "Crypt-OpenSSL-RSA", "/tmp/project"
+        ) == "upstream"
+
+    @patch("app.rebase_pr.subprocess.run")
+    def test_finds_origin_ssh(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout=(
+                "origin\tgit@github.com:owner/repo.git (fetch)\n"
+                "origin\tgit@github.com:owner/repo.git (push)\n"
+            ),
+        )
+        assert _find_remote_for_repo("owner", "repo", "/tmp/p") == "origin"
+
+    @patch("app.rebase_pr.subprocess.run")
+    def test_case_insensitive(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="upstream\thttps://github.com/OWNER/REPO.git (fetch)\n",
+        )
+        assert _find_remote_for_repo("owner", "repo", "/tmp/p") == "upstream"
+
+    @patch("app.rebase_pr.subprocess.run")
+    def test_no_match_returns_none(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="origin\thttps://github.com/other/repo.git (fetch)\n",
+        )
+        assert _find_remote_for_repo("owner", "repo", "/tmp/p") is None
+
+    @patch("app.rebase_pr.subprocess.run")
+    def test_subprocess_failure_returns_none(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=1, stdout="")
+        assert _find_remote_for_repo("o", "r", "/tmp/p") is None
+
+
+class TestOrderedRemotes:
+    """Test remote ordering with preferred remote."""
+
+    def test_no_preferred(self):
+        assert _ordered_remotes(None) == ["origin", "upstream"]
+
+    def test_preferred_origin(self):
+        # origin already in default list — should be first, no duplicate
+        assert _ordered_remotes("origin") == ["origin", "upstream"]
+
+    def test_preferred_upstream(self):
+        assert _ordered_remotes("upstream") == ["upstream", "origin"]
+
+    def test_preferred_custom(self):
+        assert _ordered_remotes("fork") == ["fork", "origin", "upstream"]
 
 
 # ---------------------------------------------------------------------------
@@ -726,6 +800,31 @@ class TestRunRebase:
         with patch("app.notify.send_telegram") as mock_tg:
             success, _ = run_rebase("o", "r", "1", "/p")
             mock_tg.assert_called()
+
+    @patch("app.rebase_pr._safe_checkout")
+    @patch("app.rebase_pr.run_gh")
+    @patch("app.rebase_pr.fetch_pr_context")
+    def test_passes_preferred_remote_to_rebase(self, mock_ctx, mock_gh, mock_safe):
+        """run_rebase must determine the correct base remote and pass it through."""
+        mock_ctx.return_value = {
+            "title": "T", "body": "", "branch": "koan/fix",
+            "base": "main", "state": "", "author": "", "url": "",
+            "diff": "", "review_comments": "", "reviews": "", "issue_comments": "",
+        }
+        notify = MagicMock()
+        with patch("app.rebase_pr._get_current_branch", return_value="main"), \
+             patch("app.rebase_pr._checkout_pr_branch"), \
+             patch("app.rebase_pr._find_remote_for_repo", return_value="upstream") as mock_find, \
+             patch("app.rebase_pr._rebase_with_conflict_resolution", return_value="upstream") as mock_rebase, \
+             patch("app.rebase_pr._push_with_fallback", return_value={
+                 "success": True, "actions": ["Force-pushed"], "error": ""
+             }):
+            run_rebase("cpan-authors", "Crypt-OpenSSL-RSA", "87", "/p", notify_fn=notify)
+            mock_find.assert_called_once_with("cpan-authors", "Crypt-OpenSSL-RSA", "/p")
+            mock_rebase.assert_called_once()
+            # Verify preferred_remote kwarg was passed
+            _, kwargs = mock_rebase.call_args
+            assert kwargs.get("preferred_remote") == "upstream"
 
 
 # ---------------------------------------------------------------------------
