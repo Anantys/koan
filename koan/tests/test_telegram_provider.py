@@ -116,14 +116,47 @@ class TestSendRaw:
         assert p._send_raw("test") is False
 
     @patch("app.messaging.telegram.requests.post")
-    def test_partial_failure(self, mock_post, provider):
-        """If one chunk fails, returns False."""
+    def test_partial_failure_sends_truncation_notice(self, mock_post, provider):
+        """If one chunk fails, returns False and sends truncation notice."""
         responses = [
-            MagicMock(json=lambda: {"ok": True}),
+            MagicMock(json=lambda: {"ok": True, "result": {"message_id": 1}}),
             MagicMock(json=lambda: {"ok": False, "description": "limit"}, text="limit"),
+            MagicMock(json=lambda: {"ok": True, "result": {"message_id": 2}}),  # notice
         ]
         mock_post.side_effect = responses
         assert provider._send_raw("a" * 5000) is False
+        # 2 chunks + 1 truncation notice
+        assert mock_post.call_count == 3
+        notice_text = mock_post.call_args_list[2][1]["json"]["text"]
+        assert "truncated" in notice_text.lower()
+        assert "1/2" in notice_text
+
+    @patch("app.messaging.telegram.requests.post")
+    def test_all_chunks_fail_no_truncation_notice(self, mock_post, provider):
+        """If ALL chunks fail, no truncation notice (nothing was delivered)."""
+        mock_post.return_value = MagicMock(
+            json=lambda: {"ok": False, "description": "err"}, text="err"
+        )
+        assert provider._send_raw("a" * 5000) is False
+        # Only 2 chunk attempts, no notice (nothing delivered)
+        assert mock_post.call_count == 2
+
+    @patch("app.messaging.telegram.requests.post")
+    def test_all_chunks_attempted_despite_failure(self, mock_post, provider):
+        """All chunks are attempted even when earlier chunks fail."""
+        responses = [
+            MagicMock(json=lambda: {"ok": False, "description": "err"}, text="err"),
+            MagicMock(json=lambda: {"ok": True, "result": {"message_id": 1}}),
+            MagicMock(json=lambda: {"ok": True, "result": {"message_id": 2}}),
+            MagicMock(json=lambda: {"ok": True, "result": {"message_id": 3}}),  # notice
+        ]
+        mock_post.side_effect = responses
+        # 8500 chars = 3 chunks (4000+4000+500)
+        assert provider._send_raw("a" * 8500) is False
+        # All 3 chunks attempted + 1 notice (partial delivery: 2/3 sent)
+        assert mock_post.call_count == 4
+        notice_text = mock_post.call_args_list[3][1]["json"]["text"]
+        assert "2/3" in notice_text
 
 
 class TestSendMessage:

@@ -267,19 +267,34 @@ class TelegramProvider(MessagingProvider):
             parse_mode = "HTML"
 
         self._last_message_ids = []
-        ok = True
-        for chunk in self.chunk_message(text, max_size=MAX_MESSAGE_SIZE):
+        chunks = self.chunk_message(text, max_size=MAX_MESSAGE_SIZE)
+        total = len(chunks)
+        sent = 0
+        failed = 0
+        for chunk in chunks:
             try:
-                ok = ok and retry_with_backoff(
+                if retry_with_backoff(
                     lambda c=chunk, pm=parse_mode: self._send_chunk(c, pm),
                     retryable=(requests.RequestException, ValueError),
                     label="telegram send",
-                )
+                ):
+                    sent += 1
+                else:
+                    failed += 1
             except (requests.RequestException, ValueError) as e:
                 print(f"[telegram] Send error after retries: {e}",
                       file=sys.stderr)
-                ok = False
-        return ok
+                failed += 1
+
+        if failed and sent:
+            # Partial delivery — notify the recipient
+            notice = f"[⚠️ Message truncated: {sent}/{total} parts delivered, {failed} failed]"
+            try:
+                self._send_chunk(notice, parse_mode)
+            except Exception:
+                pass  # Best-effort notice
+
+        return failed == 0
 
     def _send_chunk(self, chunk: str, parse_mode: str = None) -> bool:
         """Send a single chunk via Telegram API. Raises on network error."""

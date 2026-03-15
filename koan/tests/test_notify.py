@@ -275,6 +275,25 @@ class TestDirectSend:
         assert mock_post.call_count == 2  # split into 2 chunks
 
     @patch("app.notify.load_dotenv")
+    def test_partial_chunk_failure_sends_truncation_notice(self, mock_dotenv, monkeypatch):
+        """When some chunks fail, a truncation notice is sent."""
+        monkeypatch.setenv("KOAN_TELEGRAM_TOKEN", "tok")
+        monkeypatch.setenv("KOAN_TELEGRAM_CHAT_ID", "123")
+        from app.messaging.base import DEFAULT_MAX_MESSAGE_SIZE
+        long_msg = "x" * (DEFAULT_MAX_MESSAGE_SIZE + 100)
+        responses = [
+            MagicMock(json=MagicMock(return_value={"ok": True})),
+            MagicMock(json=MagicMock(return_value={"ok": False}), text="err"),
+            MagicMock(json=MagicMock(return_value={"ok": True})),  # notice
+        ]
+        with patch("requests.post", side_effect=responses) as mock_post:
+            assert _direct_send(long_msg) is False
+        assert mock_post.call_count == 3  # 2 chunks + 1 notice
+        notice_text = mock_post.call_args_list[2][1]["json"]["text"]
+        assert "truncated" in notice_text.lower()
+        assert "1/2" in notice_text
+
+    @patch("app.notify.load_dotenv")
     def test_empty_message_sends_once(self, mock_dotenv, monkeypatch):
         """Empty string still sends a single API call."""
         monkeypatch.setenv("KOAN_TELEGRAM_TOKEN", "tok")

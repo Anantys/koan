@@ -139,18 +139,32 @@ def _direct_send(text: str) -> bool:
     from app.messaging.base import DEFAULT_MAX_MESSAGE_SIZE
     chunks = [text[i:i + DEFAULT_MAX_MESSAGE_SIZE] for i in range(0, len(text), DEFAULT_MAX_MESSAGE_SIZE)] if text else [text]
 
-    ok = True
+    total = len(chunks)
+    sent = 0
+    failed = 0
     for chunk in chunks:
         try:
-            ok = ok and retry_with_backoff(
+            if retry_with_backoff(
                 lambda c=chunk, pm=parse_mode: _direct_send_chunk(api_base, chat_id, c, pm),
                 retryable=(requests.RequestException, ValueError),
                 label="telegram direct send",
-            )
+            ):
+                sent += 1
+            else:
+                failed += 1
         except (requests.RequestException, ValueError) as e:
             print(f"[notify] Send error after retries: {e}", file=sys.stderr)
-            ok = False
-    return ok
+            failed += 1
+
+    if failed and sent:
+        # Partial delivery — notify the recipient
+        notice = f"[⚠️ Message truncated: {sent}/{total} parts delivered, {failed} failed]"
+        try:
+            _direct_send_chunk(api_base, chat_id, notice, parse_mode)
+        except Exception:
+            pass  # Best-effort notice
+
+    return failed == 0
 
 
 def _direct_send_chunk(api_base: str, chat_id: str, chunk: str,
