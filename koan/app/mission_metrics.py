@@ -134,6 +134,8 @@ def compute_global_metrics(
 
     total = len(filtered)
     productive = sum(1 for o in filtered if o.get("outcome") == "productive")
+    empty = sum(1 for o in filtered if o.get("outcome") == "empty")
+    blocked = sum(1 for o in filtered if o.get("outcome") == "blocked")
 
     # Per-project breakdown
     by_project = defaultdict(lambda: {"total": 0, "productive": 0})
@@ -155,6 +157,9 @@ def compute_global_metrics(
 
     return {
         "total_sessions": total,
+        "productive": productive,
+        "empty": empty,
+        "blocked": blocked,
         "success_rate": productive / total,
         "by_project": by_project_out,
         "trend": trend,
@@ -196,6 +201,22 @@ def get_project_success_rates(
         else:
             rates[proj] = 0.5  # Neutral — not enough data
     return rates
+
+
+def compute_project_trend(instance_dir: str, project: str, days: int = 30) -> str:
+    """Compute trend for a single project over the given window.
+
+    Args:
+        instance_dir: Path to instance directory.
+        project: Project name to filter by.
+        days: Number of days to look back (0 = all time).
+
+    Returns:
+        "improving", "declining", or "stable".
+    """
+    outcomes = _load_outcomes(instance_dir)
+    filtered = _filter_by_project_and_window(outcomes, project, days)
+    return _compute_trend(filtered)
 
 
 def format_metrics_summary(instance_dir: str, days: int = 30) -> str:

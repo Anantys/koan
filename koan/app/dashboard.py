@@ -712,7 +712,7 @@ def usage_page():
 @app.route("/api/usage")
 def api_usage():
     """JSON usage data for the specified time range."""
-    from app.cost_tracker import summarize_range, get_pricing_config
+    from app.cost_tracker import summarize_range, get_pricing_config, estimate_cost, daily_series
 
     days = request.args.get("days", "7", type=str)
     selected_project = request.args.get("project", "")
@@ -731,6 +731,25 @@ def api_usage():
         by_project = {k: v for k, v in by_project.items() if k == selected_project}
 
     pricing = get_pricing_config()
+
+    # Compute aggregate estimated cost across all models
+    estimated_cost = None
+    if pricing and summary["by_model"]:
+        total_cost = 0.0
+        for model_id, model_data in summary["by_model"].items():
+            model_tokens = {
+                "model": model_id,
+                "input_tokens": model_data["input_tokens"],
+                "output_tokens": model_data["output_tokens"],
+            }
+            c = estimate_cost(model_tokens, pricing)
+            if c is not None:
+                total_cost += c
+        estimated_cost = total_cost
+
+    # Per-day time series for charts
+    daily = daily_series(INSTANCE_DIR, start, end, project=selected_project or None)
+
     return jsonify({
         "days": days,
         "start": start.isoformat(),
@@ -741,7 +760,40 @@ def api_usage():
         "by_project": by_project,
         "by_model": summary["by_model"],
         "has_pricing": pricing is not None,
+        "estimated_cost": estimated_cost,
+        "daily": daily,
     })
+
+
+@app.route("/api/metrics")
+def api_metrics():
+    """JSON mission metrics for the specified time range."""
+    from app.mission_metrics import (
+        compute_global_metrics,
+        compute_project_metrics,
+        compute_project_trend,
+    )
+
+    days = request.args.get("days", "30", type=str)
+    selected_project = request.args.get("project", "")
+    try:
+        days = int(days)
+        days = max(0, min(days, 365))
+    except (ValueError, TypeError):
+        days = 30
+
+    if selected_project:
+        metrics = compute_project_metrics(str(INSTANCE_DIR), selected_project, days=days)
+        metrics["trend"] = compute_project_trend(str(INSTANCE_DIR), selected_project, days=days)
+        return jsonify(metrics)
+
+    # Global metrics with per-project trends
+    metrics = compute_global_metrics(str(INSTANCE_DIR), days=days)
+    for proj in metrics["by_project"]:
+        metrics["by_project"][proj]["trend"] = compute_project_trend(
+            str(INSTANCE_DIR), proj, days=days
+        )
+    return jsonify(metrics)
 
 
 @app.route("/journal")

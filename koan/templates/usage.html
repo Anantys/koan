@@ -1,14 +1,39 @@
 {% extends "base.html" %}
 {% block title %}Koan — Usage{% endblock %}
 {% block content %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.9/dist/chart.umd.min.js"></script>
+
+<style>
+.trend-badge {
+    display: inline-block;
+    font-size: 0.75rem;
+    padding: 0.1rem 0.4rem;
+    border-radius: 3px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+.trend-improving { color: var(--green); background: rgba(63,185,80,0.12); }
+.trend-declining { color: var(--orange); background: rgba(210,153,34,0.12); }
+.trend-stable    { color: var(--text-muted); background: rgba(139,148,158,0.12); }
+.project-link { color: var(--accent); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+.project-link:hover { color: var(--text); }
+.chart-container { position: relative; width: 100%; }
+.empty-state { color: var(--text-muted); font-style: italic; padding: 1rem 0; text-align: center; }
+.filter-bar { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 1rem; }
+</style>
+
 <h1>Usage</h1>
 
-<div class="form-row" style="margin-bottom:1.5rem;margin-top:0;">
+<div class="filter-bar">
     <select id="range-select" style="padding:0.4rem;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;">
         <option value="1">Today</option>
         <option value="7" selected>Last 7 days</option>
         <option value="30">Last 30 days</option>
     </select>
+    <span id="filter-label" style="display:none;color:var(--text-muted);font-size:0.85rem;">
+        Filtering: <strong id="filter-project"></strong>
+        <a href="#" id="clear-filter" style="color:var(--accent);margin-left:0.5rem;">clear</a>
+    </span>
 </div>
 
 <div class="grid" id="totals">
@@ -20,6 +45,27 @@
         <div class="stat-label">Missions</div>
         <div class="stat-value" id="total-count">-</div>
     </div>
+    <div class="card" id="cost-card" style="display:none;">
+        <div class="stat-label">Est. Cost</div>
+        <div class="stat-value" id="total-cost">-</div>
+    </div>
+</div>
+
+<h2>Daily Token Spend</h2>
+<div class="card">
+    <div class="chart-container" style="height:260px;">
+        <canvas id="daily-chart"></canvas>
+    </div>
+    <div class="empty-state" id="daily-empty" style="display:none;">No usage data for this period.</div>
+</div>
+
+<h2>Mission Outcomes</h2>
+<div class="card" style="display:flex;align-items:center;gap:2rem;flex-wrap:wrap;">
+    <div class="chart-container" style="width:200px;height:200px;flex-shrink:0;">
+        <canvas id="outcome-chart"></canvas>
+    </div>
+    <div id="outcome-legend" style="font-size:0.85rem;"></div>
+    <div class="empty-state" id="outcome-empty" style="display:none;width:100%;">No mission data available.</div>
 </div>
 
 <h2>By Project</h2>
@@ -32,6 +78,8 @@
                 <th style="padding:0.5rem 0;text-align:right;">Output</th>
                 <th style="padding:0.5rem 0;text-align:right;">Total</th>
                 <th style="padding:0.5rem 0;text-align:right;">Runs</th>
+                <th style="padding:0.5rem 0;text-align:right;">Success</th>
+                <th style="padding:0.5rem 0;text-align:right;">Trend</th>
             </tr>
         </thead>
         <tbody></tbody>
@@ -55,6 +103,10 @@
 </div>
 
 <script>
+let dailyChart = null;
+let outcomeChart = null;
+let currentProject = '';
+
 function fmtTokens(n) {
     if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
     if (n >= 1e3) return (n / 1e3).toFixed(1) + 'k';
@@ -68,13 +120,167 @@ function shortModel(id) {
     return id;
 }
 
-function loadUsage(days) {
-    fetch('/api/usage?days=' + days)
+function trendBadge(trend) {
+    const symbols = {improving: '\u2191', declining: '\u2193', stable: '\u2192'};
+    const cls = 'trend-' + (trend || 'stable');
+    return '<span class="trend-badge ' + cls + '">' + (symbols[trend] || '\u2192') + ' ' + (trend || 'stable') + '</span>';
+}
+
+function setProjectFilter(project) {
+    currentProject = project;
+    const label = document.getElementById('filter-label');
+    if (project) {
+        document.getElementById('filter-project').textContent = project;
+        label.style.display = '';
+        history.replaceState(null, '', '?project=' + encodeURIComponent(project));
+    } else {
+        label.style.display = 'none';
+        history.replaceState(null, '', location.pathname);
+    }
+    loadAll();
+}
+
+function renderDailyChart(daily, hasPricing) {
+    const canvas = document.getElementById('daily-chart');
+    const emptyEl = document.getElementById('daily-empty');
+    const hasData = daily.some(d => d.total_input > 0 || d.total_output > 0);
+
+    if (!hasData) {
+        canvas.style.display = 'none';
+        emptyEl.style.display = '';
+        if (dailyChart) { dailyChart.destroy(); dailyChart = null; }
+        return;
+    }
+    canvas.style.display = '';
+    emptyEl.style.display = 'none';
+
+    const labels = daily.map(d => d.date.slice(5)); // MM-DD
+    const datasets = [
+        {
+            label: 'Input',
+            data: daily.map(d => d.total_input),
+            backgroundColor: 'rgba(88,166,255,0.7)',
+            stack: 'tokens',
+        },
+        {
+            label: 'Output',
+            data: daily.map(d => d.total_output),
+            backgroundColor: 'rgba(63,185,80,0.7)',
+            stack: 'tokens',
+        },
+    ];
+
+    if (hasPricing && daily.some(d => d.cost !== null)) {
+        datasets.push({
+            label: 'Cost ($)',
+            data: daily.map(d => d.cost),
+            type: 'line',
+            borderColor: 'rgba(210,153,34,0.9)',
+            backgroundColor: 'transparent',
+            yAxisID: 'cost',
+            pointRadius: 2,
+            tension: 0.3,
+        });
+    }
+
+    if (dailyChart) dailyChart.destroy();
+    dailyChart = new Chart(canvas, {
+        type: 'bar',
+        data: {labels, datasets},
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {legend: {labels: {color: '#8b949e'}}},
+            scales: {
+                x: {ticks: {color: '#8b949e'}, grid: {color: 'rgba(48,54,61,0.5)'}},
+                y: {
+                    stacked: true,
+                    ticks: {color: '#8b949e', callback: v => fmtTokens(v)},
+                    grid: {color: 'rgba(48,54,61,0.5)'},
+                },
+                ...(hasPricing && daily.some(d => d.cost !== null) ? {
+                    cost: {
+                        position: 'right',
+                        ticks: {color: '#d29922', callback: v => '$' + v.toFixed(2)},
+                        grid: {drawOnChartArea: false},
+                    }
+                } : {}),
+            },
+        },
+    });
+}
+
+function renderOutcomeChart(metrics) {
+    const canvas = document.getElementById('outcome-chart');
+    const legendEl = document.getElementById('outcome-legend');
+    const emptyEl = document.getElementById('outcome-empty');
+
+    if (!metrics || metrics.total_sessions === 0) {
+        canvas.style.display = 'none';
+        legendEl.innerHTML = '';
+        emptyEl.style.display = '';
+        if (outcomeChart) { outcomeChart.destroy(); outcomeChart = null; }
+        return;
+    }
+    canvas.style.display = '';
+    emptyEl.style.display = 'none';
+
+    const productive = metrics.productive || 0;
+    const empty = metrics.empty || 0;
+    const blocked = metrics.blocked || 0;
+    const other = metrics.total_sessions - productive - empty - blocked;
+
+    const data = [productive, empty, blocked];
+    const labels = ['Productive', 'Empty', 'Blocked'];
+    const colors = ['#3fb950', '#8b949e', '#f85149'];
+    if (other > 0) {
+        data.push(other);
+        labels.push('Other');
+        colors.push('#d29922');
+    }
+
+    legendEl.innerHTML = labels.map((l, i) =>
+        '<div style="margin-bottom:0.25rem;">' +
+        '<span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:' + colors[i] + ';margin-right:0.5rem;"></span>' +
+        l + ': <strong>' + data[i] + '</strong></div>'
+    ).join('');
+
+    if (outcomeChart) outcomeChart.destroy();
+    outcomeChart = new Chart(canvas, {
+        type: 'doughnut',
+        data: {labels, datasets: [{data, backgroundColor: colors, borderWidth: 0}]},
+        options: {
+            responsive: true,
+            maintainAspectRatio: true,
+            plugins: {legend: {display: false}},
+            cutout: '55%',
+        },
+    });
+}
+
+function loadAll() {
+    const days = document.getElementById('range-select').value;
+    const projParam = currentProject ? '&project=' + encodeURIComponent(currentProject) : '';
+
+    // Fetch usage data
+    fetch('/api/usage?days=' + days + projParam)
         .then(r => r.json())
         .then(data => {
             document.getElementById('total-tokens').textContent =
                 fmtTokens(data.total_input + data.total_output);
             document.getElementById('total-count').textContent = data.count;
+
+            // Cost card
+            const costCard = document.getElementById('cost-card');
+            if (data.estimated_cost !== null && data.estimated_cost !== undefined) {
+                costCard.style.display = '';
+                document.getElementById('total-cost').textContent = '$' + data.estimated_cost.toFixed(2);
+            } else {
+                costCard.style.display = 'none';
+            }
+
+            // Daily chart
+            renderDailyChart(data.daily || [], data.has_pricing);
 
             // By project table
             const pTbody = document.querySelector('#by-project tbody');
@@ -82,18 +288,29 @@ function loadUsage(days) {
             const projects = Object.entries(data.by_project)
                 .sort((a, b) => (b[1].input_tokens + b[1].output_tokens) - (a[1].input_tokens + a[1].output_tokens));
             if (projects.length === 0) {
-                pTbody.innerHTML = '<tr><td colspan="5" style="color:var(--text-muted);padding:0.5rem 0;">No data</td></tr>';
+                pTbody.innerHTML = '<tr><td colspan="7" style="color:var(--text-muted);padding:0.5rem 0;">No data</td></tr>';
             }
             for (const [name, p] of projects) {
                 const total = p.input_tokens + p.output_tokens;
-                pTbody.innerHTML += `<tr style="border-top:1px solid var(--border);">
-                    <td style="padding:0.5rem 0;">${name}</td>
-                    <td style="padding:0.5rem 0;text-align:right;">${fmtTokens(p.input_tokens)}</td>
-                    <td style="padding:0.5rem 0;text-align:right;">${fmtTokens(p.output_tokens)}</td>
-                    <td style="padding:0.5rem 0;text-align:right;">${fmtTokens(total)}</td>
-                    <td style="padding:0.5rem 0;text-align:right;">${p.count}</td>
-                </tr>`;
+                const successCell = p.success_rate !== undefined
+                    ? (p.success_rate * 100).toFixed(0) + '%'
+                    : '-';
+                const trendCell = p.trend ? trendBadge(p.trend) : '-';
+                pTbody.innerHTML += '<tr style="border-top:1px solid var(--border);">' +
+                    '<td style="padding:0.5rem 0;"><a class="project-link" data-project="' + name + '">' + name + '</a></td>' +
+                    '<td style="padding:0.5rem 0;text-align:right;">' + fmtTokens(p.input_tokens) + '</td>' +
+                    '<td style="padding:0.5rem 0;text-align:right;">' + fmtTokens(p.output_tokens) + '</td>' +
+                    '<td style="padding:0.5rem 0;text-align:right;">' + fmtTokens(total) + '</td>' +
+                    '<td style="padding:0.5rem 0;text-align:right;">' + p.count + '</td>' +
+                    '<td style="padding:0.5rem 0;text-align:right;">' + successCell + '</td>' +
+                    '<td style="padding:0.5rem 0;text-align:right;">' + trendCell + '</td>' +
+                    '</tr>';
             }
+
+            // Attach click handlers to project links
+            document.querySelectorAll('.project-link').forEach(el => {
+                el.addEventListener('click', () => setProjectFilter(el.dataset.project));
+            });
 
             // By model table
             const mTbody = document.querySelector('#by-model tbody');
@@ -105,22 +322,55 @@ function loadUsage(days) {
             }
             for (const [name, m] of models) {
                 const total = m.input_tokens + m.output_tokens;
-                mTbody.innerHTML += `<tr style="border-top:1px solid var(--border);">
-                    <td style="padding:0.5rem 0;">${shortModel(name)}</td>
-                    <td style="padding:0.5rem 0;text-align:right;">${fmtTokens(m.input_tokens)}</td>
-                    <td style="padding:0.5rem 0;text-align:right;">${fmtTokens(m.output_tokens)}</td>
-                    <td style="padding:0.5rem 0;text-align:right;">${fmtTokens(total)}</td>
-                    <td style="padding:0.5rem 0;text-align:right;">${m.count}</td>
-                </tr>`;
+                mTbody.innerHTML += '<tr style="border-top:1px solid var(--border);">' +
+                    '<td style="padding:0.5rem 0;">' + shortModel(name) + '</td>' +
+                    '<td style="padding:0.5rem 0;text-align:right;">' + fmtTokens(m.input_tokens) + '</td>' +
+                    '<td style="padding:0.5rem 0;text-align:right;">' + fmtTokens(m.output_tokens) + '</td>' +
+                    '<td style="padding:0.5rem 0;text-align:right;">' + fmtTokens(total) + '</td>' +
+                    '<td style="padding:0.5rem 0;text-align:right;">' + m.count + '</td>' +
+                    '</tr>';
+            }
+        })
+        .catch(() => {});
+
+    // Fetch metrics data (for outcome chart and project trends)
+    fetch('/api/metrics?days=' + days + projParam)
+        .then(r => r.json())
+        .then(metrics => {
+            renderOutcomeChart(metrics);
+
+            // Merge trend/success data into project table if available
+            if (metrics.by_project) {
+                document.querySelectorAll('#by-project tbody tr').forEach(row => {
+                    const linkEl = row.querySelector('.project-link');
+                    if (!linkEl) return;
+                    const proj = linkEl.dataset.project;
+                    const pm = metrics.by_project[proj];
+                    if (!pm) return;
+                    const cells = row.querySelectorAll('td');
+                    if (cells.length >= 7) {
+                        cells[5].textContent = (pm.success_rate * 100).toFixed(0) + '%';
+                        cells[6].innerHTML = trendBadge(pm.trend);
+                    }
+                });
             }
         })
         .catch(() => {});
 }
 
-document.getElementById('range-select').addEventListener('change', function() {
-    loadUsage(this.value);
+document.getElementById('range-select').addEventListener('change', () => loadAll());
+document.getElementById('clear-filter').addEventListener('click', e => {
+    e.preventDefault();
+    setProjectFilter('');
 });
 
-loadUsage(7);
+// Init from URL param
+const params = new URLSearchParams(location.search);
+if (params.get('project')) {
+    currentProject = params.get('project');
+    document.getElementById('filter-project').textContent = currentProject;
+    document.getElementById('filter-label').style.display = '';
+}
+loadAll();
 </script>
 {% endblock %}

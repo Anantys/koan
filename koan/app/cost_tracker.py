@@ -227,6 +227,60 @@ def estimate_cost(tokens: dict, pricing: Optional[dict] = None) -> Optional[floa
     return inp_cost + out_cost
 
 
+def daily_series(
+    instance_dir: Path,
+    start: date,
+    end: date,
+    project: Optional[str] = None,
+) -> list:
+    """Return per-day token breakdown for a date range.
+
+    Args:
+        instance_dir: Path to instance directory.
+        start: Start date (inclusive).
+        end: End date (inclusive).
+        project: Optional project name to filter by.
+
+    Returns:
+        List of dicts, one per day: {date, total_input, total_output, count, cost}.
+        cost is a float (USD) when pricing is configured, otherwise None.
+    """
+    usage_dir = Path(instance_dir) / "usage"
+    pricing = get_pricing_config()
+    result = []
+    current = start
+    while current <= end:
+        entries = _read_jsonl_for_date(usage_dir, current)
+        if project:
+            entries = [e for e in entries if e.get("project") == project]
+        day_summary = _aggregate(entries)
+
+        # Estimate cost by summing per-model costs
+        cost = None
+        if pricing and day_summary["by_model"]:
+            total_cost = 0.0
+            for model_id, model_data in day_summary["by_model"].items():
+                model_tokens = {
+                    "model": model_id,
+                    "input_tokens": model_data["input_tokens"],
+                    "output_tokens": model_data["output_tokens"],
+                }
+                c = estimate_cost(model_tokens, pricing)
+                if c is not None:
+                    total_cost += c
+            cost = total_cost
+
+        result.append({
+            "date": current.isoformat(),
+            "total_input": day_summary["total_input"],
+            "total_output": day_summary["total_output"],
+            "count": day_summary["count"],
+            "cost": cost,
+        })
+        current += timedelta(days=1)
+    return result
+
+
 def get_pricing_config(config: Optional[dict] = None) -> Optional[dict]:
     """Get pricing table from config.yaml → usage.pricing.
 
