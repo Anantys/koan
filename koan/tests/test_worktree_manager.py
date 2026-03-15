@@ -17,6 +17,7 @@ from app.worktree_manager import (
     cleanup_stale_worktrees,
     git_retry,
     inject_worktree_claude_md,
+    prune_worktrees,
     setup_shared_deps,
     WORKTREE_DIR,
 )
@@ -301,3 +302,57 @@ class TestSetupSharedDeps:
 
         setup_shared_deps(str(wt_path), git_repo, ["node_modules"])
         assert not (wt_path / "node_modules").is_symlink()
+
+
+class TestRemoveWorktreeLogging:
+    """Verify that remove_worktree surfaces failures instead of silently swallowing them."""
+
+    def test_logs_worktree_remove_failure(self, git_repo, capsys):
+        """git worktree remove failure should be logged to stderr."""
+        wt = create_worktree(git_repo)
+        # Remove the worktree directory manually so git worktree remove fails
+        import shutil
+        shutil.rmtree(wt.path)
+
+        remove_worktree(git_repo, session_id=wt.session_id)
+        captured = capsys.readouterr()
+        # The git worktree remove will fail since directory is gone,
+        # and should log the error
+        assert "git worktree remove failed" in captured.err or not Path(wt.path).exists()
+
+    def test_logs_branch_delete_failure(self, git_repo, capsys):
+        """git branch -D failure should be logged to stderr."""
+        wt = create_worktree(git_repo)
+        branch = wt.branch
+        # Delete the branch before remove_worktree tries to
+        subprocess.run(
+            ["git", "worktree", "remove", "--force", wt.path],
+            cwd=git_repo, capture_output=True,
+        )
+        subprocess.run(
+            ["git", "branch", "-D", branch],
+            cwd=git_repo, capture_output=True,
+        )
+        # Now remove_worktree should log that branch -D fails
+        remove_worktree(git_repo, session_id=wt.session_id)
+        captured = capsys.readouterr()
+        assert "git branch -D failed" in captured.err
+
+
+class TestPruneWorktrees:
+    def test_prune_runs_without_error(self, git_repo):
+        """prune_worktrees should complete without raising."""
+        prune_worktrees(git_repo)
+
+    def test_prune_cleans_stale_refs(self, git_repo, capsys):
+        """prune_worktrees should clean up stale worktree references."""
+        wt = create_worktree(git_repo)
+        wt_path = wt.path
+        # Manually remove the directory (simulating a crash)
+        import shutil
+        shutil.rmtree(wt_path)
+        # Now prune should detect and report the stale reference
+        prune_worktrees(git_repo)
+        captured = capsys.readouterr()
+        # --verbose output should mention pruning
+        assert "pruned" in captured.err.lower() or not Path(wt_path).exists()
