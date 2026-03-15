@@ -593,7 +593,7 @@ class TestRunRebase:
 
         with patch("app.rebase_pr._get_current_branch", return_value="main"), \
              patch("app.rebase_pr._checkout_pr_branch"), \
-             patch("app.rebase_pr._rebase_onto_target", return_value="origin"), \
+             patch("app.rebase_pr._rebase_with_conflict_resolution", return_value="origin"), \
              patch("app.rebase_pr._push_with_fallback", return_value={
                  "success": True, "actions": ["Force-pushed `koan/fix-auth`"], "error": ""
              }):
@@ -646,7 +646,7 @@ class TestRunRebase:
         notify = MagicMock()
         with patch("app.rebase_pr._get_current_branch", return_value="original"), \
              patch("app.rebase_pr._checkout_pr_branch"), \
-             patch("app.rebase_pr._rebase_onto_target", return_value=None):
+             patch("app.rebase_pr._rebase_with_conflict_resolution", return_value=None):
             success, summary = run_rebase("o", "r", "1", "/p", notify_fn=notify)
             assert success is False
             assert "conflict" in summary.lower()
@@ -665,7 +665,7 @@ class TestRunRebase:
         notify = MagicMock()
         with patch("app.rebase_pr._get_current_branch", return_value="main"), \
              patch("app.rebase_pr._checkout_pr_branch"), \
-             patch("app.rebase_pr._rebase_onto_target", return_value="origin"), \
+             patch("app.rebase_pr._rebase_with_conflict_resolution", return_value="origin"), \
              patch("app.rebase_pr._push_with_fallback", return_value={
                  "success": True, "actions": ["Force-pushed"], "error": ""
              }):
@@ -688,7 +688,7 @@ class TestRunRebase:
         notify = MagicMock()
         with patch("app.rebase_pr._get_current_branch", return_value="main"), \
              patch("app.rebase_pr._checkout_pr_branch"), \
-             patch("app.rebase_pr._rebase_onto_target", return_value="origin"), \
+             patch("app.rebase_pr._rebase_with_conflict_resolution", return_value="origin"), \
              patch("app.rebase_pr._push_with_fallback", return_value={
                  "success": True, "actions": ["Force-pushed"], "error": ""
              }):
@@ -710,7 +710,7 @@ class TestRunRebase:
         notify = MagicMock()
         with patch("app.rebase_pr._get_current_branch", return_value="original"), \
              patch("app.rebase_pr._checkout_pr_branch"), \
-             patch("app.rebase_pr._rebase_onto_target", return_value="origin"), \
+             patch("app.rebase_pr._rebase_with_conflict_resolution", return_value="origin"), \
              patch("app.rebase_pr._push_with_fallback", return_value={
                  "success": True, "actions": ["Force-pushed"], "error": ""
              }):
@@ -850,7 +850,7 @@ class TestRunRebaseClaude:
         notify = MagicMock()
         with patch("app.rebase_pr._get_current_branch", return_value="main"), \
              patch("app.rebase_pr._checkout_pr_branch"), \
-             patch("app.rebase_pr._rebase_onto_target", return_value="origin"), \
+             patch("app.rebase_pr._rebase_with_conflict_resolution", return_value="origin"), \
              patch("app.rebase_pr._push_with_fallback", return_value={
                  "success": True, "actions": ["Force-pushed"], "error": ""
              }):
@@ -873,7 +873,7 @@ class TestRunRebaseClaude:
         notify = MagicMock()
         with patch("app.rebase_pr._get_current_branch", return_value="main"), \
              patch("app.rebase_pr._checkout_pr_branch"), \
-             patch("app.rebase_pr._rebase_onto_target", return_value="origin"), \
+             patch("app.rebase_pr._rebase_with_conflict_resolution", return_value="origin"), \
              patch("app.rebase_pr._push_with_fallback", return_value={
                  "success": True, "actions": ["Force-pushed"], "error": ""
              }):
@@ -895,7 +895,7 @@ class TestRunRebaseClaude:
         notify = MagicMock()
         with patch("app.rebase_pr._get_current_branch", return_value="main"), \
              patch("app.rebase_pr._checkout_pr_branch"), \
-             patch("app.rebase_pr._rebase_onto_target", return_value="origin"), \
+             patch("app.rebase_pr._rebase_with_conflict_resolution", return_value="origin"), \
              patch("app.rebase_pr._push_with_fallback", return_value={
                  "success": True, "actions": ["Force-pushed"], "error": ""
              }):
@@ -926,7 +926,7 @@ class TestRunRebaseClaude:
         branch_calls = iter(["main", "koan/some-branch"])
         with patch("app.rebase_pr._get_current_branch", side_effect=branch_calls), \
              patch("app.rebase_pr._checkout_pr_branch"), \
-             patch("app.rebase_pr._rebase_onto_target", return_value="origin"), \
+             patch("app.rebase_pr._rebase_with_conflict_resolution", return_value="origin"), \
              patch("app.rebase_pr._push_with_fallback", return_value={
                  "success": True, "actions": ["Force-pushed"], "error": ""
              }):
@@ -958,7 +958,7 @@ class TestRunRebaseClaude:
         branch_calls = iter(["main", "feat"])
         with patch("app.rebase_pr._get_current_branch", side_effect=branch_calls), \
              patch("app.rebase_pr._checkout_pr_branch"), \
-             patch("app.rebase_pr._rebase_onto_target", return_value="origin"), \
+             patch("app.rebase_pr._rebase_with_conflict_resolution", return_value="origin"), \
              patch("app.rebase_pr._push_with_fallback", return_value={
                  "success": True, "actions": ["Force-pushed"], "error": ""
              }):

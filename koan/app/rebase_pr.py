@@ -7,13 +7,14 @@ and applying requested changes via Claude before pushing.
 Pipeline:
 1. Fetch PR metadata + comments from GitHub
 2. Checkout the PR branch locally
-3. Rebase onto the upstream target branch
+3. Rebase onto the upstream target branch (resolving conflicts via Claude if needed)
 4. Analyze review comments and apply changes (Claude-powered, if feedback exists)
 5. Force-push to the existing branch (never creates a new PR)
 6. Comment on the PR with a summary
 """
 
 import json
+import subprocess
 import sys
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -22,12 +23,12 @@ from app.claude_step import (
     _build_pr_prompt,
     _get_current_branch,
     _get_diffstat,
-    _rebase_onto_target,
     _run_git,
     _safe_checkout,
+    run_claude,
 )
 from app.github import run_gh
-from app.prompts import load_prompt, load_skill_prompt  # noqa: F401 — safety import
+from app.prompts import load_prompt, load_prompt_or_skill, load_skill_prompt  # noqa: F401 — safety import
 from app.utils import truncate_text
 
 
@@ -188,12 +189,15 @@ def run_rebase(
 
     # ── Step 3: Rebase onto target branch ─────────────────────────────
     notify_fn(f"Rebasing `{branch}` onto `{base}`...")
-    rebase_remote = _rebase_onto_target(base, project_path)
+    rebase_remote = _rebase_with_conflict_resolution(
+        base, project_path, context, actions_log,
+        notify_fn=notify_fn, skill_dir=skill_dir,
+    )
     if rebase_remote:
         actions_log.append(f"Rebased `{branch}` onto `{rebase_remote}/{base}`")
     else:
         _safe_checkout(original_branch, project_path)
-        return False, f"Rebase conflict on `{base}` (tried origin and upstream). Manual resolution required."
+        return False, f"Rebase failed on `{base}` (tried origin and upstream). Could not resolve conflicts."
 
     # ── Step 4: Analyze review comments and apply changes ──────────────
     has_review_feedback = bool(
@@ -261,6 +265,222 @@ def run_rebase(
         f"- {a}" for a in actions_log
     )
     return True, summary
+
+
+# ---------------------------------------------------------------------------
+# Conflict-aware rebase
+# ---------------------------------------------------------------------------
+
+def _rebase_with_conflict_resolution(
+    base: str,
+    project_path: str,
+    context: dict,
+    actions_log: List[str],
+    notify_fn=None,
+    skill_dir: Optional[Path] = None,
+    max_conflict_rounds: int = 5,
+) -> Optional[str]:
+    """Rebase onto target branch, resolving conflicts via Claude if needed.
+
+    Tries origin then upstream.  When ``git rebase`` hits conflicts, Claude
+    is invoked to resolve the conflicted files, they are staged, and the
+    rebase is continued.  This loop repeats for up to *max_conflict_rounds*
+    per remote (one round per conflicting commit).
+
+    Returns:
+        Remote name used (e.g. "origin") on success, None on total failure.
+    """
+    for remote in ("origin", "upstream"):
+        try:
+            _run_git(["git", "fetch", remote, base], cwd=project_path)
+        except Exception as e:
+            print(f"[rebase_pr] fetch {remote}/{base} failed: {e}", file=sys.stderr)
+            continue
+
+        # Attempt rebase
+        try:
+            _run_git(
+                ["git", "rebase", "--autostash", f"{remote}/{base}"],
+                cwd=project_path,
+            )
+            return remote  # Clean rebase — no conflicts
+        except Exception as e:
+            print(f"[rebase_pr] Rebase onto {remote}/{base} failed: {e}", file=sys.stderr)
+
+            # Check if we're in a conflicted rebase state
+            if not _has_rebase_in_progress(project_path):
+                # Non-conflict failure (e.g. dirty worktree) — abort and try next
+                _abort_rebase(project_path)
+                continue
+
+            # Conflict detected — try to resolve
+            resolved = _resolve_rebase_conflicts(
+                base, remote, project_path, context, actions_log,
+                notify_fn=notify_fn, skill_dir=skill_dir,
+                max_rounds=max_conflict_rounds,
+            )
+            if resolved:
+                return remote
+
+            # Resolution failed — abort and try next remote
+            _abort_rebase(project_path)
+
+    return None
+
+
+def _has_rebase_in_progress(project_path: str) -> bool:
+    """Check if a git rebase is in progress (typically due to conflicts)."""
+    git_dir = Path(project_path) / ".git"
+    return (git_dir / "rebase-merge").exists() or (git_dir / "rebase-apply").exists()
+
+
+def _abort_rebase(project_path: str) -> None:
+    """Abort a rebase in progress, ignoring errors."""
+    subprocess.run(
+        ["git", "rebase", "--abort"],
+        stdin=subprocess.DEVNULL,
+        capture_output=True, cwd=project_path,
+        timeout=30,
+    )
+
+
+def _get_conflicted_files(project_path: str) -> List[str]:
+    """Return list of files with unmerged conflicts."""
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--name-only", "--diff-filter=U"],
+            capture_output=True, text=True, cwd=project_path,
+            timeout=30,
+        )
+        return [f.strip() for f in result.stdout.splitlines() if f.strip()]
+    except Exception as e:
+        print(f"[rebase_pr] failed to list conflicted files: {e}", file=sys.stderr)
+        return []
+
+
+def _resolve_rebase_conflicts(
+    base: str,
+    remote: str,
+    project_path: str,
+    context: dict,
+    actions_log: List[str],
+    notify_fn=None,
+    skill_dir: Optional[Path] = None,
+    max_rounds: int = 5,
+) -> bool:
+    """Resolve rebase conflicts via Claude, then continue the rebase.
+
+    Each conflicting commit in the rebase may produce its own set of
+    conflicts.  This function loops: resolve → stage → continue → check
+    for more conflicts, up to *max_rounds* times.
+
+    Returns True if the rebase completed successfully.
+    """
+    from app.cli_provider import build_full_command
+    from app.config import get_model_config
+
+    for round_num in range(1, max_rounds + 1):
+        conflicted = _get_conflicted_files(project_path)
+        if not conflicted:
+            # No conflicts — try to continue (may already be done)
+            try:
+                _run_git(["git", "rebase", "--continue"], cwd=project_path)
+            except Exception as e:
+                print(f"[rebase_pr] rebase --continue failed: {e}", file=sys.stderr)
+            # Check if rebase is still in progress
+            if not _has_rebase_in_progress(project_path):
+                return True
+            continue
+
+        if notify_fn:
+            notify_fn(
+                f"Resolving conflicts ({round_num}/{max_rounds}): "
+                f"{', '.join(conflicted[:5])}"
+                f"{'...' if len(conflicted) > 5 else ''}"
+            )
+
+        # Build conflict resolution prompt
+        prompt = _build_conflict_resolution_prompt(
+            context, conflicted, base, skill_dir=skill_dir,
+        )
+
+        # Invoke Claude to resolve conflicts
+        models = get_model_config()
+        cmd = build_full_command(
+            prompt=prompt,
+            allowed_tools=["Bash", "Read", "Write", "Glob", "Grep", "Edit"],
+            model=models["mission"],
+            fallback=models["fallback"],
+            max_turns=15,
+        )
+        result = run_claude(cmd, project_path, timeout=300)
+
+        if not result["success"]:
+            print(
+                f"[rebase_pr] Claude conflict resolution failed (round {round_num}): "
+                f"{result['error'][:200]}",
+                file=sys.stderr,
+            )
+            return False
+
+        # Stage all resolved files (Claude should have done git add, but ensure it)
+        remaining = _get_conflicted_files(project_path)
+        if remaining:
+            print(
+                f"[rebase_pr] Still {len(remaining)} conflicted after Claude resolution: "
+                f"{remaining}",
+                file=sys.stderr,
+            )
+            return False
+
+        # Continue the rebase
+        try:
+            # GIT_EDITOR=true prevents interactive editor for commit messages
+            subprocess.run(
+                ["git", "rebase", "--continue"],
+                stdin=subprocess.DEVNULL,
+                capture_output=True, text=True,
+                cwd=project_path, timeout=60,
+                env={**__import__("os").environ, "GIT_EDITOR": "true"},
+            ).check_returncode()
+        except subprocess.CalledProcessError:
+            # May have more conflicts from subsequent commits
+            if _has_rebase_in_progress(project_path):
+                continue
+            # Or the rebase finished despite non-zero exit
+            if not _has_rebase_in_progress(project_path):
+                actions_log.append(
+                    f"Resolved merge conflicts ({round_num} round(s))"
+                )
+                return True
+            return False
+
+        # Check if rebase completed
+        if not _has_rebase_in_progress(project_path):
+            actions_log.append(
+                f"Resolved merge conflicts ({round_num} round(s))"
+            )
+            return True
+
+    print(f"[rebase_pr] Exceeded max conflict resolution rounds ({max_rounds})", file=sys.stderr)
+    return False
+
+
+def _build_conflict_resolution_prompt(
+    context: dict,
+    conflicted_files: List[str],
+    base: str,
+    skill_dir: Optional[Path] = None,
+) -> str:
+    """Build a prompt for Claude to resolve merge conflicts."""
+    kwargs = dict(
+        TITLE=context.get("title", ""),
+        BODY=context.get("body", ""),
+        BRANCH=context.get("branch", ""),
+        BASE=base,
+        CONFLICTED_FILES="\n".join(f"- `{f}`" for f in conflicted_files),
+    )
+    return load_prompt_or_skill(skill_dir, "conflict_resolution", **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -422,7 +642,7 @@ def _build_rebase_comment(
 
 def _is_conflict_failure(summary: str) -> bool:
     """Check if a rebase failure summary indicates a git conflict."""
-    return "Rebase conflict" in summary
+    return "Rebase conflict" in summary or "Could not resolve conflicts" in summary
 
 
 # ---------------------------------------------------------------------------
