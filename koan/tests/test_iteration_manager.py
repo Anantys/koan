@@ -1387,8 +1387,8 @@ projects:
 
     @patch("app.github.get_gh_username", return_value="koan-bot")
     @patch("app.github.count_open_prs", return_value=-1)
-    def test_gh_error_fails_open(self, mock_count, mock_user, koan_root):
-        """gh failure returns -1 → project included (fail-open)."""
+    def test_gh_error_treats_as_pr_limited(self, mock_count, mock_user, koan_root):
+        """gh failure returns -1 → conservative, project treated as PR-limited."""
         (koan_root / "projects.yaml").write_text("""
 projects:
   koan:
@@ -1399,8 +1399,8 @@ projects:
         result = _filter_exploration_projects(
             [("koan", "/path/to/koan")], str(koan_root),
         )
-        assert len(result.projects) == 1
-        assert result.pr_limited == []
+        assert result.projects == []
+        assert "koan" in result.pr_limited
 
     @patch("app.github.get_gh_username", return_value="koan-bot")
     @patch("app.github.count_open_prs")
@@ -1634,8 +1634,8 @@ projects:
 
     @patch("app.github.get_gh_username", return_value="koan-bot")
     @patch("app.github.count_open_prs", return_value=-1)
-    def test_github_urls_all_errors_fails_open(self, mock_count, mock_user, koan_root):
-        """All github_urls return errors → fail-open, project included."""
+    def test_github_urls_all_errors_treats_as_pr_limited(self, mock_count, mock_user, koan_root):
+        """All github_urls return errors → conservative, project treated as PR-limited."""
         (koan_root / "projects.yaml").write_text("""
 projects:
   koan:
@@ -1649,8 +1649,8 @@ projects:
         result = _filter_exploration_projects(
             [("koan", "/path/to/koan")], str(koan_root),
         )
-        assert len(result.projects) == 1
-        assert result.pr_limited == []
+        assert result.projects == []
+        assert "koan" in result.pr_limited
 
     @patch("app.github.get_gh_username", return_value="koan-bot")
     @patch("app.github.count_open_prs")

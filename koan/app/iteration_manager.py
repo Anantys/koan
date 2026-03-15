@@ -500,7 +500,7 @@ def _filter_exploration_projects(
     # Phase 3: Evaluate limits using batch results (fall back to sequential on miss)
     for name, (path, limit, urls_to_check) in projects_needing_check.items():
         total_open = 0
-        any_error = True
+        any_error = False
 
         for url in urls_to_check:
             if url in batch_results:
@@ -510,10 +510,12 @@ def _filter_exploration_projects(
                 count = cached_count_open_prs(url, author)
             if count >= 0:
                 total_open += count
-                any_error = False
+            else:
+                any_error = True
 
-        if any_error:
-            filtered.append((name, path))
+        if any_error and total_open == 0:
+            # All URLs errored — conservative: treat as PR-limited
+            pr_limited.append(name)
             continue
 
         if total_open >= limit:
