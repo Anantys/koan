@@ -233,7 +233,12 @@ def remove_worktree(
             text=True,
             check=True,
         )
-    except subprocess.CalledProcessError:
+    except subprocess.CalledProcessError as e:
+        stderr = (e.stderr or "").strip()
+        print(
+            f"[worktree_manager] git worktree remove failed for {wt}: {stderr}",
+            file=sys.stderr,
+        )
         # If git worktree remove fails, try manual cleanup
         if wt.exists():
             shutil.rmtree(str(wt), ignore_errors=True)
@@ -255,14 +260,24 @@ def remove_worktree(
         prefix = _get_branch_prefix()
         branch = f"{prefix}/session-{session_id}"
         try:
-            subprocess.run(
+            result = subprocess.run(
                 ["git", "branch", "-D", branch],
                 cwd=project_path,
                 capture_output=True,
                 text=True,
             )
-        except subprocess.CalledProcessError:
-            pass
+            if result.returncode != 0:
+                stderr = (result.stderr or "").strip()
+                print(
+                    f"[worktree_manager] git branch -D failed for {branch}: {stderr}",
+                    file=sys.stderr,
+                )
+        except subprocess.CalledProcessError as e:
+            stderr = (e.stderr or "").strip()
+            print(
+                f"[worktree_manager] git branch -D failed for {branch}: {stderr}",
+                file=sys.stderr,
+            )
 
 
 def list_worktrees(project_path: str) -> List[WorktreeInfo]:
@@ -337,15 +352,30 @@ def cleanup_stale_worktrees(project_path: str, active_session_ids: Optional[List
                 print(f"[worktree_manager] stale worktree cleanup error for {session_id}: {e}", file=sys.stderr)
 
     # Final prune
+    prune_worktrees(project_path)
+
+
+def prune_worktrees(project_path: str):
+    """Run git worktree prune to clear stale worktree references.
+
+    Intended to be called on startup to clean up leftover refs from
+    sessions that were killed without proper cleanup.
+    """
     try:
-        subprocess.run(
-            ["git", "worktree", "prune"],
+        result = subprocess.run(
+            ["git", "worktree", "prune", "--verbose"],
             cwd=project_path,
             capture_output=True,
             text=True,
         )
-    except subprocess.CalledProcessError:
-        pass
+        output = (result.stdout or "").strip()
+        if output:
+            print(f"[worktree_manager] pruned stale worktrees:\n{output}", file=sys.stderr)
+    except subprocess.CalledProcessError as e:
+        stderr = (e.stderr or "").strip()
+        print(f"[worktree_manager] git worktree prune failed: {stderr}", file=sys.stderr)
+    except FileNotFoundError:
+        pass  # git not available
 
 
 def setup_shared_deps(worktree_path: str, project_path: str, shared_deps: List[str]):

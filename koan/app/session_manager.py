@@ -28,6 +28,7 @@ from typing import Dict, List, Optional
 from app.worktree_manager import (
     create_worktree,
     inject_worktree_claude_md,
+    prune_worktrees,
     remove_worktree,
     setup_shared_deps,
 )
@@ -446,8 +447,16 @@ def kill_all_sessions(registry: SessionRegistry):
 def recover_stale_sessions(registry: SessionRegistry):
     """Clean up sessions whose processes are no longer alive.
 
-    Called on startup to handle crash recovery.
+    Called on startup to handle crash recovery. Also prunes stale
+    git worktree references that may have accumulated.
     """
+    # Prune stale worktree refs across all projects with active sessions
+    pruned_projects: set = set()
+    for session in registry.get_all():
+        if session.project_path and session.project_path not in pruned_projects:
+            pruned_projects.add(session.project_path)
+            prune_worktrees(session.project_path)
+
     for session in registry.get_active():
         if session.pid <= 0:
             session.status = "failed"
