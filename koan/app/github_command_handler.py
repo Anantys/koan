@@ -344,7 +344,9 @@ def build_mission_from_command(
         parts.append(context)
 
     mission_text = " ".join(parts)
-    return f"- [project:{project_name}] {mission_text}"
+    # Trailing 📬 marks missions originating from GitHub @mentions.
+    # The /list handler repositions it as a leading visual hint.
+    return f"- [project:{project_name}] {mission_text} 📬"
 
 
 def resolve_project_from_notification(notification: dict) -> Optional[Tuple[str, str, str]]:

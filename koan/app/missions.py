@@ -1013,6 +1013,11 @@ def clean_mission_display(text: str, max_length: int = 120) -> str:
         text = re.sub(r'\[projec?t:[a-zA-Z0-9_-]+\]\s*', '', text)
         text = f"[{project}] {text}"
 
+    # Strip trailing GitHub origin marker (displayed by /list as a leading hint)
+    text = text.rstrip()
+    if text.endswith("📬"):
+        text = text[:-1].rstrip()
+
     # Truncate for readability
     if len(text) > max_length:
         text = text[:max_length - 3] + "..."

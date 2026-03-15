@@ -404,6 +404,95 @@ class TestCleanMission:
         assert result.endswith("...")
         assert len(result) == 120
 
+    def test_github_origin_marker_stripped(self):
+        from app.missions import clean_mission_display
+        result = clean_mission_display("- [project:koan] /rebase https://github.com/o/r/pull/1 📬")
+        assert "📬" not in result
+        assert result == "[koan] /rebase https://github.com/o/r/pull/1"
+
+    def test_no_marker_unchanged(self):
+        from app.missions import clean_mission_display
+        result = clean_mission_display("- [project:koan] /plan add feature")
+        assert result == "[koan] /plan add feature"
+
+
+# ---------------------------------------------------------------------------
+# GitHub origin marker display in /list
+# ---------------------------------------------------------------------------
+
+class TestGithubOriginMarker:
+    """Test that 📬 marker is repositioned from trailing to leading in /list."""
+
+    def _make_ctx(self, tmp_path, missions_content):
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir(exist_ok=True)
+        (instance_dir / "missions.md").write_text(missions_content)
+        return SkillContext(
+            koan_root=tmp_path,
+            instance_dir=instance_dir,
+            command_name="list",
+        )
+
+    def test_github_marker_prepended_to_prefix(self, tmp_path):
+        from skills.core.list.handler import handle
+
+        missions = textwrap.dedent("""\
+            # Missions
+
+            ## Pending
+
+            - [project:koan] /rebase https://github.com/o/r/pull/1 📬
+
+            ## In Progress
+
+            ## Done
+        """)
+        ctx = self._make_ctx(tmp_path, missions)
+        result = handle(ctx)
+        # 📬 should appear before the 🔄 rebase prefix
+        assert "📬🔄" in result
+        # Trailing marker should not appear in display text
+        lines = result.split("\n")
+        rebase_line = [l for l in lines if "/rebase" in l][0]
+        assert not rebase_line.rstrip().endswith("📬")
+
+    def test_no_marker_no_change(self, tmp_path):
+        from skills.core.list.handler import handle
+
+        missions = textwrap.dedent("""\
+            # Missions
+
+            ## Pending
+
+            - [project:koan] /plan add dark mode
+
+            ## In Progress
+
+            ## Done
+        """)
+        ctx = self._make_ctx(tmp_path, missions)
+        result = handle(ctx)
+        assert "📬" not in result
+        assert "🧠" in result
+
+    def test_marker_on_in_progress(self, tmp_path):
+        from skills.core.list.handler import handle
+
+        missions = textwrap.dedent("""\
+            # Missions
+
+            ## Pending
+
+            ## In Progress
+
+            - [project:koan] /check https://github.com/o/r/pull/5 📬
+
+            ## Done
+        """)
+        ctx = self._make_ctx(tmp_path, missions)
+        result = handle(ctx)
+        assert "📬✅" in result
+
 
 # ---------------------------------------------------------------------------
 # Integration: command routing via awake.py

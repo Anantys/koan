@@ -259,7 +259,7 @@ class TestBuildMissionFromCommand:
         mission = build_mission_from_command(
             mock_skill, "rebase", "", sample_notification, "koan"
         )
-        assert mission == "- [project:koan] /rebase https://github.com/sukria/koan/pull/42"
+        assert mission == "- [project:koan] /rebase https://github.com/sukria/koan/pull/42 📬"
 
     def test_context_aware_with_context(self, mock_context_skill, sample_notification):
         mission = build_mission_from_command(
@@ -287,7 +287,7 @@ class TestBuildMissionFromCommand:
         mission = build_mission_from_command(
             mock_skill, "rebase", "", notif, "myproject"
         )
-        assert mission == "- [project:myproject] /rebase"
+        assert mission == "- [project:myproject] /rebase 📬"
 
 
 class TestResolveProjectFromNotification:
@@ -1883,8 +1883,7 @@ class TestBuildMissionEdgeCases:
         )
         notif = {"subject": {"url": "https://api.github.com/repos/o/r/issues/3"}}
         mission = build_mission_from_command(skill, "fix", "", notif, "myproj")
-        assert mission == "- [project:myproj] /fix https://github.com/o/r/issues/3"
-        assert not mission.endswith(" ")
+        assert mission == "- [project:myproj] /fix https://github.com/o/r/issues/3 📬"
 
     def test_no_web_url_and_no_context(self):
         """Mission with no URL and no context."""
@@ -1895,7 +1894,7 @@ class TestBuildMissionEdgeCases:
         )
         notif = {"subject": {}}
         mission = build_mission_from_command(skill, "check", "", notif, "proj")
-        assert mission == "- [project:proj] /check"
+        assert mission == "- [project:proj] /check 📬"
 
     @patch("app.github_command_handler._resolve_project_from_url", return_value="grep")
     def test_context_url_cross_repo_resolves_project(self, mock_resolve):

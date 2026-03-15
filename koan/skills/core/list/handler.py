@@ -21,6 +21,9 @@ _CATEGORY_PREFIXES = {
 
 _MISSION_PREFIX = "📋"
 
+# Trailing marker appended by GitHub @mention missions.
+_GITHUB_ORIGIN_MARKER = "📬"
+
 # Extract slash command from raw mission line (after optional "- " and [project:X]).
 _COMMAND_RE = re.compile(
     r"^(?:-\s*)?(?:\[projec?t:[a-zA-Z0-9_-]+\]\s*)?/([a-zA-Z0-9_.]+)"
@@ -65,10 +68,11 @@ def handle(ctx):
         for i, m in enumerate(in_progress, 1):
             prefix = mission_prefix(m)
             display = clean_mission_display(m)
+            origin = _GITHUB_ORIGIN_MARKER if _GITHUB_ORIGIN_MARKER in m else ""
             if prefix:
-                parts.append(f"  {i}. {prefix} {display}")
+                parts.append(f"  {i}. {origin}{prefix} {display}")
             else:
-                parts.append(f"  {i}. {display}")
+                parts.append(f"  {i}. {origin}{display}")
         parts.append("")
 
     if pending:
@@ -76,9 +80,10 @@ def handle(ctx):
         for i, m in enumerate(pending, 1):
             prefix = mission_prefix(m)
             display = clean_mission_display(m)
+            origin = _GITHUB_ORIGIN_MARKER if _GITHUB_ORIGIN_MARKER in m else ""
             if prefix:
-                parts.append(f"  {i}. {prefix} {display}")
+                parts.append(f"  {i}. {origin}{prefix} {display}")
             else:
-                parts.append(f"  {i}. {display}")
+                parts.append(f"  {i}. {origin}{display}")
 
     return "\n".join(parts)
