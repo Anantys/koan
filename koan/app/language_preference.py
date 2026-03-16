@@ -13,6 +13,8 @@ import json
 import os
 from pathlib import Path
 
+from app.utils import atomic_write
+
 
 def _get_language_file() -> Path:
     """Return path to the language preference file."""
@@ -44,7 +46,7 @@ def set_language(language: str) -> None:
     """
     lang_file = _get_language_file()
     lang_file.parent.mkdir(parents=True, exist_ok=True)
-    lang_file.write_text(json.dumps({"language": language.strip().lower()}))
+    atomic_write(lang_file, json.dumps({"language": language.strip().lower()}))
 
 
 def reset_language() -> None:

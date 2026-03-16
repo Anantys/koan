@@ -59,7 +59,8 @@ def handle_command(text: str):
     # --- Core hardcoded commands (safety-critical / bootstrap) ---
 
     if cmd == "/stop":
-        (KOAN_ROOT / STOP_FILE).write_text("STOP")
+        from app.utils import atomic_write
+        atomic_write(KOAN_ROOT / STOP_FILE, "STOP")
         send_telegram("⏹️ Stop requested. Current mission will complete, then Kōan will stop.")
         return
 

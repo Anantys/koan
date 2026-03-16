@@ -22,7 +22,7 @@ from typing import List, Optional
 from app.notify import format_and_send
 from app.signals import DAILY_REPORT_FILE, QUOTA_RESET_FILE
 
-from app.utils import load_dotenv
+from app.utils import atomic_write, load_dotenv
 
 load_dotenv()
 
@@ -222,7 +222,7 @@ def generate_report(report_type: str = "morning") -> str:
 
 def mark_report_sent():
     """Mark today's report as sent."""
-    REPORT_MARKER.write_text(date.today().strftime("%Y-%m-%d"))
+    atomic_write(REPORT_MARKER, date.today().strftime("%Y-%m-%d"))
 
 
 def send_daily_report(report_type: str = None) -> bool:

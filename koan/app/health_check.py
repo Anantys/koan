@@ -22,6 +22,7 @@ from pathlib import Path
 
 from app.notify import format_and_send
 from app.signals import HEARTBEAT_FILE, RUN_HEARTBEAT_FILE
+from app.utils import atomic_write
 DEFAULT_MAX_AGE = 60  # seconds
 # Run loop heartbeat is written once per iteration (~minutes apart),
 # so a longer max age is appropriate. 10 minutes covers normal idle periods.
@@ -31,7 +32,7 @@ DEFAULT_RUN_MAX_AGE = 600  # seconds
 def write_heartbeat(koan_root: str) -> None:
     """Write current timestamp to heartbeat file. Called by awake.py."""
     path = Path(koan_root) / HEARTBEAT_FILE
-    path.write_text(str(time.time()))
+    atomic_write(path, str(time.time()))
 
 
 def check_heartbeat(koan_root: str, max_age: int = DEFAULT_MAX_AGE) -> bool:
@@ -78,7 +79,7 @@ def check_and_alert(koan_root: str, max_age: int = DEFAULT_MAX_AGE) -> bool:
 def write_run_heartbeat(koan_root: str) -> None:
     """Write current timestamp to run heartbeat file. Called by run.py."""
     path = Path(koan_root) / RUN_HEARTBEAT_FILE
-    path.write_text(str(time.time()))
+    atomic_write(path, str(time.time()))
 
 
 def check_run_heartbeat(koan_root: str, max_age: int = DEFAULT_RUN_MAX_AGE) -> bool:

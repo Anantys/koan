@@ -119,7 +119,8 @@ def _write_cleanup_marker():
     import time
     marker = _cleanup_marker_path()
     try:
-        marker.write_text(str(time.time()))
+        from app.utils import atomic_write
+        atomic_write(marker, str(time.time()))
     except OSError:
         pass
 

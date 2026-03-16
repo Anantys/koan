@@ -673,8 +673,9 @@ def stop_processes(koan_root: Path, timeout: float = 5.0) -> dict:
     results = {}
 
     # Create .koan-stop signal file for graceful run loop shutdown
+    from app.utils import atomic_write
     stop_file = koan_root / STOP_FILE
-    stop_file.write_text("STOP")
+    atomic_write(stop_file, "STOP")
 
     # Bootout any launchd-managed services first to prevent respawn
     for name in PROCESS_NAMES:
