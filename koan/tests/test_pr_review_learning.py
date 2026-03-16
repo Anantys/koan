@@ -417,8 +417,8 @@ class TestLearnFromReviews:
     @patch("app.pr_review_learning._is_cache_fresh")
     @patch("app.pr_review_learning.analyze_reviews_with_cli")
     @patch("app.pr_review_learning.fetch_pr_reviews")
-    def test_empty_analysis_still_caches(self, mock_fetch, mock_analyze,
-                                         mock_cache_check, mock_cache_write):
+    def test_empty_analysis_skips_cache(self, mock_fetch, mock_analyze,
+                                        mock_cache_check, mock_cache_write):
         mock_fetch.return_value = [
             {
                 "number": 1, "title": "feat: X", "was_merged": True,
@@ -433,5 +433,6 @@ class TestLearnFromReviews:
 
         result = learn_from_reviews("/instance", "proj", "/path")
         assert result["skipped_reason"] == "empty_analysis"
-        # Cache should still be written to avoid re-running
-        mock_cache_write.assert_called_once()
+        # Cache must NOT be written on empty analysis (API failure),
+        # so future retries can re-attempt the analysis
+        mock_cache_write.assert_not_called()

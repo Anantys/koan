@@ -412,7 +412,6 @@ def learn_from_reviews(
     result["analyzed"] = True
     if not lessons_text:
         result["skipped_reason"] = "empty_analysis"
-        _write_cache(instance_dir, review_hash)
         return result
 
     # Persist to learnings.md
