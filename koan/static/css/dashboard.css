@@ -1,0 +1,571 @@
+/* Kōan Dashboard — shared stylesheet */
+
+/* ========== Theme Variables ========== */
+:root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --border: #30363d;
+    --text: #c9d1d9;
+    --text-muted: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --orange: #d29922;
+    --red: #f85149;
+    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+}
+
+/* Light theme overrides */
+[data-theme="light"] {
+    --bg: #ffffff;
+    --surface: #f6f8fa;
+    --border: #d0d7de;
+    --text: #1f2328;
+    --text-muted: #656d76;
+    --accent: #0969da;
+    --green: #1a7f37;
+    --orange: #9a6700;
+    --red: #cf222e;
+}
+
+/* ========== Reset & Base ========== */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    font-family: var(--font);
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.5;
+}
+
+/* ========== Navigation ========== */
+nav {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 0.75rem 1.5rem;
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    flex-wrap: wrap;
+}
+nav .logo {
+    font-size: 1.2rem;
+    font-weight: 600;
+    color: var(--accent);
+    text-decoration: none;
+    margin-right: 0.5rem;
+}
+nav a {
+    color: var(--text-muted);
+    text-decoration: none;
+    font-size: 0.9rem;
+    white-space: nowrap;
+}
+nav a:hover, nav a.active { color: var(--text); }
+
+/* Theme toggle button */
+#theme-toggle {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    line-height: 1;
+    flex-shrink: 0;
+}
+#theme-toggle:hover {
+    color: var(--text);
+    opacity: 1;
+}
+
+/* Project filter */
+#project-filter {
+    margin-left: auto;
+    padding: 0.35rem 0.5rem;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-size: 0.8rem;
+    cursor: pointer;
+    display: none;
+}
+#project-filter:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+/* ========== Layout ========== */
+main {
+    max-width: 960px;
+    margin: 2rem auto;
+    padding: 0 1.5rem;
+}
+
+/* ========== Typography ========== */
+h1 { font-size: 1.5rem; margin-bottom: 1.5rem; }
+h2 { font-size: 1.1rem; margin-bottom: 1rem; color: var(--text-muted); }
+
+/* ========== Cards & Grids ========== */
+.card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 1rem 1.25rem;
+    margin-bottom: 1rem;
+}
+.grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 1rem;
+    margin-bottom: 2rem;
+}
+.stat-value {
+    font-size: 2rem;
+    font-weight: 700;
+    font-family: var(--mono);
+}
+.stat-label {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+.stat-detail {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    margin-top: 0.25rem;
+}
+
+/* ========== Badges ========== */
+.badge {
+    display: inline-block;
+    padding: 0.15rem 0.5rem;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    font-weight: 600;
+}
+.badge-green { background: rgba(63, 185, 80, 0.15); color: var(--green); }
+.badge-orange { background: rgba(210, 153, 34, 0.15); color: var(--orange); }
+.badge-red { background: rgba(248, 81, 73, 0.15); color: var(--red); }
+.badge-blue { background: rgba(88, 166, 255, 0.15); color: var(--accent); }
+.badge-muted { background: rgba(139, 148, 158, 0.15); color: var(--text-muted); }
+
+/* ========== Missions ========== */
+.mission-item {
+    padding: 0.5rem 0;
+    border-bottom: 1px solid var(--border);
+    font-family: var(--mono);
+    font-size: 0.85rem;
+}
+.mission-item:last-child { border-bottom: none; }
+
+/* ========== Forms ========== */
+input[type="text"], textarea {
+    width: 100%;
+    padding: 0.5rem 0.75rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 0.9rem;
+}
+input[type="text"]:focus, textarea:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+button, .btn {
+    padding: 0.4rem 1rem;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    font-weight: 500;
+}
+button:hover, .btn:hover { opacity: 0.9; }
+.btn-secondary {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+}
+.form-row {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    margin-top: 0.75rem;
+}
+.form-row input[type="text"] { flex: 1; }
+
+/* ========== Code & Pre ========== */
+pre {
+    font-family: var(--mono);
+    font-size: 0.82rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--text-muted);
+    line-height: 1.6;
+}
+
+/* ========== Journal ========== */
+.journal-date {
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--accent);
+    margin-bottom: 0.5rem;
+}
+.journal-project {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    margin-bottom: 0.25rem;
+}
+
+/* ========== Chat ========== */
+.chat-container {
+    display: flex;
+    flex-direction: column;
+    height: calc(100vh - 200px);
+}
+.chat-messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 1rem 0;
+}
+.chat-msg {
+    margin-bottom: 1rem;
+    padding: 0.75rem 1rem;
+    border-radius: 8px;
+    max-width: 80%;
+}
+.chat-msg.human {
+    background: rgba(88, 166, 255, 0.1);
+    border: 1px solid rgba(88, 166, 255, 0.2);
+    margin-left: auto;
+}
+.chat-msg.koan {
+    background: var(--surface);
+    border: 1px solid var(--border);
+}
+.chat-msg .sender {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    margin-bottom: 0.25rem;
+    text-transform: uppercase;
+}
+.chat-input {
+    display: flex;
+    gap: 0.5rem;
+    padding: 1rem 0;
+    border-top: 1px solid var(--border);
+}
+.chat-input textarea {
+    flex: 1;
+    resize: none;
+    height: 60px;
+}
+.chat-input .actions {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+
+/* ========== State & Focus Cards ========== */
+.card-focus {
+    background: rgba(88, 166, 255, 0.08);
+    border-color: rgba(88, 166, 255, 0.3);
+    font-size: 0.85rem;
+    color: var(--accent);
+    margin-bottom: 1.5rem;
+}
+.state-detail {
+    margin-bottom: 1.5rem;
+}
+.state-detail-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 0.5rem 1.5rem;
+}
+.detail-item {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+}
+.detail-key {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+.detail-val {
+    font-family: var(--mono);
+    font-size: 0.85rem;
+}
+.detail-link {
+    margin-top: 0.75rem;
+    font-size: 0.8rem;
+}
+.detail-link a {
+    color: var(--accent);
+    text-decoration: none;
+}
+.detail-link a:hover {
+    text-decoration: underline;
+}
+
+/* ========== Activity Dots ========== */
+.activity-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-right: 6px;
+    vertical-align: middle;
+}
+.activity-dot-working {
+    background: var(--green);
+    animation: pulse 1.5s ease-in-out infinite;
+}
+.activity-dot-sleeping, .activity-dot-contemplating {
+    background: var(--accent);
+}
+.activity-dot-paused {
+    background: var(--orange);
+}
+.activity-dot-stopped, .activity-dot-error_recovery {
+    background: var(--red);
+}
+.activity-dot-idle {
+    background: var(--text-muted);
+    opacity: 0.5;
+}
+@keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.4; transform: scale(0.8); }
+}
+
+/* ========== Project Cards ========== */
+.project-card:hover {
+    border-color: var(--accent);
+}
+
+/* ========== Spinners & Loading ========== */
+.loading { opacity: 0.5; }
+.spinner {
+    display: inline-block;
+    width: 16px;
+    height: 16px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ========== Attention Zone ========== */
+.attention-zone {
+    margin-bottom: 1.5rem;
+}
+.attention-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.75rem;
+    padding: 0.65rem 1rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--border);
+    border-radius: 6px;
+    margin-bottom: 0.5rem;
+    transition: opacity 0.3s ease;
+}
+.attention-item.severity-critical { border-left-color: var(--red); }
+.attention-item.severity-warning { border-left-color: var(--orange); }
+.attention-item.severity-info { border-left-color: var(--accent); }
+.attention-item-icon {
+    font-size: 0.9rem;
+    margin-top: 0.1rem;
+    flex-shrink: 0;
+}
+.attention-item-body {
+    flex: 1;
+    min-width: 0;
+}
+.attention-item-title {
+    font-size: 0.85rem;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.attention-item-title a {
+    color: var(--text);
+    text-decoration: none;
+}
+.attention-item-title a:hover { text-decoration: underline; }
+.attention-item-meta {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin-top: 0.1rem;
+}
+.attention-item-dismiss {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 1rem;
+    padding: 0 0.25rem;
+    line-height: 1;
+    flex-shrink: 0;
+}
+.attention-item-dismiss:hover { color: var(--text); opacity: 1; }
+.attention-show-more {
+    font-size: 0.8rem;
+    color: var(--accent);
+    cursor: pointer;
+    background: none;
+    border: none;
+    padding: 0;
+    margin-top: 0.25rem;
+}
+.attention-show-more:hover { text-decoration: underline; }
+
+/* Nav attention badge */
+.nav-attention-badge {
+    display: inline-block;
+    background: var(--red);
+    color: #fff;
+    border-radius: 10px;
+    font-size: 0.65rem;
+    font-weight: 700;
+    padding: 0.05rem 0.35rem;
+    margin-left: 0.3rem;
+    vertical-align: middle;
+    line-height: 1.4;
+}
+
+/* ========== Table wrapper (mobile scroll) ========== */
+.table-wrap {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+.table-wrap table {
+    min-width: 500px;
+}
+
+/* ========== Plans detail panel ========== */
+/* (page-specific overrides handled below in responsive section) */
+
+/* ========== Keyboard Shortcuts Overlay ========== */
+#shortcuts-help {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    z-index: 1000;
+    align-items: center;
+    justify-content: center;
+}
+#shortcuts-help.visible {
+    display: flex;
+}
+#shortcuts-help-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.5rem 2rem;
+    min-width: 280px;
+    max-width: 400px;
+    width: 90%;
+}
+#shortcuts-help-box h3 {
+    font-size: 1rem;
+    margin-bottom: 1rem;
+    color: var(--text);
+}
+.shortcut-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.35rem 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.85rem;
+}
+.shortcut-row:last-child { border-bottom: none; }
+.shortcut-key {
+    font-family: var(--mono);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.1rem 0.4rem;
+    font-size: 0.8rem;
+    color: var(--accent);
+}
+.shortcut-close {
+    display: block;
+    margin-top: 1rem;
+    text-align: right;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+}
+
+/* ========== Mobile Responsive ========== */
+@media (max-width: 640px) {
+    /* Nav: wrap to two rows, full-width filter */
+    nav {
+        gap: 0.5rem;
+        padding: 0.75rem 1rem;
+    }
+    nav .logo {
+        font-size: 1rem;
+    }
+    nav a {
+        font-size: 0.8rem;
+    }
+    #project-filter {
+        margin-left: 0;
+        width: 100%;
+        order: 10; /* push to new row */
+    }
+    #theme-toggle {
+        margin-left: auto;
+    }
+
+    /* Main container */
+    main {
+        margin: 1rem auto;
+        padding: 0 0.75rem;
+    }
+
+    /* Stat grids: force single col on very narrow screens */
+    .grid {
+        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    }
+
+    /* Chat: reduce max-width for bubbles */
+    .chat-msg {
+        max-width: 95%;
+    }
+    .chat-input .actions {
+        flex-direction: row;
+        flex-wrap: wrap;
+    }
+
+    /* Form rows: stack vertically */
+    .form-row {
+        flex-wrap: wrap;
+    }
+    .form-row input[type="text"] {
+        min-width: 0;
+    }
+
+    /* Pre content: already pre-wrap, add break-all for narrow */
+    pre {
+        word-break: break-all;
+    }
+
+    /* Hide lower-priority table columns on mobile */
+    .hide-mobile { display: none !important; }
+}

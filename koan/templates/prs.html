@@ -45,13 +45,14 @@
     <div id="pr-empty" style="display:none;text-align:center;padding:2rem;color:var(--text-muted);">
         No open PRs found.
     </div>
+    <div class="table-wrap">
     <table id="pr-table" style="width:100%;border-collapse:collapse;font-size:0.85rem;display:none;">
         <thead>
             <tr style="color:var(--text-muted);text-align:left;">
                 <th style="padding:0.5rem 0;">Project</th>
                 <th style="padding:0.5rem 0;">PR</th>
-                <th style="padding:0.5rem 0;">Branch</th>
-                <th style="padding:0.5rem 0;">Age</th>
+                <th style="padding:0.5rem 0;" class="hide-mobile">Branch</th>
+                <th style="padding:0.5rem 0;" class="hide-mobile">Age</th>
                 <th style="padding:0.5rem 0;">Status</th>
                 <th style="padding:0.5rem 0;">CI</th>
                 <th style="padding:0.5rem 0;">Review</th>
@@ -60,6 +61,7 @@
         </thead>
         <tbody id="pr-tbody"></tbody>
     </table>
+    </div>
 </div>
 
 <!-- Expandable CI checks detail (shown below a row on click) -->
@@ -179,8 +181,8 @@ function loadPRs() {
                     '<td style="padding:0.5rem 0;"><a href="' + escapeHtml(pr.url || '') + '" target="_blank" ' +
                         'style="color:var(--accent);text-decoration:none;" onclick="event.stopPropagation();">' +
                         '#' + pr.number + '</a> ' + title + '</td>' +
-                    '<td style="padding:0.5rem 0;font-family:var(--mono);font-size:0.8rem;color:var(--text-muted);">' + branch + '</td>' +
-                    '<td style="padding:0.5rem 0;font-family:var(--mono);font-size:0.8rem;color:var(--text-muted);">' + timeAgo(pr.createdAt) + '</td>' +
+                    '<td style="padding:0.5rem 0;font-family:var(--mono);font-size:0.8rem;color:var(--text-muted);" class="hide-mobile">' + branch + '</td>' +
+                    '<td style="padding:0.5rem 0;font-family:var(--mono);font-size:0.8rem;color:var(--text-muted);" class="hide-mobile">' + timeAgo(pr.createdAt) + '</td>' +
                     '<td style="padding:0.5rem 0;"><span class="badge badge-' + statusBadge + '">' + statusLabel + '</span></td>' +
                     '<td style="padding:0.5rem 0;"><span class="badge badge-' + ci.badge + '">' + ci.label + '</span></td>' +
                     '<td style="padding:0.5rem 0;"><span class="badge badge-' + rv.badge + '">' + rv.label + '</span></td>' +

@@ -74,7 +74,12 @@ PENDING_FILE = JOURNAL_DIR / "pending.md"
 CONVERSATION_HISTORY_FILE = INSTANCE_DIR / "conversation-history.jsonl"
 CHAT_TIMEOUT = int(os.environ.get("KOAN_CHAT_TIMEOUT", "180"))
 
-app = Flask(__name__, template_folder=str(KOAN_ROOT / "koan" / "templates"))
+app = Flask(
+    __name__,
+    template_folder=str(KOAN_ROOT / "koan" / "templates"),
+    static_folder=str(Path(__file__).parent.parent / "static"),
+    static_url_path="/static",
+)
 
 
 _PROJECT_TAG_RE = re.compile(r'\s*\[(?:project|projet):([a-zA-Z0-9_-]+)\]\s*')
