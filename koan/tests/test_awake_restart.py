@@ -2,11 +2,11 @@
 
 import time
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, call
 
 import pytest
 
-from app.awake import handle_command
+from app.awake import handle_command, _ensure_runner_alive
 
 
 class TestRestartCommandRouting:
@@ -83,3 +83,33 @@ class TestHelpText:
         assert "/update" in help_text
 
 
+class TestEnsureRunnerAlive:
+    """Tests for _ensure_runner_alive — bridge starts runner after restart."""
+
+    @patch("app.awake.log")
+    @patch("app.pid_manager.check_pidfile", return_value=12345)
+    def test_no_op_when_runner_alive(self, mock_check, mock_log):
+        """If runner is already running, do nothing."""
+        _ensure_runner_alive()
+        mock_check.assert_called_once()
+        # Should not attempt to start runner
+        mock_log.assert_not_called()
+
+    @patch("app.awake.log")
+    @patch("app.pid_manager.start_runner", return_value=(True, "Agent loop started (PID 99)"))
+    @patch("app.pid_manager.check_pidfile", return_value=None)
+    def test_starts_runner_when_dead(self, mock_check, mock_start, mock_log):
+        """If runner is not running, start it."""
+        _ensure_runner_alive()
+        mock_start.assert_called_once()
+        # Should log success
+        assert any("started" in str(c).lower() for c in mock_log.call_args_list)
+
+    @patch("app.awake.log")
+    @patch("app.pid_manager.start_runner", return_value=(False, "Failed to launch: error"))
+    @patch("app.pid_manager.check_pidfile", return_value=None)
+    def test_logs_error_on_start_failure(self, mock_check, mock_start, mock_log):
+        """If start_runner fails, log the error."""
+        _ensure_runner_alive()
+        mock_start.assert_called_once()
+        assert any("error" in str(c) for c in mock_log.call_args_list)

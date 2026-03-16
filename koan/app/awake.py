@@ -706,6 +706,25 @@ def handle_message(text: str):
         _run_in_worker(handle_chat, text)
 
 
+def _ensure_runner_alive() -> None:
+    """Start the runner if it's not running.
+
+    Called after a /restart re-exec so the bridge can bring the runner
+    back when the runner wasn't alive to detect the restart signal itself.
+    """
+    from app.pid_manager import check_pidfile, start_runner
+
+    if check_pidfile(KOAN_ROOT, "run"):
+        return  # Already running — it will restart itself via exit code 42
+
+    log("init", "Runner not running — starting it as part of restart")
+    ok, msg = start_runner(KOAN_ROOT)
+    if ok:
+        log("init", f"Runner started: {msg}")
+    else:
+        log("error", f"Failed to start runner: {msg}")
+
+
 def main():
     from app.banners import print_bridge_banner
     from app.github_auth import setup_github_auth
@@ -821,9 +840,17 @@ def main():
             # the skill handler re-creates the file — but we clear it
             # right after so the check below finds nothing.
             if first_poll:
+                # Check if we're coming back from a /restart before clearing
+                was_restart = check_restart(str(KOAN_ROOT))
                 clear_restart(str(KOAN_ROOT))
                 clear_shutdown(str(KOAN_ROOT))
                 first_poll = False
+
+                # If this is a restart-triggered re-exec and the runner
+                # is dead, start it.  The runner can't self-restart if
+                # it wasn't running when the signal was created.
+                if was_restart:
+                    _ensure_runner_alive()
 
             try:
                 flush_outbox()
