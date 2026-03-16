@@ -1476,6 +1476,10 @@ def _run_iteration(
             instance_skills = instance / "skills"
             if instance_skills.is_dir():
                 extra_dirs.append(instance_skills)
+            # Include user-installed Claude Code skills (~/.claude/skills/)
+            user_skills = Path.home() / ".claude" / "skills"
+            if user_skills.is_dir():
+                extra_dirs.append(user_skills)
             registry = build_registry(extra_dirs=extra_dirs or None)
             if registry.list_by_audience("agent", "command", "hybrid"):
                 plugin_dir = generate_plugin_dir(registry)

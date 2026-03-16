@@ -263,11 +263,14 @@ def _tool_skill(arguments: Dict[str, Any], cwd: str) -> str:
     koan_root = Path(os.environ.get("KOAN_ROOT", ""))
     instance_dir = koan_root / "instance"
 
-    # Build registry including instance skills
+    # Build registry including instance skills and user-installed skills
     extra_dirs: list = []
     instance_skills = instance_dir / "skills"
     if instance_skills.is_dir():
         extra_dirs.append(instance_skills)
+    user_skills = Path.home() / ".claude" / "skills"
+    if user_skills.is_dir():
+        extra_dirs.append(user_skills)
     registry = build_registry(extra_dirs=extra_dirs or None)
 
     skill = registry.find(skill_name)
