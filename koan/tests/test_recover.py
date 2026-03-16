@@ -78,6 +78,52 @@ class TestRecoverMissions:
         assert "Still active" in between
         assert "Already done" not in between
 
+    def test_skip_unclosed_strikethrough(self, instance_dir):
+        """Unclosed strikethrough (e.g. '- ~~text') is NOT recovered."""
+        missions = instance_dir / "missions.md"
+        missions.write_text(
+            _missions(
+                in_progress=(
+                    "- ~~Partial strikethrough\n"
+                    "- Still active"
+                )
+            )
+        )
+
+        count = recover_missions(str(instance_dir))
+        assert count == 1
+
+        content = missions.read_text()
+        lines = content.splitlines()
+        pending_idx = next(i for i, l in enumerate(lines) if "pending" in l.lower())
+        in_prog_idx = next(i for i, l in enumerate(lines) if "in progress" in l.lower())
+        between = "\n".join(lines[pending_idx + 1 : in_prog_idx])
+        assert "Still active" in between
+        assert "Partial strikethrough" not in between
+
+    def test_skip_inline_strikethrough(self, instance_dir):
+        """Items containing ~~ anywhere (e.g. '- text ~~done~~') are NOT recovered."""
+        missions = instance_dir / "missions.md"
+        missions.write_text(
+            _missions(
+                in_progress=(
+                    "- Some task ~~cancelled~~\n"
+                    "- Still active"
+                )
+            )
+        )
+
+        count = recover_missions(str(instance_dir))
+        assert count == 1
+
+        content = missions.read_text()
+        lines = content.splitlines()
+        pending_idx = next(i for i, l in enumerate(lines) if "pending" in l.lower())
+        in_prog_idx = next(i for i, l in enumerate(lines) if "in progress" in l.lower())
+        between = "\n".join(lines[pending_idx + 1 : in_prog_idx])
+        assert "Still active" in between
+        assert "Some task" not in between
+
     def test_skip_strikethrough_with_trailing_text(self, instance_dir):
         """Struck-through items with trailing text (e.g. '~~done~~ merged') are NOT recovered."""
         missions = instance_dir / "missions.md"

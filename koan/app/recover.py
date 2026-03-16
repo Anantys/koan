@@ -15,7 +15,6 @@ Returns via stdout:
     Missions file is updated in-place if recovery happens.
 """
 
-import re
 import sys
 from pathlib import Path
 
@@ -104,7 +103,7 @@ def recover_missions(instance_dir: str) -> int:
                 remaining_in_progress.append(line)
                 continue
 
-            if stripped.startswith("- ") and not re.match(r"^- ~~.+~~", stripped):
+            if stripped.startswith("- ") and "~~" not in stripped:
                 recovered.append(line)
             elif stripped == "(aucune)" or stripped == "(none)":
                 remaining_in_progress.append(line)
