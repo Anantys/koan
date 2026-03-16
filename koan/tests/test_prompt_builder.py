@@ -1330,22 +1330,42 @@ class TestGetSecurityFlaggingSection:
     """Tests for security vulnerability flagging prompt section."""
 
     def test_returns_security_flagging_content(self):
-        """Section should load the security-flagging prompt."""
-        result = _get_security_flagging_section()
+        """Section should load the security-flagging prompt for missions."""
+        result = _get_security_flagging_section("Fix bug", "implement")
         assert "SECURITY" in result
         assert "vulnerability" in result.lower()
 
     def test_contains_flagging_format(self):
         """Section should include the flagging format instruction."""
-        result = _get_security_flagging_section()
+        result = _get_security_flagging_section("Fix bug", "implement")
         assert "flag" in result.lower()
 
     def test_mentions_example_vulnerability_classes(self):
         """Section should mention key vulnerability categories."""
-        result = _get_security_flagging_section()
+        result = _get_security_flagging_section("Fix bug", "implement")
         assert "SQL injection" in result
         assert "command injection" in result
         assert "path traversal" in result
+
+    def test_included_for_review_autonomous_mode(self):
+        """Section should be included in review autonomous mode."""
+        result = _get_security_flagging_section("", "review")
+        assert "SECURITY" in result
+
+    def test_included_for_implement_autonomous_mode(self):
+        """Section should be included in implement autonomous mode."""
+        result = _get_security_flagging_section("", "implement")
+        assert "SECURITY" in result
+
+    def test_excluded_for_deep_autonomous_mode(self):
+        """Section should NOT be included in deep autonomous mode without mission."""
+        result = _get_security_flagging_section("", "deep")
+        assert result == ""
+
+    def test_excluded_for_wait_autonomous_mode(self):
+        """Section should NOT be included in wait mode without mission."""
+        result = _get_security_flagging_section("", "wait")
+        assert result == ""
 
     @patch("app.prompt_builder._get_verbose_section", return_value="")
     @patch("app.prompt_builder._get_submit_pr_section", return_value="")
@@ -1356,7 +1376,7 @@ class TestGetSecurityFlaggingSection:
         self, mock_load, mock_prefix, mock_merge, mock_submit_pr, mock_verbose,
         prompt_env,
     ):
-        """build_agent_prompt should always include security flagging."""
+        """build_agent_prompt should include security flagging for missions."""
         mock_load.side_effect = lambda name, **kw: (
             "Base prompt" if name == "agent" else
             "# Security Vulnerability Flagging" if name == "security-flagging" else
@@ -1382,11 +1402,11 @@ class TestGetSecurityFlaggingSection:
     @patch("app.prompt_builder._get_merge_policy", return_value="\nMerge\n")
     @patch("app.prompt_builder._get_branch_prefix", return_value="koan/")
     @patch("app.prompts.load_prompt")
-    def test_included_in_autonomous_mode_too(
+    def test_excluded_in_deep_autonomous_mode(
         self, mock_load, mock_prefix, mock_merge, mock_submit_pr, mock_verbose,
         prompt_env,
     ):
-        """Security flagging should be included even without a mission."""
+        """Security flagging should NOT be included in deep mode without mission."""
         mock_load.side_effect = lambda name, **kw: (
             "Base prompt" if name == "agent" else
             "# Security Vulnerability Flagging" if name == "security-flagging" else
@@ -1405,4 +1425,4 @@ class TestGetSecurityFlaggingSection:
             mission_title="",
         )
 
-        assert "Security Vulnerability Flagging" in result
+        assert "Security Vulnerability Flagging" not in result

@@ -236,12 +236,15 @@ def _get_verbose_section(instance: str) -> str:
     return load_prompt("verbose-mode", INSTANCE=instance)
 
 
-def _get_security_flagging_section() -> str:
+def _get_security_flagging_section(mission_title: str, autonomous_mode: str) -> str:
     """Return the security vulnerability flagging section.
 
-    Always included — instructs the agent to prominently flag potential
-    security vulnerabilities discovered during any type of work.
+    Only included for mission-driven runs and review/implement autonomous
+    modes — not for deep research or wait modes.
     """
+    if not mission_title and autonomous_mode not in ("review", "implement"):
+        return ""
+
     from app.prompts import load_prompt
 
     return load_prompt("security-flagging")
@@ -325,8 +328,8 @@ def build_agent_prompt(
     # Append merge policy
     prompt += _get_merge_policy(project_name)
 
-    # Append security vulnerability flagging (always included)
-    prompt += _get_security_flagging_section()
+    # Append security vulnerability flagging (mission-driven + review/implement)
+    prompt += _get_security_flagging_section(mission_title, autonomous_mode)
 
     # Append submit-pull-request section
     prompt += _get_submit_pr_section(project_path)
