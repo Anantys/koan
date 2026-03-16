@@ -1213,7 +1213,6 @@ class TestMain:
 
 
 # ---------------------------------------------------------------------------
-<<<<<<< HEAD
 # --onto rebase (cross-fork PR support)
 # ---------------------------------------------------------------------------
 
@@ -1481,8 +1480,9 @@ class TestPushWithFallbackHeadRemote:
         push_cmds = [c for c in calls if "push" in c]
         # Should have tried myfork first (both lease and force), then origin
         assert any(c[2] == "origin" for c in push_cmds)
-||||||| parent of 64dc7a1 (feat: add CI-aware fixup pipeline to /rebase)
-=======
+
+
+# ---------------------------------------------------------------------------
 # CI checking and fixing
 # ---------------------------------------------------------------------------
 
@@ -1637,4 +1637,3 @@ class TestBuildRebaseCommentWithCi:
             ci_section="",
         )
         assert "### CI" not in result
->>>>>>> 64dc7a1 (feat: add CI-aware fixup pipeline to /rebase)
