@@ -1,9 +1,16 @@
 """Kōan logs skill — show last lines from run and awake logs."""
 
+import re
 from pathlib import Path
 
 _LOG_FILES = ["run.log", "awake.log"]
 _TAIL_LINES = 10
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _strip_ansi(text):
+    """Remove ANSI color/style escape sequences from text."""
+    return _ANSI_RE.sub("", text)
 
 
 def _tail(path, n=_TAIL_LINES):
@@ -12,7 +19,9 @@ def _tail(path, n=_TAIL_LINES):
         return None
     try:
         lines = path.read_text().splitlines()
-        return lines[-n:] if lines else None
+        if not lines:
+            return None
+        return [_strip_ansi(line) for line in lines[-n:]]
     except OSError:
         return None
 

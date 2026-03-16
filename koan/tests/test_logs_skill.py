@@ -64,6 +64,21 @@ class TestTail:
         assert result[0] == "line10"
         assert result[-1] == "line19"
 
+    def test_strips_ansi_codes(self, tmp_path):
+        mod = _load_handler()
+        f = tmp_path / "colored.log"
+        f.write_text(
+            "\x1b[34m[init]\x1b[0m Token: ...K1YkUu4I\n"
+            "\x1b[32m[ok]\x1b[0m Ready\n"
+            "\x1b[1;31mERROR\x1b[0m something broke\n"
+        )
+        result = mod._tail(f)
+        assert result == [
+            "[init] Token: ...K1YkUu4I",
+            "[ok] Ready",
+            "ERROR something broke",
+        ]
+
 
 class TestHandle:
     """Tests for handle() — the /logs command entry point."""
