@@ -242,15 +242,17 @@ def _cache_notif(notif: dict) -> None:
     now = time.time()
     with _notif_cache_lock:
         _notif_cache[key] = now
-        # Evict expired entries when cache is large
+        # Always sweep expired entries to prevent stale cache buildup.
+        # Without this, expired entries only get evicted on cache-hit
+        # (in _is_notif_cached) or when size exceeds _NOTIF_CACHE_MAX,
+        # letting stale entries accumulate and block re-appearing notifications.
+        expired = [k for k, v in _notif_cache.items() if now - v > _NOTIF_CACHE_TTL]
+        for k in expired:
+            del _notif_cache[k]
+        # If still over limit, evict oldest
         if len(_notif_cache) > _NOTIF_CACHE_MAX:
-            expired = [k for k, v in _notif_cache.items() if now - v > _NOTIF_CACHE_TTL]
-            for k in expired:
-                del _notif_cache[k]
-            # If still over limit, evict oldest
-            if len(_notif_cache) > _NOTIF_CACHE_MAX:
-                oldest_key = min(_notif_cache, key=_notif_cache.get)
-                del _notif_cache[oldest_key]
+            oldest_key = min(_notif_cache, key=_notif_cache.get)
+            del _notif_cache[oldest_key]
 
 
 def _get_config_mtime(koan_root: str) -> float:

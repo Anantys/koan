@@ -1990,6 +1990,26 @@ class TestNotificationCache:
         finally:
             lm._NOTIF_CACHE_MAX = original_max
 
+    def test_expired_entries_evicted_on_cache_write_below_max(self):
+        """Expired entries must be swept on every _cache_notif call, not just
+        when cache size exceeds _NOTIF_CACHE_MAX. Otherwise stale entries
+        accumulate and block re-appearing notifications."""
+        import app.loop_manager as lm
+        from app.loop_manager import _cache_notif, _notif_cache_lock
+        # Cache a notification, then manually expire it
+        old_notif = {"id": "200", "updated_at": "2026-03-15T10:00:00Z"}
+        _cache_notif(old_notif)
+        key = (str(old_notif["id"]), old_notif["updated_at"])
+        with _notif_cache_lock:
+            # Age the entry past TTL
+            lm._notif_cache[key] = lm._notif_cache[key] - lm._NOTIF_CACHE_TTL - 1
+            assert key in lm._notif_cache  # still present before sweep
+        # Cache a DIFFERENT notification — this should trigger lazy sweep
+        new_notif = {"id": "201", "updated_at": "2026-03-15T11:00:00Z"}
+        _cache_notif(new_notif)
+        with _notif_cache_lock:
+            assert key not in lm._notif_cache, "expired entry should have been swept"
+
     @patch("app.loop_manager._load_github_config")
     @patch("app.loop_manager._build_skill_registry")
     @patch("app.loop_manager._get_known_repos_from_projects")
