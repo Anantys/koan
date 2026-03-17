@@ -20,6 +20,7 @@ from app.rebase_pr import (
     _build_rebase_prompt,
     _checkout_pr_branch,
     _find_remote_for_repo,
+    _get_conflicted_files,
     _get_current_branch,
     _is_conflict_failure,
     _ordered_remotes,
@@ -27,6 +28,7 @@ from app.rebase_pr import (
     _rebase_with_conflict_resolution,
     _run_ci_check_and_fix,
     _safe_checkout,
+    _UNMERGED_STATUSES,
     MAX_CI_FIX_ATTEMPTS,
 )
 from app.claude_step import _is_permission_error, wait_for_ci
@@ -209,6 +211,86 @@ class TestCheckoutPrBranch:
         with patch("app.claude_step.subprocess.run", side_effect=mock_run):
             with pytest.raises(RuntimeError, match="not found on origin or upstream"):
                 _checkout_pr_branch("nonexistent", "/project")
+
+
+# ---------------------------------------------------------------------------
+# _get_conflicted_files
+# ---------------------------------------------------------------------------
+
+class TestGetConflictedFiles:
+    """Verify _get_conflicted_files uses git status --porcelain to detect unmerged entries."""
+
+    def test_detects_uu_conflict(self):
+        """UU (both modified) is the most common conflict type."""
+        mock_result = MagicMock(
+            stdout="UU file_a.txt\nM  file_b.txt\n",
+            returncode=0,
+        )
+        with patch("app.rebase_pr.subprocess.run", return_value=mock_result) as mock_run:
+            files = _get_conflicted_files("/project")
+            assert files == ["file_a.txt"]
+            # Verify stdin=subprocess.DEVNULL is passed
+            call_kwargs = mock_run.call_args[1]
+            assert call_kwargs.get("stdin") == subprocess.DEVNULL
+
+    def test_detects_multiple_conflict_types(self):
+        """All unmerged status codes are detected (UU, AA, DU, UD, AU, UA, DD)."""
+        mock_result = MagicMock(
+            stdout=(
+                "UU both_modified.py\n"
+                "AA both_added.py\n"
+                "DU deleted_by_us.py\n"
+                "UD deleted_by_them.py\n"
+                "AU added_by_us.py\n"
+                "UA added_by_them.py\n"
+                "DD both_deleted.py\n"
+                "M  cleanly_staged.py\n"
+                " M unstaged.py\n"
+            ),
+            returncode=0,
+        )
+        with patch("app.rebase_pr.subprocess.run", return_value=mock_result):
+            files = _get_conflicted_files("/project")
+            assert files == [
+                "both_modified.py",
+                "both_added.py",
+                "deleted_by_us.py",
+                "deleted_by_them.py",
+                "added_by_us.py",
+                "added_by_them.py",
+                "both_deleted.py",
+            ]
+
+    def test_no_conflicts_returns_empty(self):
+        """When no unmerged entries exist, returns empty list."""
+        mock_result = MagicMock(
+            stdout="M  staged.py\n M unstaged.py\n?? untracked.py\n",
+            returncode=0,
+        )
+        with patch("app.rebase_pr.subprocess.run", return_value=mock_result):
+            assert _get_conflicted_files("/project") == []
+
+    def test_empty_output_returns_empty(self):
+        mock_result = MagicMock(stdout="", returncode=0)
+        with patch("app.rebase_pr.subprocess.run", return_value=mock_result):
+            assert _get_conflicted_files("/project") == []
+
+    def test_exception_returns_empty(self):
+        with patch("app.rebase_pr.subprocess.run", side_effect=OSError("fail")):
+            assert _get_conflicted_files("/project") == []
+
+    def test_paths_with_spaces(self):
+        mock_result = MagicMock(
+            stdout="UU path with spaces/file.txt\n",
+            returncode=0,
+        )
+        with patch("app.rebase_pr.subprocess.run", return_value=mock_result):
+            files = _get_conflicted_files("/project")
+            assert files == ["path with spaces/file.txt"]
+
+    def test_unmerged_statuses_constant_covers_all_types(self):
+        """The frozen set covers all git unmerged status codes."""
+        assert _UNMERGED_STATUSES == {"DD", "AU", "UD", "UA", "DU", "AA", "UU"}
 
 
 # ---------------------------------------------------------------------------

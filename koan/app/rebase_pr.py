@@ -487,15 +487,30 @@ def _abort_rebase(project_path: str) -> None:
     )
 
 
+_UNMERGED_STATUSES = frozenset({"DD", "AU", "UD", "UA", "DU", "AA", "UU"})
+
+
 def _get_conflicted_files(project_path: str) -> List[str]:
-    """Return list of files with unmerged conflicts."""
+    """Return list of files with unmerged conflicts.
+
+    Uses ``git status --porcelain`` which explicitly reports the merge state
+    of each index entry.  Previous implementation used
+    ``git diff --name-only --diff-filter=U`` which can silently return
+    incomplete results during complex rebase operations (e.g. ``--onto``
+    rebases or branches with merge commits being linearised).
+    """
     try:
         result = subprocess.run(
-            ["git", "diff", "--name-only", "--diff-filter=U"],
+            ["git", "status", "--porcelain"],
+            stdin=subprocess.DEVNULL,
             capture_output=True, text=True, cwd=project_path,
             timeout=30,
         )
-        return [f.strip() for f in result.stdout.splitlines() if f.strip()]
+        files = []
+        for line in result.stdout.splitlines():
+            if len(line) >= 4 and line[:2] in _UNMERGED_STATUSES:
+                files.append(line[3:].strip())
+        return files
     except Exception as e:
         print(f"[rebase_pr] failed to list conflicted files: {e}", file=sys.stderr)
         return []
