@@ -16,6 +16,7 @@ Pipeline:
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -53,14 +54,22 @@ def fetch_pr_context(owner: str, repo: str, pr_number: str) -> dict:
     # Fetch review comment count from REST API for pending review detection.
     # GitHub counts pending (unsubmitted) review comments in PR metadata but
     # the comments endpoints don't return them to other users.
-    try:
-        count_json = run_gh(
-            "api", f"repos/{full_repo}/pulls/{pr_number}",
-            "--jq", ".review_comments",
-        )
-        api_review_comment_count = int(count_json.strip()) if count_json.strip() else 0
-    except (RuntimeError, ValueError):
-        api_review_comment_count = 0
+    # Retry once on transient failures — falling back to 0 incorrectly hides
+    # pending reviews, causing the bot to miss unsubmitted review feedback.
+    api_review_comment_count = 0
+    for _attempt in range(2):
+        try:
+            count_json = run_gh(
+                "api", f"repos/{full_repo}/pulls/{pr_number}",
+                "--jq", ".review_comments",
+            )
+            api_review_comment_count = int(count_json.strip()) if count_json.strip() else 0
+            break
+        except (RuntimeError, ValueError):
+            if _attempt == 0:
+                time.sleep(2)
+                continue
+            api_review_comment_count = 0
 
     # Fetch PR diff (may fail for very large PRs — GitHub HTTP 406)
     try:

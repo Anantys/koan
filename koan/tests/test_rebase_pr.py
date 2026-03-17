@@ -599,16 +599,18 @@ class TestFetchPrContext:
         context = fetch_pr_context("o", "r", "1")
         assert context["has_pending_reviews"] is False
 
+    @patch("app.rebase_pr.time.sleep")
     @patch("app.github.subprocess.run")
-    def test_pending_review_count_fetch_failure_graceful(self, mock_run):
-        """If the review_comments count fetch fails, assume no pending reviews."""
+    def test_pending_review_count_fetch_failure_graceful(self, mock_run, mock_sleep):
+        """If the review_comments count fetch fails twice, assume no pending reviews."""
         mock_run.side_effect = [
             MagicMock(returncode=0, stdout=json.dumps({
                 "title": "PR", "headRefName": "br", "baseRefName": "main",
                 "state": "OPEN", "author": {"login": "dev"},
                 "url": "https://github.com/o/r/pull/1",
             })),
-            MagicMock(returncode=1, stderr="rate limited"),  # count fetch fails
+            MagicMock(returncode=1, stderr="rate limited"),  # count fetch fails (attempt 1)
+            MagicMock(returncode=1, stderr="rate limited"),  # count fetch fails (retry)
             MagicMock(returncode=0, stdout="+diff"),
             MagicMock(returncode=0, stdout=""),
             MagicMock(returncode=0, stdout=""),
@@ -616,6 +618,28 @@ class TestFetchPrContext:
         ]
         context = fetch_pr_context("o", "r", "1")
         assert context["has_pending_reviews"] is False
+        mock_sleep.assert_called_once_with(2)
+
+    @patch("app.rebase_pr.time.sleep")
+    @patch("app.github.subprocess.run")
+    def test_pending_review_count_retry_succeeds(self, mock_run, mock_sleep):
+        """If count fetch fails once but retry succeeds, use the retried value."""
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout=json.dumps({
+                "title": "PR", "headRefName": "br", "baseRefName": "main",
+                "state": "OPEN", "author": {"login": "dev"},
+                "url": "https://github.com/o/r/pull/1",
+            })),
+            MagicMock(returncode=1, stderr="transient error"),  # count fetch fails
+            MagicMock(returncode=0, stdout="2"),                # retry succeeds
+            MagicMock(returncode=0, stdout="+diff"),
+            MagicMock(returncode=0, stdout=""),  # comments endpoint returns empty
+            MagicMock(returncode=0, stdout=""),
+            MagicMock(returncode=0, stdout=""),
+        ]
+        context = fetch_pr_context("o", "r", "1")
+        assert context["has_pending_reviews"] is True
+        mock_sleep.assert_called_once_with(2)
 
 
 # ---------------------------------------------------------------------------
