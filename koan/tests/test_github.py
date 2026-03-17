@@ -94,6 +94,41 @@ class TestRunGh:
         assert mock_run.call_count == 3
         assert mock_sleep.call_count == 2
 
+    @patch("app.retry.time.sleep")
+    @patch("app.github.subprocess.run")
+    def test_retries_secondary_rate_limit_when_idempotent(self, mock_run, mock_sleep):
+        """Secondary rate limits are retried when idempotent=True (default)."""
+        mock_run.side_effect = [
+            MagicMock(returncode=1, stderr="You have exceeded a secondary rate limit"),
+            MagicMock(returncode=0, stdout="ok\n"),
+        ]
+        assert run_gh("api", "repos/o/r", idempotent=True) == "ok"
+        assert mock_run.call_count == 2
+
+    @patch("app.retry.time.sleep")
+    @patch("app.github.subprocess.run")
+    def test_no_retry_on_secondary_rate_limit_when_not_idempotent(self, mock_run, mock_sleep):
+        """Secondary rate limits are NOT retried when idempotent=False."""
+        mock_run.return_value = MagicMock(
+            returncode=1, stderr="You have exceeded a secondary rate limit"
+        )
+        with pytest.raises(RuntimeError, match="secondary rate limit"):
+            run_gh("pr", "create", "--title", "T", "--body", "B", idempotent=False)
+        assert mock_run.call_count == 1
+        mock_sleep.assert_not_called()
+
+    @patch("app.retry.time.sleep")
+    @patch("app.github.subprocess.run")
+    def test_retry_after_header_respected(self, mock_run, mock_sleep):
+        """When gh reports a Retry-After value, that delay is used instead of backoff."""
+        # 429 matches transient keywords; Retry-After: 30 provides the delay
+        mock_run.side_effect = [
+            MagicMock(returncode=1, stderr="429 too many requests — Retry-After: 30"),
+            MagicMock(returncode=0, stdout="ok\n"),
+        ]
+        assert run_gh("api", "repos/o/r") == "ok"
+        mock_sleep.assert_called_once_with(30.0)
+
 
 # ---------------------------------------------------------------------------
 # pr_create

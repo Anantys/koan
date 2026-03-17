@@ -5,7 +5,12 @@ from unittest.mock import patch
 
 import pytest
 
-from app.retry import retry_with_backoff, is_gh_transient
+from app.retry import (
+    retry_with_backoff,
+    is_gh_transient,
+    is_gh_secondary_rate_limit,
+    parse_retry_after,
+)
 
 
 class TestRetryWithBackoff:
@@ -153,3 +158,92 @@ class TestIsGhTransient:
     ])
     def test_permanent_errors(self, msg):
         assert is_gh_transient(RuntimeError(msg)) is False
+
+
+class TestIsGhSecondaryRateLimit:
+    """Tests for is_gh_secondary_rate_limit() detection."""
+
+    @pytest.mark.parametrize("msg", [
+        "gh failed: gh pr create... — You have exceeded a secondary rate limit",
+        "gh failed: gh api... — abuse detection triggered",
+        "gh failed: gh issue create... — abuse rate limit",
+    ])
+    def test_secondary_rate_limit_errors(self, msg):
+        assert is_gh_secondary_rate_limit(RuntimeError(msg)) is True
+
+    @pytest.mark.parametrize("msg", [
+        "gh failed: gh api... — 429 rate limit exceeded",
+        "gh failed: gh pr view... — not found",
+        "gh failed: gh api... — connection timed out",
+    ])
+    def test_non_secondary_errors(self, msg):
+        assert is_gh_secondary_rate_limit(RuntimeError(msg)) is False
+
+
+class TestParseRetryAfter:
+    """Tests for parse_retry_after() header extraction."""
+
+    @pytest.mark.parametrize("msg,expected", [
+        ("gh failed: ... — Retry-After: 60", 60.0),
+        ("gh failed: ... — retry-after: 120", 120.0),
+        ("gh failed: ... — Retry After 30", 30.0),
+        ("gh failed: ... — retry after: 90.5", 90.5),
+    ])
+    def test_parses_retry_after_value(self, msg, expected):
+        result = parse_retry_after(RuntimeError(msg))
+        assert result == expected
+
+    @pytest.mark.parametrize("msg", [
+        "gh failed: ... — connection timed out",
+        "gh failed: ... — not found",
+        "gh failed: ... — 429 rate limit exceeded",
+    ])
+    def test_returns_none_when_absent(self, msg):
+        assert parse_retry_after(RuntimeError(msg)) is None
+
+
+class TestRetryWithBackoffGetRetryDelay:
+    """Tests for retry_with_backoff() get_retry_delay parameter."""
+
+    @patch("app.retry.time.sleep")
+    def test_uses_explicit_delay_from_get_retry_delay(self, mock_sleep):
+        """When get_retry_delay returns a value, it overrides the backoff schedule."""
+        calls = {"n": 0}
+
+        def flaky():
+            calls["n"] += 1
+            if calls["n"] < 2:
+                raise RuntimeError("Retry-After: 45")
+            return "ok"
+
+        result = retry_with_backoff(
+            flaky,
+            retryable=(RuntimeError,),
+            get_retry_delay=parse_retry_after,
+            label="test",
+        )
+        assert result == "ok"
+        # Should sleep for 45s (from Retry-After), not default backoff 1s
+        mock_sleep.assert_called_once_with(45.0)
+
+    @patch("app.retry.time.sleep")
+    def test_falls_back_to_backoff_when_no_retry_after(self, mock_sleep):
+        """When get_retry_delay returns None, default backoff is used."""
+        calls = {"n": 0}
+
+        def flaky():
+            calls["n"] += 1
+            if calls["n"] < 2:
+                raise RuntimeError("connection timed out")
+            return "ok"
+
+        result = retry_with_backoff(
+            flaky,
+            retryable=(RuntimeError,),
+            get_retry_delay=parse_retry_after,
+            backoff=(5, 10),
+            is_transient=is_gh_transient,
+            label="test",
+        )
+        assert result == "ok"
+        mock_sleep.assert_called_once_with(5)
