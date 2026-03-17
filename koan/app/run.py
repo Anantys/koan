@@ -1473,6 +1473,10 @@ def _run_iteration(
             from app.plugin_generator import generate_plugin_dir, cleanup_plugin_dir
             from app.skills import build_registry
             extra_dirs = []
+            # Include project-local skills (<project>/.claude/skills/)
+            project_skills = Path(project_path) / ".claude" / "skills"
+            if project_skills.is_dir():
+                extra_dirs.append(project_skills)
             instance_skills = instance / "skills"
             if instance_skills.is_dir():
                 extra_dirs.append(instance_skills)
