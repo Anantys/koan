@@ -120,6 +120,7 @@ def _log_recovery_event(
         with open(log_path, "a") as f:
             fcntl.flock(f, fcntl.LOCK_EX)
             f.write(json.dumps(event) + "\n")
+            f.flush()
             fcntl.flock(f, fcntl.LOCK_UN)
     except OSError as e:
         print(f"[recover] Warning: could not write recovery log: {e}", file=sys.stderr)
