@@ -2550,3 +2550,59 @@ class TestProcessNotificationWithNLP:
 
         assert success is True
         mock_nlp.assert_not_called()  # NLP should not be invoked
+
+
+# ---------------------------------------------------------------------------
+# Phase 1: github_context_aware flag on PR-manipulation core skills
+# ---------------------------------------------------------------------------
+
+
+class TestContextAwareCoreSkills:
+    """Verify that rebase, recreate, and refactor have github_context_aware=True.
+
+    These tests load the actual SKILL.md files via the registry so that any
+    future edit to those files will be caught immediately.
+    """
+
+    @pytest.fixture
+    def core_registry(self):
+        """Registry loaded from the real core skills directory."""
+        from pathlib import Path
+
+        skills_dir = Path(__file__).parent.parent / "skills" / "core"
+        return SkillRegistry(skills_dir)
+
+    @pytest.mark.parametrize("command_name", ["rebase", "recreate", "refactor"])
+    def test_skill_is_context_aware(self, core_registry, command_name):
+        """Each PR-manipulation skill must have github_context_aware=True."""
+        skill = core_registry.find_by_command(command_name)
+        assert skill is not None, f"Skill '{command_name}' not found in core registry"
+        assert skill.github_context_aware is True, (
+            f"Skill '{command_name}' must have github_context_aware: true in SKILL.md"
+        )
+
+    @pytest.mark.parametrize("command_name", ["rebase", "recreate", "refactor"])
+    def test_context_included_in_mission(self, core_registry, command_name):
+        """When context is provided, it should appear in the built mission."""
+        skill = core_registry.find_by_command(command_name)
+        assert skill is not None
+
+        notif = {"subject": {"url": f"https://api.github.com/repos/o/r/pulls/42"}}
+        context = "please squash into one commit"
+        mission = build_mission_from_command(skill, command_name, context, notif, "myproject")
+
+        assert context in mission, (
+            f"Mission for '{command_name}' should contain context text"
+        )
+        assert f"/{command_name}" in mission
+
+    @pytest.mark.parametrize("command_name", ["rebase", "recreate", "refactor"])
+    def test_no_context_mission_unchanged(self, core_registry, command_name):
+        """Without extra context, mission format should be unchanged."""
+        skill = core_registry.find_by_command(command_name)
+        assert skill is not None
+
+        notif = {"subject": {"url": f"https://api.github.com/repos/o/r/pulls/42"}}
+        mission = build_mission_from_command(skill, command_name, "", notif, "myproject")
+
+        assert mission == f"- [project:myproject] /{command_name} https://github.com/o/r/pull/42 📬"

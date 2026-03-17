@@ -6,6 +6,7 @@ description: "Queue a refactoring mission (ex: /refactor https://github.com/owne
 version: 1.0.0
 audience: hybrid
 github_enabled: true
+github_context_aware: true
 commands:
   - name: refactor
     description: "Queue a refactoring mission for a PR, issue, or file"
