@@ -343,6 +343,19 @@ These features turn Kōan from a task runner into a full development workflow pa
 
 ### PR Management
 
+**`/ask`** — Ask a question about a GitHub PR or issue and get an AI-generated reply posted directly to the thread.
+
+- **Usage:** `/ask <github-comment-url>`
+- **GitHub @mention:** `@koan-bot ask <your question>` on any PR or issue
+
+<details>
+<summary>Use cases</summary>
+
+- `@koan-bot ask why does this test fail?` — Kōan investigates the thread context and replies on GitHub
+- `@koan-bot ask what is the purpose of this PR?` — Get a structured explanation with context summary
+- `/ask https://github.com/org/repo/issues/42#issuecomment-123456` — Reply to a specific comment
+</details>
+
 **`/rebase`** — Rebase a PR onto its base branch.
 
 - **Usage:** `/rebase <pr-url>`
@@ -1060,6 +1073,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/fix <issue>` | — | I | Full bug-fix pipeline (understand → plan → test → fix → PR) |
 | `/review <PR> [--architecture]` | `/rv` | I | Review a pull request |
 | `/refactor <desc>` | `/rf` | I | Targeted refactoring mission |
+| `/ask <comment-url>` | — | I | Ask a question about a PR/issue — posts AI reply to GitHub |
 | `/rebase <PR>` | `/rb` | I | Rebase a PR onto its base branch |
 | `/recreate <PR>` | `/rc` | I | Re-implement a PR from scratch |
 | `/pr <PR>` | — | I | Review and update a GitHub PR |

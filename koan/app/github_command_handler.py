@@ -306,6 +306,7 @@ def build_mission_from_command(
     context: str,
     notification: dict,
     project_name: str,
+    comment_url: Optional[str] = None,
 ) -> str:
     """Construct a mission string from a GitHub notification command.
 
@@ -315,10 +316,19 @@ def build_mission_from_command(
         context: Additional context text from the @mention.
         notification: The notification dict.
         project_name: The resolved project name.
+        comment_url: Optional comment web URL. When set, overrides the
+            subject URL and skips context (used by /ask to store only the
+            comment URL, keeping missions.md free of raw question text).
 
     Returns:
         A mission entry string like "- [project:X] /command url context"
     """
+    # When a comment URL is explicitly provided (e.g., for /ask), use it
+    # directly and skip context — the question text lives on GitHub.
+    if comment_url:
+        mission_text = f"/{command_name} {comment_url}"
+        return f"- [project:{project_name}] {mission_text} 📬"
+
     # Extract URL from notification subject
     subject_url = notification.get("subject", {}).get("url", "")
     web_url = api_url_to_web_url(subject_url) if subject_url else ""
@@ -830,8 +840,14 @@ def process_single_notification(
                     return False, f"Mission blocked by prompt guard: {guard_result.reason}"
 
     # Build and insert mission BEFORE reacting (so crash doesn't lose command)
+    # For /ask: pass the comment's web URL so the mission stores only the URL,
+    # not the raw question text (which may contain chars that corrupt missions.md).
+    ask_comment_url = None
+    if command_name == "ask":
+        ask_comment_url = comment.get("html_url") or None
     mission_entry = build_mission_from_command(
         skill, command_name, context, notification, project_name,
+        comment_url=ask_comment_url,
     )
     log.info("GitHub: inserting mission from @%s: %s", comment_author, mission_entry)
 
