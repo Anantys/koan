@@ -172,14 +172,16 @@ class TestAskHandlerFlow:
     @patch("app.utils.resolve_project_path", return_value="/path/to/project")
     @patch("app.utils.project_name_for_path", return_value="myproject")
     @patch("app.github_reply.post_reply", return_value=True)
-    @patch("app.github_reply.generate_reply", return_value="Here is my answer.")
+    @patch("app.github_reply.clean_reply", return_value="Here is my answer.")
+    @patch("app.cli_provider.run_command", return_value="Here is my answer.")
     @patch("app.github_reply.fetch_thread_context")
     @patch("app.github.api")
     def test_successful_flow(
         self,
         mock_api,
         mock_fetch_ctx,
-        mock_generate,
+        mock_run_command,
+        mock_clean,
         mock_post,
         mock_name,
         mock_resolve,
@@ -206,8 +208,19 @@ class TestAskHandlerFlow:
 
         assert "✅" in result
         assert "sukria/koan" in result
-        mock_generate.assert_called_once()
+        mock_run_command.assert_called_once()
         mock_post.assert_called_once_with("sukria", "koan", "42", "Here is my answer.")
+
+    @patch("app.utils.resolve_project_path", return_value="/path/to/project")
+    @patch("app.utils.project_name_for_path", return_value="myproject")
+    def test_no_comment_fragment_returns_error(self, _mock_name, _mock_resolve):
+        from skills.core.ask.handler import handle
+
+        url = "https://github.com/sukria/koan/issues/42"
+        ctx = self._make_ctx(url)
+        result = handle(ctx)
+        assert "❌" in result
+        assert "fragment" in result.lower()
 
     @patch("app.utils.resolve_project_path", return_value=None)
     def test_unknown_project_returns_error(self, _mock_resolve):
@@ -233,13 +246,14 @@ class TestAskHandlerFlow:
     @patch("app.utils.resolve_project_path", return_value="/path/to/project")
     @patch("app.utils.project_name_for_path", return_value="myproject")
     @patch("app.github_reply.post_reply", return_value=False)
-    @patch("app.github_reply.generate_reply", return_value="An answer.")
+    @patch("app.github_reply.clean_reply", return_value="An answer.")
+    @patch("app.cli_provider.run_command", return_value="An answer.")
     @patch("app.github_reply.fetch_thread_context", return_value={
         "title": "", "body": "", "comments": [], "is_pr": False, "diff_summary": ""
     })
     @patch("app.github.api")
     def test_post_failure_returns_error(
-        self, mock_api, _fetch_ctx, _generate, _post, _name, _resolve
+        self, mock_api, _fetch_ctx, _run_command, _clean, _post, _name, _resolve
     ):
         import json as _json
         from skills.core.ask.handler import handle

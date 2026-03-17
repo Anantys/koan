@@ -68,6 +68,11 @@ def handle(ctx):
 
     # Extract comment ID from URL fragment
     comment_id = _extract_comment_id(comment_url)
+    if not comment_id:
+        return (
+            "❌ URL must include a comment fragment (#issuecomment-NNN or #discussion_rNNN).\n"
+            "Ex: /ask https://github.com/owner/repo/issues/42#issuecomment-123456"
+        )
 
     # Fetch thread context (title, body, recent comments, diff)
     thread_context = github_reply.fetch_thread_context(owner, repo, issue_number)
@@ -199,53 +204,39 @@ def _generate_reply(
     from app import github_reply
     from app.cli_provider import run_command
 
-    # Try ask-specific prompt first (structured history/why/how/reasoning format)
-    try:
-        kind = "pull request" if thread_context.get("is_pr") else "issue"
-        title = thread_context.get("title", "")
-        body = thread_context.get("body", "")
-        comments = thread_context.get("comments", [])
-        diff_summary = thread_context.get("diff_summary", "")
+    kind = "pull request" if thread_context.get("is_pr") else "issue"
+    title = thread_context.get("title", "")
+    body = thread_context.get("body", "")
+    comments = thread_context.get("comments", [])
+    diff_summary = thread_context.get("diff_summary", "")
 
-        comments_text = ""
-        if comments:
-            comments_text = "\n\n".join(
-                f"@{c['author']}: {c['body']}" for c in comments
-            )
-
-        prompt = load_skill_prompt(
-            Path(__file__).parent,
-            "ask",
-            REPO=f"{owner}/{repo}",
-            ISSUE_NUMBER=issue_number,
-            KIND=kind,
-            TITLE=title,
-            BODY=body,
-            COMMENTS=comments_text,
-            DIFF_SUMMARY=diff_summary,
-            QUESTION=question,
-            AUTHOR=comment_author,
+    comments_text = ""
+    if comments:
+        comments_text = "\n\n".join(
+            f"@{c['author']}: {c['body']}" for c in comments
         )
-        raw = run_command(
-            prompt=prompt,
-            project_path=project_path,
-            allowed_tools=["Read", "Glob", "Grep"],
-            model_key="chat",
-            max_turns=1,
-            timeout=120,
-        )
-        if raw:
-            return github_reply._clean_reply(raw)
-    except Exception as e:
-        log.warning("ask: prompt generation failed, falling back to github-reply: %s", e)
 
-    # Fall back to the standard generate_reply path
-    return github_reply.generate_reply(
-        question=question,
-        thread_context=thread_context,
-        owner=owner,
-        repo=repo,
-        issue_number=issue_number,
-        comment_author=comment_author,
-        project_path=project_path,
+    prompt = load_skill_prompt(
+        Path(__file__).parent,
+        "ask",
+        REPO=f"{owner}/{repo}",
+        ISSUE_NUMBER=issue_number,
+        KIND=kind,
+        TITLE=title,
+        BODY=body,
+        COMMENTS=comments_text,
+        DIFF_SUMMARY=diff_summary,
+        QUESTION=question,
+        AUTHOR=comment_author,
     )
+    raw = run_command(
+        prompt=prompt,
+        project_path=project_path,
+        allowed_tools=["Read", "Glob", "Grep"],
+        model_key="chat",
+        max_turns=1,
+        timeout=120,
+    )
+    if not raw:
+        return None
+    return github_reply.clean_reply(raw)

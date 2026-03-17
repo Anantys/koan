@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.github_reply import (
-    _clean_reply,
+    clean_reply,
     build_reply_prompt,
     extract_mention_text,
     fetch_thread_context,
@@ -271,30 +271,30 @@ class TestPostReply:
 
 class TestCleanReply:
     def test_strips_whitespace(self):
-        assert _clean_reply("  hello  \n") == "hello"
+        assert clean_reply("  hello  \n") == "hello"
 
     def test_removes_cli_noise(self):
         text = "Good reply\nError: Reached max turns (1)"
-        assert _clean_reply(text) == "Good reply"
+        assert clean_reply(text) == "Good reply"
 
     def test_preserves_normal_content(self):
         text = "Line 1\nLine 2\nLine 3"
-        assert _clean_reply(text) == text
+        assert clean_reply(text) == text
 
 
 class TestCleanReplyEdgeCases:
-    """Additional edge cases for _clean_reply."""
+    """Additional edge cases for clean_reply."""
 
     def test_only_noise_lines_returns_empty(self):
         text = "Error: Reached max turns (1)\nError: Reached max turns (5)"
-        assert _clean_reply(text) == ""
+        assert clean_reply(text) == ""
 
     def test_empty_string(self):
-        assert _clean_reply("") == ""
+        assert clean_reply("") == ""
 
     def test_multiline_with_noise_in_middle(self):
         text = "Good line\nError: Reached max turns (1)\nAnother good line"
-        result = _clean_reply(text)
+        result = clean_reply(text)
         assert "Good line" in result
         assert "Another good line" in result
         assert "max turns" not in result

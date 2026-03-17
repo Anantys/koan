@@ -215,7 +215,7 @@ def generate_reply(
             max_turns=1,
             timeout=120,
         )
-        return _clean_reply(reply) if reply else None
+        return clean_reply(reply) if reply else None
     except Exception as e:
         log.warning("GitHub reply generation failed: %s", e)
         return None
@@ -250,7 +250,7 @@ def post_reply(
         return False
 
 
-def _clean_reply(text: str) -> str:
+def clean_reply(text: str) -> str:
     """Clean Claude CLI output artifacts from the reply."""
     lines = text.strip().splitlines()
     # Remove CLI noise lines

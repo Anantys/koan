@@ -6,7 +6,7 @@ description: "Ask Kōan a question about a GitHub PR or issue — fetches contex
 version: 1.0.0
 audience: hybrid
 github_enabled: true
-github_context_aware: false
+github_context_aware: true
 worker: true
 commands:
   - name: ask
