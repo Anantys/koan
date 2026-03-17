@@ -19,6 +19,7 @@ CLI:
 import json
 import re
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -31,19 +32,9 @@ from app.review_schema import validate_review
 _ISSUE_URL_RE = re.compile(ISSUE_URL_PATTERN)
 
 
-def fetch_repliable_comments(
-    owner: str, repo: str, pr_number: str,
-) -> List[dict]:
-    """Fetch PR comments with their IDs for reply targeting.
-
-    Returns a list of dicts with keys: id, type, user, body, path (for
-    inline comments only). Excludes bot comments and the PR author's own
-    inline comments to reduce noise.
-    """
-    full_repo = f"{owner}/{repo}"
-    comments: List[dict] = []
-
-    # Inline review comments (code-level)
+def _fetch_inline_review_comments(full_repo: str, pr_number: str) -> List[dict]:
+    """Fetch inline review comments (code-level) for a PR."""
+    results: List[dict] = []
     try:
         raw = run_gh(
             "api", f"repos/{full_repo}/pulls/{pr_number}/comments",
@@ -56,7 +47,7 @@ def fetch_repliable_comments(
                     item = json.loads(line)
                     if item.get("user_type") == "Bot":
                         continue
-                    comments.append({
+                    results.append({
                         "id": item["id"],
                         "type": "review_comment",
                         "user": item["user"],
@@ -68,8 +59,12 @@ def fetch_repliable_comments(
                     continue
     except RuntimeError:
         pass
+    return results
 
-    # Issue-level comments (conversation thread)
+
+def _fetch_issue_comments(full_repo: str, pr_number: str) -> List[dict]:
+    """Fetch issue-level comments (conversation thread) for a PR."""
+    results: List[dict] = []
     try:
         raw = run_gh(
             "api", f"repos/{full_repo}/issues/{pr_number}/comments",
@@ -82,7 +77,7 @@ def fetch_repliable_comments(
                     item = json.loads(line)
                     if item.get("user_type") == "Bot":
                         continue
-                    comments.append({
+                    results.append({
                         "id": item["id"],
                         "type": "issue_comment",
                         "user": item["user"],
@@ -92,6 +87,39 @@ def fetch_repliable_comments(
                     continue
     except RuntimeError:
         pass
+    return results
+
+
+def fetch_repliable_comments(
+    owner: str, repo: str, pr_number: str,
+    parallel: bool = True,
+) -> List[dict]:
+    """Fetch PR comments with their IDs for reply targeting.
+
+    Returns a list of dicts with keys: id, type, user, body, path (for
+    inline comments only). Excludes bot comments and the PR author's own
+    inline comments to reduce noise.
+
+    Args:
+        owner: GitHub owner/org.
+        repo: Repository name.
+        pr_number: PR number as string.
+        parallel: When True (default), fetch inline and issue comments
+            concurrently using two threads. Set to False to force sequential
+            fetching (useful in tests or single-threaded contexts).
+    """
+    full_repo = f"{owner}/{repo}"
+    comments: List[dict] = []
+
+    if parallel:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            f_inline = pool.submit(_fetch_inline_review_comments, full_repo, pr_number)
+            f_issue = pool.submit(_fetch_issue_comments, full_repo, pr_number)
+            comments.extend(f_inline.result())
+            comments.extend(f_issue.result())
+    else:
+        comments.extend(_fetch_inline_review_comments(full_repo, pr_number))
+        comments.extend(_fetch_issue_comments(full_repo, pr_number))
 
     return comments
 
@@ -737,22 +765,37 @@ def run_review(
         from app.notify import send_telegram
         notify_fn = send_telegram
 
+    from app.config import get_review_concurrency_config
+    concurrency_cfg = get_review_concurrency_config()
+    github_workers = concurrency_cfg["github_workers"]
+    concurrency_enabled = concurrency_cfg["enabled"]
+
     full_repo = f"{owner}/{repo}"
 
-    # Step 1: Fetch PR context
+    # Step 1: Fetch PR context and repliable comments in parallel
     notify_fn(f"Reviewing PR #{pr_number} ({full_repo})...")
-    try:
-        context = fetch_pr_context(owner, repo, pr_number)
-    except Exception as e:
-        return False, f"Failed to fetch PR context: {e}", None
+    if concurrency_enabled and github_workers > 1:
+        with ThreadPoolExecutor(max_workers=min(2, github_workers)) as pool:
+            f_context = pool.submit(fetch_pr_context, owner, repo, pr_number)
+            f_comments = pool.submit(
+                fetch_repliable_comments, owner, repo, pr_number, True,
+            )
+            try:
+                context = f_context.result()
+            except Exception as e:
+                return False, f"Failed to fetch PR context: {e}", None
+            repliable_comments = f_comments.result()
+    else:
+        try:
+            context = fetch_pr_context(owner, repo, pr_number)
+        except Exception as e:
+            return False, f"Failed to fetch PR context: {e}", None
+        repliable_comments = fetch_repliable_comments(owner, repo, pr_number, parallel=False)
 
     if not context.get("diff"):
         return False, f"PR #{pr_number} has no diff — nothing to review.", None
 
-    # Step 1b: Fetch repliable comments (with IDs for reply targeting)
-    repliable_comments = fetch_repliable_comments(owner, repo, pr_number)
-
-    # Step 1c: Detect and fetch plan body for alignment checking
+    # Step 1b: Detect and fetch plan body for alignment checking
     plan_body = _resolve_plan_body(plan_url, context.get("body", ""))
 
     # Step 2: Build review prompt

@@ -597,3 +597,29 @@ def get_prompt_guard_config() -> dict:
         "enabled": guard_cfg.get("enabled", True),
         "block_mode": guard_cfg.get("block_mode", False),
     }
+
+
+def get_review_concurrency_config() -> dict:
+    """Get review concurrency configuration from config.yaml.
+
+    Controls parallelism for GitHub API calls during PR reviews. The LLM
+    call (Claude CLI) is always sequential — only GitHub data-fetching is
+    parallelised.
+
+    Config key: review_concurrency
+      - enabled (bool): Enable parallel GitHub API fetches (default: True)
+      - github_workers (int): Max concurrent GitHub API calls (default: 4)
+
+    Returns:
+        Dict with keys:
+          - enabled (bool): Whether parallel fetching is active.
+          - github_workers (int): ThreadPoolExecutor max_workers for gh calls.
+    """
+    config = _load_config()
+    review_cfg = config.get("review_concurrency", {})
+    if not isinstance(review_cfg, dict):
+        review_cfg = {}
+    return {
+        "enabled": bool(review_cfg.get("enabled", True)),
+        "github_workers": _safe_int(review_cfg.get("github_workers", 4), 4),
+    }

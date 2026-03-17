@@ -274,6 +274,13 @@ usage:
 #                                    # for intent classification before falling back to error.
 #                                    # Per-project override available in projects.yaml.
 
+# Review concurrency — parallel GitHub API calls during code reviews
+# When enabled, PR context and comment fetching run concurrently using a
+# ThreadPoolExecutor. The LLM call (Claude CLI) is always sequential.
+# review_concurrency:
+#   enabled: true           # Enable parallel GitHub API fetches (default: true)
+#   github_workers: 4       # Max concurrent GitHub API calls (default: 4)
+
 # Dashboard attention zone — GitHub @mention notifications
 # When true, the dashboard attention zone also shows unread GitHub @mention
 # notifications (reason: mention or review_requested). Requires github_url

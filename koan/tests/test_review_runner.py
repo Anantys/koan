@@ -1694,3 +1694,107 @@ class TestSkillDispatchPlanUrl:
 
         assert cmd is not None
         assert "--plan-url" not in cmd
+
+
+# ---------------------------------------------------------------------------
+# Concurrency: fetch_repliable_comments parallel parameter
+# ---------------------------------------------------------------------------
+
+class TestFetchRepliableCommentsParallel:
+    """Tests for the parallel=False / parallel=True modes of fetch_repliable_comments."""
+
+    @patch("app.review_runner._fetch_issue_comments")
+    @patch("app.review_runner._fetch_inline_review_comments")
+    def test_sequential_mode_calls_helpers_in_order(
+        self, mock_inline, mock_issue,
+    ):
+        """parallel=False calls the two fetch helpers sequentially."""
+        mock_inline.return_value = [{"id": 1, "type": "review_comment"}]
+        mock_issue.return_value = [{"id": 2, "type": "issue_comment"}]
+
+        comments = fetch_repliable_comments("owner", "repo", "42", parallel=False)
+
+        mock_inline.assert_called_once_with("owner/repo", "42")
+        mock_issue.assert_called_once_with("owner/repo", "42")
+        assert len(comments) == 2
+        # Inline results come first in sequential mode
+        assert comments[0]["id"] == 1
+        assert comments[1]["id"] == 2
+
+    @patch("app.review_runner._fetch_issue_comments")
+    @patch("app.review_runner._fetch_inline_review_comments")
+    def test_parallel_mode_collects_both_result_sets(
+        self, mock_inline, mock_issue,
+    ):
+        """parallel=True still collects results from both helpers."""
+        mock_inline.return_value = [{"id": 10, "type": "review_comment"}]
+        mock_issue.return_value = [{"id": 20, "type": "issue_comment"}]
+
+        comments = fetch_repliable_comments("owner", "repo", "99", parallel=True)
+
+        assert len(comments) == 2
+        ids = {c["id"] for c in comments}
+        assert ids == {10, 20}
+
+    @patch("app.review_runner._fetch_issue_comments")
+    @patch("app.review_runner._fetch_inline_review_comments")
+    def test_empty_results_from_both_helpers(self, mock_inline, mock_issue):
+        """Returns empty list when both helpers return nothing."""
+        mock_inline.return_value = []
+        mock_issue.return_value = []
+
+        comments = fetch_repliable_comments("owner", "repo", "1", parallel=False)
+        assert comments == []
+
+
+# ---------------------------------------------------------------------------
+# Concurrency config: get_review_concurrency_config
+# ---------------------------------------------------------------------------
+
+class TestReviewConcurrencyConfig:
+    """Tests for get_review_concurrency_config() in app.config."""
+
+    def test_defaults_when_no_config(self):
+        """Returns sensible defaults when review_concurrency is absent from config."""
+        from app.config import get_review_concurrency_config
+
+        with patch("app.config._load_config", return_value={}):
+            cfg = get_review_concurrency_config()
+
+        assert cfg["enabled"] is True
+        assert cfg["github_workers"] == 4
+
+    def test_reads_enabled_flag(self):
+        """Reads enabled flag from config."""
+        from app.config import get_review_concurrency_config
+
+        with patch("app.config._load_config", return_value={
+            "review_concurrency": {"enabled": False, "github_workers": 2},
+        }):
+            cfg = get_review_concurrency_config()
+
+        assert cfg["enabled"] is False
+        assert cfg["github_workers"] == 2
+
+    def test_invalid_workers_falls_back_to_default(self):
+        """Non-integer github_workers falls back to 4."""
+        from app.config import get_review_concurrency_config
+
+        with patch("app.config._load_config", return_value={
+            "review_concurrency": {"github_workers": "not-a-number"},
+        }):
+            cfg = get_review_concurrency_config()
+
+        assert cfg["github_workers"] == 4
+
+    def test_non_dict_config_uses_defaults(self):
+        """A non-dict review_concurrency value uses defaults."""
+        from app.config import get_review_concurrency_config
+
+        with patch("app.config._load_config", return_value={
+            "review_concurrency": "invalid",
+        }):
+            cfg = get_review_concurrency_config()
+
+        assert cfg["enabled"] is True
+        assert cfg["github_workers"] == 4
