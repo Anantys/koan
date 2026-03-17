@@ -178,13 +178,23 @@ def get_project_auto_merge(config: dict, project_name: str) -> dict:
     }
 
 
-def resolve_base_branch(project_name: str) -> str:
-    """Resolve the base branch for a project from config, defaulting to 'main'.
+def resolve_base_branch(
+    project_name: str, project_path: Optional[str] = None
+) -> str:
+    """Resolve the base branch for a project.
 
-    Loads projects.yaml via KOAN_ROOT and looks up the auto_merge config.
+    Resolution order:
+    1. Explicit per-project base_branch in projects.yaml
+    2. Auto-detection from the remote's default branch (if project_path given)
+    3. Defaults section base_branch from projects.yaml
+    4. Hardcoded fallback: 'main'
+
     Safe to call when KOAN_ROOT is unset or config is missing — returns 'main'.
     """
     import os
+
+    config_branch = "main"
+    project_explicit = False
 
     try:
         koan_root = os.environ.get("KOAN_ROOT", "")
@@ -192,10 +202,37 @@ def resolve_base_branch(project_name: str) -> str:
             config = load_projects_config(koan_root)
             if config:
                 am = get_project_auto_merge(config, project_name)
-                return am.get("base_branch", "main")
+                config_branch = am.get("base_branch", "main")
+
+                # Check if the project explicitly sets base_branch
+                projects = config.get("projects", {}) or {}
+                proj_cfg = projects.get(project_name, {}) or {}
+                proj_am = proj_cfg.get("git_auto_merge", {}) or {}
+                if proj_am.get("base_branch"):
+                    project_explicit = True
     except (ValueError, OSError, KeyError):
         pass
-    return "main"
+
+    # If project explicitly sets the branch, trust it
+    if project_explicit:
+        return config_branch
+
+    # Try auto-detection from the remote
+    if project_path:
+        try:
+            from app.git_prep import detect_remote_default_branch, get_upstream_remote
+
+            koan_root = os.environ.get("KOAN_ROOT", "")
+            remote = "origin"
+            if koan_root:
+                remote = get_upstream_remote(project_path, project_name, koan_root)
+            detected = detect_remote_default_branch(remote, project_path)
+            if detected:
+                return detected
+        except Exception:
+            pass
+
+    return config_branch
 
 
 def get_project_cli_provider(config: dict, project_name: str) -> str:

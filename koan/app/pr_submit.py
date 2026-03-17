@@ -143,7 +143,7 @@ def submit_draft_pr(
         logger.debug("No existing PR found (or check failed): %s", e)
 
     # Verify we have commits to submit
-    base_branch = resolve_base_branch(project_name)
+    base_branch = resolve_base_branch(project_name, project_path)
     commits = get_commit_subjects(project_path, base_branch=base_branch)
     if not commits:
         logger.info("No commits on branch — skipping PR creation")

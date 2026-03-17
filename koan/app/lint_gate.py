@@ -126,7 +126,7 @@ def run_lint_gate(
         return None
 
     # Get changed files
-    base_branch = resolve_base_branch(project_name)
+    base_branch = resolve_base_branch(project_name, project_path)
     changed_files = _get_changed_files(project_path, base_branch)
     if not changed_files:
         return None  # Nothing to lint

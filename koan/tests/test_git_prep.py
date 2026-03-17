@@ -7,7 +7,7 @@ from app.git_prep import (
     get_upstream_remote,
     prepare_project_branch,
     PrepResult,
-    _detect_remote_default_branch,
+    detect_remote_default_branch,
 )
 
 
@@ -73,7 +73,7 @@ class TestGetUpstreamRemote:
         assert result == "origin"
 
 
-# --- _detect_remote_default_branch ---
+# --- detect_remote_default_branch ---
 
 
 class TestDetectRemoteDefaultBranch:
@@ -83,14 +83,14 @@ class TestDetectRemoteDefaultBranch:
         """Detects 'master' from local symbolic ref."""
         with patch("app.git_prep.run_git") as mock_git:
             mock_git.return_value = (0, "refs/remotes/origin/master", "")
-            result = _detect_remote_default_branch("origin", "/proj")
+            result = detect_remote_default_branch("origin", "/proj")
         assert result == "master"
 
     def test_local_symbolic_ref_main(self):
         """Detects 'main' from local symbolic ref."""
         with patch("app.git_prep.run_git") as mock_git:
             mock_git.return_value = (0, "refs/remotes/upstream/main", "")
-            result = _detect_remote_default_branch("upstream", "/proj")
+            result = detect_remote_default_branch("upstream", "/proj")
         assert result == "main"
 
     def test_local_ref_fails_falls_to_ls_remote(self):
@@ -100,7 +100,7 @@ class TestDetectRemoteDefaultBranch:
                 (1, "", "not a symbolic ref"),  # symbolic-ref fails
                 (0, "ref: refs/heads/master\tHEAD\nabc123\tHEAD", ""),  # ls-remote
             ]
-            result = _detect_remote_default_branch("origin", "/proj")
+            result = detect_remote_default_branch("origin", "/proj")
         assert result == "master"
 
     def test_both_methods_fail_returns_main(self):
@@ -110,7 +110,7 @@ class TestDetectRemoteDefaultBranch:
                 (1, "", "error"),  # symbolic-ref fails
                 (1, "", "error"),  # ls-remote fails
             ]
-            result = _detect_remote_default_branch("origin", "/proj")
+            result = detect_remote_default_branch("origin", "/proj")
         assert result == "main"
 
     def test_empty_symbolic_ref_falls_to_ls_remote(self):
@@ -120,7 +120,7 @@ class TestDetectRemoteDefaultBranch:
                 (0, "", ""),  # symbolic-ref returns empty
                 (0, "ref: refs/heads/develop\tHEAD\nabc\tHEAD", ""),
             ]
-            result = _detect_remote_default_branch("origin", "/proj")
+            result = detect_remote_default_branch("origin", "/proj")
         assert result == "develop"
 
     def test_ls_remote_no_ref_line(self):
@@ -130,7 +130,7 @@ class TestDetectRemoteDefaultBranch:
                 (1, "", "error"),
                 (0, "abc123\tHEAD", ""),  # no ref: line
             ]
-            result = _detect_remote_default_branch("origin", "/proj")
+            result = detect_remote_default_branch("origin", "/proj")
         assert result == "main"
 
 
@@ -278,6 +278,53 @@ class TestPrepareProjectBranch:
             result = prepare_project_branch("/proj", "myproj", "/koan")
 
         assert result.success is True
+        assert result.base_branch == "master"
+
+    def test_defaults_base_branch_does_not_prevent_detection(self):
+        """Regression: defaults.git_auto_merge.base_branch should NOT prevent auto-detection.
+
+        This was the root cause of the p5-File-Copy-Recursive failure:
+        projects.yaml had defaults.git_auto_merge.base_branch='main', which
+        set config_explicit=True, preventing detection of 'master' as the
+        actual remote default branch.
+        """
+        calls = []
+
+        def side_effect(*args, **kwargs):
+            cmd = args[0] if args else ""
+            calls.append(args)
+            if cmd == "rev-parse":
+                return (0, "feature", "")
+            if cmd == "fetch":
+                # First fetch (main) fails, second (master) succeeds
+                fetch_calls = [c for c in calls if c[0] == "fetch"]
+                if len(fetch_calls) == 1:
+                    return (1, "", "fatal: couldn't find remote ref main")
+                return (0, "", "")
+            if cmd == "symbolic-ref":
+                return (0, "refs/remotes/origin/master", "")
+            if cmd == "status":
+                return (0, "", "")
+            if cmd == "checkout":
+                return (0, "", "")
+            if cmd == "merge":
+                return (0, "", "")
+            return (1, "", "no remote")
+
+        # Config has defaults.base_branch="main" but NO per-project override
+        config = {
+            "defaults": {"git_auto_merge": {"base_branch": "main"}},
+            "projects": {"myproj": {}},
+        }
+        stack, _ = self._patch_all(
+            run_git_side_effect=side_effect,
+            config=config,
+            auto_merge={"base_branch": "main"},
+        )
+        with stack:
+            result = prepare_project_branch("/proj", "myproj", "/koan")
+
+        assert result.success is True, f"Expected success but got error: {result.error}"
         assert result.base_branch == "master"
 
     def test_fetch_failure_detection_same_branch_no_retry(self):

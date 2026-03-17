@@ -23,7 +23,7 @@ from app.projects_config import (
 logger = logging.getLogger(__name__)
 
 
-def _detect_remote_default_branch(remote: str, project_path: str) -> str:
+def detect_remote_default_branch(remote: str, project_path: str) -> str:
     """Detect the default branch for a remote.
 
     Resolution order:
@@ -133,7 +133,7 @@ def prepare_project_branch(
             proj_am = proj_cfg.get("git_auto_merge", {}) or {}
             defaults = config.get("defaults", {}) or {}
             defaults_am = defaults.get("git_auto_merge", {}) or {}
-            if proj_am.get("base_branch") or defaults_am.get("base_branch"):
+            if proj_am.get("base_branch"):
                 config_explicit = True
     except Exception as e:
         logger.warning("config load error for base_branch: %s", e)
@@ -146,7 +146,7 @@ def prepare_project_branch(
     )
     if rc != 0 and not config_explicit:
         # Base branch was not explicitly configured — detect remote default
-        detected = _detect_remote_default_branch(remote, project_path)
+        detected = detect_remote_default_branch(remote, project_path)
         if detected != base_branch:
             logger.info(
                 "Default branch for %s/%s is '%s', not '%s'",

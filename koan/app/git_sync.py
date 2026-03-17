@@ -106,7 +106,7 @@ class GitSync:
 
     def _get_target_branches(self) -> List[str]:
         """Return remote target branches that exist in this repo."""
-        candidates = ["origin/main", "origin/staging", "origin/develop", "origin/production"]
+        candidates = ["origin/main", "origin/master", "origin/staging", "origin/develop", "origin/production"]
         existing = []
         for ref in candidates:
             if run_git(self.project_path, "rev-parse", "--verify", ref):
