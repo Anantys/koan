@@ -41,7 +41,8 @@ def _resolve_post_mission_timeout() -> int:
     try:
         from app.config import get_post_mission_timeout
         return get_post_mission_timeout()
-    except Exception:
+    except Exception as e:
+        print(f"[mission_runner] failed to load post_mission_timeout config: {e}", file=sys.stderr)
         return POST_MISSION_TIMEOUT
 
 
