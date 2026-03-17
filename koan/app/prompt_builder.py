@@ -270,6 +270,66 @@ def _get_security_flagging_section(mission_title: str, autonomous_mode: str) -> 
     return load_prompt("security-flagging")
 
 
+def _build_mission_instruction(mission_title: str, project_name: str) -> str:
+    """Build the mission instruction text for the agent prompt."""
+    if mission_title:
+        return (
+            f"Your assigned mission is: **{mission_title}** "
+            "The mission is already marked In Progress. "
+            "Follow the Mission Execution Workflow below."
+        )
+    return (
+        f"No specific mission assigned. Look for pending missions for "
+        f"{project_name} in missions.md (check [project:{project_name}] "
+        f"tags and ### project:{project_name} sub-headers). "
+        "If none found, proceed to autonomous mode."
+    )
+
+
+def _load_agent_template(
+    instance: str,
+    project_name: str,
+    project_path: str,
+    run_num: int,
+    max_runs: int,
+    autonomous_mode: str,
+    focus_area: str,
+    available_pct: int,
+    mission_title: str,
+) -> str:
+    """Load and populate the agent.md template with standard placeholders."""
+    from app.prompts import load_prompt
+
+    mission_instruction = _build_mission_instruction(mission_title, project_name)
+    branch_prefix = _get_branch_prefix()
+    return load_prompt(
+        "agent",
+        INSTANCE=instance,
+        PROJECT_PATH=project_path,
+        PROJECT_NAME=project_name,
+        RUN_NUM=str(run_num),
+        MAX_RUNS=str(max_runs),
+        AUTONOMOUS_MODE=autonomous_mode,
+        FOCUS_AREA=focus_area,
+        AVAILABLE_PCT=str(available_pct),
+        MISSION_INSTRUCTION=mission_instruction,
+        BRANCH_PREFIX=branch_prefix,
+    )
+
+
+def _append_spec(prompt: str, spec_content: str, mission_title: str) -> str:
+    """Append mission spec section if applicable."""
+    if spec_content and mission_title:
+        prompt += (
+            "\n\n# Mission Spec\n\n"
+            "A spec was generated before implementation. Use it to anchor your work — "
+            "follow the approach and stay within the defined scope. Reference key "
+            "decisions in the PR description.\n\n"
+            f"{spec_content}\n"
+        )
+    return prompt
+
+
 def build_agent_prompt(
     instance: str,
     project_name: str,
@@ -299,48 +359,12 @@ def build_agent_prompt(
     Returns:
         Complete prompt string ready for Claude CLI
     """
-    from app.prompts import load_prompt
-
-    # Build mission instruction
-    if mission_title:
-        mission_instruction = (
-            f"Your assigned mission is: **{mission_title}** "
-            "The mission is already marked In Progress. "
-            "Follow the Mission Execution Workflow below."
-        )
-    else:
-        mission_instruction = (
-            f"No specific mission assigned. Look for pending missions for "
-            f"{project_name} in missions.md (check [project:{project_name}] "
-            f"tags and ### project:{project_name} sub-headers). "
-            "If none found, proceed to autonomous mode."
-        )
-
-    # Load template and substitute placeholders
-    branch_prefix = _get_branch_prefix()
-    prompt = load_prompt(
-        "agent",
-        INSTANCE=instance,
-        PROJECT_PATH=project_path,
-        PROJECT_NAME=project_name,
-        RUN_NUM=str(run_num),
-        MAX_RUNS=str(max_runs),
-        AUTONOMOUS_MODE=autonomous_mode,
-        FOCUS_AREA=focus_area,
-        AVAILABLE_PCT=str(available_pct),
-        MISSION_INSTRUCTION=mission_instruction,
-        BRANCH_PREFIX=branch_prefix,
+    prompt = _load_agent_template(
+        instance, project_name, project_path, run_num, max_runs,
+        autonomous_mode, focus_area, available_pct, mission_title,
     )
 
-    # Append mission spec (if generated)
-    if spec_content and mission_title:
-        prompt += (
-            "\n\n# Mission Spec\n\n"
-            "A spec was generated before implementation. Use it to anchor your work — "
-            "follow the approach and stay within the defined scope. Reference key "
-            "decisions in the PR description.\n\n"
-            f"{spec_content}\n"
-        )
+    prompt = _append_spec(prompt, spec_content, mission_title)
 
     # Append mission type guidance (mission-driven runs only)
     prompt += _get_mission_type_section(mission_title)
@@ -410,48 +434,14 @@ def build_agent_prompt_parts(
     Callers should pass ``system_prompt`` to ``build_full_command()``
     so it's sent via ``--append-system-prompt`` on supported providers.
     """
-    from app.prompts import load_prompt
-
     # --- User prompt: agent template + per-mission dynamic content ---
 
-    if mission_title:
-        mission_instruction = (
-            f"Your assigned mission is: **{mission_title}** "
-            "The mission is already marked In Progress. "
-            "Follow the Mission Execution Workflow below."
-        )
-    else:
-        mission_instruction = (
-            f"No specific mission assigned. Look for pending missions for "
-            f"{project_name} in missions.md (check [project:{project_name}] "
-            f"tags and ### project:{project_name} sub-headers). "
-            "If none found, proceed to autonomous mode."
-        )
-
-    branch_prefix = _get_branch_prefix()
-    user_prompt = load_prompt(
-        "agent",
-        INSTANCE=instance,
-        PROJECT_PATH=project_path,
-        PROJECT_NAME=project_name,
-        RUN_NUM=str(run_num),
-        MAX_RUNS=str(max_runs),
-        AUTONOMOUS_MODE=autonomous_mode,
-        FOCUS_AREA=focus_area,
-        AVAILABLE_PCT=str(available_pct),
-        MISSION_INSTRUCTION=mission_instruction,
-        BRANCH_PREFIX=branch_prefix,
+    user_prompt = _load_agent_template(
+        instance, project_name, project_path, run_num, max_runs,
+        autonomous_mode, focus_area, available_pct, mission_title,
     )
 
-    # Append mission spec (if generated)
-    if spec_content and mission_title:
-        user_prompt += (
-            "\n\n# Mission Spec\n\n"
-            "A spec was generated before implementation. Use it to anchor your work — "
-            "follow the approach and stay within the defined scope. Reference key "
-            "decisions in the PR description.\n\n"
-            f"{spec_content}\n"
-        )
+    user_prompt = _append_spec(user_prompt, spec_content, mission_title)
 
     # Append mission type guidance (mission-driven runs only)
     user_prompt += _get_mission_type_section(mission_title)

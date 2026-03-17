@@ -34,6 +34,15 @@ from typing import Callable, Dict, List, Optional
 # runs finish in 30-60s.
 POST_MISSION_TIMEOUT = 300
 
+# Status icons shared by _PipelineTracker.summary_lines() and
+# _notify_pipeline_failures() — single source of truth.
+_STATUS_ICONS = {"success": "✓", "fail": "✗", "skipped": "–", "timeout": "⏱"}
+
+
+def _get_koan_root(instance_dir: str) -> str:
+    """Resolve KOAN_ROOT from env or instance directory parent."""
+    return os.environ.get("KOAN_ROOT", str(Path(instance_dir).parent))
+
 
 class _PipelineTracker:
     """Accumulates step outcomes for the post-mission pipeline.
@@ -78,7 +87,7 @@ class _PipelineTracker:
         lines = []
         for step, info in self.steps.items():
             status = info["status"]
-            icon = {"success": "✓", "fail": "✗", "skipped": "–", "timeout": "⏱"}.get(status, "?")
+            icon = _STATUS_ICONS.get(status, "?")
             detail = f" ({info['detail']})" if info["detail"] else ""
             lines.append(f"  {icon} {step}: {status}{detail}")
         return lines
@@ -417,7 +426,7 @@ def _get_quality_gate_mode(instance_dir: str, project_name: str) -> str:
     """
     try:
         from app.projects_config import load_projects_config, get_project_config
-        koan_root = os.environ.get("KOAN_ROOT", str(Path(instance_dir).parent))
+        koan_root = _get_koan_root(instance_dir)
         config = load_projects_config(koan_root)
         if config:
             project_config = get_project_config(config, project_name)
@@ -473,7 +482,7 @@ def _is_lint_blocking(instance_dir: str, project_name: str) -> bool:
     try:
         from app.lint_gate import get_project_lint_config
         from app.projects_config import load_projects_config
-        koan_root = os.environ.get("KOAN_ROOT", str(Path(instance_dir).parent))
+        koan_root = _get_koan_root(instance_dir)
         config = load_projects_config(koan_root)
         if not config:
             return False
@@ -553,7 +562,7 @@ def check_auto_merge(
         from app.git_auto_merge import auto_merge_branch
         from app.projects_config import load_projects_config, get_project_auto_merge
 
-        koan_root = os.environ.get("KOAN_ROOT", str(Path(instance_dir).parent))
+        koan_root = _get_koan_root(instance_dir)
         projects_config = load_projects_config(koan_root)
         auto_merge_cfg = get_project_auto_merge(projects_config, project_name) if projects_config else {}
         auto_merge_enabled = auto_merge_cfg.get("enabled", False)
@@ -592,10 +601,10 @@ def _notify_pipeline_failures(
     try:
         from app.notify import send_telegram
 
-        _STATUS_ICONS = {"fail": "✗", "timeout": "⏱", "skipped": "–"}
+        _ISSUE_ICONS = {"fail": "✗", "timeout": "⏱", "skipped": "–"}
         issues = []
         for name, info in tracker.steps.items():
-            icon = _STATUS_ICONS.get(info["status"])
+            icon = _ISSUE_ICONS.get(info["status"])
             if icon is None:
                 continue
             label = f"{icon} {name}"
@@ -741,7 +750,7 @@ def run_post_mission(
         _report("checking quota")
         from app.quota_handler import handle_quota_exhaustion
 
-        koan_root = os.environ.get("KOAN_ROOT", str(Path(instance_dir).parent))
+        koan_root = _get_koan_root(instance_dir)
         quota_result = handle_quota_exhaustion(
             koan_root=koan_root,
             instance_dir=instance_dir,

@@ -36,6 +36,36 @@ def _run_git(cmd: list, cwd: str = None, timeout: int = 60) -> str:
     return run_git_strict(*args, cwd=cwd, timeout=timeout)
 
 
+_REBASE_EXCEPTIONS = (RuntimeError, subprocess.TimeoutExpired, OSError)
+
+
+def _abort_rebase_safely(project_path: str) -> None:
+    """Abort a rebase in progress, ignoring errors."""
+    try:
+        subprocess.run(
+            ["git", "rebase", "--abort"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True, cwd=project_path,
+            timeout=30,
+        )
+    except Exception:
+        pass
+
+
+def _ordered_remotes(preferred: Optional[str]) -> List[str]:
+    """Return remote names to try, with *preferred* first if given.
+
+    Always includes both ``origin`` and ``upstream`` (de-duplicated).
+    """
+    remotes: list[str] = []
+    if preferred:
+        remotes.append(preferred)
+    for r in ("origin", "upstream"):
+        if r not in remotes:
+            remotes.append(r)
+    return remotes
+
+
 def _rebase_onto_target(
     base: str,
     project_path: str,
@@ -52,16 +82,10 @@ def _rebase_onto_target(
     Returns:
         Remote name used (e.g. "origin" or "upstream") on success, None on failure.
     """
-    remotes: list[str] = []
-    if preferred_remote:
-        remotes.append(preferred_remote)
-    for r in ("origin", "upstream"):
-        if r not in remotes:
-            remotes.append(r)
-    for remote in remotes:
+    for remote in _ordered_remotes(preferred_remote):
         try:
             _run_git(["git", "fetch", remote, base], cwd=project_path)
-        except (RuntimeError, subprocess.TimeoutExpired, OSError) as e:
+        except _REBASE_EXCEPTIONS as e:
             print(f"[claude_step] Fetch {remote}/{base} failed: {e}", file=sys.stderr)
             continue
 
@@ -76,14 +100,9 @@ def _rebase_onto_target(
                     cwd=project_path,
                 )
                 return remote
-            except (RuntimeError, subprocess.TimeoutExpired, OSError) as e:
+            except _REBASE_EXCEPTIONS as e:
                 print(f"[claude_step] --onto rebase failed: {e}", file=sys.stderr)
-                subprocess.run(
-                    ["git", "rebase", "--abort"],
-                    stdin=subprocess.DEVNULL,
-                    capture_output=True, cwd=project_path,
-                    timeout=30,
-                )
+                _abort_rebase_safely(project_path)
                 # Fall through to plain rebase
 
         # Fallback: plain rebase
@@ -93,14 +112,9 @@ def _rebase_onto_target(
                 cwd=project_path,
             )
             return remote
-        except (RuntimeError, subprocess.TimeoutExpired, OSError) as e:
+        except _REBASE_EXCEPTIONS as e:
             print(f"[claude_step] Rebase onto {remote}/{base} failed: {e}", file=sys.stderr)
-            subprocess.run(
-                ["git", "rebase", "--abort"],
-                stdin=subprocess.DEVNULL,
-                capture_output=True, cwd=project_path,
-                timeout=30,
-            )
+            _abort_rebase_safely(project_path)
     return None
 
 

@@ -183,6 +183,15 @@ def _ordered_remotes(preferred: Optional[str]) -> List[str]:
     return remotes
 
 
+def _has_review_feedback(context: dict) -> bool:
+    """Check if the PR context contains any review feedback."""
+    return bool(
+        context.get("review_comments", "").strip()
+        or context.get("reviews", "").strip()
+        or context.get("issue_comments", "").strip()
+    )
+
+
 def build_comment_summary(context: dict) -> str:
     """Build a human-readable summary of all PR feedback.
 
@@ -311,13 +320,7 @@ def run_rebase(
         return False, f"Rebase failed on `{base}` (tried origin and upstream). Could not resolve conflicts."
 
     # ── Step 4: Analyze review comments and apply changes ──────────────
-    has_review_feedback = bool(
-        context.get("review_comments", "").strip()
-        or context.get("reviews", "").strip()
-        or context.get("issue_comments", "").strip()
-    )
-
-    if has_review_feedback:
+    if _has_review_feedback(context):
         notify_fn(f"Analyzing review comments on `{branch}`...")
         _apply_review_feedback(
             context, pr_number, project_path, actions_log,
@@ -686,6 +689,23 @@ def _check_pr_state(pr_number: str, full_repo: str) -> tuple:
         return ("UNKNOWN", "UNKNOWN")
 
 
+def _force_push(remote: str, branch: str, project_path: str) -> None:
+    """Force-push branch, trying --force-with-lease first then --force.
+
+    Raises on total failure.
+    """
+    try:
+        _run_git(
+            ["git", "push", remote, branch, "--force-with-lease"],
+            cwd=project_path,
+        )
+    except Exception:
+        _run_git(
+            ["git", "push", remote, branch, "--force"],
+            cwd=project_path,
+        )
+
+
 def _run_ci_check_and_fix(
     branch: str,
     base: str,
@@ -765,20 +785,10 @@ def _run_ci_check_and_fix(
 
         # Force-push the fix
         try:
-            _run_git(
-                ["git", "push", "origin", branch, "--force-with-lease"],
-                cwd=project_path,
-            )
+            _force_push("origin", branch, project_path)
         except Exception as e:
-            print(f"[rebase] force-with-lease push failed, retrying with --force: {e}", file=sys.stderr)
-            try:
-                _run_git(
-                    ["git", "push", "origin", branch, "--force"],
-                    cwd=project_path,
-                )
-            except Exception as e:
-                actions_log.append(f"Push after CI fix failed: {str(e)[:100]}")
-                break
+            actions_log.append(f"Push after CI fix failed: {str(e)[:100]}")
+            break
 
         actions_log.append(f"Pushed CI fix (attempt {attempt})")
 
@@ -899,38 +909,15 @@ def _push_with_fallback(
     Uses ``--force-with-lease`` first, then plain ``--force`` as fallback.
     """
     actions: List[str] = []
-
-    remotes: List[str] = []
-    if head_remote:
-        remotes.append(head_remote)
-    for r in ("origin", "upstream"):
-        if r not in remotes:
-            remotes.append(r)
-
+    remotes = _ordered_remotes(head_remote)
     last_error = ""
     for remote in remotes:
-        # Try safe force-push first
         try:
-            _run_git(
-                ["git", "push", remote, branch, "--force-with-lease"],
-                cwd=project_path,
-            )
+            _force_push(remote, branch, project_path)
             actions.append(f"Force-pushed `{branch}` to {remote}")
             return {"success": True, "actions": actions, "error": ""}
         except Exception as e:
-            print(f"[rebase_pr] force-with-lease to {remote} failed: {e}", file=sys.stderr)
-            last_error = str(e)
-
-        # Fall back to plain force-push (handles stale tracking refs)
-        try:
-            _run_git(
-                ["git", "push", remote, branch, "--force"],
-                cwd=project_path,
-            )
-            actions.append(f"Force-pushed `{branch}` to {remote}")
-            return {"success": True, "actions": actions, "error": ""}
-        except Exception as e:
-            print(f"[rebase_pr] force push to {remote} failed: {e}", file=sys.stderr)
+            print(f"[rebase_pr] push to {remote} failed: {e}", file=sys.stderr)
             last_error = str(e)
 
     return {
@@ -974,12 +961,7 @@ def _build_rebase_comment(
         parts.append(f"**Diff**: {diffstat}\n")
 
     # Show what review feedback was addressed
-    has_feedback = bool(
-        context.get("review_comments", "").strip()
-        or context.get("reviews", "").strip()
-        or context.get("issue_comments", "").strip()
-    )
-    if has_feedback and any("feedback" in a.lower() for a in actions_log):
+    if _has_review_feedback(context) and any("feedback" in a.lower() for a in actions_log):
         parts.append("Review feedback was analyzed and applied.\n")
 
     parts.append(f"### Actions\n\n{actions_md}\n")
