@@ -1435,6 +1435,7 @@ class TestGetSecurityFlaggingSection:
 class TestBuildAgentPromptParts:
     """Tests for the split prompt builder (system + user prompt)."""
 
+    @patch("app.prompt_builder._get_security_flagging_section", return_value="")
     @patch("app.prompt_builder._get_verbose_section", return_value="")
     @patch("app.prompt_builder._get_focus_section", return_value="")
     @patch("app.prompt_builder._get_verification_gate_section", return_value="")
@@ -1445,7 +1446,7 @@ class TestBuildAgentPromptParts:
     @patch("app.prompts.load_prompt")
     def test_returns_tuple(
         self, mock_load, mock_prefix, mock_merge, mock_submit,
-        mock_tdd, mock_verify, mock_focus, mock_verbose, prompt_env,
+        mock_tdd, mock_verify, mock_focus, mock_verbose, mock_security, prompt_env,
     ):
         """build_agent_prompt_parts returns a (system_prompt, user_prompt) tuple."""
         mock_load.return_value = "AGENT_TEMPLATE"
@@ -1462,6 +1463,7 @@ class TestBuildAgentPromptParts:
         assert isinstance(sys_prompt, str)
         assert isinstance(user_prompt, str)
 
+    @patch("app.prompt_builder._get_security_flagging_section", return_value="")
     @patch("app.prompt_builder._get_verbose_section", return_value="")
     @patch("app.prompt_builder._get_focus_section", return_value="")
     @patch("app.prompt_builder._get_verification_gate_section", return_value="")
@@ -1472,7 +1474,7 @@ class TestBuildAgentPromptParts:
     @patch("app.prompts.load_prompt")
     def test_system_prompt_contains_merge_policy(
         self, mock_load, mock_prefix, mock_merge, mock_submit,
-        mock_tdd, mock_verify, mock_focus, mock_verbose, prompt_env,
+        mock_tdd, mock_verify, mock_focus, mock_verbose, mock_security, prompt_env,
     ):
         """System prompt contains merge policy and PR guidelines."""
         mock_load.return_value = "AGENT_TEMPLATE"
@@ -1489,6 +1491,7 @@ class TestBuildAgentPromptParts:
         assert "Merge Policy" in sys_prompt
         assert "Submit PR" in sys_prompt
 
+    @patch("app.prompt_builder._get_security_flagging_section", return_value="")
     @patch("app.prompt_builder._get_verbose_section", return_value="")
     @patch("app.prompt_builder._get_focus_section", return_value="")
     @patch("app.prompt_builder._get_verification_gate_section", return_value="")
@@ -1499,7 +1502,7 @@ class TestBuildAgentPromptParts:
     @patch("app.prompts.load_prompt")
     def test_user_prompt_contains_template(
         self, mock_load, mock_prefix, mock_merge, mock_submit,
-        mock_tdd, mock_verify, mock_focus, mock_verbose, prompt_env,
+        mock_tdd, mock_verify, mock_focus, mock_verbose, mock_security, prompt_env,
     ):
         """User prompt contains the agent template."""
         mock_load.return_value = "AGENT_TEMPLATE"
@@ -1515,6 +1518,7 @@ class TestBuildAgentPromptParts:
         )
         assert "AGENT_TEMPLATE" in user_prompt
 
+    @patch("app.prompt_builder._get_security_flagging_section", return_value="")
     @patch("app.prompt_builder._get_verbose_section", return_value="")
     @patch("app.prompt_builder._get_focus_section", return_value="")
     @patch("app.prompt_builder._get_verification_gate_section",
@@ -1526,7 +1530,7 @@ class TestBuildAgentPromptParts:
     @patch("app.prompts.load_prompt")
     def test_verification_gate_in_system_prompt(
         self, mock_load, mock_prefix, mock_merge, mock_submit,
-        mock_tdd, mock_verify, mock_focus, mock_verbose, prompt_env,
+        mock_tdd, mock_verify, mock_focus, mock_verbose, mock_security, prompt_env,
     ):
         """Verification gate goes to system prompt when present."""
         mock_load.return_value = "TEMPLATE"
@@ -1544,6 +1548,7 @@ class TestBuildAgentPromptParts:
         assert "Verification Gate" in sys_prompt
         assert "Verification Gate" not in user_prompt
 
+    @patch("app.prompt_builder._get_security_flagging_section", return_value="")
     @patch("app.prompt_builder._get_verbose_section", return_value="")
     @patch("app.prompt_builder._get_focus_section", return_value="")
     @patch("app.prompt_builder._get_verification_gate_section", return_value="")
@@ -1554,7 +1559,7 @@ class TestBuildAgentPromptParts:
     @patch("app.prompts.load_prompt")
     def test_merge_policy_not_in_user_prompt(
         self, mock_load, mock_prefix, mock_merge, mock_submit,
-        mock_tdd, mock_verify, mock_focus, mock_verbose, prompt_env,
+        mock_tdd, mock_verify, mock_focus, mock_verbose, mock_security, prompt_env,
     ):
         """Merge policy appears in system prompt, not user prompt."""
         mock_load.return_value = "TEMPLATE"
@@ -1571,6 +1576,7 @@ class TestBuildAgentPromptParts:
         assert "Merge Policy" in sys_prompt
         assert "Merge Policy" not in user_prompt
 
+    @patch("app.prompt_builder._get_security_flagging_section", return_value="")
     @patch("app.prompt_builder._get_verbose_section", return_value="")
     @patch("app.prompt_builder._get_focus_section", return_value="")
     @patch("app.prompt_builder._get_verification_gate_section", return_value="")
@@ -1581,7 +1587,7 @@ class TestBuildAgentPromptParts:
     @patch("app.prompts.load_prompt")
     def test_spec_content_in_user_prompt(
         self, mock_load, mock_prefix, mock_merge, mock_submit,
-        mock_tdd, mock_verify, mock_focus, mock_verbose, prompt_env,
+        mock_tdd, mock_verify, mock_focus, mock_verbose, mock_security, prompt_env,
     ):
         """Mission spec goes to user prompt (variable content)."""
         mock_load.return_value = "TEMPLATE"

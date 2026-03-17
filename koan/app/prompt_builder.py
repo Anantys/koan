@@ -481,6 +481,10 @@ def build_agent_prompt_parts(
     if verbose:
         sys_parts.append(verbose)
 
+    security = _get_security_flagging_section(mission_title, autonomous_mode)
+    if security:
+        sys_parts.append(security)
+
     system_prompt = "\n\n".join(part for part in sys_parts if part)
 
     return system_prompt, user_prompt
