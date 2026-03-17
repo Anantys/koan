@@ -4,7 +4,7 @@ import json
 import pytest
 from pathlib import Path
 
-from app.mcp_config import generate_mcp_config, has_browser_mcp
+from app.mcp_config import generate_mcp_config
 
 
 # ---------------------------------------------------------------------------
@@ -83,31 +83,3 @@ class TestGenerateMcpConfig:
         path2 = generate_mcp_config(entries, str(tmp_path), "proj")
         assert path1 == path2
         assert Path(path1).read_text() == Path(path2).read_text()
-
-
-# ---------------------------------------------------------------------------
-# has_browser_mcp
-# ---------------------------------------------------------------------------
-
-
-class TestHasBrowserMcp:
-    """Tests for has_browser_mcp()."""
-
-    def test_detects_playwright(self):
-        entries = [{"name": "playwright", "command": "npx"}]
-        assert has_browser_mcp(entries) is True
-
-    def test_detects_browser(self):
-        entries = [{"name": "browser", "command": "cmd"}]
-        assert has_browser_mcp(entries) is True
-
-    def test_case_insensitive(self):
-        entries = [{"name": "Playwright", "command": "npx"}]
-        assert has_browser_mcp(entries) is True
-
-    def test_returns_false_for_non_browser(self):
-        entries = [{"name": "custom-server", "command": "cmd"}]
-        assert has_browser_mcp(entries) is False
-
-    def test_returns_false_for_empty(self):
-        assert has_browser_mcp([]) is False

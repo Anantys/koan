@@ -127,10 +127,10 @@ def _get_mcp_config_paths(project_name: str) -> Optional[List[str]]:
     Reads MCP entries from projects.yaml, generates a JSON config file,
     and returns a list with the config path (or None if no MCP config).
     """
-    try:
-        from app.projects_config import load_projects_config, get_project_mcp
-        from app.mcp_config import generate_mcp_config
+    from app.projects_config import load_projects_config, get_project_mcp
+    from app.mcp_config import generate_mcp_config
 
+    try:
         koan_root = os.environ.get("KOAN_ROOT", "")
         if not koan_root:
             return None
@@ -148,7 +148,7 @@ def _get_mcp_config_paths(project_name: str) -> Optional[List[str]]:
         if config_path:
             return [config_path]
     except Exception as e:
-        print(f"[mission_runner] MCP config resolution failed: {e}", file=sys.stderr)
+        print(f"[mission_runner] MCP config resolution failed for {project_name}: {e}", file=sys.stderr)
     return None
 
 

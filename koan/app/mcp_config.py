@@ -16,7 +16,6 @@ name for reuse across runs.
 """
 
 import json
-import os
 from pathlib import Path
 from typing import List, Optional
 
@@ -65,21 +64,8 @@ def generate_mcp_config(
     config_dir = Path(instance_dir) / ".mcp-configs"
     config_dir.mkdir(parents=True, exist_ok=True)
 
-    config_path = config_dir / f"{project_name}.json"
+    safe_name = Path(project_name).name or "default"
+    config_path = config_dir / f"{safe_name}.json"
     config_path.write_text(json.dumps(config, indent=2) + "\n")
 
     return str(config_path)
-
-
-def has_browser_mcp(mcp_entries: List[dict]) -> bool:
-    """Check if any MCP entry is a browser/Playwright server.
-
-    Used to decide whether browser-specific behavior (locking, prompt
-    guidance) should be activated.
-    """
-    browser_names = {"playwright", "browser", "puppeteer"}
-    for entry in mcp_entries:
-        name = str(entry.get("name", "")).lower()
-        if name in browser_names:
-            return True
-    return False
