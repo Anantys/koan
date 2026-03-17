@@ -48,6 +48,12 @@ fast_reply: false
 # Default: 3600 (60 minutes). Previous default was 900 (15 minutes).
 skill_timeout: 3600
 
+# Post-mission pipeline timeout — maximum seconds for the steps that run after
+# a mission completes: verification, reflection, PR review learning, auto-merge.
+# Increase if post-mission steps are being cut short; decrease to keep the loop snappy.
+# Default: 300 (5 minutes).
+# post_mission_timeout: 300
+
 # Contemplative mode trigger chance (0-100%)
 # When no mission is pending, this is the probability of running a reflective
 # session instead of autonomous work. Allows regular moments of introspection

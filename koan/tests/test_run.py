@@ -1165,7 +1165,7 @@ class TestPostMissionDeadline:
 
     def test_deadline_skips_slow_steps(self, tmp_path, monkeypatch):
         """Steps are skipped when the pipeline deadline expires."""
-        from app.mission_runner import run_post_mission, POST_MISSION_TIMEOUT
+        from app.mission_runner import run_post_mission
 
         # Create required files
         stdout_f = str(tmp_path / "stdout.txt")
@@ -1182,7 +1182,7 @@ class TestPostMissionDeadline:
             return None
 
         monkeypatch.setattr(
-            "app.mission_runner.POST_MISSION_TIMEOUT", 0.2
+            "app.mission_runner._resolve_post_mission_timeout", lambda: 0.2
         )
         monkeypatch.setattr(
             "app.mission_runner._run_mission_verification", slow_verification
@@ -1251,7 +1251,7 @@ class TestPostMissionDeadline:
 
         outcome_recorded = []
 
-        monkeypatch.setattr("app.mission_runner.POST_MISSION_TIMEOUT", 0.01)
+        monkeypatch.setattr("app.mission_runner._resolve_post_mission_timeout", lambda: 0.01)
         monkeypatch.setattr(
             "app.mission_runner.update_usage", lambda *a: True,
         )

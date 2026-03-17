@@ -351,6 +351,22 @@ def get_mission_timeout() -> int:
     return _safe_int(config.get("mission_timeout", 3600), 3600)
 
 
+def get_post_mission_timeout() -> int:
+    """Get timeout in seconds for the post-mission pipeline.
+
+    Controls the overall deadline for post-mission steps: verification,
+    reflection, PR review learning, and auto-merge.  Without this ceiling,
+    accumulated steps can block the agent loop for too long.
+
+    Config key: post_mission_timeout (default: 300 — 5 minutes).
+
+    Returns:
+        Timeout in seconds.
+    """
+    config = _load_config()
+    return _safe_int(config.get("post_mission_timeout", 300), 300)
+
+
 def get_plan_review_config() -> dict:
     """Get plan review loop configuration from config.yaml.
 

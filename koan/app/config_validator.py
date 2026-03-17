@@ -30,6 +30,7 @@ CONFIG_SCHEMA: Dict[str, Any] = {
     "branch_prefix": "str",
     "skill_timeout": "int",
     "mission_timeout": "int",
+    "post_mission_timeout": "int",
     "contemplative_chance": "int",
     "start_on_pause": "bool",
     "skip_permissions": "bool",

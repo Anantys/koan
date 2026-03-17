@@ -32,7 +32,18 @@ from typing import Callable, Dict, List, Optional
 # verification: 10s), but without an overall ceiling, accumulated steps
 # can block the agent loop for too long.  5 minutes is generous — typical
 # runs finish in 30-60s.
-POST_MISSION_TIMEOUT = 300
+# Configurable via post_mission_timeout in config.yaml.
+POST_MISSION_TIMEOUT = 300  # default; overridden by config at runtime
+
+
+def _resolve_post_mission_timeout() -> int:
+    """Read post_mission_timeout from config, falling back to module constant."""
+    try:
+        from app.config import get_post_mission_timeout
+        return get_post_mission_timeout()
+    except Exception as e:
+        print(f"[mission_runner] failed to load post_mission_timeout config: {e}", file=sys.stderr)
+        return POST_MISSION_TIMEOUT
 
 
 class _PipelineTracker:
@@ -698,13 +709,14 @@ def run_post_mission(
 
     # Overall pipeline deadline — prevents accumulated steps from blocking
     # the agent loop indefinitely.
+    _pm_timeout = _resolve_post_mission_timeout()
     _pipeline_expired = threading.Event()
     _deadline_timer = threading.Timer(
-        POST_MISSION_TIMEOUT,
+        _pm_timeout,
         lambda: (
             _pipeline_expired.set(),
             print(
-                f"[mission_runner] Post-mission pipeline exceeded {POST_MISSION_TIMEOUT}s — "
+                f"[mission_runner] Post-mission pipeline exceeded {_pm_timeout}s — "
                 "skipping remaining steps",
                 file=sys.stderr,
             ),
