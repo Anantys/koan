@@ -388,10 +388,11 @@ class TestIsKnownProject:
 # Test: handle_resume
 # ---------------------------------------------------------------------------
 
+@patch("app.command_handlers._is_runner_alive", return_value=True)
 class TestHandleResume:
     """Tests for handle_resume — unpause from various states."""
 
-    def test_resume_manual_pause(self, patch_bridge_state, mock_send):
+    def test_resume_manual_pause(self, mock_alive, patch_bridge_state, mock_send):
         from app.command_handlers import handle_resume
         (patch_bridge_state / ".koan-pause").touch()
         handle_resume()
@@ -399,7 +400,7 @@ class TestHandleResume:
         mock_send.assert_called_once()
         assert "Unpaused" in mock_send.call_args[0][0]
 
-    def test_resume_max_runs_pause(self, patch_bridge_state, mock_send):
+    def test_resume_max_runs_pause(self, mock_alive, patch_bridge_state, mock_send):
         from app.command_handlers import handle_resume
         (patch_bridge_state / ".koan-pause").write_text("max_runs\n")
         handle_resume()
@@ -409,7 +410,7 @@ class TestHandleResume:
 
     @patch("app.command_handlers._reset_session_counters")
     def test_resume_quota_pause_resets_counters(
-        self, mock_reset, patch_bridge_state, mock_send
+        self, mock_reset, mock_alive, patch_bridge_state, mock_send
     ):
         from app.command_handlers import handle_resume
         # Quota reason with a far future timestamp
@@ -423,7 +424,7 @@ class TestHandleResume:
 
     @patch("app.command_handlers._reset_session_counters")
     def test_resume_quota_with_expired_reset(
-        self, mock_reset, patch_bridge_state, mock_send
+        self, mock_reset, mock_alive, patch_bridge_state, mock_send
     ):
         from app.command_handlers import handle_resume
         # Quota reason with past timestamp (expired)
@@ -436,7 +437,7 @@ class TestHandleResume:
         msg = mock_send.call_args[0][0]
         assert "Quota should be reset" in msg
 
-    def test_resume_when_not_paused(self, patch_bridge_state, mock_send):
+    def test_resume_when_not_paused(self, mock_alive, patch_bridge_state, mock_send):
         from app.command_handlers import handle_resume
         handle_resume()
         mock_send.assert_called_once()
@@ -1056,12 +1057,13 @@ class TestPauseUsesPauseManager:
 # Test: handle_resume — corrupt and edge-case pause files
 # ---------------------------------------------------------------------------
 
+@patch("app.command_handlers._is_runner_alive", return_value=True)
 class TestHandleResumeEdgeCases:
     """Tests for handle_resume with corrupt or unusual file contents."""
 
     @patch("app.command_handlers._reset_session_counters")
     def test_resume_quota_with_empty_timestamp_line(
-        self, mock_reset, patch_bridge_state, mock_send
+        self, mock_reset, mock_alive, patch_bridge_state, mock_send
     ):
         """Pause file with empty second line should not crash."""
         from app.command_handlers import handle_resume
@@ -1073,7 +1075,7 @@ class TestHandleResumeEdgeCases:
 
     @patch("app.command_handlers._reset_session_counters")
     def test_resume_quota_with_garbage_timestamp(
-        self, mock_reset, patch_bridge_state, mock_send
+        self, mock_reset, mock_alive, patch_bridge_state, mock_send
     ):
         """Pause file with non-numeric timestamp should not crash."""
         from app.command_handlers import handle_resume
@@ -1084,7 +1086,7 @@ class TestHandleResumeEdgeCases:
         # No timestamp → treat as expired → should say "Quota should be reset"
         assert "Quota should be reset" in mock_send.call_args[0][0]
 
-    def test_resume_with_whitespace_in_reason_file(self, patch_bridge_state, mock_send):
+    def test_resume_with_whitespace_in_reason_file(self, mock_alive, patch_bridge_state, mock_send):
         """Pause file with extra whitespace should still parse correctly."""
         from app.command_handlers import handle_resume
         (patch_bridge_state / ".koan-pause").write_text("  manual  \n  \n")
@@ -1093,7 +1095,7 @@ class TestHandleResumeEdgeCases:
         mock_send.assert_called_once()
         assert "Unpaused" in mock_send.call_args[0][0]
 
-    def test_resume_with_only_reason_no_timestamp(self, patch_bridge_state, mock_send):
+    def test_resume_with_only_reason_no_timestamp(self, mock_alive, patch_bridge_state, mock_send):
         """Pause file with just the reason, no timestamp line."""
         from app.command_handlers import handle_resume
         (patch_bridge_state / ".koan-pause").write_text("manual")
@@ -1639,3 +1641,80 @@ class TestQueueCliSkillMissionEdgeCases:
         msg = mock_send.call_args[0][0]
         # The koan_cmd[:500] truncation should apply
         assert len(msg) < 1500
+
+
+# ---------------------------------------------------------------------------
+# Test: handle_resume — auto-restart dead runner
+# ---------------------------------------------------------------------------
+
+class TestHandleResumeAutoRestart:
+    """Tests for handle_resume auto-restarting a dead runner."""
+
+    @patch("app.command_handlers._is_runner_alive", return_value=False)
+    @patch("app.command_handlers._auto_restart_runner", return_value=True)
+    def test_resume_paused_with_dead_runner_restarts(
+        self, mock_restart, mock_alive, patch_bridge_state, mock_send
+    ):
+        """When paused and runner is dead, resume should auto-restart."""
+        from app.command_handlers import handle_resume
+        (patch_bridge_state / ".koan-pause").write_text("manual\n")
+        handle_resume()
+        # Pause removed + message sent + restart triggered
+        assert not (patch_bridge_state / ".koan-pause").exists()
+        mock_restart.assert_called_once()
+
+    @patch("app.command_handlers._is_runner_alive", return_value=True)
+    @patch("app.command_handlers._auto_restart_runner")
+    def test_resume_paused_with_alive_runner_no_restart(
+        self, mock_restart, mock_alive, patch_bridge_state, mock_send
+    ):
+        """When paused and runner is alive, resume should NOT restart."""
+        from app.command_handlers import handle_resume
+        (patch_bridge_state / ".koan-pause").write_text("manual\n")
+        handle_resume()
+        mock_restart.assert_not_called()
+
+    @patch("app.command_handlers._is_runner_alive", return_value=False)
+    @patch("app.command_handlers._auto_restart_runner", return_value=True)
+    def test_resume_no_pause_no_quota_dead_runner_restarts(
+        self, mock_restart, mock_alive, patch_bridge_state, mock_send
+    ):
+        """When no pause file and runner is dead, resume should restart."""
+        from app.command_handlers import handle_resume
+        handle_resume()
+        mock_restart.assert_called_once()
+
+    @patch("app.command_handlers._is_runner_alive", return_value=True)
+    def test_resume_no_pause_alive_runner_shows_info(
+        self, mock_alive, patch_bridge_state, mock_send
+    ):
+        """When no pause and runner is alive, show info message."""
+        from app.command_handlers import handle_resume
+        handle_resume()
+        mock_send.assert_called_once()
+        assert "No pause" in mock_send.call_args[0][0]
+
+    @patch("app.pid_manager.check_pidfile", return_value=None)
+    @patch("app.pid_manager.start_runner", return_value=(True, "Agent loop started (PID 999)"))
+    def test_auto_restart_runner_calls_start_runner_with_skip_env(
+        self, mock_start, mock_check, patch_bridge_state, mock_send
+    ):
+        """_auto_restart_runner should pass KOAN_SKIP_START_PAUSE=1."""
+        from app.command_handlers import _auto_restart_runner
+        result = _auto_restart_runner()
+        assert result is True
+        mock_start.assert_called_once()
+        extra_env = mock_start.call_args[1].get("extra_env", {})
+        assert extra_env.get("KOAN_SKIP_START_PAUSE") == "1"
+        assert "restarting" in mock_send.call_args[0][0].lower()
+
+    @patch("app.pid_manager.check_pidfile", return_value=None)
+    @patch("app.pid_manager.start_runner", return_value=(False, "Failed to launch"))
+    def test_auto_restart_runner_failure_sends_error(
+        self, mock_start, mock_check, patch_bridge_state, mock_send
+    ):
+        """_auto_restart_runner should report failure."""
+        from app.command_handlers import _auto_restart_runner
+        result = _auto_restart_runner()
+        assert result is False
+        assert "Failed" in mock_send.call_args[0][0]

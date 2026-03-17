@@ -215,7 +215,14 @@ def handle_start_on_pause(koan_root: str):
     Removes stale system-generated reason files (quota, max_runs)
     to prevent auto-resume from a previous session. Preserves
     manual pauses (user explicitly requested via /pause).
+
+    Skipped when KOAN_SKIP_START_PAUSE=1 (set by /resume auto-restart
+    to avoid immediately re-pausing the freshly launched runner).
     """
+    if os.environ.get("KOAN_SKIP_START_PAUSE") == "1":
+        log("pause", "start_on_pause skipped (KOAN_SKIP_START_PAUSE=1)")
+        return
+
     from app.utils import get_start_on_pause
 
     if not get_start_on_pause():

@@ -424,6 +424,24 @@ class TestHandleStartOnPause:
         # No log about entering pause (already paused)
         assert "start_on_pause=true" not in out
 
+    @patch("app.utils.get_start_on_pause", return_value=True)
+    def test_skip_when_env_var_set(self, mock_config, koan_root, monkeypatch, capsys):
+        """KOAN_SKIP_START_PAUSE=1 should bypass start_on_pause entirely."""
+        monkeypatch.setenv("KOAN_SKIP_START_PAUSE", "1")
+        from app.startup_manager import handle_start_on_pause
+        handle_start_on_pause(str(koan_root))
+        assert not (koan_root / ".koan-pause").exists()
+        out = capsys.readouterr().out
+        assert "skipped" in out.lower()
+
+    @patch("app.utils.get_start_on_pause", return_value=True)
+    def test_no_skip_when_env_var_not_set(self, mock_config, koan_root, monkeypatch, capsys):
+        """Without KOAN_SKIP_START_PAUSE, start_on_pause should work normally."""
+        monkeypatch.delenv("KOAN_SKIP_START_PAUSE", raising=False)
+        from app.startup_manager import handle_start_on_pause
+        handle_start_on_pause(str(koan_root))
+        assert (koan_root / ".koan-pause").exists()
+
 
 # ---------------------------------------------------------------------------
 # Test: setup_git_identity

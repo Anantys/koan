@@ -261,7 +261,8 @@ OLLAMA_VERIFY_TIMEOUT = 5.0
 
 
 def _launch_python_process(
-    koan_root: Path, script_name: str, process_name: str, verify_timeout: float
+    koan_root: Path, script_name: str, process_name: str, verify_timeout: float,
+    extra_env: dict = None,
 ) -> tuple:
     """Launch a Python process in the background and verify startup.
     
@@ -287,6 +288,7 @@ def _launch_python_process(
         "KOAN_ROOT": str(koan_root),
         "PYTHONPATH": str(koan_dir),
         "KOAN_FORCE_COLOR": "1",
+        **(extra_env or {}),
     }
 
     log_fh = _open_log_file(koan_root, process_name)
@@ -317,11 +319,18 @@ def _launch_python_process(
     return False, "Launched but PID not detected — check logs"
 
 
-def start_runner(koan_root: Path, verify_timeout: float = DEFAULT_VERIFY_TIMEOUT) -> tuple:
+def start_runner(
+    koan_root: Path, verify_timeout: float = DEFAULT_VERIFY_TIMEOUT,
+    extra_env: dict = None,
+) -> tuple:
     """Start the agent loop (run.py) as a detached subprocess.
 
     Clears .koan-stop signal, launches run.py, and verifies startup
     via PID file.
+
+    Args:
+        extra_env: Additional environment variables passed to the subprocess
+                   (e.g. {"KOAN_SKIP_START_PAUSE": "1"} to bypass start_on_pause).
 
     Returns (success: bool, message: str).
     """
@@ -329,7 +338,9 @@ def start_runner(koan_root: Path, verify_timeout: float = DEFAULT_VERIFY_TIMEOUT
     for signal_file in (STOP_FILE, PAUSE_FILE):
         (koan_root / signal_file).unlink(missing_ok=True)
 
-    return _launch_python_process(koan_root, "app/run.py", "run", verify_timeout)
+    return _launch_python_process(
+        koan_root, "app/run.py", "run", verify_timeout, extra_env=extra_env,
+    )
 
 
 def start_ollama(koan_root: Path, verify_timeout: float = OLLAMA_VERIFY_TIMEOUT) -> tuple:

@@ -561,8 +561,35 @@ def _reset_session_counters():
         log("error", f"Failed to reset session counters: {e}")
 
 
+def _is_runner_alive() -> bool:
+    """Check if the run process is alive via its PID file."""
+    from app.pid_manager import check_pidfile
+    return check_pidfile(KOAN_ROOT, "run") is not None
+
+
+def _auto_restart_runner() -> bool:
+    """Start the runner with start_on_pause bypassed.
+
+    Returns True if the runner was successfully started.
+    """
+    from app.pid_manager import start_runner
+    ok, msg = start_runner(
+        KOAN_ROOT, extra_env={"KOAN_SKIP_START_PAUSE": "1"},
+    )
+    if ok:
+        send_telegram(f"🔄 Runner was not active — restarting now… {msg}")
+    else:
+        send_telegram(f"❌ Failed to restart runner: {msg}")
+    return ok
+
+
 def handle_resume():
-    """Resume from pause or quota exhaustion."""
+    """Resume from pause or quota exhaustion.
+
+    If the run process is dead, automatically restarts it with
+    KOAN_SKIP_START_PAUSE=1 so start_on_pause doesn't immediately
+    re-pause the freshly launched runner.
+    """
     from app.pause_manager import get_pause_state, remove_pause
 
     pause_file = KOAN_ROOT / PAUSE_FILE
@@ -602,11 +629,19 @@ def handle_resume():
             send_telegram("▶️ Unpaused (was: max_runs). Run counter reset, loop continues.")
         else:
             send_telegram("▶️ Unpaused. Missions resume next cycle.")
+
+        # If the runner died while paused, restart it automatically
+        if not _is_runner_alive():
+            _auto_restart_runner()
         return
 
     # Legacy fallback: old .koan-quota-reset file (can be removed in future)
     if not quota_file.exists():
-        send_telegram("ℹ️ No pause or quota hold detected. /status to check.")
+        # No pause state, but runner might be dead — restart it
+        if not _is_runner_alive():
+            _auto_restart_runner()
+        else:
+            send_telegram("ℹ️ No pause or quota hold detected. /status to check.")
         return
 
     try:
