@@ -1616,8 +1616,8 @@ def _run_iteration(
             try:
                 from app.plugin_generator import cleanup_plugin_dir
                 cleanup_plugin_dir(plugin_dir)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[run] plugin cleanup error: {e}", file=sys.stderr)
 
     # Report result — always notify on completion (success or failure)
     if claude_exit == 0:
