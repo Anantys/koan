@@ -74,6 +74,15 @@ class TestHandleCommandRouting:
         mock_send.assert_called_once()
         assert "Stop requested" in mock_send.call_args[0][0]
 
+    def test_cycle_command_creates_cycle_file(self, patch_bridge_state, mock_send):
+        from app.command_handlers import handle_command
+        handle_command("/cycle")
+        cycle_file = patch_bridge_state / ".koan-cycle"
+        assert cycle_file.exists()
+        assert cycle_file.read_text() == "CYCLE"
+        mock_send.assert_called_once()
+        assert "Cycle requested" in mock_send.call_args[0][0]
+
     def test_pause_command_creates_pause_file(self, patch_bridge_state, mock_send):
         from app.command_handlers import handle_command
         handle_command("/pause")

@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Optional, IO
 
 from app.signals import (
+    CYCLE_FILE,
     PAUSE_FILE,
     PROJECT_FILE,
     STATUS_FILE,
@@ -334,8 +335,8 @@ def start_runner(
 
     Returns (success: bool, message: str).
     """
-    # Clear stop and pause signals so run.py starts fresh
-    for signal_file in (STOP_FILE, PAUSE_FILE):
+    # Clear stop, pause, and cycle signals so run.py starts fresh
+    for signal_file in (STOP_FILE, PAUSE_FILE, CYCLE_FILE):
         (koan_root / signal_file).unlink(missing_ok=True)
 
     return _launch_python_process(

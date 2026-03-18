@@ -925,6 +925,17 @@ Kōan supports multiple CLI backends. Configure globally via `KOAN_CLI_PROVIDER`
 - `/shutdown` — Gracefully stop everything (e.g., before system maintenance)
 </details>
 
+**`/cycle`** — Finish the current mission, pull updates, and restart.
+
+- Graceful maintenance cycle: waits for work to complete before updating.
+- Equivalent to `/stop` + `/update` + `/restart`, but in one step.
+
+<details>
+<summary>Use cases</summary>
+
+- `/cycle` — "Finish what you're doing, update yourself, and come back"
+</details>
+
 **`/update`** — Pull the latest Kōan code from upstream and restart.
 
 - **Aliases:** `/upgrade`
@@ -1149,6 +1160,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/pause` | `/sleep` | P | Pause mission processing |
 | `/resume` | `/work`, `/awake`, `/run`, `/start` | P | Resume mission processing |
 | `/shutdown` | — | P | Shutdown all processes |
+| `/cycle` | — | P | Finish mission, update, restart |
 | `/update` | `/upgrade` | P | Update Kōan and restart |
 | `/restart` | — | P | Restart processes (no code pull) |
 | `/snapshot` | — | P | Export memory state |
