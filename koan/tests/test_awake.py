@@ -504,14 +504,16 @@ class TestHandleCommand:
 # ---------------------------------------------------------------------------
 
 class TestHandleResume:
+    @patch("app.command_handlers._is_runner_alive", return_value=True)
     @patch("app.command_handlers.send_telegram")
-    def test_no_quota_file(self, mock_send, tmp_path):
+    def test_no_quota_file(self, mock_send, mock_alive, tmp_path):
         with patch("app.command_handlers.KOAN_ROOT", tmp_path):
             handle_resume()
         assert "No pause or quota hold" in mock_send.call_args[0][0]
 
+    @patch("app.command_handlers._is_runner_alive", return_value=True)
     @patch("app.command_handlers.send_telegram")
-    def test_likely_reset(self, mock_send, tmp_path):
+    def test_likely_reset(self, mock_send, mock_alive, tmp_path):
         quota_file = tmp_path / ".koan-quota-reset"
         old_ts = str(int(time.time()) - 3 * 3600)  # 3 hours ago
         quota_file.write_text(f"resets 7pm (Europe/Paris)\n{old_ts}")
@@ -520,8 +522,9 @@ class TestHandleResume:
         assert not quota_file.exists()
         assert "Quota likely reset" in mock_send.call_args[0][0]
 
+    @patch("app.command_handlers._is_runner_alive", return_value=True)
     @patch("app.command_handlers.send_telegram")
-    def test_not_yet_reset(self, mock_send, tmp_path):
+    def test_not_yet_reset(self, mock_send, mock_alive, tmp_path):
         quota_file = tmp_path / ".koan-quota-reset"
         recent_ts = str(int(time.time()) - 30 * 60)  # 30 min ago
         quota_file.write_text(f"resets 7pm (Europe/Paris)\n{recent_ts}")
@@ -530,8 +533,9 @@ class TestHandleResume:
         assert quota_file.exists()
         assert "not reset yet" in mock_send.call_args[0][0]
 
+    @patch("app.command_handlers._is_runner_alive", return_value=True)
     @patch("app.command_handlers.send_telegram")
-    def test_corrupt_quota_file(self, mock_send, tmp_path):
+    def test_corrupt_quota_file(self, mock_send, mock_alive, tmp_path):
         """Corrupt timestamp in legacy quota file should degrade gracefully.
         With the fix, the invalid timestamp defaults to 0 (epoch), which
         means hours_since_pause is huge → treated as 'likely reset'."""
@@ -647,8 +651,9 @@ class TestHandleStart:
             handle_command("/start")
         assert "already running" in mock_send.call_args[0][0]
 
+    @patch("app.command_handlers._is_runner_alive", return_value=True)
     @patch("app.command_handlers.send_telegram")
-    def test_resume_still_works_separately(self, mock_send, tmp_path):
+    def test_resume_still_works_separately(self, mock_send, mock_alive, tmp_path):
         """/resume should NOT call _handle_start — verify separation."""
         with patch("app.command_handlers.KOAN_ROOT", tmp_path):
             handle_command("/resume")
@@ -1561,16 +1566,18 @@ class TestPauseCommand:
             handle_command("/sleep")
         assert "already paused" in mock_send.call_args[0][0].lower()
 
+    @patch("app.command_handlers._is_runner_alive", return_value=True)
     @patch("app.command_handlers.send_telegram")
-    def test_resume_clears_pause(self, mock_send, tmp_path):
+    def test_resume_clears_pause(self, mock_send, mock_alive, tmp_path):
         (tmp_path / ".koan-pause").write_text("PAUSE")
         with patch("app.command_handlers.KOAN_ROOT", tmp_path):
             handle_resume()
         assert not (tmp_path / ".koan-pause").exists()
         assert "unpaused" in mock_send.call_args[0][0].lower()
 
+    @patch("app.command_handlers._is_runner_alive", return_value=True)
     @patch("app.command_handlers.send_telegram")
-    def test_resume_pause_takes_priority_over_quota(self, mock_send, tmp_path):
+    def test_resume_pause_takes_priority_over_quota(self, mock_send, mock_alive, tmp_path):
         """If both pause and quota files exist, /resume clears pause first."""
         (tmp_path / ".koan-pause").write_text("PAUSE")
         (tmp_path / ".koan-quota-reset").write_text("resets 7pm\n0")
@@ -1580,8 +1587,9 @@ class TestPauseCommand:
         assert (tmp_path / ".koan-quota-reset").exists()
         assert "unpaused" in mock_send.call_args[0][0].lower()
 
+    @patch("app.command_handlers._is_runner_alive", return_value=True)
     @patch("app.command_handlers.send_telegram")
-    def test_resume_with_quota_reason(self, mock_send, tmp_path):
+    def test_resume_with_quota_reason(self, mock_send, mock_alive, tmp_path):
         """Resume cleans up pause file and reports quota reason."""
         (tmp_path / ".koan-pause").write_text("quota\n1234567890")
         with patch("app.command_handlers.KOAN_ROOT", tmp_path):
@@ -1589,8 +1597,9 @@ class TestPauseCommand:
         assert not (tmp_path / ".koan-pause").exists()
         assert "quota" in mock_send.call_args[0][0].lower()
 
+    @patch("app.command_handlers._is_runner_alive", return_value=True)
     @patch("app.command_handlers.send_telegram")
-    def test_resume_with_max_runs_reason(self, mock_send, tmp_path):
+    def test_resume_with_max_runs_reason(self, mock_send, mock_alive, tmp_path):
         """Resume cleans up pause file and reports max_runs reason."""
         (tmp_path / ".koan-pause").write_text("max_runs\n1234567890")
         with patch("app.command_handlers.KOAN_ROOT", tmp_path):
@@ -1598,8 +1607,9 @@ class TestPauseCommand:
         assert not (tmp_path / ".koan-pause").exists()
         assert "max_runs" in mock_send.call_args[0][0].lower()
 
+    @patch("app.command_handlers._is_runner_alive", return_value=True)
     @patch("app.command_handlers.send_telegram")
-    def test_resume_pause_without_reason(self, mock_send, tmp_path):
+    def test_resume_pause_without_reason(self, mock_send, mock_alive, tmp_path):
         """Resume with pause file but no reason file (manual /pause)."""
         (tmp_path / ".koan-pause").write_text("PAUSE")
         with patch("app.command_handlers.KOAN_ROOT", tmp_path):
@@ -1608,35 +1618,39 @@ class TestPauseCommand:
         # Should say "unpaused" without specific reason
         assert "unpaused" in mock_send.call_args[0][0].lower()
 
+    @patch("app.command_handlers._is_runner_alive", return_value=True)
     @patch("app.command_handlers._reset_session_counters")
     @patch("app.command_handlers.send_telegram")
-    def test_resume_quota_resets_session_counters(self, mock_send, mock_reset, tmp_path):
+    def test_resume_quota_resets_session_counters(self, mock_send, mock_reset, mock_alive, tmp_path):
         """Resume from quota pause should reset internal session counters."""
         (tmp_path / ".koan-pause").write_text("quota\n9999999999\nresets 7pm")
         with patch("app.command_handlers.KOAN_ROOT", tmp_path):
             handle_resume()
         mock_reset.assert_called_once()
 
+    @patch("app.command_handlers._is_runner_alive", return_value=True)
     @patch("app.command_handlers._reset_session_counters")
     @patch("app.command_handlers.send_telegram")
-    def test_resume_max_runs_does_not_reset_session(self, mock_send, mock_reset, tmp_path):
+    def test_resume_max_runs_does_not_reset_session(self, mock_send, mock_reset, mock_alive, tmp_path):
         """Resume from max_runs should NOT reset session counters."""
         (tmp_path / ".koan-pause").write_text("max_runs\n1234567890")
         with patch("app.command_handlers.KOAN_ROOT", tmp_path):
             handle_resume()
         mock_reset.assert_not_called()
 
+    @patch("app.command_handlers._is_runner_alive", return_value=True)
     @patch("app.command_handlers._reset_session_counters")
     @patch("app.command_handlers.send_telegram")
-    def test_resume_manual_pause_does_not_reset_session(self, mock_send, mock_reset, tmp_path):
+    def test_resume_manual_pause_does_not_reset_session(self, mock_send, mock_reset, mock_alive, tmp_path):
         """Resume from manual pause (no reason file) should NOT reset session counters."""
         (tmp_path / ".koan-pause").write_text("PAUSE")
         with patch("app.command_handlers.KOAN_ROOT", tmp_path):
             handle_resume()
         mock_reset.assert_not_called()
 
+    @patch("app.command_handlers._is_runner_alive", return_value=True)
     @patch("app.command_handlers.send_telegram")
-    def test_resume_quota_message_includes_counter_info(self, mock_send, tmp_path):
+    def test_resume_quota_message_includes_counter_info(self, mock_send, mock_alive, tmp_path):
         """Resume message from quota should mention that counters were cleared."""
         future_ts = str(int(time.time()) + 3600)
         (tmp_path / ".koan-pause").write_text(f"quota\n{future_ts}\nresets 7pm")
@@ -1646,8 +1660,9 @@ class TestPauseCommand:
         msg = mock_send.call_args[0][0].lower()
         assert "counter" in msg or "clear" in msg
 
+    @patch("app.command_handlers._is_runner_alive", return_value=True)
     @patch("app.command_handlers.send_telegram")
-    def test_resume_quota_past_reset_time(self, mock_send, tmp_path):
+    def test_resume_quota_past_reset_time(self, mock_send, mock_alive, tmp_path):
         """Resume after reset time should confirm quota reset."""
         past_ts = str(int(time.time()) - 3600)  # 1h ago
         (tmp_path / ".koan-pause").write_text(f"quota\n{past_ts}\nresets 7pm")
