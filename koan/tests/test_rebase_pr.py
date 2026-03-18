@@ -1776,9 +1776,11 @@ class TestFetchPrContextHeadOwner:
             })),
             MagicMock(returncode=0, stdout="0"),  # review comment count
             MagicMock(returncode=0, stdout=""),  # diff
+            MagicMock(returncode=0, stdout=""),  # timeline (last push timestamp)
             MagicMock(returncode=0, stdout=""),  # review comments
             MagicMock(returncode=0, stdout=""),  # reviews
             MagicMock(returncode=0, stdout=""),  # issue comments
+            MagicMock(returncode=0, stdout=""),  # CI checks
         ]
 
         context = fetch_pr_context("upstream", "repo", "1")
@@ -1793,10 +1795,12 @@ class TestFetchPrContextHeadOwner:
                 "baseRefName": "main",
             })),
             MagicMock(returncode=0, stdout="0"),  # review comment count
-            MagicMock(returncode=0, stdout=""),
-            MagicMock(returncode=0, stdout=""),
-            MagicMock(returncode=0, stdout=""),
-            MagicMock(returncode=0, stdout=""),
+            MagicMock(returncode=0, stdout=""),  # diff
+            MagicMock(returncode=0, stdout=""),  # timeline (last push timestamp)
+            MagicMock(returncode=0, stdout=""),  # review comments
+            MagicMock(returncode=0, stdout=""),  # reviews
+            MagicMock(returncode=0, stdout=""),  # issue comments
+            MagicMock(returncode=0, stdout=""),  # CI checks
         ]
 
         context = fetch_pr_context("o", "r", "1")
