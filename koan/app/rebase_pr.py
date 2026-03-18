@@ -664,6 +664,28 @@ def _build_conflict_resolution_prompt(
 MAX_CI_FIX_ATTEMPTS = 2
 
 
+def _check_pr_state(pr_number: str, full_repo: str) -> tuple:
+    """Query current PR state and mergeable status.
+
+    Returns:
+        (state, mergeable) tuple where state is e.g. "OPEN", "MERGED", "CLOSED"
+        and mergeable is e.g. "MERGEABLE", "CONFLICTING", "UNKNOWN".
+    """
+    try:
+        raw = run_gh(
+            "pr", "view", pr_number, "--repo", full_repo,
+            "--json", "state,mergeable",
+        )
+        data = json.loads(raw) if raw.strip() else {}
+        return (
+            data.get("state", "UNKNOWN"),
+            data.get("mergeable", "UNKNOWN"),
+        )
+    except Exception as e:
+        print(f"[rebase] PR state check failed: {e}", file=sys.stderr)
+        return ("UNKNOWN", "UNKNOWN")
+
+
 def _run_ci_check_and_fix(
     branch: str,
     base: str,
@@ -677,7 +699,9 @@ def _run_ci_check_and_fix(
 ) -> str:
     """Poll CI after push, attempt fixes if failing. Returns CI section for PR comment."""
 
-    notify_fn(f"Checking CI on `{branch}`...")
+    pr_url = context.get("url") or f"https://github.com/{full_repo}/pull/{pr_number}"
+
+    notify_fn(f"Checking CI on [{branch}]({pr_url})...")
     ci_status, run_id, ci_logs = wait_for_ci(branch, full_repo)
 
     if ci_status == "none":
@@ -694,7 +718,18 @@ def _run_ci_check_and_fix(
 
     # CI failed — attempt fixes
     for attempt in range(1, MAX_CI_FIX_ATTEMPTS + 1):
-        notify_fn(f"CI failed. Fix attempt {attempt}/{MAX_CI_FIX_ATTEMPTS}...")
+        # Check if PR has been merged or has conflicts before attempting fix
+        pr_state, mergeable = _check_pr_state(pr_number, full_repo)
+
+        if pr_state == "MERGED":
+            actions_log.append("PR already merged — skipping CI fix")
+            return "PR already merged — CI fix skipped."
+
+        if mergeable == "CONFLICTING":
+            actions_log.append("PR has merge conflicts — skipping CI fix")
+            return "PR has merge conflicts — CI fix skipped (rebase needed)."
+
+        notify_fn(f"CI failed on [{pr_url}]({pr_url}). Fix attempt {attempt}/{MAX_CI_FIX_ATTEMPTS}...")
         actions_log.append(f"CI failed (attempt {attempt})")
 
         # Build CI fix prompt
@@ -748,7 +783,7 @@ def _run_ci_check_and_fix(
         actions_log.append(f"Pushed CI fix (attempt {attempt})")
 
         # Re-check CI
-        notify_fn(f"Re-checking CI after fix attempt {attempt}...")
+        notify_fn(f"Re-checking CI on [{pr_url}]({pr_url}) after fix attempt {attempt}...")
         ci_status, run_id, ci_logs = wait_for_ci(branch, full_repo)
 
         if ci_status == "success":

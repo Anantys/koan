@@ -26,6 +26,7 @@ from app.rebase_pr import (
     _ordered_remotes,
     _push_with_fallback,
     _rebase_with_conflict_resolution,
+    _check_pr_state,
     _run_ci_check_and_fix,
     _safe_checkout,
     _UNMERGED_STATUSES,
@@ -1841,6 +1842,127 @@ class TestRunCiCheckAndFix:
         )
         # Should stop after first failed attempt since Claude produced no changes
         mock_claude.assert_called_once()
+
+
+class TestCiCheckAndFixPrLink:
+    """Tests that _run_ci_check_and_fix includes the PR link in notifications."""
+
+    def _make_context(self):
+        return {
+            "title": "Fix bug",
+            "branch": "koan/fix",
+            "base": "main",
+            "body": "",
+            "diff": "",
+            "url": "https://github.com/owner/repo/pull/42",
+        }
+
+    @patch("app.rebase_pr.wait_for_ci", return_value=("success", 100, ""))
+    def test_initial_check_includes_pr_link(self, mock_wait):
+        messages = []
+        result = _run_ci_check_and_fix(
+            "koan/fix", "main", "owner/repo", "42", "/project",
+            self._make_context(), [], lambda m: messages.append(m),
+        )
+        assert any("owner/repo/pull/42" in m for m in messages)
+
+    @patch("app.rebase_pr._check_pr_state", return_value=("OPEN", "MERGEABLE"))
+    @patch("app.rebase_pr._run_git")
+    @patch("app.rebase_pr.run_claude_step", return_value=True)
+    @patch("app.rebase_pr.load_prompt_or_skill", return_value="fix prompt")
+    @patch("app.rebase_pr.wait_for_ci")
+    def test_fix_attempt_includes_pr_link(self, mock_wait, mock_prompt, mock_claude, mock_git, mock_state):
+        mock_wait.side_effect = [
+            ("failure", 456, "test FAILED"),
+            ("success", 457, ""),
+        ]
+        messages = []
+        _run_ci_check_and_fix(
+            "koan/fix", "main", "owner/repo", "42", "/project",
+            self._make_context(), [], lambda m: messages.append(m),
+        )
+        fix_msgs = [m for m in messages if "Fix attempt" in m]
+        assert len(fix_msgs) > 0
+        assert all("owner/repo/pull/42" in m for m in fix_msgs)
+
+
+class TestCiCheckAndFixAbortOnMerged:
+    """Tests that _run_ci_check_and_fix aborts if the PR has been merged."""
+
+    def _make_context(self):
+        return {
+            "title": "Fix bug",
+            "branch": "koan/fix",
+            "base": "main",
+            "body": "",
+            "diff": "",
+            "url": "https://github.com/owner/repo/pull/42",
+        }
+
+    @patch("app.rebase_pr._check_pr_state", return_value=("MERGED", "UNKNOWN"))
+    @patch("app.rebase_pr.wait_for_ci", return_value=("failure", 456, "error"))
+    def test_aborts_when_pr_merged(self, mock_wait, mock_state):
+        actions = []
+        result = _run_ci_check_and_fix(
+            "koan/fix", "main", "owner/repo", "42", "/project",
+            self._make_context(), actions, lambda m: None,
+        )
+        assert "merged" in result.lower()
+        assert any("merged" in a.lower() for a in actions)
+
+    @patch("app.rebase_pr._check_pr_state", return_value=("OPEN", "CONFLICTING"))
+    @patch("app.rebase_pr.wait_for_ci", return_value=("failure", 456, "error"))
+    def test_aborts_when_pr_has_conflicts(self, mock_wait, mock_state):
+        actions = []
+        result = _run_ci_check_and_fix(
+            "koan/fix", "main", "owner/repo", "42", "/project",
+            self._make_context(), actions, lambda m: None,
+        )
+        assert "conflict" in result.lower()
+        assert any("conflict" in a.lower() for a in actions)
+
+    @patch("app.rebase_pr._check_pr_state", return_value=("OPEN", "MERGEABLE"))
+    @patch("app.rebase_pr._run_git")
+    @patch("app.rebase_pr.run_claude_step", return_value=True)
+    @patch("app.rebase_pr.load_prompt_or_skill", return_value="fix prompt")
+    @patch("app.rebase_pr.wait_for_ci")
+    def test_proceeds_when_pr_open_and_mergeable(self, mock_wait, mock_prompt, mock_claude, mock_git, mock_state):
+        mock_wait.side_effect = [
+            ("failure", 456, "test FAILED"),
+            ("success", 457, ""),
+        ]
+        actions = []
+        result = _run_ci_check_and_fix(
+            "koan/fix", "main", "owner/repo", "42", "/project",
+            self._make_context(), actions, lambda m: None,
+        )
+        assert "fixed on attempt 1" in result
+        mock_claude.assert_called_once()
+
+
+class TestCheckPrState:
+    """Tests for _check_pr_state() helper."""
+
+    @patch("app.rebase_pr.run_gh", return_value='{"state":"MERGED","mergeable":"UNKNOWN"}')
+    def test_returns_merged(self, mock_gh):
+        from app.rebase_pr import _check_pr_state
+        state, mergeable = _check_pr_state("42", "owner/repo")
+        assert state == "MERGED"
+        assert mergeable == "UNKNOWN"
+
+    @patch("app.rebase_pr.run_gh", return_value='{"state":"OPEN","mergeable":"CONFLICTING"}')
+    def test_returns_conflicting(self, mock_gh):
+        from app.rebase_pr import _check_pr_state
+        state, mergeable = _check_pr_state("42", "owner/repo")
+        assert state == "OPEN"
+        assert mergeable == "CONFLICTING"
+
+    @patch("app.rebase_pr.run_gh", side_effect=RuntimeError("API error"))
+    def test_returns_unknown_on_error(self, mock_gh):
+        from app.rebase_pr import _check_pr_state
+        state, mergeable = _check_pr_state("42", "owner/repo")
+        assert state == "UNKNOWN"
+        assert mergeable == "UNKNOWN"
 
 
 class TestBuildRebaseCommentWithCi:
