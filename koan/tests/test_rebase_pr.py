@@ -734,9 +734,11 @@ class TestFetchPrContext:
             MagicMock(returncode=1, stderr="transient error"),  # count fetch fails
             MagicMock(returncode=0, stdout="2"),                # retry succeeds
             MagicMock(returncode=0, stdout="+diff"),
-            MagicMock(returncode=0, stdout=""),  # comments endpoint returns empty
-            MagicMock(returncode=0, stdout=""),
-            MagicMock(returncode=0, stdout=""),
+            MagicMock(returncode=0, stdout=""),  # timeline
+            MagicMock(returncode=0, stdout=""),  # review comments (empty — triggers pending)
+            MagicMock(returncode=0, stdout=""),  # reviews
+            MagicMock(returncode=0, stdout=""),  # issue comments
+            MagicMock(returncode=0, stdout=""),  # CI checks
         ]
         context = fetch_pr_context("o", "r", "1")
         assert context["has_pending_reviews"] is True
