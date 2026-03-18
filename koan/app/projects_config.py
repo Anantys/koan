@@ -231,7 +231,7 @@ def resolve_base_branch(
             if detected:
                 return detected
         except Exception as e:
-            print(f"[projects_config] default branch detection failed for {project_name}: {e}", file=sys.stderr)
+            print(f"[projects_config] default branch detection failed for {project_name} (non-fatal): {e}", file=sys.stderr)
 
     return config_branch
 

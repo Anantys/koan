@@ -699,7 +699,8 @@ def _force_push(remote: str, branch: str, project_path: str) -> None:
             ["git", "push", remote, branch, "--force-with-lease"],
             cwd=project_path,
         )
-    except Exception:
+    except Exception as e:
+        print(f"[rebase_pr] --force-with-lease failed, falling back to --force: {e}", file=sys.stderr)
         _run_git(
             ["git", "push", remote, branch, "--force"],
             cwd=project_path,

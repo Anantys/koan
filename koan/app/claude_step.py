@@ -48,8 +48,8 @@ def _abort_rebase_safely(project_path: str) -> None:
             capture_output=True, cwd=project_path,
             timeout=30,
         )
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[claude_step] rebase --abort failed (non-fatal): {e}", file=sys.stderr)
 
 
 def _ordered_remotes(preferred: Optional[str]) -> List[str]:
