@@ -220,7 +220,7 @@ class TestBuildPrompt:
 class TestExecuteImplementation:
     def test_passes_correct_run_command_params(self):
         with patch(f"{_IMPL_MODULE}._build_prompt", return_value="prompt"), \
-             patch("app.cli_provider.run_command", return_value="ok") as mock_run:
+             patch("app.cli_provider.run_command_streaming", return_value="ok") as mock_run:
             result = _execute_implementation(
                 "/project", "url", "t", "p", "c",
                 skill_dir=Path("/skill"),
@@ -236,7 +236,7 @@ class TestExecuteImplementation:
     def test_passes_allowed_tools(self):
         """run_command must receive allowed_tools covering full CLAUDE_TOOLS set."""
         with patch(f"{_IMPL_MODULE}._build_prompt", return_value="p"), \
-             patch("app.cli_provider.run_command", return_value="ok") as mock_run:
+             patch("app.cli_provider.run_command_streaming", return_value="ok") as mock_run:
             _execute_implementation("/project", "url", "t", "p", "c")
             call_args = mock_run.call_args
             tools = call_args[1].get("allowed_tools") or call_args[0][2]

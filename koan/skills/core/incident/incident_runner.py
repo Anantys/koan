@@ -163,8 +163,8 @@ def _execute_incident(
         timestamp=timestamp,
     )
 
-    from app.cli_provider import CLAUDE_TOOLS, run_command
-    return run_command(
+    from app.cli_provider import CLAUDE_TOOLS, run_command_streaming
+    return run_command_streaming(
         prompt, project_path,
         allowed_tools=sorted(CLAUDE_TOOLS),
         max_turns=50, timeout=get_skill_timeout(),

@@ -401,62 +401,38 @@ class TestRunIssuePlan:
 # ---------------------------------------------------------------------------
 
 class TestGeneratePlan:
-    @patch("app.cli_exec.run_cli")
+    @patch("app.cli_provider.run_command_streaming", return_value="## Plan\n\nStep 1")
     def test_returns_claude_output(self, mock_run):
-        mock_run.return_value = MagicMock(
-            returncode=0, stdout="## Plan\n\nStep 1", stderr=""
-        )
-        with patch("app.plan_runner.load_prompt_or_skill", return_value="prompt"), \
-             patch("app.claude_step.get_model_config",
-                    return_value={"chat": "sonnet", "fallback": "haiku"}), \
-             patch("app.claude_step.build_full_command",
-                    return_value=["claude", "-p", "test"]):
+        with patch("app.plan_runner.load_prompt_or_skill", return_value="prompt"):
             skill_dir = Path("/fake/skills/core/plan")
             result = _generate_plan("/project", "Add feature", skill_dir=skill_dir)
             assert "Step 1" in result
 
-    @patch("app.cli_exec.run_cli")
+    @patch("app.cli_provider.run_command_streaming", return_value="plan")
     def test_includes_context(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=0, stdout="plan", stderr="")
-        with patch("app.plan_runner.load_prompt_or_skill") as mock_load, \
-             patch("app.claude_step.get_model_config",
-                    return_value={"chat": "", "fallback": ""}), \
-             patch("app.claude_step.build_full_command",
-                    return_value=["claude", "-p", "test"]):
+        with patch("app.plan_runner.load_prompt_or_skill") as mock_load:
             skill_dir = Path("/fake")
             _generate_plan("/project", "idea", context="prev", skill_dir=skill_dir)
             _, kwargs = mock_load.call_args
             assert kwargs["CONTEXT"] == "prev"
 
-    @patch("app.cli_exec.run_cli")
+    @patch("app.cli_provider.run_command_streaming",
+           side_effect=RuntimeError("CLI invocation failed: rate limited"))
     def test_raises_on_failure(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=1, stderr="rate limited")
-        with patch("app.plan_runner.load_prompt_or_skill", return_value="prompt"), \
-             patch("app.claude_step.get_model_config",
-                    return_value={"chat": "", "fallback": ""}), \
-             patch("app.claude_step.build_full_command",
-                    return_value=["claude"]):
+        with patch("app.plan_runner.load_prompt_or_skill", return_value="prompt"):
             with pytest.raises(RuntimeError, match="invocation failed"):
                 _generate_plan("/project", "idea", skill_dir=Path("/fake"))
 
-    @patch("app.cli_exec.run_cli")
+    @patch("app.cli_provider.run_command_streaming", return_value="plan")
     def test_uses_read_only_tools(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=0, stdout="plan", stderr="")
-        with patch("app.plan_runner.load_prompt_or_skill", return_value="prompt"), \
-             patch("app.claude_step.get_model_config",
-                    return_value={"chat": "", "fallback": ""}):
+        with patch("app.plan_runner.load_prompt_or_skill", return_value="prompt"):
             _generate_plan("/project", "idea", skill_dir=Path("/fake"))
             call_kwargs = mock_run.call_args[1]
-            assert call_kwargs.get("cwd") == "/project"
+            assert "Read" in call_kwargs.get("allowed_tools", [])
 
-    @patch("app.cli_exec.run_cli")
+    @patch("app.cli_provider.run_command_streaming", return_value="plan")
     def test_no_skill_dir_uses_load_prompt(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=0, stdout="plan", stderr="")
-        with patch("app.plan_runner.load_prompt_or_skill", return_value="prompt") as mock_load, \
-             patch("app.claude_step.get_model_config",
-                    return_value={"chat": "", "fallback": ""}), \
-             patch("app.claude_step.build_full_command",
-                    return_value=["claude"]):
+        with patch("app.plan_runner.load_prompt_or_skill", return_value="prompt") as mock_load:
             _generate_plan("/project", "idea")
             mock_load.assert_called_once()
 
@@ -466,16 +442,9 @@ class TestGeneratePlan:
 # ---------------------------------------------------------------------------
 
 class TestGenerateIterationPlan:
-    @patch("app.cli_exec.run_cli")
+    @patch("app.cli_provider.run_command_streaming", return_value="## Updated Plan")
     def test_uses_plan_iterate_prompt(self, mock_run):
-        mock_run.return_value = MagicMock(
-            returncode=0, stdout="## Updated Plan", stderr=""
-        )
-        with patch("app.plan_runner.load_prompt_or_skill") as mock_load, \
-             patch("app.config.get_model_config",
-                    return_value={"chat": "", "fallback": ""}), \
-             patch("app.cli_provider.build_full_command",
-                    return_value=["claude"]):
+        with patch("app.plan_runner.load_prompt_or_skill") as mock_load:
             skill_dir = Path("/fake/skills/core/plan")
             result = _generate_iteration_plan(
                 "/project", "issue context here", skill_dir=skill_dir
@@ -486,27 +455,18 @@ class TestGenerateIterationPlan:
                 skill_dir, "plan-iterate", ISSUE_CONTEXT="issue context here"
             )
 
-    @patch("app.cli_exec.run_cli")
+    @patch("app.cli_provider.run_command_streaming", return_value="plan")
     def test_no_skill_dir_uses_load_prompt(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=0, stdout="plan", stderr="")
-        with patch("app.plan_runner.load_prompt_or_skill") as mock_load, \
-             patch("app.config.get_model_config",
-                    return_value={"chat": "", "fallback": ""}), \
-             patch("app.cli_provider.build_full_command",
-                    return_value=["claude"]):
+        with patch("app.plan_runner.load_prompt_or_skill") as mock_load:
             _generate_iteration_plan("/project", "context")
             mock_load.assert_called_once_with(
                 None, "plan-iterate", ISSUE_CONTEXT="context"
             )
 
-    @patch("app.cli_exec.run_cli")
+    @patch("app.cli_provider.run_command_streaming",
+           side_effect=RuntimeError("CLI invocation failed: error"))
     def test_raises_on_failure(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=1, stderr="error")
-        with patch("app.plan_runner.load_prompt_or_skill", return_value="prompt"), \
-             patch("app.config.get_model_config",
-                    return_value={"chat": "", "fallback": ""}), \
-             patch("app.cli_provider.build_full_command",
-                    return_value=["claude"]):
+        with patch("app.plan_runner.load_prompt_or_skill", return_value="prompt"):
             with pytest.raises(RuntimeError):
                 _generate_iteration_plan(
                     "/project", "context", skill_dir=Path("/fake")
@@ -519,7 +479,7 @@ class TestGenerateIterationPlan:
 
 class TestRunClaudePlan:
     @patch("app.config.get_skill_timeout", return_value=3600)
-    @patch("app.cli_provider.run_command", return_value="result with spaces")
+    @patch("app.cli_provider.run_command_streaming", return_value="result with spaces")
     def test_returns_stripped_output(self, mock_cmd, mock_timeout):
         result = _run_claude_plan("test prompt", "/project")
         assert result == "result with spaces"
@@ -529,25 +489,25 @@ class TestRunClaudePlan:
             max_turns=25, timeout=3600,
         )
 
-    @patch("app.cli_provider.run_command",
+    @patch("app.cli_provider.run_command_streaming",
            side_effect=RuntimeError("CLI invocation failed: error msg"))
     def test_raises_on_non_zero_exit(self, mock_cmd):
         with pytest.raises(RuntimeError, match="CLI invocation failed"):
             _run_claude_plan("prompt", "/project")
 
-    @patch("app.cli_provider.run_command",
+    @patch("app.cli_provider.run_command_streaming",
            return_value="Error: Reached max turns (3)")
     def test_raises_on_max_turns_error(self, mock_cmd):
         with pytest.raises(RuntimeError, match="Reached max turns"):
             _run_claude_plan("prompt", "/project")
 
-    @patch("app.cli_provider.run_command",
+    @patch("app.cli_provider.run_command_streaming",
            return_value="Error: Something went wrong")
     def test_raises_on_short_error_output(self, mock_cmd):
         with pytest.raises(RuntimeError, match="Something went wrong"):
             _run_claude_plan("prompt", "/project")
 
-    @patch("app.cli_provider.run_command",
+    @patch("app.cli_provider.run_command_streaming",
            return_value=(
                "● Read files\nExcellent! Now I have all the context I need.\n"
                "\nClean title\n\n### Summary"

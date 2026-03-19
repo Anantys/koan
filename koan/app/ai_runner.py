@@ -64,8 +64,8 @@ def run_exploration(
 
     # Run Claude
     try:
-        from app.cli_provider import run_command
-        result = run_command(
+        from app.cli_provider import run_command_streaming
+        result = run_command_streaming(
             prompt, project_path,
             allowed_tools=["Read", "Glob", "Grep", "Bash"],
             max_turns=10, timeout=600,

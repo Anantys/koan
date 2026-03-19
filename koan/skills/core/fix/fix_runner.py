@@ -180,9 +180,9 @@ def _execute_fix(
         issue_number=issue_number,
     )
 
-    from app.cli_provider import CLAUDE_TOOLS, run_command
+    from app.cli_provider import CLAUDE_TOOLS, run_command_streaming
     from app.config import get_skill_timeout
-    return run_command(
+    return run_command_streaming(
         prompt, project_path,
         allowed_tools=sorted(CLAUDE_TOOLS),
         max_turns=50, timeout=get_skill_timeout(),

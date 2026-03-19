@@ -141,7 +141,7 @@ class TestRunCommand:
 # ---------------------------------------------------------------------------
 
 class TestRunExploration:
-    @patch("app.cli_provider.run_command", return_value="Found 3 issues")
+    @patch("app.cli_provider.run_command_streaming", return_value="Found 3 issues")
     @patch("app.ai_runner.get_missions_context", return_value="No active missions.")
     @patch("app.ai_runner.gather_project_structure", return_value="Directories: src/")
     @patch("app.ai_runner.gather_git_activity", return_value="Recent commits: abc")
@@ -158,7 +158,7 @@ class TestRunExploration:
         assert success is True
         assert "completed" in summary.lower()
 
-    @patch("app.cli_provider.run_command", return_value="Found 3 issues")
+    @patch("app.cli_provider.run_command_streaming", return_value="Found 3 issues")
     @patch("app.ai_runner.get_missions_context", return_value="No active missions.")
     @patch("app.ai_runner.gather_project_structure", return_value="Directories: src/")
     @patch("app.ai_runner.gather_git_activity", return_value="Recent commits: abc")
@@ -178,7 +178,7 @@ class TestRunExploration:
         # Second call: exploration result
         assert "myapp" in notify.call_args_list[1][0][0]
 
-    @patch("app.cli_provider.run_command", side_effect=RuntimeError("quota exceeded"))
+    @patch("app.cli_provider.run_command_streaming", side_effect=RuntimeError("quota exceeded"))
     @patch("app.ai_runner.get_missions_context", return_value="No active missions.")
     @patch("app.ai_runner.gather_project_structure", return_value="Directories: src/")
     @patch("app.ai_runner.gather_git_activity", return_value="Recent commits: abc")
@@ -195,7 +195,7 @@ class TestRunExploration:
         assert success is False
         assert "failed" in summary.lower()
 
-    @patch("app.cli_provider.run_command", return_value="")
+    @patch("app.cli_provider.run_command_streaming", return_value="")
     @patch("app.ai_runner.get_missions_context", return_value="No active missions.")
     @patch("app.ai_runner.gather_project_structure", return_value="Directories: src/")
     @patch("app.ai_runner.gather_git_activity", return_value="Recent commits: abc")
@@ -212,7 +212,7 @@ class TestRunExploration:
         assert success is False
         assert "empty" in summary.lower()
 
-    @patch("app.cli_provider.run_command", return_value="Found 3 issues")
+    @patch("app.cli_provider.run_command_streaming", return_value="Found 3 issues")
     @patch("app.ai_runner.get_missions_context", return_value="No active missions.")
     @patch("app.ai_runner.gather_project_structure", return_value="Directories: src/")
     @patch("app.ai_runner.gather_git_activity", return_value="Recent commits: abc")
@@ -231,7 +231,7 @@ class TestRunExploration:
         assert mock_prompt.call_args[0][0] == custom_dir
         assert mock_prompt.call_args[0][1] == "ai-explore"
 
-    @patch("app.cli_provider.run_command", return_value="Found 3 issues")
+    @patch("app.cli_provider.run_command_streaming", return_value="Found 3 issues")
     @patch("app.ai_runner.get_missions_context", return_value="No active missions.")
     @patch("app.ai_runner.gather_project_structure", return_value="Directories: src/")
     @patch("app.ai_runner.gather_git_activity", return_value="Recent commits: abc")
@@ -252,7 +252,7 @@ class TestRunExploration:
         assert "PROJECT_STRUCTURE" in kwargs
         assert "MISSIONS_CONTEXT" in kwargs
 
-    @patch("app.cli_provider.run_command", return_value="x" * 3000)
+    @patch("app.cli_provider.run_command_streaming", return_value="x" * 3000)
     @patch("app.ai_runner.get_missions_context", return_value="No active missions.")
     @patch("app.ai_runner.gather_project_structure", return_value="Directories: src/")
     @patch("app.ai_runner.gather_git_activity", return_value="Recent commits: abc")
@@ -269,7 +269,7 @@ class TestRunExploration:
         result_msg = notify.call_args_list[1][0][0]
         assert len(result_msg) <= 2100  # header + 2000 content
 
-    @patch("app.cli_provider.run_command", return_value="Found issues")
+    @patch("app.cli_provider.run_command_streaming", return_value="Found issues")
     @patch("app.ai_runner.get_missions_context", return_value="No active missions.")
     @patch("app.ai_runner.gather_project_structure", return_value="Directories: src/")
     @patch("app.ai_runner.gather_git_activity", return_value="Recent commits: abc")
@@ -412,7 +412,7 @@ class TestQueueMissions:
 
 class TestRunExplorationWithMissions:
     @patch("app.utils.insert_pending_mission")
-    @patch("app.cli_provider.run_command",
+    @patch("app.cli_provider.run_command_streaming",
            return_value="Found issues\nMISSION: Fix bug A\nMISSION: Fix bug B")
     @patch("app.ai_runner.get_missions_context", return_value="No active missions.")
     @patch("app.ai_runner.gather_project_structure", return_value="Directories: src/")
@@ -432,7 +432,7 @@ class TestRunExplorationWithMissions:
         assert mock_insert.call_count == 2
 
     @patch("app.utils.insert_pending_mission")
-    @patch("app.cli_provider.run_command",
+    @patch("app.cli_provider.run_command_streaming",
            return_value="Found issues\nMISSION: Fix bug A\nMISSION: Fix bug B")
     @patch("app.ai_runner.get_missions_context", return_value="No active missions.")
     @patch("app.ai_runner.gather_project_structure", return_value="Directories: src/")
@@ -451,7 +451,7 @@ class TestRunExplorationWithMissions:
         assert "2 mission(s) queued" in result_msg
         assert "MISSION:" not in result_msg
 
-    @patch("app.cli_provider.run_command", return_value="No issues found")
+    @patch("app.cli_provider.run_command_streaming", return_value="No issues found")
     @patch("app.ai_runner.get_missions_context", return_value="No active missions.")
     @patch("app.ai_runner.gather_project_structure", return_value="Directories: src/")
     @patch("app.ai_runner.gather_git_activity", return_value="Recent commits: abc")

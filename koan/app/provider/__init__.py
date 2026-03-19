@@ -239,3 +239,72 @@ def run_command(
 
     from app.claude_step import strip_cli_noise
     return strip_cli_noise(result.stdout.strip())
+
+
+def run_command_streaming(
+    prompt: str,
+    project_path: str,
+    allowed_tools: List[str],
+    model_key: str = "chat",
+    max_turns: int = 10,
+    timeout: int = 300,
+) -> str:
+    """Build and run a CLI command, streaming output to stdout in real time.
+
+    Like :func:`run_command`, but uses Popen to tee CLI output to
+    ``sys.stdout`` line by line while also capturing the full text.
+    This enables the skill dispatch layer in run.py to pipe the output
+    into ``pending.md``, making it visible via ``/live``.
+
+    Raises:
+        RuntimeError: If the command exits with non-zero code.
+    """
+    from app.config import get_model_config
+
+    models = get_model_config()
+    cmd = build_full_command(
+        prompt=prompt,
+        allowed_tools=allowed_tools,
+        model=models.get(model_key, ""),
+        fallback=models.get("fallback", ""),
+        max_turns=max_turns,
+    )
+
+    from app.cli_exec import popen_cli
+
+    proc, cleanup = popen_cli(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=project_path,
+    )
+
+    lines = []
+    stderr_text = ""
+    try:
+        for line in proc.stdout:
+            stripped = line.rstrip("\n")
+            lines.append(stripped)
+            print(stripped, flush=True)
+        stderr_text = proc.stderr.read() if proc.stderr else ""
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+        raise RuntimeError(f"CLI invocation timed out after {timeout}s")
+    finally:
+        if proc.stdout:
+            proc.stdout.close()
+        if proc.stderr:
+            proc.stderr.close()
+        cleanup()
+
+    stdout_text = "\n".join(lines)
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"CLI invocation failed: {stderr_text[:300]}"
+        )
+
+    from app.claude_step import strip_cli_noise
+    return strip_cli_noise(stdout_text.strip())

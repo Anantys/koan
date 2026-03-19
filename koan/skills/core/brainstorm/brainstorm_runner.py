@@ -160,9 +160,9 @@ def _decompose_topic(project_path, topic, skill_dir=None):
     """Run Claude to decompose the topic into sub-issues."""
     prompt = load_prompt_or_skill(skill_dir, "decompose", TOPIC=topic)
 
-    from app.cli_provider import run_command
+    from app.cli_provider import run_command_streaming
     from app.config import get_skill_timeout
-    output = run_command(
+    output = run_command_streaming(
         prompt, project_path,
         allowed_tools=["Read", "Glob", "Grep", "WebFetch"],
         max_turns=25, timeout=get_skill_timeout(),

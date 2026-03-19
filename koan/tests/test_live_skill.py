@@ -83,17 +83,34 @@ class TestReadLiveProgress:
         assert "08:00 — Reading codebase" in result
         assert "08:10 — Writing handler" in result
 
-    def test_returns_all_progress_lines(self, tmp_path):
-        """Unlike /log which truncates to 5 lines, /live shows everything."""
+    def test_returns_all_progress_lines_within_limit(self, tmp_path):
+        """Lines within the display limit are all shown."""
         mod = _load_handler()
         pending = tmp_path / "journal" / "pending.md"
         pending.parent.mkdir(parents=True)
         lines = "\n".join(f"09:{i:02d} — Step {i}" for i in range(15))
         pending.write_text(f"# Mission: test\n\n---\n{lines}")
         result = mod._read_live_progress(tmp_path)
-        # All 15 steps should be present
+        # All 15 steps should be present (within 30-line limit)
         for i in range(15):
             assert f"Step {i}" in result
+
+
+    def test_truncates_long_output_showing_tail(self, tmp_path):
+        """When activity exceeds the limit, only the tail is shown."""
+        mod = _load_handler()
+        pending = tmp_path / "journal" / "pending.md"
+        pending.parent.mkdir(parents=True)
+        lines = "\n".join(f"09:{i:02d} — Step {i}" for i in range(50))
+        pending.write_text(f"# Mission: test\n\n---\n{lines}")
+        result = mod._format_progress(mod._read_live_progress(tmp_path))
+        # Should contain the tail lines
+        assert "Step 49" in result
+        assert "Step 48" in result
+        # Should NOT contain early lines
+        assert "Step 0" not in result
+        # Should indicate truncation
+        assert "earlier lines omitted" in result
 
 
 class TestFormatProgress:
