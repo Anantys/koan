@@ -29,7 +29,7 @@ You are fixing a GitHub issue. Your job is to understand the issue, plan the fix
 
 ### Phase 3 — Test First (when possible)
 
-7. **Write tests that reproduce the issue** before fixing it. Follow existing test patterns (pytest, `tests/test_*.py`). The tests should FAIL before the fix. Tests should verify observable behavior (return values, exceptions, state changes) — not assert that specific internal functions were called.
+7. **Write tests that reproduce the issue** before fixing it. Follow existing test patterns (pytest, `tests/test_*.py`). The tests should FAIL before the fix. Tests should verify observable behavior (return values, exceptions, state changes). Mocking dependencies is fine, but never inspect actual source code to verify code presence or absence.
 8. If the issue cannot be reproduced in tests (infrastructure, config, etc.), note why and skip this step.
 
 ### Phase 4 — Fix (repeat per phase)

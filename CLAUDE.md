@@ -34,7 +34,7 @@ KOAN_ROOT=/tmp/test-koan .venv/bin/pytest koan/tests/test_missions.py -v
 - Never call Claude (subprocess) in tests. Mock `format_and_send` which invokes Claude CLI for message formatting.
 - With `runpy.run_module()` (CLI tests), patch both `app.<module>.format_and_send` **and** `app.notify.format_and_send` — `runpy` re-executes the module so the import-level binding escapes the first patch.
 - When `load_dotenv()` would reload env vars from `.env` (defeating `monkeypatch.delenv`), patch `app.notify.load_dotenv` too.
-- **Test behavior, not implementation.** Unless the project's own conventions say otherwise, tests should validate what code does (inputs → outputs, side effects, observable state), not how it does it. A test that asserts a specific internal function was called inside another function is brittle and low-value — it breaks on refactors without catching real bugs. Prefer asserting on return values, raised exceptions, file contents, or other observable outcomes.
+- **Test behavior, not implementation.** Unless the project's own conventions say otherwise, tests should validate what code does (inputs → outputs, side effects, observable state), not how it does it. Mocking internal dependencies of the unit under test is fine, but tests must never read or inspect actual source code to verify whether specific code is present or absent — that couples tests to implementation text rather than behavior. Prefer asserting on return values, raised exceptions, file contents, or other observable outcomes.
 
 ## Architecture
 
