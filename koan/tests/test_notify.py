@@ -11,6 +11,7 @@ from app.notify import (
     send_typing, TypingIndicator,
     _send_raw_bypass_flood, _direct_send,
     invalidate_file_cache, _file_cache,
+    NotificationPriority,
 )
 
 pytestmark = pytest.mark.slow
@@ -75,7 +76,8 @@ class TestFormatAndSend:
 
         assert result is True
         mock_fmt.assert_called_once_with("raw msg", "soul", "prefs", "memory")
-        mock_send.assert_called_once_with("formatted msg")
+        mock_send.assert_called_once_with("formatted msg",
+                                          priority=NotificationPriority.ACTION)
 
     @patch("app.notify.send_telegram", return_value=True)
     def test_fallback_on_format_error(self, mock_send, instance_dir):
@@ -86,7 +88,8 @@ class TestFormatAndSend:
 
         assert result is True
         mock_fb.assert_called_once_with("raw")
-        mock_send.assert_called_once_with("clean msg")
+        mock_send.assert_called_once_with("clean msg",
+                                          priority=NotificationPriority.ACTION)
 
     @patch("app.notify.send_telegram", return_value=True)
     @patch("app.notify.load_dotenv")
@@ -113,7 +116,7 @@ class TestFormatAndSend:
             result = format_and_send("raw")
 
         assert result is True
-        mock_send.assert_called_once_with("fmt")
+        mock_send.assert_called_once_with("fmt", priority=NotificationPriority.ACTION)
 
     @patch("app.notify.send_telegram", return_value=True)
     def test_project_name_passed_to_memory(self, mock_send, instance_dir):
@@ -136,7 +139,8 @@ class TestFormatAndSend:
              patch("app.format_outbox.fallback_format", return_value="fallback"):
             result = format_and_send("raw", instance_dir=str(instance_dir))
         assert result is True
-        mock_send.assert_called_once_with("fallback")
+        mock_send.assert_called_once_with("fallback",
+                                          priority=NotificationPriority.ACTION)
 
     @patch("app.notify.send_telegram", return_value=True)
     def test_value_error_uses_fallback(self, mock_send, instance_dir):
@@ -146,7 +150,8 @@ class TestFormatAndSend:
              patch("app.format_outbox.fallback_format", return_value="fallback"):
             result = format_and_send("raw", instance_dir=str(instance_dir))
         assert result is True
-        mock_send.assert_called_once_with("fallback")
+        mock_send.assert_called_once_with("fallback",
+                                          priority=NotificationPriority.ACTION)
 
 
 class TestResetFloodState:

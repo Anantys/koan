@@ -17,10 +17,26 @@ import os
 import subprocess
 import sys
 import threading
+from enum import Enum
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
 from app.utils import load_dotenv
+
+
+class NotificationPriority(Enum):
+    """Four-level notification priority system.
+
+    Priority ranks (higher = more important):
+        urgent=3  — critical failures, quota exhausted
+        action=2  — mission complete, command responses (default)
+        warning=1 — quota low, focus validation
+        info=0    — progress updates, reflections
+    """
+    INFO = 0
+    WARNING = 1
+    ACTION = 2
+    URGENT = 3
 
 
 # mtime-based file read cache for format_and_send context files.
@@ -189,12 +205,17 @@ def _direct_send_chunk(api_base: str, chat_id: str, chunk: str,
     return True
 
 
-def send_telegram(text: str) -> bool:
+def send_telegram(text: str,
+                  priority: NotificationPriority = NotificationPriority.ACTION) -> bool:
     """Send a message via the active messaging provider (with flood protection).
 
     Retry logic is handled at the HTTP request level inside the provider's
     _send_raw() and notify's _direct_send(), so transient network failures
     are retried transparently (up to 3 attempts with 1s/2s/4s backoff).
+
+    Args:
+        text: Message text to send
+        priority: Notification priority level (default: ACTION)
 
     Returns True on success (suppression counts as success).
     """
@@ -244,7 +265,8 @@ def invalidate_file_cache():
 
 
 def format_and_send(raw_message: str, instance_dir: str = None,
-                     project_name: str = "") -> bool:
+                     project_name: str = "",
+                     priority: NotificationPriority = NotificationPriority.ACTION) -> bool:
     """Format a message through Claude with Kōan's personality, then send to Telegram.
 
     Every message sent to Telegram should go through this function to ensure
@@ -254,6 +276,7 @@ def format_and_send(raw_message: str, instance_dir: str = None,
         raw_message: The raw/technical message to format
         instance_dir: Path to instance directory (auto-detected from KOAN_ROOT if None)
         project_name: Optional project name for scoped memory context
+        priority: Notification priority level (default: ACTION)
 
     Returns:
         True if message was sent successfully
@@ -270,7 +293,7 @@ def format_and_send(raw_message: str, instance_dir: str = None,
             instance_dir = str(Path(koan_root) / "instance")
         else:
             # Can't format without instance dir — send raw with basic cleanup
-            return send_telegram(fallback_format(raw_message))
+            return send_telegram(fallback_format(raw_message), priority=priority)
 
     instance_path = Path(instance_dir)
     try:
@@ -319,10 +342,10 @@ def format_and_send(raw_message: str, instance_dir: str = None,
                 print(f"[notify] GitHub ref expansion failed: {e}",
                       file=sys.stderr)
 
-        return send_telegram(formatted)
+        return send_telegram(formatted, priority=priority)
     except (OSError, subprocess.SubprocessError, ValueError) as e:
         print(f"[notify] Format error, sending fallback: {e}", file=sys.stderr)
-        return send_telegram(fallback_format(raw_message))
+        return send_telegram(fallback_format(raw_message), priority=priority)
 
 
 if __name__ == "__main__":
