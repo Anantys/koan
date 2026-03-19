@@ -23,7 +23,7 @@ class TestBuildSafePath:
     def test_filters_home_dirs(self):
         raw = "/usr/bin:/home/alice/.local/bin:/home/alice/bin:/usr/local/bin"
         result = build_safe_path(raw, "/home/alice")
-        assert "/home/alice/.local/bin" not in result.split(":")
+        assert "/home/alice/.local/bin" in result.split(":")
         assert "/home/alice/bin" not in result.split(":")
         assert "/usr/bin" in result.split(":")
         assert "/usr/local/bin" in result.split(":")
@@ -31,7 +31,7 @@ class TestBuildSafePath:
     def test_filters_root_home_dirs(self):
         raw = "/root/.local/bin:/root/.cargo/bin:/usr/bin:/usr/local/bin"
         result = build_safe_path(raw, "/root")
-        assert "/root/.local/bin" not in result.split(":")
+        assert "/root/.local/bin" in result.split(":")
         assert "/root/.cargo/bin" not in result.split(":")
         assert "/usr/bin" in result.split(":")
 
@@ -83,14 +83,25 @@ class TestBuildSafePath:
         assert "/usr/local/cpanel/bin" in parts
         assert "/usr/local/cpanel/3rdparty/bin" in parts
         assert "/usr/local/cpanel/3rdparty/node/22/bin" in parts
-        # Home dirs filtered out
-        assert "/root/.local/bin" not in parts
+        # Allowed home subdirs preserved, others filtered
+        assert "/root/.local/bin" in parts
         assert "/root/.cargo/bin" not in parts
 
     def test_trailing_slash_on_home(self):
-        raw = "/root/.local/bin:/usr/bin"
+        raw = "/root/.local/bin:/root/.cargo/bin:/usr/bin"
         result = build_safe_path(raw, "/root/")
-        assert "/root/.local/bin" not in result.split(":")
+        assert "/root/.local/bin" in result.split(":")
+        assert "/root/.cargo/bin" not in result.split(":")
+
+    def test_allows_local_bin(self):
+        """~/.local/bin is preserved while other home subdirs are filtered."""
+        raw = "/home/user/.local/bin:/home/user/.cargo/bin:/home/user/.nvm/bin:/usr/bin"
+        result = build_safe_path(raw, "/home/user")
+        parts = result.split(":")
+        assert "/home/user/.local/bin" in parts
+        assert "/home/user/.cargo/bin" not in parts
+        assert "/home/user/.nvm/bin" not in parts
+        assert "/usr/bin" in parts
 
     def test_exact_home_dir_filtered(self):
         """Home dir itself (not just subdirs) should be filtered."""
@@ -259,7 +270,7 @@ class TestMain:
             main()
 
         content = (out_dir / "koan.service").read_text()
-        assert "/home/alice/.local/bin" not in content
+        assert "/home/alice/.local/bin" in content
         assert "/usr/bin" in content
 
 

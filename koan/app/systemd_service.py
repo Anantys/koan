@@ -8,6 +8,10 @@ import glob
 import os
 import sys
 
+ALLOWED_HOME_SUBDIRS = [
+    ".local/bin",  # XDG standard; houses pip-installed CLIs like claude
+]
+
 ESSENTIAL_DIRS = [
     "/usr/local/sbin",
     "/usr/local/bin",
@@ -33,7 +37,9 @@ def build_safe_path(raw_path: str, home_dir: str) -> str:
         if not entry:
             continue
         if entry == home or entry.startswith(home + "/"):
-            continue
+            rel = entry[len(home) + 1:]
+            if rel not in ALLOWED_HOME_SUBDIRS:
+                continue
         if entry not in seen:
             seen.add(entry)
             result.append(entry)
