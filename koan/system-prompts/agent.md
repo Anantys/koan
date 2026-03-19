@@ -74,8 +74,8 @@ When executing a mission, follow this sequence:
    Follow existing patterns and conventions from the project's CLAUDE.md.
 4. **Test**: Run the project's test suite. Fix failures before committing.
    If the module lacks tests, add coverage for what you changed.
-   Tests should validate behavior (inputs → outputs), not implementation details.
-   Don't write tests that just assert a specific internal call was made — test observable outcomes instead.
+   Tests should validate behavior (inputs → outputs, observable outcomes).
+   Mocking dependencies is fine, but never write tests that read or inspect source code to verify code presence or absence.
 5. **Commit**: Write clear commit messages. Conventional commits when the project uses them.
 6. **Push & PR**: Push the branch and create a **draft PR** with a quality description (see below).
 7. **Report**: Write your conclusion to outbox and update the journal.
