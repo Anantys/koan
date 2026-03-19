@@ -45,6 +45,77 @@ class NotificationPriority(Enum):
 _file_cache: Dict[str, Tuple[str, float]] = {}
 _file_cache_lock = threading.Lock()
 
+# Valid priority names for config parsing (lowercase)
+_PRIORITY_NAME_MAP = {
+    "info": NotificationPriority.INFO,
+    "warning": NotificationPriority.WARNING,
+    "action": NotificationPriority.ACTION,
+    "urgent": NotificationPriority.URGENT,
+}
+
+
+def _get_min_priority() -> NotificationPriority:
+    """Load min_priority from config at call time.
+
+    Reads notifications.min_priority from instance/config.yaml.
+    Defaults to ACTION if missing or invalid.
+
+    Returns:
+        NotificationPriority threshold — messages below this rank are suppressed.
+    """
+    try:
+        from app.utils import load_config
+        config = load_config()
+        notifications = config.get("notifications", {})
+        if not isinstance(notifications, dict):
+            return NotificationPriority.ACTION
+        raw = notifications.get("min_priority", "action")
+        if isinstance(raw, str):
+            key = raw.strip().lower()
+            result = _PRIORITY_NAME_MAP.get(key)
+            if result is not None:
+                return result
+            print(
+                f"[notify] Invalid min_priority value '{raw}', defaulting to 'action'.",
+                file=sys.stderr,
+            )
+    except Exception as e:
+        print(f"[notify] Could not load min_priority from config: {e}", file=sys.stderr)
+    return NotificationPriority.ACTION
+
+
+def _write_suppressed_to_journal(text: str, priority: NotificationPriority):
+    """Write a suppressed notification to the daily journal.
+
+    Used when a message's priority is below min_priority. Messages are preserved
+    in the journal under a "notifications" project entry so nothing is lost.
+
+    Args:
+        text: The notification text that was suppressed
+        priority: The priority level of the suppressed message
+    """
+    try:
+        from datetime import datetime as _dt
+        from app.utils import load_dotenv as _load_dotenv
+        import os as _os
+
+        _load_dotenv()
+        koan_root = _os.environ.get("KOAN_ROOT", "")
+        if not koan_root:
+            return
+
+        from app.journal import append_to_journal
+        instance_dir = Path(koan_root) / "instance"
+        timestamp = _dt.now().strftime("%H:%M:%S")
+        entry = (
+            f"\n### [{timestamp}] Suppressed ({priority.name.lower()})\n\n"
+            f"{text.strip()}\n"
+        )
+        append_to_journal(instance_dir, "notifications", entry)
+    except Exception as e:
+        print(f"[notify] Failed to write suppressed message to journal: {e}",
+              file=sys.stderr)
+
 
 class TypingIndicator:
     """Context manager that sends typing indicators at regular intervals.
@@ -213,12 +284,21 @@ def send_telegram(text: str,
     _send_raw() and notify's _direct_send(), so transient network failures
     are retried transparently (up to 3 attempts with 1s/2s/4s backoff).
 
+    Messages with priority below the configured min_priority are suppressed from
+    Telegram and written to the daily journal instead (nothing is lost).
+
     Args:
         text: Message text to send
         priority: Notification priority level (default: ACTION)
 
     Returns True on success (suppression counts as success).
     """
+    # Check priority filter before sending
+    min_priority = _get_min_priority()
+    if priority.value < min_priority.value:
+        _write_suppressed_to_journal(text, priority)
+        return True  # Suppression counts as success
+
     try:
         from app.messaging import get_messaging_provider
         provider = get_messaging_provider()
