@@ -2435,20 +2435,21 @@ class TestPipelineStepsInResult:
 
 
 class TestNotifyPipelineFailures:
-    """Test _notify_pipeline_failures sends Telegram warnings on step failures."""
+    """Test _notify_pipeline_failures writes warnings to outbox.md."""
 
-    def test_no_notification_when_all_success(self):
+    def test_no_notification_when_all_success(self, tmp_path):
         from app.mission_runner import _notify_pipeline_failures, _PipelineTracker
 
         tracker = _PipelineTracker()
         tracker.record("usage_update", "success")
         tracker.record("reflection", "success", "2.1s")
 
-        with patch("app.notify.send_telegram") as mock_send:
-            _notify_pipeline_failures(tracker, "test mission")
-            mock_send.assert_not_called()
+        outbox = tmp_path / "outbox.md"
+        outbox.write_text("")
+        _notify_pipeline_failures(tracker, "test mission", str(tmp_path))
+        assert outbox.read_text() == ""
 
-    def test_sends_notification_on_failure(self):
+    def test_writes_notification_on_failure(self, tmp_path):
         from app.mission_runner import _notify_pipeline_failures, _PipelineTracker
 
         tracker = _PipelineTracker()
@@ -2456,51 +2457,51 @@ class TestNotifyPipelineFailures:
         tracker.record("reflection", "fail", "timeout after 60s")
         tracker.record("hooks", "fail", "failed: my_hook")
 
-        with patch("app.notify.send_telegram") as mock_send:
-            _notify_pipeline_failures(tracker, "audit security")
-            mock_send.assert_called_once()
-            msg = mock_send.call_args[0][0]
-            assert "⚠️" in msg
-            assert "audit security" in msg
-            assert "✗ reflection (timeout after 60s)" in msg
-            assert "✗ hooks (failed: my_hook)" in msg
+        outbox = tmp_path / "outbox.md"
+        outbox.write_text("")
+        _notify_pipeline_failures(tracker, "audit security", str(tmp_path))
+        msg = outbox.read_text()
+        assert "⚠️" in msg
+        assert "audit security" in msg
+        assert "✗ reflection (timeout after 60s)" in msg
+        assert "✗ hooks (failed: my_hook)" in msg
 
-    def test_no_mission_title_omits_prefix(self):
+    def test_no_mission_title_omits_prefix(self, tmp_path):
         from app.mission_runner import _notify_pipeline_failures, _PipelineTracker
 
         tracker = _PipelineTracker()
         tracker.record("verification", "fail", "verify crash")
 
-        with patch("app.notify.send_telegram") as mock_send:
-            _notify_pipeline_failures(tracker, "")
-            mock_send.assert_called_once()
-            msg = mock_send.call_args[0][0]
-            assert msg.startswith("⚠️ Pipeline issues:")
-            assert "✗ verification (verify crash)" in msg
+        outbox = tmp_path / "outbox.md"
+        outbox.write_text("")
+        _notify_pipeline_failures(tracker, "", str(tmp_path))
+        msg = outbox.read_text()
+        assert msg.startswith("⚠️ Pipeline issues:")
+        assert "✗ verification (verify crash)" in msg
 
-    def test_notification_failure_does_not_raise(self):
+    def test_notification_failure_does_not_raise(self, tmp_path):
         from app.mission_runner import _notify_pipeline_failures, _PipelineTracker
 
         tracker = _PipelineTracker()
         tracker.record("reflection", "fail", "boom")
 
-        with patch("app.notify.send_telegram", side_effect=RuntimeError("network")):
+        with patch("app.utils.append_to_outbox", side_effect=RuntimeError("disk full")):
             # Should not raise — fire-and-forget
-            _notify_pipeline_failures(tracker, "test")
+            _notify_pipeline_failures(tracker, "test", str(tmp_path))
 
-    def test_reports_timeout_and_skipped_statuses(self):
+    def test_reports_timeout_and_skipped_statuses(self, tmp_path):
         from app.mission_runner import _notify_pipeline_failures, _PipelineTracker
 
         tracker = _PipelineTracker()
         tracker.record("reflection", "timeout", "pipeline deadline exceeded")
         tracker.record("hooks", "skipped", "non-zero exit code")
 
-        with patch("app.notify.send_telegram") as mock_send:
-            _notify_pipeline_failures(tracker, "test")
-            mock_send.assert_called_once()
-            msg = mock_send.call_args[0][0]
-            assert "⏱ reflection (pipeline deadline exceeded)" in msg
-            assert "– hooks (non-zero exit code)" in msg
+        outbox = tmp_path / "outbox.md"
+        outbox.write_text("")
+        _notify_pipeline_failures(tracker, "test", str(tmp_path))
+        msg = outbox.read_text()
+        assert "⏱ reflection (pipeline deadline exceeded)" in msg
+        assert "– hooks (non-zero exit code)" in msg
 
     @patch("app.mission_runner._write_pipeline_summary")
     @patch("app.mission_runner._record_session_outcome")
@@ -2519,20 +2520,20 @@ class TestNotifyPipelineFailures:
         instance_dir = str(tmp_path / "instance")
         os.makedirs(instance_dir, exist_ok=True)
 
-        with patch("app.notify.send_telegram") as mock_send:
-            result = run_post_mission(
-                instance_dir=instance_dir,
-                project_name="koan",
-                project_path=str(tmp_path),
-                run_num=1,
-                exit_code=0,
-                stdout_file="/tmp/out.json",
-                stderr_file="/tmp/err.txt",
-                mission_title="test pipeline notify",
-            )
+        outbox = Path(instance_dir) / "outbox.md"
+        outbox.write_text("")
+        result = run_post_mission(
+            instance_dir=instance_dir,
+            project_name="koan",
+            project_path=str(tmp_path),
+            run_num=1,
+            exit_code=0,
+            stdout_file="/tmp/out.json",
+            stderr_file="/tmp/err.txt",
+            mission_title="test pipeline notify",
+        )
 
-            assert result["pipeline_steps"]["reflection"]["status"] == "fail"
-            mock_send.assert_called_once()
-            msg = mock_send.call_args[0][0]
-            assert "reflection" in msg
-            assert "test pipeline notify" in msg
+        assert result["pipeline_steps"]["reflection"]["status"] == "fail"
+        msg = outbox.read_text()
+        assert "reflection" in msg
+        assert "test pipeline notify" in msg

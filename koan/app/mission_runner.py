@@ -590,16 +590,20 @@ def check_auto_merge(
 def _notify_pipeline_failures(
     tracker: _PipelineTracker,
     mission_title: str = "",
+    instance_dir: str = "",
 ) -> None:
-    """Send a Telegram warning if the post-mission pipeline had issues.
+    """Write a warning to outbox.md if the post-mission pipeline had issues.
 
     Reports failed, timed-out, and skipped steps so users can see when
     steps like reflection or auto_merge silently fail to complete.
+
+    Writing to outbox.md instead of calling Telegram directly ensures the
+    bridge retries delivery on transient network errors.
     """
     if not tracker.has_issues():
         return
     try:
-        from app.notify import send_telegram
+        from app.utils import append_to_outbox
 
         _ISSUE_ICONS = {"fail": "✗", "timeout": "⏱", "skipped": "–"}
         issues = []
@@ -616,7 +620,8 @@ def _notify_pipeline_failures(
 
         prefix = f"[{mission_title}] " if mission_title else ""
         msg = f"⚠️ {prefix}Pipeline issues: {', '.join(issues)}"
-        send_telegram(msg)
+        outbox_path = Path(instance_dir) / "outbox.md"
+        append_to_outbox(outbox_path, msg + "\n")
     except Exception as e:
         print(f"[mission_runner] Pipeline failure notification failed: {e}", file=sys.stderr)
 
@@ -905,8 +910,8 @@ def run_post_mission(
         result["pipeline_steps"] = tracker.to_dict()
         _write_pipeline_summary(instance_dir, project_name, tracker, mission_title)
 
-        # Notify user of pipeline failures via Telegram
-        _notify_pipeline_failures(tracker, mission_title)
+        # Notify user of pipeline failures via outbox (retried by bridge)
+        _notify_pipeline_failures(tracker, mission_title, instance_dir)
 
         return result
     finally:
