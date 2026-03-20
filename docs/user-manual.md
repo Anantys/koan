@@ -743,6 +743,11 @@ tools:
   allowed: []                 # Whitelist (empty = all allowed)
   blocked: []                 # Blacklist specific tools
 
+# Start on pause — boot directly into pause mode
+# Useful for scheduled launches (cron, launchd) where you want
+# the stack running but idle until you explicitly /resume.
+start_on_pause: false
+
 # Schedule (when Kōan is allowed to work)
 schedule:
   timezone: UTC
@@ -886,6 +891,27 @@ Kōan supports multiple CLI backends. Configure globally via `KOAN_CLI_PROVIDER`
 </details>
 
 ### System Management
+
+**`/pause`** — Pause mission processing. Kōan stays running but won't pick up new missions.
+
+- **Aliases:** `/sleep`
+
+<details>
+<summary>Use cases</summary>
+
+- `/pause` — Temporarily stop mission work without shutting down
+- Resume with `/resume` when ready
+</details>
+
+**`/resume`** — Resume mission processing after a pause (manual or automatic).
+
+- **Aliases:** `/work`, `/awake`, `/run`, `/start`
+
+<details>
+<summary>Use cases</summary>
+
+- `/resume` — Unpause after a manual `/pause` or quota exhaustion
+</details>
 
 **`/shutdown`** — Shutdown both the agent loop and the messaging bridge.
 
@@ -1102,6 +1128,8 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/language <lang>` | `/lng` | P | Set reply language |
 | `/french` | `/fr`, `/francais`, `/français` | P | Switch to French |
 | `/english` | `/en`, `/anglais` | P | Switch to English |
+| `/pause` | `/sleep` | P | Pause mission processing |
+| `/resume` | `/work`, `/awake`, `/run`, `/start` | P | Resume mission processing |
 | `/shutdown` | — | P | Shutdown all processes |
 | `/update` | `/upgrade` | P | Update Kōan and restart |
 | `/restart` | — | P | Restart processes (no code pull) |
