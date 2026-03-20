@@ -15,9 +15,12 @@ from app.cost_tracker import (
     estimate_cache_savings,
     daily_series,
     get_pricing_config,
+    format_cache_summary,
+    format_mission_cache_line,
     _read_jsonl_for_date,
     _read_jsonl_range,
     _aggregate,
+    _format_tokens,
 )
 
 
@@ -408,3 +411,84 @@ class TestGetPricingConfig:
     def test_returns_none_for_non_dict_pricing(self):
         config = {"usage": {"pricing": "invalid"}}
         assert get_pricing_config(config) is None
+
+
+class TestFormatCacheSummary:
+    def test_returns_empty_when_no_data(self, instance_dir):
+        assert format_cache_summary(instance_dir) == ""
+
+    def test_returns_summary_with_cache_data(self, instance_dir):
+        record_usage(
+            instance_dir, "koan", "opus",
+            1000, 500,
+            cache_read_input_tokens=9000,
+            cache_creation_input_tokens=1000,
+        )
+        result = format_cache_summary(instance_dir)
+        assert "hit rate" in result
+        assert "read" in result
+        assert "created" in result
+
+    def test_summary_shows_zero_pct_for_creation_only(self, instance_dir):
+        record_usage(
+            instance_dir, "koan", "opus",
+            1000, 500,
+            cache_creation_input_tokens=5000,
+        )
+        result = format_cache_summary(instance_dir)
+        assert "0% hit rate" in result
+
+
+class TestFormatMissionCacheLine:
+    def test_empty_when_no_cache(self):
+        assert format_mission_cache_line(0, 0, 1000) == ""
+
+    def test_shows_hit_rate(self):
+        result = format_mission_cache_line(
+            cache_read=9000, cache_create=0, input_tokens=1000,
+        )
+        assert "90% hit" in result
+        assert "9.0k read" in result
+
+    def test_shows_creation(self):
+        result = format_mission_cache_line(
+            cache_read=0, cache_create=5000, input_tokens=1000,
+        )
+        assert "0% hit" in result
+        assert "5.0k created" in result
+
+    def test_mixed(self):
+        result = format_mission_cache_line(
+            cache_read=4000, cache_create=1000, input_tokens=5000,
+        )
+        assert "hit" in result
+        assert "read" in result
+        assert "created" in result
+
+
+class TestFormatTokens:
+    def test_small(self):
+        assert _format_tokens(500) == "500"
+
+    def test_thousands(self):
+        assert _format_tokens(1500) == "1.5k"
+
+    def test_millions(self):
+        assert _format_tokens(1_500_000) == "1.5M"
+
+
+class TestDailySeriesCacheFields:
+    def test_includes_cache_fields(self, instance_dir):
+        record_usage(
+            instance_dir, "koan", "opus",
+            1000, 500,
+            cache_read_input_tokens=3000,
+            cache_creation_input_tokens=1000,
+        )
+        from app.cost_tracker import daily_series
+        series = daily_series(instance_dir, date.today(), date.today())
+        assert len(series) == 1
+        day = series[0]
+        assert day["cache_read_input_tokens"] == 3000
+        assert day["cache_creation_input_tokens"] == 1000
+        assert day["cache_hit_rate"] > 0

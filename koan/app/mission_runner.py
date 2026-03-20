@@ -118,6 +118,7 @@ def _write_pipeline_summary(
     project_name: str,
     tracker: _PipelineTracker,
     mission_title: str = "",
+    stdout_file: str = "",
 ) -> None:
     """Append a pipeline outcome summary to today's journal."""
     try:
@@ -127,6 +128,12 @@ def _write_pipeline_summary(
         if not lines:
             return
 
+        # Append cache metrics from this mission's output
+        if stdout_file:
+            cache_line = _extract_cache_line(stdout_file)
+            if cache_line:
+                lines.append(f"  📊 {cache_line}")
+
         now = datetime.now().strftime("%H:%M")
         header = f"\n### Pipeline summary — {now}"
         if mission_title:
@@ -135,6 +142,24 @@ def _write_pipeline_summary(
         append_to_journal(Path(instance_dir), project_name, entry)
     except Exception as e:
         print(f"[mission_runner] Pipeline summary write failed: {e}", file=sys.stderr)
+
+
+def _extract_cache_line(stdout_file: str) -> str:
+    """Extract a compact cache performance line from Claude JSON output."""
+    try:
+        from app.usage_estimator import extract_tokens_detailed
+        from app.cost_tracker import format_mission_cache_line
+
+        detailed = extract_tokens_detailed(Path(stdout_file))
+        if detailed is None:
+            return ""
+        return format_mission_cache_line(
+            cache_read=detailed.get("cache_read_input_tokens", 0),
+            cache_create=detailed.get("cache_creation_input_tokens", 0),
+            input_tokens=detailed.get("input_tokens", 0),
+        )
+    except Exception:
+        return ""
 
 
 def build_mission_command(
@@ -921,7 +946,10 @@ def run_post_mission(
 
         # Write pipeline summary to journal and include in result
         result["pipeline_steps"] = tracker.to_dict()
-        _write_pipeline_summary(instance_dir, project_name, tracker, mission_title)
+        _write_pipeline_summary(
+            instance_dir, project_name, tracker, mission_title,
+            stdout_file=stdout_file,
+        )
 
         # Notify user of pipeline failures via outbox (retried by bridge)
         _notify_pipeline_failures(tracker, mission_title, instance_dir)

@@ -2537,3 +2537,44 @@ class TestNotifyPipelineFailures:
         msg = outbox.read_text()
         assert "reflection" in msg
         assert "test pipeline notify" in msg
+
+
+class TestExtractCacheLine:
+    """Test _extract_cache_line helper for pipeline summary."""
+
+    def test_returns_cache_line_with_data(self, tmp_path):
+        from app.mission_runner import _extract_cache_line
+
+        json_file = tmp_path / "output.json"
+        json_file.write_text(json.dumps({
+            "input_tokens": 1000,
+            "output_tokens": 500,
+            "model": "opus",
+            "usage": {
+                "input_tokens": 1000,
+                "output_tokens": 500,
+                "cache_read_input_tokens": 9000,
+                "cache_creation_input_tokens": 0,
+            },
+        }))
+        result = _extract_cache_line(str(json_file))
+        assert "hit" in result
+        assert "read" in result
+
+    def test_returns_empty_for_no_cache(self, tmp_path):
+        from app.mission_runner import _extract_cache_line
+
+        json_file = tmp_path / "output.json"
+        json_file.write_text(json.dumps({
+            "input_tokens": 1000,
+            "output_tokens": 500,
+            "model": "opus",
+        }))
+        result = _extract_cache_line(str(json_file))
+        assert result == ""
+
+    def test_returns_empty_for_missing_file(self):
+        from app.mission_runner import _extract_cache_line
+
+        result = _extract_cache_line("/nonexistent/file.json")
+        assert result == ""
