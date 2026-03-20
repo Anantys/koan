@@ -287,6 +287,24 @@ These features turn Kōan from a task runner into a full development workflow pa
 - `/plan webapp Add rate limiting to public API endpoints` — Target a specific project
 </details>
 
+**`/deepplan`** — Spec-first design with Socratic exploration of 2-3 approaches before planning. For complex missions where design matters more than speed.
+
+- **Usage:** `/deepplan <idea>`, `/deepplan <project> <idea>`
+- **Aliases:** `/deeplan`
+- **GitHub @mention:** `@koan-bot /deepplan <idea>` on an issue
+
+The workflow: (1) explores your codebase and surfaces 2-3 distinct design approaches with trade-offs, (2) runs a spec review loop (up to 5 iterations) to ensure the spec is concrete and complete, (3) posts the approved spec as a GitHub issue, (4) queues a `/plan <issue-url>` mission for your review and approval.
+
+Use this before `/plan` when the idea is architecturally complex, when you want to explore alternatives before committing, or when design mistakes would be expensive to fix later.
+
+<details>
+<summary>Use cases</summary>
+
+- `/deepplan Refactor the auth middleware to support OAuth2` — Explore design approaches before writing any code
+- `/deepplan koan Add multi-tenant project isolation` — Target a specific project with spec-first design
+- `/deepplan Redesign the mission queue for concurrent execution` — Surface trade-offs for a complex architectural change
+</details>
+
 **`/implement`** — Queue an implementation mission for a GitHub issue.
 
 - **Usage:** `/implement <issue-url> [additional context]`
@@ -1069,6 +1087,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/unfocus` | — | B | Exit focus mode |
 | `/brainstorm <topic>` | — | I | Decompose topic into linked sub-issues + master issue |
 | `/plan <desc>` | — | I | Create a structured implementation plan |
+| `/deepplan <idea>` | `/deeplan` | I | Spec-first design: explore approaches, post spec, queue /plan |
 | `/implement <issue>` | `/impl` | I | Implement a GitHub issue |
 | `/fix <issue>` | — | I | Full bug-fix pipeline (understand → plan → test → fix → PR) |
 | `/review <PR> [--architecture]` | `/rv` | I | Review a pull request |

@@ -53,6 +53,8 @@ _SKILL_RUNNERS = {
     "dead_code": "skills.core.dead_code.dead_code_runner",
     "profile": "skills.core.profile.profile_runner",
     "brainstorm": "skills.core.brainstorm.brainstorm_runner",
+    "deepplan": "skills.core.deepplan.deepplan_runner",
+    "deeplan": "skills.core.deepplan.deepplan_runner",
     "claudemd": "app.claudemd_refresh",
     "claude": "app.claudemd_refresh",
     "claude.md": "app.claudemd_refresh",
@@ -198,6 +200,8 @@ def build_skill_command(
     # Dispatch to command-specific builder
     _COMMAND_BUILDERS = {
         "brainstorm": lambda: _build_brainstorm_cmd(base_cmd, args, project_path),
+        "deepplan": lambda: _build_deepplan_cmd(base_cmd, args, project_path),
+        "deeplan": lambda: _build_deepplan_cmd(base_cmd, args, project_path),
         "plan": lambda: _build_plan_cmd(base_cmd, args, project_path),
         "implement": lambda: _build_implement_cmd(base_cmd, args, project_path),
         "fix": lambda: _build_implement_cmd(base_cmd, args, project_path),
@@ -282,6 +286,13 @@ def _build_brainstorm_cmd(
 
     cmd.extend(["--topic", topic])
     return cmd
+
+
+def _build_deepplan_cmd(
+    base_cmd: List[str], args: str, project_path: str,
+) -> List[str]:
+    """Build deepplan_runner command."""
+    return base_cmd + ["--project-path", project_path, "--idea", args.strip()]
 
 
 def _build_plan_cmd(
