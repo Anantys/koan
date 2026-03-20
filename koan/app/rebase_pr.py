@@ -30,6 +30,7 @@ from app.claude_step import (
     commit_if_changes,
     run_claude,
     run_claude_step,
+    strip_cli_noise,
     wait_for_ci,
 )
 from app.git_utils import ordered_remotes as _ordered_remotes
@@ -307,9 +308,10 @@ def run_rebase(
         return False, f"Rebase failed on `{base}` (tried origin and upstream). Could not resolve conflicts."
 
     # ── Step 4: Analyze review comments and apply changes ──────────────
+    change_summary = ""
     if _has_review_feedback(context):
         notify_fn(f"Analyzing review comments on `{branch}`...")
-        _apply_review_feedback(
+        change_summary = _apply_review_feedback(
             context, pr_number, project_path, actions_log,
             skill_dir=skill_dir,
         )
@@ -361,6 +363,7 @@ def run_rebase(
         pr_number, branch, base, actions_log, context,
         diffstat=diffstat,
         ci_section=ci_section,
+        change_summary=change_summary,
     )
 
     try:
@@ -830,20 +833,55 @@ def _apply_review_feedback(
     project_path: str,
     actions_log: List[str],
     skill_dir: Optional[Path] = None,
-) -> None:
-    """Analyze review comments via Claude and apply requested changes."""
-    from app.claude_step import run_claude_step
+) -> str:
+    """Analyze review comments via Claude and apply requested changes.
+
+    Returns:
+        A change summary string describing what was modified (empty if
+        no changes were made).  Used for descriptive commit messages and
+        PR comments so that review-driven changes are always explained.
+    """
+    from app.cli_provider import build_full_command
+    from app.config import get_model_config
 
     prompt = _build_rebase_prompt(context, skill_dir=skill_dir)
-    run_claude_step(
+
+    models = get_model_config()
+    cmd = build_full_command(
         prompt=prompt,
-        project_path=project_path,
-        commit_msg=f"rebase: apply review feedback on #{pr_number}",
-        success_label="Applied review feedback",
-        failure_label="Review feedback step failed",
-        actions_log=actions_log,
+        allowed_tools=["Bash", "Read", "Write", "Glob", "Grep", "Edit"],
+        model=models["mission"],
+        fallback=models["fallback"],
         max_turns=20,
     )
+
+    result = run_claude(cmd, project_path, timeout=600)
+
+    if not result["success"]:
+        actions_log.append(
+            f"Review feedback step failed: {result['error'][:200]}"
+        )
+        return ""
+
+    # Extract Claude's change summary from its output
+    change_summary = strip_cli_noise(result.get("output", "")).strip()
+    # Truncate overly long summaries (keep last portion which is the summary)
+    if len(change_summary) > 1000:
+        change_summary = change_summary[-1000:]
+
+    # Build a descriptive commit message with the summary as the body
+    subject = f"rebase: apply review feedback on #{pr_number}"
+    if change_summary:
+        commit_msg = f"{subject}\n\n{change_summary}"
+    else:
+        commit_msg = subject
+
+    committed = commit_if_changes(project_path, commit_msg)
+    if committed:
+        actions_log.append("Applied review feedback")
+        return change_summary
+
+    return ""
 
 
 
@@ -926,6 +964,7 @@ def _build_rebase_comment(
     context: dict,
     diffstat: str = "",
     ci_section: str = "",
+    change_summary: str = "",
 ) -> str:
     """Build a markdown comment summarizing the rebase."""
     title = context.get("title", f"PR #{pr_number}")
@@ -951,6 +990,10 @@ def _build_rebase_comment(
     # Show what review feedback was addressed
     if _has_review_feedback(context) and any("feedback" in a.lower() for a in actions_log):
         parts.append("Review feedback was analyzed and applied.\n")
+
+    # Include detailed change summary when review feedback produced code changes
+    if change_summary:
+        parts.append(f"### Changes\n\n{change_summary}\n")
 
     parts.append(f"### Actions\n\n{actions_md}\n")
 
