@@ -2201,6 +2201,158 @@ class TestNotificationCacheIdValidation:
             lm._NOTIF_CACHE_TTL = original_ttl
 
 
+class TestErrorReplyRetryQueue:
+    """Test the failed error reply queue and retry logic."""
+
+    def setup_method(self):
+        from app.loop_manager import reset_github_backoff
+        reset_github_backoff()
+
+    def test_failed_reply_queued_for_retry(self):
+        """When post_error_reply fails, the reply is queued for retry."""
+        import app.loop_manager as lm
+
+        notif = {
+            "id": "1",
+            "updated_at": "2026-03-20T10:00:00Z",
+            "subject": {"url": "https://api.github.com/repos/o/r/issues/1"},
+            "repository": {"full_name": "o/r"},
+        }
+
+        with patch("app.github_command_handler.resolve_project_from_notification",
+                    return_value=("proj", "o", "r")), \
+             patch("app.github_command_handler.extract_issue_number_from_notification",
+                    return_value=42), \
+             patch("app.github_notifications.get_comment_from_notification",
+                    return_value={"id": 999, "url": "https://api.github.com/comment/999"}), \
+             patch("app.github_command_handler.post_error_reply",
+                    side_effect=OSError("network error")):
+            lm._post_error_for_notification(notif, "some error")
+
+        with lm._pending_error_replies_lock:
+            assert len(lm._pending_error_replies) == 1
+            entry = lm._pending_error_replies[0]
+            assert entry["owner"] == "o"
+            assert entry["repo"] == "r"
+            assert entry["issue_num"] == 42
+            assert entry["comment_id"] == "999"
+            assert entry["attempts"] == 1
+
+    def test_retry_succeeds_clears_queue(self):
+        """Successful retry removes entry from the queue."""
+        import app.loop_manager as lm
+
+        entry = {
+            "owner": "o", "repo": "r", "issue_num": 42,
+            "comment_id": "999", "error": "some error",
+            "comment_api_url": "", "attempts": 1,
+        }
+        with lm._pending_error_replies_lock:
+            lm._pending_error_replies.append(entry)
+
+        with patch("app.github_command_handler.post_error_reply") as mock_reply:
+            lm._retry_failed_replies()
+            mock_reply.assert_called_once()
+
+        with lm._pending_error_replies_lock:
+            assert len(lm._pending_error_replies) == 0
+
+    def test_retry_failure_requeues_with_incremented_attempts(self):
+        """Failed retry re-queues with attempts incremented."""
+        import app.loop_manager as lm
+
+        entry = {
+            "owner": "o", "repo": "r", "issue_num": 42,
+            "comment_id": "999", "error": "some error",
+            "comment_api_url": "", "attempts": 1,
+        }
+        with lm._pending_error_replies_lock:
+            lm._pending_error_replies.append(entry)
+
+        with patch("app.github_command_handler.post_error_reply",
+                    side_effect=OSError("still broken")):
+            lm._retry_failed_replies()
+
+        with lm._pending_error_replies_lock:
+            assert len(lm._pending_error_replies) == 1
+            assert lm._pending_error_replies[0]["attempts"] == 2
+
+    def test_max_retries_drops_entry(self):
+        """After _MAX_REPLY_RETRIES attempts, the entry is dropped."""
+        import app.loop_manager as lm
+
+        entry = {
+            "owner": "o", "repo": "r", "issue_num": 42,
+            "comment_id": "999", "error": "some error",
+            "comment_api_url": "", "attempts": lm._MAX_REPLY_RETRIES,
+        }
+        with lm._pending_error_replies_lock:
+            lm._pending_error_replies.append(entry)
+
+        with patch("app.github_command_handler.post_error_reply",
+                    side_effect=OSError("permanent failure")):
+            lm._retry_failed_replies()
+
+        with lm._pending_error_replies_lock:
+            assert len(lm._pending_error_replies) == 0
+
+    def test_reset_clears_retry_queue(self):
+        """reset_github_backoff clears the retry queue."""
+        import app.loop_manager as lm
+
+        with lm._pending_error_replies_lock:
+            lm._pending_error_replies.append({"owner": "o", "repo": "r"})
+
+        lm.reset_github_backoff()
+
+        with lm._pending_error_replies_lock:
+            assert len(lm._pending_error_replies) == 0
+
+    @patch("app.loop_manager._load_github_config")
+    @patch("app.loop_manager._build_skill_registry")
+    @patch("app.loop_manager._get_known_repos_from_projects")
+    @patch("app.utils.load_config")
+    def test_cache_written_before_error_reply(
+        self, mock_config, mock_repos, mock_registry, mock_gh_config, tmp_path
+    ):
+        """Cache must be written before the error reply attempt so that a
+        reply failure doesn't cause re-processing of the whole notification."""
+        from app.github_notifications import FetchResult
+        from app.loop_manager import process_github_notifications, _is_notif_cached
+
+        mock_config.return_value = {}
+        mock_gh_config.return_value = {"bot_username": "bot", "max_age": 300}
+        mock_registry.return_value = MagicMock()
+        mock_repos.return_value = set()
+
+        notif = {
+            "id": "1", "updated_at": "2026-03-20T10:00:00Z",
+            "subject": {"url": "https://api.github.com/repos/o/r/issues/1"},
+            "repository": {"full_name": "o/r"},
+        }
+
+        call_order = []
+
+        def mock_process(*a, **kw):
+            return (False, "some error")
+
+        def mock_post_error(n, e):
+            # At the point when error reply is attempted, cache should exist
+            call_order.append(("post_error", _is_notif_cached(notif)))
+
+        with patch("app.projects_config.load_projects_config", return_value={}), \
+             patch("app.github_notifications.fetch_unread_notifications",
+                   return_value=FetchResult([notif], [])), \
+             patch("app.github_command_handler.process_single_notification",
+                   side_effect=mock_process), \
+             patch("app.loop_manager._post_error_for_notification",
+                   side_effect=mock_post_error):
+            process_github_notifications(str(tmp_path), str(tmp_path))
+
+        assert call_order == [("post_error", True)], \
+            "Notification should be cached before error reply attempt"
+
+
 # --- Thread-safety tests ---
 
 
