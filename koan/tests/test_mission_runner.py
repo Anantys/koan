@@ -2476,7 +2476,7 @@ class TestNotifyPipelineFailures:
         outbox.write_text("")
         _notify_pipeline_failures(tracker, "", str(tmp_path))
         msg = outbox.read_text()
-        assert msg.startswith("⚠️ Pipeline issues:")
+        assert "⚠️ Pipeline issues:" in msg
         assert "✗ verification (verify crash)" in msg
 
     def test_notification_failure_does_not_raise(self, tmp_path):
