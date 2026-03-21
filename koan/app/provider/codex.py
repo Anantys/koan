@@ -42,7 +42,16 @@ class CodexProvider(CLIProvider):
         return shutil.which("codex") is not None
 
     def build_permission_args(self, skip_permissions: bool = False) -> List[str]:
-        # Codex equivalent: --yolo bypasses approvals and sandbox
+        # Codex equivalent: --yolo bypasses approvals and sandbox entirely.
+        #
+        # When skip_permissions=False we use --full-auto rather than Codex's
+        # interactive default, because Kōan runs headless (codex exec) where
+        # interactive approval prompts would block forever.  --full-auto
+        # grants workspace-write sandbox + on-request approval, which is the
+        # least-privilege mode that still works unattended.
+        #
+        # TODO: for read-only contexts (chat, review mode) a future
+        # enhancement could pass --sandbox read-only instead.
         if skip_permissions:
             return ["--yolo"]
         return ["--full-auto"]
@@ -126,8 +135,9 @@ class CodexProvider(CLIProvider):
         cmd.extend(self.build_permission_args(skip_permissions))
         cmd.extend(self.build_model_args(model, fallback))
 
-        # 'exec' subcommand + prompt (positional)
-        cmd.extend(["exec", prompt])
+        # 'exec' subcommand + prompt (positional) — delegate to
+        # build_prompt_args() so standalone callers get the same shape.
+        cmd.extend(self.build_prompt_args(prompt))
 
         # Exec-specific flags go after prompt if needed in future
 
@@ -138,6 +148,11 @@ class CodexProvider(CLIProvider):
 
         Sends a tiny prompt ("ok") to surface rate-limit or subscription
         errors before a full mission is attempted.
+
+        NOTE: Unlike Claude's zero-cost ``claude usage``, this probe
+        consumes a small number of tokens on each call.  Kōan's main
+        loop calls this before every mission, so the cost is real but
+        negligible compared to the mission itself.
         """
         cmd = [self.binary(), "--full-auto", "exec", "ok"]
 
