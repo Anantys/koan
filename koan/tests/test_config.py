@@ -262,6 +262,32 @@ class TestGetIntervalSeconds:
             assert get_interval_seconds() == 120
 
 
+# --- get_same_project_stickiness_percent ---
+
+
+class TestGetSameProjectStickinessPercent:
+    def test_default_disabled(self):
+        from app.config import get_same_project_stickiness_percent
+
+        with _mock_config({}):
+            assert get_same_project_stickiness_percent() == 0
+
+    def test_reads_nested_prompt_caching_value(self):
+        from app.config import get_same_project_stickiness_percent
+
+        with _mock_config({"prompt_caching": {"same_project_stickiness_percent": 35}}):
+            assert get_same_project_stickiness_percent() == 35
+
+    def test_clamps_out_of_range_values(self):
+        from app.config import get_same_project_stickiness_percent
+
+        with _mock_config({"prompt_caching": {"same_project_stickiness_percent": 999}}):
+            assert get_same_project_stickiness_percent() == 100
+
+        with _mock_config({"prompt_caching": {"same_project_stickiness_percent": -5}}):
+            assert get_same_project_stickiness_percent() == 0
+
+
 # --- get_fast_reply_model ---
 
 
