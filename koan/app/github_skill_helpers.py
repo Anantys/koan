@@ -29,12 +29,27 @@ def extract_github_url(args: str, url_type: str = "pr-or-issue") -> Optional[Tup
         >>> extract_github_url("https://github.com/o/r/pull/1 phase 1")
         ("https://github.com/o/r/pull/1", "phase 1")
     """
+    pr_pattern = (
+        r"https?://(?:"
+        r"github\.com/[^\s/]+/[^\s/]+/pull/\d+|"
+        r"gitlab\.com/[^\s]+(?:/[^\s]+)*/[^\s/]+/-/merge_requests/\d+|"
+        r"codeberg\.org/[^\s/]+/[^\s/]+/pulls/\d+"
+        r")"
+    )
+    issue_pattern = (
+        r"https?://(?:"
+        r"github\.com/[^\s/]+/[^\s/]+/issues/\d+|"
+        r"gitlab\.com/[^\s]+(?:/[^\s]+)*/[^\s/]+/-/issues/\d+|"
+        r"codeberg\.org/[^\s/]+/[^\s/]+/issues/\d+"
+        r")"
+    )
+
     if url_type == "pr":
-        pattern = r'https?://github\.com/[^\s]+/pull/\d+'
+        pattern = pr_pattern
     elif url_type == "issue":
-        pattern = r'https?://github\.com/[^\s]+/issues/\d+'
+        pattern = issue_pattern
     else:  # pr-or-issue
-        pattern = r'https?://github\.com/[^\s]+/(?:pull|issues)/\d+'
+        pattern = f"(?:{pr_pattern}|{issue_pattern})"
 
     match = re.search(pattern, args)
     if not match:

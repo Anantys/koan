@@ -108,6 +108,24 @@ class TestExtractGithubUrl:
         result = extract_github_url("http://github.com/o/r/pull/1")
         assert result == ("http://github.com/o/r/pull/1", None)
 
+    def test_gitlab_mr_url(self):
+        result = extract_github_url(
+            "https://gitlab.com/org/sub/repo/-/merge_requests/21"
+        )
+        assert result == ("https://gitlab.com/org/sub/repo/-/merge_requests/21", None)
+
+    def test_codeberg_pr_url(self):
+        result = extract_github_url(
+            "https://codeberg.org/acme/repo/pulls/5"
+        )
+        assert result == ("https://codeberg.org/acme/repo/pulls/5", None)
+
+    def test_gitlab_issue_url(self):
+        result = extract_github_url(
+            "https://gitlab.com/org/sub/repo/-/issues/88"
+        )
+        assert result == ("https://gitlab.com/org/sub/repo/-/issues/88", None)
+
 
 # ---------------------------------------------------------------------------
 # resolve_project_for_repo

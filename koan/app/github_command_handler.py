@@ -258,14 +258,12 @@ def _resolve_project_from_url(url: str) -> Optional[str]:
     corresponding project. Returns the project name or None if the
     URL cannot be parsed or the repo is not a known project.
     """
-    match = re.search(
-        r'https?://github\.com/([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)',
-        url,
-    )
-    if not match:
-        return None
+    from app.github_url_parser import parse_github_url
 
-    owner, repo = match.group(1), match.group(2)
+    try:
+        owner, repo, _url_type, _number = parse_github_url(url)
+    except ValueError:
+        return None
 
     from app.utils import project_name_for_path, resolve_project_path
 
@@ -285,17 +283,22 @@ def _extract_url_from_context(context: str) -> Optional[Tuple[str, str]]:
     Returns:
         Tuple of (url, remaining_context) or None if no URL found
     """
-    # Require /pull/N or /issues/N path — bare repo URLs must not match
-    url_match = re.search(
-        r'https?://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/(?:pull|issues)/\d+',
-        context,
-    )
-    if not url_match:
+    from app.github_skill_helpers import extract_github_url
+
+    # Require PR/MR/issue path — bare repo URLs must not match.
+    # Despite the helper name, this supports GitHub/GitLab/Codeberg URLs.
+    extracted = extract_github_url(context, url_type="pr-or-issue")
+    if not extracted:
         return None
-    
-    url = url_match.group(0)
+
+    url, _ = extracted
+    url_start = context.find(url)
+    if url_start == -1:
+        return None
+
+    url_end = url_start + len(url)
     # Remove URL from context
-    remaining = context[:url_match.start()].strip() + " " + context[url_match.end():].strip()
+    remaining = context[:url_start].strip() + " " + context[url_end:].strip()
     remaining = remaining.strip()
     return url, remaining
 

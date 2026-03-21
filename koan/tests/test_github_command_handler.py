@@ -1047,6 +1047,24 @@ class TestExtractUrlFromContext:
         url, _ = result
         assert url == "https://github.com/my-org/my-repo/pull/99"
 
+    def test_gitlab_mr_url(self):
+        result = _extract_url_from_context(
+            "rebase https://gitlab.com/group/sub/repo/-/merge_requests/7 now"
+        )
+        assert result is not None
+        url, remaining = result
+        assert url == "https://gitlab.com/group/sub/repo/-/merge_requests/7"
+        assert remaining == "rebase now"
+
+    def test_codeberg_pr_url(self):
+        result = _extract_url_from_context(
+            "check https://codeberg.org/acme/repo/pulls/11"
+        )
+        assert result is not None
+        url, remaining = result
+        assert url == "https://codeberg.org/acme/repo/pulls/11"
+        assert remaining == "check"
+
 
 class TestCommentApiUrlThreading:
     """Tests that comment_api_url is properly threaded through the pipeline."""
@@ -1671,6 +1689,15 @@ class TestExtractUrlFromContextEdgeCases:
         assert url == "https://github.com/owner/repo/pull/42"
         assert remaining == "rebase please"
 
+    def test_gitlab_issue_url_still_matches(self):
+        result = _extract_url_from_context(
+            "plan https://gitlab.com/org/sub/repo/-/issues/42 context"
+        )
+        assert result is not None
+        url, remaining = result
+        assert url == "https://gitlab.com/org/sub/repo/-/issues/42"
+        assert remaining == "plan context"
+
 
 # ---------------------------------------------------------------------------
 # Additional edge cases for extract_issue_number_from_notification
@@ -1982,6 +2009,16 @@ class TestResolveProjectFromUrl:
     def test_non_github_url_returns_none(self):
         from app.github_command_handler import _resolve_project_from_url
         assert _resolve_project_from_url("https://example.com/foo") is None
+
+    @patch("app.utils.resolve_project_path", return_value="/path/to/proj")
+    @patch("app.utils.project_name_for_path", return_value="proj")
+    def test_resolves_from_gitlab_mr_url(self, mock_name, mock_resolve):
+        from app.github_command_handler import _resolve_project_from_url
+        result = _resolve_project_from_url(
+            "https://gitlab.com/group/sub/repo/-/merge_requests/2"
+        )
+        assert result == "proj"
+        mock_resolve.assert_called_with("repo", owner="group/sub")
 
     def test_empty_string_returns_none(self):
         from app.github_command_handler import _resolve_project_from_url
