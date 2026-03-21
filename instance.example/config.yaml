@@ -240,6 +240,18 @@ usage:
 #                                    # for intent classification before falling back to error.
 #                                    # Per-project override available in projects.yaml.
 
+# /check behavior
+# Controls how the check runner handles PR inspection and review-comment dispatch.
+# check:
+#   auto_dispatch_reviews: true  # When true, unresolved PR review comments are
+#                                # automatically forwarded to the agent as missions.
+#                                # Set to false to disable this feature entirely.
+#                                # Default: true (enabled).
+#   skip_draft_dispatch: false   # When true, draft PRs are excluded from
+#                                # review-comment auto-dispatch. Default: false
+#                                # (draft PRs are included by default so feedback
+#                                # on work-in-progress is also forwarded to the agent).
+
 # Dashboard attention zone — GitHub @mention notifications
 # When true, the dashboard attention zone also shows unread GitHub @mention
 # notifications (reason: mention or review_requested). Requires github_url

@@ -365,6 +365,238 @@ def _append_lessons_to_learnings(
     return len(new_lines)
 
 
+def fetch_unresolved_review_comments(
+    owner: str,
+    repo: str,
+    pr_number,
+) -> List[dict]:
+    """Fetch unresolved human review comments for a single open PR.
+
+    Collects both inline code-review comments (/pulls/{n}/comments) and
+    top-level review bodies (/pulls/{n}/reviews).  Bot comments are filtered
+    out using :func:`review_runner.is_bot_user`.
+
+    Args:
+        owner: GitHub repository owner.
+        repo: Repository name.
+        pr_number: PR number (int or str).
+
+    Returns:
+        List of dicts with keys: id, body, user_login, path, line, created_at.
+        Returns an empty list on any GitHub API failure.
+    """
+    try:
+        from app.github import run_gh
+        from app.review_runner import is_bot_user
+    except ImportError:
+        return []
+
+    full_repo = f"{owner}/{repo}"
+    comments: List[dict] = []
+    seen_ids: set = set()
+
+    # 1. Inline review comments (code-level)
+    try:
+        raw = run_gh(
+            "api",
+            f"repos/{full_repo}/pulls/{pr_number}/comments",
+            "--paginate",
+            "--jq",
+            r".[] | {id: .id, body: .body, user_login: .user.login,"
+            r" user_type: .user.type, path: .path,"
+            r" line: (.line // .original_line), created_at: .created_at}",
+        )
+        if raw.strip():
+            for line in raw.strip().split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    item = json.loads(line)
+                    if is_bot_user(item):
+                        continue
+                    cid = item.get("id")
+                    if cid and cid not in seen_ids:
+                        seen_ids.add(cid)
+                        comments.append({
+                            "id": cid,
+                            "body": item.get("body", ""),
+                            "user_login": item.get("user_login", ""),
+                            "path": item.get("path", ""),
+                            "line": item.get("line"),
+                            "created_at": item.get("created_at", ""),
+                        })
+                except json.JSONDecodeError:
+                    continue
+    except Exception as e:
+        print(
+            f"[pr_review_learning] Inline comments fetch failed for #{pr_number}: {e}",
+            file=sys.stderr,
+        )
+
+    # 2. Top-level review bodies (overall review comments, not inline)
+    try:
+        raw = run_gh(
+            "api",
+            f"repos/{full_repo}/pulls/{pr_number}/reviews",
+            "--jq",
+            r".[] | {id: .id, body: .body, user_login: .user.login,"
+            r" user_type: .user.type, state: .state, created_at: .submitted_at}",
+        )
+        if raw.strip():
+            for line in raw.strip().split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    item = json.loads(line)
+                    if is_bot_user(item):
+                        continue
+                    body = (item.get("body") or "").strip()
+                    if not body:
+                        continue
+                    cid = item.get("id")
+                    if cid and cid not in seen_ids:
+                        seen_ids.add(cid)
+                        comments.append({
+                            "id": cid,
+                            "body": body,
+                            "user_login": item.get("user_login", ""),
+                            "path": "",
+                            "line": None,
+                            "created_at": item.get("created_at", ""),
+                        })
+                except json.JSONDecodeError:
+                    continue
+    except Exception as e:
+        print(
+            f"[pr_review_learning] Reviews fetch failed for #{pr_number}: {e}",
+            file=sys.stderr,
+        )
+
+    return comments
+
+
+def compute_comment_fingerprint(comments: List[dict]) -> str:
+    """Compute a stable hash of comment IDs to detect new review activity.
+
+    Sorts comment IDs before hashing so the fingerprint is order-independent.
+
+    Args:
+        comments: List of comment dicts, each with an ``id`` key.
+
+    Returns:
+        Hex digest string (16 chars).
+    """
+    sorted_ids = sorted(str(c.get("id", "")) for c in comments)
+    content = "|".join(sorted_ids)
+    return hashlib.sha256(content.encode()).hexdigest()[:16]
+
+
+def _dispatch_tracker_path(instance_dir: str) -> "Path":
+    """Return path to the review-dispatch tracker file."""
+    return Path(instance_dir) / ".review-dispatch-tracker.json"
+
+
+def get_comment_fingerprint(instance_dir: str, pr_url: str) -> Optional[str]:
+    """Read the stored comment fingerprint for *pr_url*, or None."""
+    path = _dispatch_tracker_path(instance_dir)
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text())
+        return data.get(pr_url)
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def store_comment_fingerprint(
+    instance_dir: str, pr_url: str, fingerprint: str
+) -> None:
+    """Persist the comment fingerprint for *pr_url* (atomic, flock-safe)."""
+    import fcntl
+
+    from app.utils import atomic_write
+
+    lock_path = Path(instance_dir) / ".review-dispatch-tracker.lock"
+    with open(lock_path, "a") as lf:
+        fcntl.flock(lf, fcntl.LOCK_EX)
+        try:
+            path = _dispatch_tracker_path(instance_dir)
+            try:
+                data = json.loads(path.read_text()) if path.exists() else {}
+            except (json.JSONDecodeError, OSError):
+                data = {}
+            data[pr_url] = fingerprint
+            atomic_write(path, json.dumps(data, indent=2) + "\n")
+        finally:
+            fcntl.flock(lf, fcntl.LOCK_UN)
+
+
+def dispatch_review_comments_mission(
+    owner: str,
+    repo: str,
+    pr_number,
+    comments: List[dict],
+    missions_path: "Path",
+    instance_dir: str,
+) -> bool:
+    """Inject a mission to address unresolved review comments on a PR.
+
+    Uses fingerprint-based deduplication: if the set of comment IDs hasn't
+    changed since the last dispatch, no mission is created.
+
+    Args:
+        owner: GitHub repository owner.
+        repo: Repository name.
+        pr_number: PR number (int or str).
+        comments: Output of :func:`fetch_unresolved_review_comments`.
+        missions_path: Path to ``missions.md``.
+        instance_dir: Path to the instance directory (for tracker + config).
+
+    Returns:
+        True if a mission was injected, False if fingerprint was unchanged.
+    """
+    from app.utils import insert_pending_mission, resolve_project_name
+
+    if not comments:
+        return False
+
+    pr_url = f"https://github.com/{owner}/{repo}/pull/{pr_number}"
+    fingerprint = compute_comment_fingerprint(comments)
+
+    stored = get_comment_fingerprint(instance_dir, pr_url)
+    if stored == fingerprint:
+        return False
+
+    project_name = resolve_project_name(repo, owner=owner)
+
+    # Format comment excerpts (≤200 chars each, max 10 comments)
+    max_comments = 10
+    lines = []
+    for c in comments[:max_comments]:
+        user = c.get("user_login", "reviewer")
+        path = c.get("path", "")
+        body = (c.get("body") or "").strip()
+        if len(body) > 200:
+            body = body[:200] + "…"
+        loc = f" on `{path}`" if path else ""
+        lines.append(f"  - @{user}{loc}: {body}")
+
+    remaining = len(comments) - max_comments
+    if remaining > 0:
+        lines.append(f"  - …and {remaining} more comment(s)")
+
+    comment_block = "\n".join(lines)
+    entry = (
+        f"- [project:{project_name}] Address review comments on PR #{pr_number} "
+        f"({owner}/{repo}) — {pr_url}\n{comment_block}"
+    )
+    insert_pending_mission(missions_path, entry)
+    store_comment_fingerprint(instance_dir, pr_url, fingerprint)
+    return True
+
+
 def learn_from_reviews(
     instance_dir: str,
     project_name: str,
