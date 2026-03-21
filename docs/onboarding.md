@@ -64,6 +64,16 @@ Presets are stored in `instance.example/soul-presets/`. You can customize `insta
 
 The CLI wizard complements the existing web-based wizard (`make install`). Both configure the same files — use whichever you prefer. The CLI wizard covers more ground (language, personality, GitHub, deployment).
 
+### Custom Hostname / IP
+
+By default, the web wizard binds to `127.0.0.1` (localhost only). To make it accessible from other machines on your network — for example, when running Kōan on a headless server — set `SETUP_HOSTNAME`:
+
+```bash
+SETUP_HOSTNAME=10.0.0.1 make install
+```
+
+This binds the wizard to the specified address. Use `0.0.0.0` to listen on all interfaces.
+
 ## Non-Interactive Mode
 
 If stdin is not a TTY (e.g., in CI), the wizard uses default values for all prompts. Set `NO_COLOR=1` to disable colored output.

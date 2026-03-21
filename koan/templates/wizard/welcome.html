@@ -77,6 +77,19 @@
 </div>
 {% endif %}
 
+{% if hostname_hint %}
+<div class="alert alert-info">
+    <span>💡</span>
+    <div>
+        <strong>Running on {{ request.host }}</strong><br>
+        <span style="color: var(--text-muted)">
+            To use a different IP or hostname, restart with:<br>
+            <code class="code-inline">SETUP_HOSTNAME=&lt;your-ip&gt; make install</code>
+        </span>
+    </div>
+</div>
+{% endif %}
+
 <div class="btn-row end">
     <button id="btn-continue" class="btn btn-primary" onclick="initAndContinue()">
         Continue →
