@@ -258,7 +258,8 @@ def _get_today_cache_line(instance_dir: Path) -> str:
     try:
         from app.cost_tracker import format_cache_summary
         return format_cache_summary(instance_dir)
-    except Exception:
+    except Exception as e:
+        print(f"[usage_estimator] cache line fetch failed: {e}", file=sys.stderr)
         return ""
 
 

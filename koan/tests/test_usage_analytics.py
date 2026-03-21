@@ -83,7 +83,10 @@ class TestDailySeries:
         result = daily_series(instance_dir, start, end)
         assert len(result) == 3
         for day in result:
-            assert set(day.keys()) == {"date", "total_input", "total_output", "count", "cost"}
+            assert set(day.keys()) == {
+                "date", "total_input", "total_output", "count", "cost",
+                "cache_read_input_tokens", "cache_creation_input_tokens", "cache_hit_rate",
+            }
 
     def test_aggregates_per_day(self, instance_dir):
         usage_dir = instance_dir / "usage"

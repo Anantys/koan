@@ -151,7 +151,8 @@ def _extract_cache_line(stdout_file: str) -> str:
             cache_create=detailed.get("cache_creation_input_tokens", 0),
             input_tokens=detailed.get("input_tokens", 0),
         )
-    except Exception:
+    except Exception as e:
+        print(f"[mission_runner] cache line extraction failed: {e}", file=sys.stderr)
         return ""
 
 
