@@ -200,21 +200,32 @@ def _dispatch_review_comments(
 ):
     """Fetch unresolved review comments and queue a mission if new ones exist.
 
-    Skips the dispatch if the config key ``check.skip_draft_dispatch`` is true
-    *and* the PR is a draft.  By default draft PRs are included.
+    Controlled by two config keys under ``check:``:
+
+    - ``auto_dispatch_reviews`` (default ``True``): master toggle for the
+      entire feature.  When ``False``, no dispatch is attempted.
+    - ``skip_draft_dispatch`` (default ``False``): when ``True``, draft PRs
+      are excluded from dispatch.
 
     Appends an action string to *actions* when a mission is queued.
     """
     from app.utils import load_config
 
+    # Config: check.auto_dispatch_reviews (default true — enabled)
     # Config: check.skip_draft_dispatch (default false — include drafts)
     try:
         config = load_config()
-        skip_drafts = config.get("check", {}).get("skip_draft_dispatch", False)
+        check_config = config.get("check", {})
+        auto_dispatch = check_config.get("auto_dispatch_reviews", True)
+        skip_drafts = check_config.get("skip_draft_dispatch", False)
     except Exception as e:
         import sys
         print(f"[check_runner] config load failed, using defaults: {e}", file=sys.stderr)
+        auto_dispatch = True
         skip_drafts = False
+
+    if not auto_dispatch:
+        return
 
     if skip_drafts and pr_data.get("isDraft", False):
         return
