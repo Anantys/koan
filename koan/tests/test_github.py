@@ -913,3 +913,72 @@ class TestCachedCountOpenPrs:
         mock_time.return_value = 1299.0
         cached_count_open_prs("owner/repo", "koan-bot")
         mock_count.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# get_failed_check_runs
+# ---------------------------------------------------------------------------
+
+from app.github import get_failed_check_runs, fetch_ci_failure_logs
+
+
+class TestGetFailedCheckRuns:
+    @patch("app.github.subprocess.run")
+    def test_returns_only_failed_runs(self, mock_run):
+        checks = [
+            {"name": "lint", "status": "completed", "conclusion": "SUCCESS", "databaseId": 1},
+            {"name": "test", "status": "completed", "conclusion": "FAILURE", "databaseId": 2},
+        ]
+        mock_run.return_value = MagicMock(returncode=0, stdout=json.dumps(checks))
+        result = get_failed_check_runs("123", "owner/repo")
+        assert len(result) == 1
+        assert result[0]["name"] == "test"
+
+    @patch("app.github.subprocess.run")
+    def test_returns_empty_list_on_error(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=1, stderr="not found")
+        result = get_failed_check_runs("123", "owner/repo")
+        assert result == []
+
+    @patch("app.github.subprocess.run")
+    def test_returns_empty_list_when_all_pass(self, mock_run):
+        checks = [
+            {"name": "lint", "status": "completed", "conclusion": "SUCCESS", "databaseId": 1},
+        ]
+        mock_run.return_value = MagicMock(returncode=0, stdout=json.dumps(checks))
+        result = get_failed_check_runs("123", "owner/repo")
+        assert result == []
+
+
+# ---------------------------------------------------------------------------
+# fetch_ci_failure_logs
+# ---------------------------------------------------------------------------
+
+class TestFetchCIFailureLogs:
+    @patch("app.github.subprocess.run")
+    def test_returns_log_text(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="line1\nline2\n")
+        result = fetch_ci_failure_logs("owner/repo", "12345")
+        assert "line1" in result
+        assert "line2" in result
+
+    @patch("app.github.subprocess.run")
+    def test_returns_empty_string_on_error(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=1, stderr="not found")
+        result = fetch_ci_failure_logs("owner/repo", "12345")
+        assert result == ""
+
+    @patch("app.github.subprocess.run")
+    def test_truncates_to_max_lines(self, mock_run):
+        many_lines = "\n".join(f"line{i}" for i in range(300))
+        mock_run.return_value = MagicMock(returncode=0, stdout=many_lines)
+        result = fetch_ci_failure_logs("owner/repo", "12345", max_lines=10)
+        lines = result.splitlines()
+        assert len(lines) == 11  # 10 lines + "[truncated]"
+        assert lines[-1] == "[truncated]"
+
+    @patch("app.github.subprocess.run")
+    def test_no_truncation_when_within_limit(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="a\nb\nc\n")
+        result = fetch_ci_failure_logs("owner/repo", "12345", max_lines=200)
+        assert "[truncated]" not in result

@@ -446,6 +446,60 @@ def batch_count_open_prs(repos: list, author: str) -> Dict[str, int]:
         return {}
 
 
+def get_failed_check_runs(pr_number, repo):
+    """Return a list of failed check runs for a PR.
+
+    Args:
+        pr_number: PR number (string or int).
+        repo: Repository in "owner/repo" format.
+
+    Returns:
+        List of dicts with keys: name, status, conclusion, databaseId.
+        Returns empty list on error.
+    """
+    try:
+        raw = run_gh(
+            "pr", "checks", str(pr_number),
+            "--repo", repo,
+            "--json", "name,status,conclusion,databaseId",
+        )
+        checks = json.loads(raw)
+        return [c for c in checks if c.get("conclusion") == "FAILURE"]
+    except Exception as e:
+        import sys
+        print(f"[github] get_failed_check_runs error: {e}", file=sys.stderr)
+        return []
+
+
+def fetch_ci_failure_logs(repo, run_id, max_lines=200):
+    """Fetch failure logs for a GitHub Actions run.
+
+    Args:
+        repo: Repository in "owner/repo" format.
+        run_id: GitHub Actions run ID (string or int).
+        max_lines: Maximum lines to return. Excess lines are truncated.
+
+    Returns:
+        Log text string (possibly truncated). Empty string on error.
+    """
+    try:
+        raw = run_gh(
+            "run", "view", str(run_id),
+            "--repo", repo,
+            "--log-failed",
+            timeout=60,
+        )
+        lines = raw.splitlines()
+        if len(lines) > max_lines:
+            lines = lines[:max_lines]
+            lines.append("[truncated]")
+        return "\n".join(lines)
+    except Exception as e:
+        import sys
+        print(f"[github] fetch_ci_failure_logs error: {e}", file=sys.stderr)
+        return ""
+
+
 def count_open_prs(repo: str, author: str, cwd: str = None) -> int:
     """Count open pull requests by a specific author in a repository.
 
