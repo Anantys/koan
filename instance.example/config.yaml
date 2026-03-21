@@ -281,6 +281,14 @@ usage:
 #   enabled: true           # Enable parallel GitHub API fetches (default: true)
 #   github_workers: 4       # Max concurrent GitHub API calls (default: 4)
 
+# /check behavior
+# Controls how the check runner handles PR inspection and review-comment dispatch.
+# check:
+#   skip_draft_dispatch: false   # When true, draft PRs are excluded from
+#                                # review-comment auto-dispatch. Default: false
+#                                # (draft PRs are included by default so feedback
+#                                # on work-in-progress is also forwarded to the agent).
+
 # Dashboard attention zone — GitHub @mention notifications
 # When true, the dashboard attention zone also shows unread GitHub @mention
 # notifications (reason: mention or review_requested). Requires github_url

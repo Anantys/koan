@@ -32,6 +32,20 @@ from app.review_schema import validate_review
 _ISSUE_URL_RE = re.compile(ISSUE_URL_PATTERN)
 
 
+def is_bot_user(item: dict) -> bool:
+    """Return True if the comment author is a bot.
+
+    Checks the ``user_type`` field (pre-extracted from ``user.type``) or
+    falls back to reading ``item["user"]["type"]`` directly so the function
+    works with both pre-processed dicts and raw GitHub API payloads.
+    """
+    if item.get("user_type") == "Bot":
+        return True
+    if isinstance(item.get("user"), dict) and item["user"].get("type") == "Bot":
+        return True
+    return False
+
+
 def _fetch_inline_review_comments(full_repo: str, pr_number: str) -> List[dict]:
     """Fetch inline review comments (code-level) for a PR."""
     results: List[dict] = []
@@ -45,7 +59,7 @@ def _fetch_inline_review_comments(full_repo: str, pr_number: str) -> List[dict]:
             for line in raw.strip().split("\n"):
                 try:
                     item = json.loads(line)
-                    if item.get("user_type") == "Bot":
+                    if is_bot_user(item):
                         continue
                     results.append({
                         "id": item["id"],
@@ -75,7 +89,7 @@ def _fetch_issue_comments(full_repo: str, pr_number: str) -> List[dict]:
             for line in raw.strip().split("\n"):
                 try:
                     item = json.loads(line)
-                    if item.get("user_type") == "Bot":
+                    if is_bot_user(item):
                         continue
                     results.append({
                         "id": item["id"],
