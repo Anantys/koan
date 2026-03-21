@@ -332,6 +332,21 @@ def get_project_github_authorized_users(config: dict, project_name: str) -> list
     return users if isinstance(users, list) else []
 
 
+def get_project_github_reply_authorized_users(config: dict, project_name: str) -> Optional[list]:
+    """Get GitHub reply_authorized_users for a project from projects.yaml.
+
+    Per-project github.reply_authorized_users completely replaces global list.
+    Returns the list of authorized GitHub usernames, or ["*"] for wildcard.
+    Returns None if not configured (meaning: fall back to global config.yaml).
+    """
+    project_cfg = get_project_config(config, project_name)
+    github = project_cfg.get("github", {}) or {}
+    users = github.get("reply_authorized_users")
+    if users is None:
+        return None
+    return users if isinstance(users, list) else None
+
+
 def get_project_github_natural_language(config: dict, project_name: str) -> Optional[bool]:
     """Get GitHub natural_language setting for a project from projects.yaml.
 

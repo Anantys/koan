@@ -9,7 +9,9 @@ from app.github_config import (
     get_github_max_age_hours,
     get_github_natural_language,
     get_github_nickname,
+    get_github_reply_authorized_users,
     get_github_reply_enabled,
+    get_github_reply_rate_limit,
     validate_github_config,
 )
 
@@ -217,3 +219,88 @@ class TestValidateGithubConfig:
         config = {"github": {"commands_enabled": True, "nickname": ""}}
         result = validate_github_config(config)
         assert result is not None
+
+
+class TestGetGithubReplyAuthorizedUsers:
+    def test_explicit_list(self):
+        config = {"github": {"reply_authorized_users": ["alice", "bob"]}}
+        assert get_github_reply_authorized_users(config) == ["alice", "bob"]
+
+    def test_wildcard(self):
+        config = {"github": {"reply_authorized_users": ["*"]}}
+        assert get_github_reply_authorized_users(config) == ["*"]
+
+    def test_not_configured_returns_none(self):
+        """When reply_authorized_users is not set, return None (fallback signal)."""
+        config = {"github": {"authorized_users": ["alice"]}}
+        assert get_github_reply_authorized_users(config) is None
+
+    def test_empty_config_returns_none(self):
+        assert get_github_reply_authorized_users({}) is None
+
+    def test_none_section_returns_none(self):
+        assert get_github_reply_authorized_users({"github": None}) is None
+
+    def test_empty_list_returns_empty(self):
+        """Explicit empty list means 'disable replies for everyone'."""
+        config = {"github": {"reply_authorized_users": []}}
+        assert get_github_reply_authorized_users(config) == []
+
+    def test_per_project_override(self):
+        config = {"github": {"reply_authorized_users": ["alice"]}}
+        projects_config = {
+            "defaults": {},
+            "projects": {
+                "myapp": {
+                    "path": "/tmp/myapp",
+                    "github": {"reply_authorized_users": ["bob"]},
+                }
+            },
+        }
+        result = get_github_reply_authorized_users(
+            config, project_name="myapp", projects_config=projects_config
+        )
+        assert result == ["bob"]
+
+    def test_per_project_fallback_to_global(self):
+        config = {"github": {"reply_authorized_users": ["alice"]}}
+        projects_config = {
+            "defaults": {},
+            "projects": {"myapp": {"path": "/tmp/myapp"}},
+        }
+        result = get_github_reply_authorized_users(
+            config, project_name="myapp", projects_config=projects_config
+        )
+        assert result == ["alice"]
+
+    def test_per_project_not_configured_returns_none(self):
+        """When neither project nor global has reply_authorized_users, return None."""
+        config = {"github": {}}
+        projects_config = {
+            "defaults": {},
+            "projects": {"myapp": {"path": "/tmp/myapp"}},
+        }
+        result = get_github_reply_authorized_users(
+            config, project_name="myapp", projects_config=projects_config
+        )
+        assert result is None
+
+
+class TestGetGithubReplyRateLimit:
+    def test_default(self):
+        assert get_github_reply_rate_limit({}) == 5
+
+    def test_custom(self):
+        assert get_github_reply_rate_limit({"github": {"reply_rate_limit": 10}}) == 10
+
+    def test_none_section(self):
+        assert get_github_reply_rate_limit({"github": None}) == 5
+
+    def test_invalid_value(self):
+        assert get_github_reply_rate_limit({"github": {"reply_rate_limit": "bad"}}) == 5
+
+    def test_floor_at_1(self):
+        assert get_github_reply_rate_limit({"github": {"reply_rate_limit": 0}}) == 1
+
+    def test_negative_floored(self):
+        assert get_github_reply_rate_limit({"github": {"reply_rate_limit": -5}}) == 1
