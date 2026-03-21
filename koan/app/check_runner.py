@@ -125,7 +125,9 @@ def _handle_pr(owner, repo, pr_number, instance_dir, koan_root, notify_fn):
 
     # Skip closed/merged PRs
     if state in ("CLOSED", "MERGED"):
+        from app.check_tracker import clear_ci_status
         mark_checked(instance_dir, url, updated_at)
+        clear_ci_status(instance_dir, url)
         msg = f"PR #{pr_number} is {state.lower()}. No action needed."
         notify_fn(msg)
         return True, msg
@@ -155,6 +157,17 @@ def _handle_pr(owner, repo, pr_number, instance_dir, koan_root, notify_fn):
     if _has_no_reviews(pr_data) and not is_draft and not needs_reb:
         _queue_pr_review(owner, repo, pr_number, missions_path)
         actions.append("\U0001f4dd PR review queued \u2014 no reviews yet")
+
+    # 3. Check if CI has failed on a Kōan-owned branch
+    head_ref = pr_data.get("headRefName", "")
+    if _is_koan_branch(head_ref) and not needs_reb:
+        ci_result = _check_ci_recovery(
+            owner, repo, pr_number, url, instance_dir, koan_root
+        )
+        if ci_result == "dispatched":
+            actions.append("\U0001f527 CI fix mission queued")
+        elif ci_result == "escalated":
+            actions.append("\u26a0\ufe0f CI failure escalated \u2014 max retries reached")
 
     # Record the check
     mark_checked(instance_dir, url, updated_at)
@@ -297,6 +310,54 @@ def _queue_plan(owner, repo, issue_number, title, instance_dir, koan_root):
         )
 
     insert_pending_mission(missions_path, entry)
+
+
+def _is_koan_branch(head_ref):
+    """Return True if the branch was created by Kōan (uses configured prefix).
+
+    ``get_branch_prefix()`` already includes the trailing '/' (e.g. ``'koan/'``),
+    so we use it directly without appending another slash.
+    """
+    from app.config import get_branch_prefix
+    prefix = get_branch_prefix()  # e.g. "koan/"
+    return head_ref.startswith(prefix)
+
+
+def _check_ci_recovery(owner, repo, pr_number, pr_url, instance_dir, koan_root):
+    """Check if CI has failed and dispatch recovery if needed.
+
+    Returns the status string from handle_ci_failure, or None if CI is passing.
+    """
+    import os
+    from app.ci_recovery import handle_ci_failure
+    from app.projects_config import load_projects_config
+    from app.github import get_failed_check_runs
+
+    repo_full = f"{owner}/{repo}"
+    failed_runs = get_failed_check_runs(pr_number, repo_full)
+    if not failed_runs:
+        return None  # No CI failures
+
+    project_name = _resolve_project_name(repo, owner=owner)
+
+    koan_root_env = koan_root or os.environ.get("KOAN_ROOT", "")
+    config = {}
+    if koan_root_env:
+        try:
+            config = load_projects_config(koan_root_env) or {}
+        except Exception as e:
+            import sys
+            print(f"[check_runner] failed to load projects config: {e}", file=sys.stderr)
+            config = {}
+
+    return handle_ci_failure(
+        instance_dir=instance_dir,
+        pr_url=pr_url,
+        pr_number=pr_number,
+        project_name=project_name,
+        repo=repo_full,
+        config=config,
+    )
 
 
 def _resolve_project_name(repo, owner=None):

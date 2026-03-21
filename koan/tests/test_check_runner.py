@@ -1120,3 +1120,86 @@ class TestPrStatusFormatting:
             )
             assert success
             assert "UNKNOWN" in msg
+
+
+# ---------------------------------------------------------------------------
+# CI recovery integration
+# ---------------------------------------------------------------------------
+
+class TestCIRecoveryIntegration:
+    """Integration tests for CI recovery wiring in check_runner."""
+
+    def test_failed_ci_on_koan_branch_dispatches_fix(self, instance_dir, koan_root):
+        from app.check_runner import run_check
+
+        pr_data = _pr_json(headRefName="koan/my-feature", state="OPEN",
+                           reviewDecision="APPROVED", mergeable="MERGEABLE")
+        notify = MagicMock()
+
+        with patch("app.check_runner._fetch_pr_metadata", return_value=pr_data), \
+             patch("app.check_tracker.has_changed", return_value=True), \
+             patch("app.check_tracker.mark_checked"), \
+             patch("app.check_runner._check_ci_recovery", return_value="dispatched") as mock_ci, \
+             patch("app.utils.get_known_projects", return_value=[]):
+            success, msg = run_check(
+                "https://github.com/sukria/koan/pull/99",
+                str(instance_dir), koan_root, notify_fn=notify,
+            )
+        assert success
+        mock_ci.assert_called_once()
+        assert "CI fix mission queued" in msg
+
+    def test_failed_ci_at_max_retries_shows_escalation(self, instance_dir, koan_root):
+        from app.check_runner import run_check
+
+        pr_data = _pr_json(headRefName="koan/my-feature", state="OPEN",
+                           reviewDecision="APPROVED", mergeable="MERGEABLE")
+        notify = MagicMock()
+
+        with patch("app.check_runner._fetch_pr_metadata", return_value=pr_data), \
+             patch("app.check_tracker.has_changed", return_value=True), \
+             patch("app.check_tracker.mark_checked"), \
+             patch("app.check_runner._check_ci_recovery", return_value="escalated"), \
+             patch("app.utils.get_known_projects", return_value=[]):
+            success, msg = run_check(
+                "https://github.com/sukria/koan/pull/99",
+                str(instance_dir), koan_root, notify_fn=notify,
+            )
+        assert success
+        assert "escalat" in msg.lower()
+
+    def test_passing_ci_clears_status_on_merged(self, instance_dir, koan_root):
+        from app.check_runner import run_check
+        from app.check_tracker import set_ci_status, get_ci_status
+
+        pr_url = "https://github.com/sukria/koan/pull/99"
+        set_ci_status(instance_dir, pr_url, "fix_dispatched", 1)
+
+        pr_data = _pr_json(state="MERGED")
+        notify = MagicMock()
+
+        with patch("app.check_runner._fetch_pr_metadata", return_value=pr_data), \
+             patch("app.check_tracker.mark_checked"):
+            success, msg = run_check(
+                pr_url, str(instance_dir), koan_root, notify_fn=notify,
+            )
+        assert success
+        assert get_ci_status(instance_dir, pr_url) is None
+
+    def test_non_koan_branch_skips_ci_check(self, instance_dir, koan_root):
+        from app.check_runner import run_check
+
+        pr_data = _pr_json(headRefName="feature/my-feature", state="OPEN",
+                           reviewDecision="APPROVED", mergeable="MERGEABLE")
+        notify = MagicMock()
+
+        with patch("app.check_runner._fetch_pr_metadata", return_value=pr_data), \
+             patch("app.check_tracker.has_changed", return_value=True), \
+             patch("app.check_tracker.mark_checked"), \
+             patch("app.check_runner._check_ci_recovery") as mock_ci, \
+             patch("app.utils.get_known_projects", return_value=[]):
+            success, msg = run_check(
+                "https://github.com/sukria/koan/pull/99",
+                str(instance_dir), koan_root, notify_fn=notify,
+            )
+        mock_ci.assert_not_called()
