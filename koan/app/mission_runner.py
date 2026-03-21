@@ -308,12 +308,14 @@ def _record_cost_event(
         if detailed is None:
             return
 
-        # Enrich with JSONL session data when available
+        # Enrich with JSONL session data when available (Claude provider only)
         if project_path and not detailed.get("cost_usd"):
-            from app.session_jsonl import collect_jsonl_tokens
-            jsonl_data = collect_jsonl_tokens(project_path)
-            if jsonl_data and jsonl_data.get("cost_usd"):
-                detailed["cost_usd"] = jsonl_data["cost_usd"]
+            from app.provider import get_provider_name
+            if get_provider_name() == "claude":
+                from app.session_jsonl import collect_jsonl_tokens
+                jsonl_data = collect_jsonl_tokens(project_path)
+                if jsonl_data and jsonl_data.get("cost_usd"):
+                    detailed["cost_usd"] = jsonl_data["cost_usd"]
 
         record_usage(
             instance_dir=Path(instance_dir),
@@ -901,12 +903,15 @@ def run_post_mission(
         _report("recording session outcome")
 
         # Collect last_action from JSONL session data for outcome enrichment
+        # (Claude provider only — JSONL files are Claude Code-specific)
         _last_action = ""
         try:
-            from app.session_jsonl import collect_jsonl_tokens
-            _jsonl = collect_jsonl_tokens(project_path)
-            if _jsonl:
-                _last_action = _jsonl.get("last_action", "")
+            from app.provider import get_provider_name
+            if get_provider_name() == "claude":
+                from app.session_jsonl import collect_jsonl_tokens
+                _jsonl = collect_jsonl_tokens(project_path)
+                if _jsonl:
+                    _last_action = _jsonl.get("last_action", "")
         except Exception as e:
             print(f"[mission_runner] JSONL last_action extraction failed: {e}", file=sys.stderr)
 

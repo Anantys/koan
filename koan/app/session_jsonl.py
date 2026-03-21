@@ -3,6 +3,10 @@
 Reads the tail of Claude Code's JSONL session files to extract cost,
 token, and activity data after mission execution. Session files live
 at ~/.claude/projects/{encoded-path}/*.jsonl.
+
+This module is **Claude provider-specific**. Callers must guard invocations
+with a ``get_provider_name() == "claude"`` check so it is never called
+when running under other providers (e.g. Copilot).
 """
 
 import json
