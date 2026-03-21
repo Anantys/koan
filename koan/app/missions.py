@@ -476,6 +476,66 @@ def extract_project_tag(line: str) -> str:
     return "default"
 
 
+def inject_subtasks(
+    content: str,
+    parent_text: str,
+    subtasks: List[str],
+    group_id: str,
+) -> str:
+    """Replace a pending mission with its ordered sub-tasks.
+
+    The parent mission line is replaced in-place with the sub-task lines.
+    Each sub-task inherits the parent's [project:X] tag and is tagged with
+    [group:GROUP_ID] for lineage tracking.
+
+    Args:
+        content: Current missions.md content.
+        parent_text: The mission text as it appears in missions.md (without
+            the leading "- "). Used to locate the parent line.
+        subtasks: Ordered list of sub-task description strings.
+        group_id: Short identifier linking sub-tasks to their parent.
+
+    Returns:
+        Updated missions.md content with sub-tasks replacing the parent.
+    """
+    if not subtasks:
+        return content
+
+    # Extract project tag from parent to propagate to sub-tasks
+    project_match = re.search(r'\[(?:project|projet):([a-zA-Z0-9_-]+)\]', parent_text)
+    project_tag = f"[project:{project_match.group(1)}] " if project_match else ""
+
+    # Build stamped sub-task lines
+    subtask_lines = [
+        stamp_queued(f"- {project_tag}[group:{group_id}] {task}")
+        for task in subtasks
+    ]
+
+    # Find and replace the parent line in the content
+    # The line in missions.md is "- {parent_text}" (stripped)
+    lines = content.splitlines()
+    parent_line_prefix = f"- {parent_text}"
+
+    for i, line in enumerate(lines):
+        if line.strip() == parent_line_prefix.strip():
+            lines[i:i + 1] = subtask_lines
+            return normalize_content("\n".join(lines))
+
+    # Parent not found verbatim — try matching without timestamps
+    ts_pattern = re.compile(
+        r'\s*[⏳▶]\([^\)]+\)\s*$'
+    )
+    parent_bare = ts_pattern.sub("", parent_text).strip()
+    for i, line in enumerate(lines):
+        line_bare = ts_pattern.sub("", line.strip().lstrip("- ")).strip()
+        if line_bare == parent_bare:
+            lines[i:i + 1] = subtask_lines
+            return normalize_content("\n".join(lines))
+
+    # Parent not found — append sub-tasks at bottom of pending instead
+    return insert_mission(content, subtask_lines[-1], urgent=False)
+
+
 def group_by_project(content: str) -> Dict[str, Dict[str, List[str]]]:
     """Parse missions and group them by project.
 
