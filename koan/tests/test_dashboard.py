@@ -146,6 +146,74 @@ class TestRoutes:
         assert data["ok"] is False
 
 
+class TestUsageApi:
+    def test_api_usage_exposes_cache_metrics(self, app_client):
+        fake_summary = {
+            "total_input": 1000,
+            "total_output": 500,
+            "cache_creation_input_tokens": 300,
+            "cache_read_input_tokens": 1200,
+            "cache_hit_rate": 0.48,
+            "count": 3,
+            "by_project": {"koan": {"input_tokens": 1000, "output_tokens": 500, "count": 3}},
+            "by_model": {
+                "claude-sonnet-4-20250514": {
+                    "input_tokens": 1000,
+                    "output_tokens": 500,
+                    "cache_creation_input_tokens": 300,
+                    "cache_read_input_tokens": 1200,
+                    "count": 3,
+                }
+            },
+        }
+        fake_daily = [{
+            "date": "2026-03-21",
+            "total_input": 1000,
+            "total_output": 500,
+            "cache_creation_input_tokens": 300,
+            "cache_read_input_tokens": 1200,
+            "cache_hit_rate": 0.48,
+            "count": 3,
+            "cost": 0.12,
+        }]
+
+        with patch("app.cost_tracker.summarize_range", return_value=fake_summary), \
+             patch("app.cost_tracker.get_pricing_config", return_value={"sonnet": {"input": 3.0, "output": 15.0}}), \
+             patch("app.cost_tracker.estimate_cost", return_value=0.12), \
+             patch("app.cost_tracker.estimate_cache_savings", return_value=0.00324), \
+             patch("app.cost_tracker.daily_series", return_value=fake_daily):
+            resp = app_client.get("/api/usage?days=7")
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["cache_creation_input_tokens"] == 300
+        assert data["cache_read_input_tokens"] == 1200
+        assert data["cache_hit_rate"] == pytest.approx(0.48)
+        assert data["estimated_cache_savings"] == pytest.approx(0.00324)
+        assert data["daily"][0]["cache_read_input_tokens"] == 1200
+
+    def test_api_usage_without_pricing_returns_null_cache_savings(self, app_client):
+        fake_summary = {
+            "total_input": 0,
+            "total_output": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "cache_hit_rate": 0.0,
+            "count": 0,
+            "by_project": {},
+            "by_model": {},
+        }
+        with patch("app.cost_tracker.summarize_range", return_value=fake_summary), \
+             patch("app.cost_tracker.get_pricing_config", return_value=None), \
+             patch("app.cost_tracker.daily_series", return_value=[]):
+            resp = app_client.get("/api/usage?days=1")
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["has_pricing"] is False
+        assert data["estimated_cache_savings"] is None
+
+
 class TestSignals:
     def test_no_signals(self, tmp_path):
         with patch.object(dashboard, "KOAN_ROOT", tmp_path):

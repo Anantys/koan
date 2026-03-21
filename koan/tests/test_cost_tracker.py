@@ -12,6 +12,8 @@ from app.cost_tracker import (
     summarize_by_project,
     summarize_by_model,
     estimate_cost,
+    estimate_cache_savings,
+    daily_series,
     get_pricing_config,
     _read_jsonl_for_date,
     _read_jsonl_range,
@@ -324,6 +326,40 @@ class TestCacheTracking:
         result = summarize_day(instance_dir)
         assert result["cache_read_input_tokens"] == 100000
         assert result["cache_hit_rate"] > 0
+
+    def test_estimate_cache_savings_from_pricing(self):
+        summary = {
+            "by_model": {
+                "claude-sonnet-4-20250514": {
+                    "cache_read_input_tokens": 1_000_000,
+                },
+            }
+        }
+        pricing = {"sonnet": {"input": 3.0, "output": 15.0}}
+        # 1M read tokens * $3/M input * 90% savings
+        assert estimate_cache_savings(summary, pricing) == pytest.approx(2.7)
+
+    def test_estimate_cache_savings_none_without_pricing(self):
+        summary = {"by_model": {"m": {"cache_read_input_tokens": 1000}}}
+        assert estimate_cache_savings(summary, None) is None
+
+    def test_daily_series_includes_cache_fields(self, instance_dir):
+        record_usage(
+            instance_dir,
+            "koan",
+            "claude-sonnet-4-20250514",
+            100,
+            50,
+            cache_creation_input_tokens=200,
+            cache_read_input_tokens=800,
+        )
+        today = date.today()
+        rows = daily_series(instance_dir, today, today)
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["cache_creation_input_tokens"] == 200
+        assert row["cache_read_input_tokens"] == 800
+        assert row["cache_hit_rate"] > 0
 
 
 class TestEstimateCost:
