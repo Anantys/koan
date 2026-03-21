@@ -232,6 +232,14 @@ usage:
 #                                    # for intent classification before falling back to error.
 #                                    # Per-project override available in projects.yaml.
 
+# Review comment dispatch — auto-forward human PR review comments to the agent
+# When a reviewer leaves comments on a Koan-created PR, the check loop creates
+# a mission to address them. Fingerprint deduplication prevents re-dispatching
+# the same comment set. Bot comments (codecov, dependabot, etc.) are filtered out.
+# review_dispatch:
+#   include_drafts: true   # Also dispatch for draft PRs (default: true).
+#                          # Set to false to skip drafts.
+
 # Dashboard attention zone — GitHub @mention notifications
 # When true, the dashboard attention zone also shows unread GitHub @mention
 # notifications (reason: mention or review_requested). Requires github_url
