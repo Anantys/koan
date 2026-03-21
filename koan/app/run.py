@@ -47,6 +47,7 @@ from app.run_log import (  # noqa: F401 — re-exported for backward compat
 )
 from app.shutdown_manager import is_shutdown_requested, clear_shutdown
 from app.signals import (
+    CYCLE_FILE,
     PAUSE_FILE,
     PROJECT_FILE,
     SHUTDOWN_FILE,
@@ -496,6 +497,36 @@ def _commit_instance(instance: str, message: str = ""):
 
 
 # ---------------------------------------------------------------------------
+# Cycle handler (update + restart)
+# ---------------------------------------------------------------------------
+
+def _handle_cycle(koan_root: str, instance: str, count: int):
+    """Handle /cycle: pull upstream updates, then trigger restart.
+
+    Called after the current mission completes. Pulls the latest code
+    and requests a restart. If the pull fails, notifies and still restarts
+    (the user explicitly asked for a cycle).
+    """
+    from app.update_manager import pull_upstream
+    from app.restart_manager import request_restart
+    from app.pause_manager import remove_pause
+
+    result = pull_upstream(Path(koan_root))
+    if not result.success:
+        log("koan", f"Cycle update failed: {result.error}")
+        _notify(instance, f"🔄 Cycle: update failed ({result.error}), restarting anyway.")
+    elif result.changed:
+        log("koan", f"Cycle update: {result.summary()}")
+        _notify(instance, f"🔄 Cycle complete after {count} runs. {result.summary()} Restarting...")
+    else:
+        log("koan", "Cycle: already up to date, restarting.")
+        _notify(instance, f"🔄 Cycle complete after {count} runs. Already up to date. Restarting...")
+
+    remove_pause(koan_root)
+    request_restart(koan_root)
+
+
+# ---------------------------------------------------------------------------
 # Pause mode handler
 # ---------------------------------------------------------------------------
 
@@ -531,7 +562,7 @@ def handle_pause(
         _reset_usage_session(instance)
         return "resume"
 
-    # Sleep 5 min in 5s increments — check for resume/stop/restart/shutdown
+    # Sleep 5 min in 5s increments — check for resume/stop/restart/shutdown/cycle
     with protected_phase("Paused — waiting for resume"):
         for _ in range(60):
             if not Path(koan_root, PAUSE_FILE).exists():
@@ -541,6 +572,9 @@ def handle_pause(
                 break
             if Path(koan_root, SHUTDOWN_FILE).exists():
                 log("pause", "Shutdown signal detected while paused")
+                break
+            if Path(koan_root, CYCLE_FILE).exists():
+                log("pause", "Cycle signal detected while paused")
                 break
             if check_restart(koan_root):
                 break
@@ -591,6 +625,7 @@ def main_loop():
     # file persists and would cause an immediate exit on next startup.
     Path(koan_root, STOP_FILE).unlink(missing_ok=True)
     Path(koan_root, SHUTDOWN_FILE).unlink(missing_ok=True)
+    Path(koan_root, CYCLE_FILE).unlink(missing_ok=True)
     clear_restart(koan_root)
 
     # Install SIGINT handler
@@ -621,6 +656,14 @@ def main_loop():
                 current = _read_current_project(koan_root)
                 _notify(instance, f"Kōan stopped on request after {count} runs. Last project: {current}.")
                 break
+
+            # --- Cycle check (finish mission → update → restart) ---
+            cycle_file = Path(koan_root, CYCLE_FILE)
+            if cycle_file.exists():
+                log("koan", "Cycle requested. Updating and restarting...")
+                cycle_file.unlink(missing_ok=True)
+                _handle_cycle(koan_root, instance, count)
+                sys.exit(RESTART_EXIT_CODE)
 
             # --- Shutdown check (stops both agent loop and bridge) ---
             if is_shutdown_requested(koan_root, start_time):

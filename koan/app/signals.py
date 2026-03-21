@@ -13,6 +13,7 @@ PID files use a parameterized helper since the process name varies.
 STOP_FILE = ".koan-stop"
 SHUTDOWN_FILE = ".koan-shutdown"
 RESTART_FILE = ".koan-restart"
+CYCLE_FILE = ".koan-cycle"
 
 # -- Pause / quota signals ----------------------------------------------------
 
