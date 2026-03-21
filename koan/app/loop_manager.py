@@ -209,6 +209,15 @@ _NOTIF_CACHE_MAX = 2000
 _notif_cache: dict = {}
 _notif_cache_lock = threading.Lock()
 
+# --- Failed error reply queue ---
+# When posting an error reply to GitHub fails, store the params here for retry
+# on the next notification cycle. Each entry is a dict with keys:
+# owner, repo, issue_num, comment_id, error, comment_api_url.
+_MAX_REPLY_RETRIES = 3
+_MAX_PENDING_REPLIES = 50
+_pending_error_replies: list = []
+_pending_error_replies_lock = threading.Lock()
+
 # SSO alert cooldown: only send one Telegram alert per hour.
 _SSO_ALERT_COOLDOWN = 3600  # 1 hour
 _last_sso_alert: float = 0
@@ -524,6 +533,47 @@ def reset_github_backoff() -> None:
         _last_sso_alert = 0
     with _notif_cache_lock:
         _notif_cache.clear()
+    with _pending_error_replies_lock:
+        _pending_error_replies.clear()
+
+
+def _retry_failed_replies() -> None:
+    """Retry previously failed GitHub error replies.
+
+    Drains the pending queue and attempts each reply once. Replies that
+    fail again are re-queued (up to _MAX_REPLY_RETRIES total attempts).
+    """
+    with _pending_error_replies_lock:
+        if not _pending_error_replies:
+            return
+        batch = list(_pending_error_replies)
+        _pending_error_replies.clear()
+
+    if not batch:
+        return
+
+    from app.github_command_handler import post_error_reply
+
+    for entry in batch:
+        try:
+            post_error_reply(
+                entry["owner"], entry["repo"], entry["issue_num"],
+                entry["comment_id"], entry["error"],
+                comment_api_url=entry.get("comment_api_url", ""),
+            )
+        except (ImportError, OSError, RuntimeError, subprocess.SubprocessError) as e:
+            attempts = entry.get("attempts", 1) + 1
+            if attempts <= _MAX_REPLY_RETRIES:
+                entry["attempts"] = attempts
+                with _pending_error_replies_lock:
+                    if len(_pending_error_replies) < _MAX_PENDING_REPLIES:
+                        _pending_error_replies.append(entry)
+            else:
+                _github_log(
+                    f"Dropping error reply after {attempts - 1} attempts "
+                    f"({entry['owner']}/{entry['repo']}#{entry['issue_num']}): {e}",
+                    "warning",
+                )
 
 
 def process_github_notifications(
@@ -568,6 +618,9 @@ def process_github_notifications(
         if now - _last_github_check < effective_interval:
             return 0
         _last_github_check = now
+
+    # Retry any previously failed error replies before processing new ones.
+    _retry_failed_replies()
 
     try:
         from app.utils import load_config
@@ -656,6 +709,12 @@ def process_github_notifications(
                 github_config.get("max_age", 24),
             )
 
+            # Cache immediately after processing: prevents re-processing on
+            # next cycle. Must happen before the error reply attempt so that
+            # a reply failure doesn't cause the whole notification to be
+            # re-processed (which could create duplicate missions).
+            _cache_notif(notif)
+
             if success:
                 missions_created += 1
                 repo = notif.get("repository", {}).get("full_name", "?")
@@ -666,11 +725,6 @@ def process_github_notifications(
                 repo = notif.get("repository", {}).get("full_name", "?")
                 _github_log(f"Notification error for {repo}: {error[:100]}", "warning")
                 _post_error_for_notification(notif, error)
-
-            # Cache after processing: prevents re-checking until updated_at changes.
-            # Applies to all outcomes — successful missions are also deduplicated
-            # by reaction checks, but caching avoids the API call entirely.
-            _cache_notif(notif)
 
         # Drain non-actionable notifications (ci_activity, review_requested,
         # etc.) to prevent accumulation that blocks future @mention detection.
@@ -770,7 +824,11 @@ def _notify_mission_from_mention(notif: dict) -> None:
 
 
 def _post_error_for_notification(notif: dict, error: str) -> None:
-    """Post error reply to a notification if possible."""
+    """Post error reply to a notification if possible.
+
+    On failure, queues the reply for retry on the next notification cycle
+    rather than silently dropping it.
+    """
     from app.github_command_handler import (
         post_error_reply,
         resolve_project_from_notification,
@@ -788,14 +846,24 @@ def _post_error_for_notification(notif: dict, error: str) -> None:
 
     try:
         comment = get_comment_from_notification(notif)
-        if comment:
-            comment_id = str(comment.get("id", ""))
-            comment_api_url = comment.get("url", "")
-            if comment_id:
-                post_error_reply(owner, repo, issue_num, comment_id, error,
-                                 comment_api_url=comment_api_url)
+        if not comment:
+            return
+        comment_id = str(comment.get("id", ""))
+        comment_api_url = comment.get("url", "")
+        if not comment_id:
+            return
+        post_error_reply(owner, repo, issue_num, comment_id, error,
+                         comment_api_url=comment_api_url)
     except (ImportError, OSError, RuntimeError, subprocess.SubprocessError) as e:
-        print(f"[loop_manager] Error posting reply to GitHub: {e}", file=sys.stderr)
+        _github_log(f"Error posting reply to GitHub, queuing for retry: {e}", "warning")
+        entry = {
+            "owner": owner, "repo": repo, "issue_num": issue_num,
+            "comment_id": comment_id, "error": error,
+            "comment_api_url": comment_api_url, "attempts": 1,
+        }
+        with _pending_error_replies_lock:
+            if len(_pending_error_replies) < _MAX_PENDING_REPLIES:
+                _pending_error_replies.append(entry)
 
 
 # --- Interruptible sleep ---
