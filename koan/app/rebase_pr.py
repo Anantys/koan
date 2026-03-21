@@ -14,6 +14,7 @@ Pipeline:
 """
 
 import json
+import re
 import subprocess
 import sys
 import time
@@ -37,6 +38,17 @@ from app.git_utils import ordered_remotes as _ordered_remotes
 from app.github import run_gh
 from app.prompts import load_prompt, load_prompt_or_skill, load_skill_prompt  # noqa: F401 — safety import
 from app.utils import _GITHUB_REMOTE_RE, truncate_text
+
+_DOC_OR_METADATA_RE = re.compile(
+    r"^(docs?/|\.github/|README|CHANGELOG|LICENSE|NOTICE|"
+    r"\.gitignore$|\.gitattributes$|\.editorconfig$)",
+    re.IGNORECASE,
+)
+_ISSUE_LINK_RE = re.compile(r"https?://github\.com/[^/]+/[^/]+/issues/(\d+)")
+_ISSUE_KEYWORD_RE = re.compile(
+    r"\b(?:fixe?[sd]?|close[sd]?|resolve[sd]?)\s+#(\d+)\b",
+    re.IGNORECASE,
+)
 
 
 def fetch_pr_context(owner: str, repo: str, pr_number: str) -> dict:
@@ -178,6 +190,198 @@ def _has_review_feedback(context: dict) -> bool:
         or context.get("reviews", "").strip()
         or context.get("issue_comments", "").strip()
     )
+
+
+def _get_remaining_diff(base_ref: str, project_path: str) -> str:
+    """Return raw remaining diff between base_ref and HEAD."""
+    try:
+        return _run_git(["git", "diff", f"{base_ref}..HEAD"], cwd=project_path)
+    except Exception as e:
+        print(f"[rebase_pr] remaining diff check failed: {e}", file=sys.stderr)
+        return ""
+
+
+def _get_changed_files(base_ref: str, project_path: str) -> List[str]:
+    """List changed file paths between base_ref and HEAD."""
+    try:
+        changed = _run_git(
+            ["git", "diff", "--name-only", f"{base_ref}..HEAD"],
+            cwd=project_path,
+        )
+    except Exception as e:
+        print(f"[rebase_pr] changed-files check failed: {e}", file=sys.stderr)
+        return []
+    return [line.strip() for line in changed.splitlines() if line.strip()]
+
+
+def _is_doc_or_metadata_path(path: str) -> bool:
+    """Return True for paths considered non-functional metadata/docs."""
+    basename = Path(path).name
+    if _DOC_OR_METADATA_RE.search(path) or _DOC_OR_METADATA_RE.search(basename):
+        return True
+    return basename.lower().endswith((".md", ".rst", ".txt", ".adoc"))
+
+
+def _is_comment_or_whitespace_line(content: str) -> bool:
+    stripped = content.strip()
+    if not stripped:
+        return True
+    comment_prefixes = ("#", "//", "/*", "*", "*/", "--", "<!--", "-->", ";")
+    return any(stripped.startswith(prefix) for prefix in comment_prefixes)
+
+
+def _diff_has_meaningful_changes(diff_text: str, changed_files: List[str]) -> bool:
+    """Heuristic meaningful-change detector.
+
+    Returns True if at least one non-comment, non-whitespace changed line exists.
+    If all touched files are docs/metadata and line changes are comments/whitespace,
+    returns False.
+    """
+    if not diff_text.strip():
+        return False
+
+    current_path = ""
+    saw_functional_path = False
+    for raw_line in diff_text.splitlines():
+        if raw_line.startswith("diff --git "):
+            # Format: diff --git a/path b/path
+            parts = raw_line.split()
+            if len(parts) >= 4:
+                b_path = parts[3]
+                current_path = b_path[2:] if b_path.startswith("b/") else b_path
+                if not _is_doc_or_metadata_path(current_path):
+                    saw_functional_path = True
+            continue
+
+        if raw_line.startswith(("+++", "---", "@@")):
+            continue
+
+        if raw_line.startswith("+") or raw_line.startswith("-"):
+            content = raw_line[1:]
+            if not _is_comment_or_whitespace_line(content):
+                if current_path and _is_doc_or_metadata_path(current_path):
+                    continue
+                if (
+                    not current_path
+                    and changed_files
+                    and all(_is_doc_or_metadata_path(path) for path in changed_files)
+                ):
+                    continue
+                return True
+
+    if saw_functional_path:
+        return False
+
+    if changed_files and any(not _is_doc_or_metadata_path(path) for path in changed_files):
+        return False
+
+    return False
+
+
+def _extract_linked_issue_numbers(pr_body: str) -> List[str]:
+    """Extract same-repo issue numbers linked in a PR body."""
+    if not pr_body:
+        return []
+    issues = set(_ISSUE_LINK_RE.findall(pr_body))
+    issues.update(_ISSUE_KEYWORD_RE.findall(pr_body))
+    # Preserve numeric ordering for deterministic comments/tests
+    return sorted(issues, key=lambda x: int(x))
+
+
+def _find_superseding_reference(
+    base_ref: str,
+    project_path: str,
+    changed_files: List[str],
+) -> str:
+    """Find a likely commit/PR that already contains the intended work."""
+    log_cmd = ["git", "log", "--pretty=format:%H%x09%s", "-n", "120", base_ref]
+    if changed_files:
+        log_cmd.extend(["--", *changed_files])
+
+    candidates = ""
+    try:
+        candidates = _run_git(log_cmd, cwd=project_path)
+    except Exception as e:
+        print(f"[rebase_pr] superseding reference lookup failed: {e}", file=sys.stderr)
+        candidates = ""
+
+    lines = [line for line in candidates.splitlines() if "\t" in line]
+    if not lines:
+        try:
+            head = _run_git(["git", "rev-parse", "--short", base_ref], cwd=project_path)
+            return f"commit `{head}` on `{base_ref}`"
+        except Exception as e:
+            print(f"[rebase_pr] rev-parse failed for {base_ref}: {e}", file=sys.stderr)
+            return f"`{base_ref}`"
+
+    sha, subject = lines[0].split("\t", 1)
+    pr_match = re.search(r"\(#(\d+)\)", subject)
+    short_sha = sha[:7]
+    if pr_match:
+        return f"PR #{pr_match.group(1)} (commit `{short_sha}`)"
+    return f"commit `{short_sha}`"
+
+
+def _close_superseded_pr(
+    full_repo: str,
+    pr_number: str,
+    context: dict,
+    superseded_by: str,
+) -> List[str]:
+    """Close PR as superseded and annotate linked issues when possible."""
+    actions: List[str] = []
+    close_comment = (
+        "Closing this PR automatically after rebase: only non-functional "
+        "differences remained (comments/metadata/formatting).\n\n"
+        f"This work appears already included in {superseded_by}."
+    )
+    run_gh(
+        "pr", "close", pr_number,
+        "--repo", full_repo,
+        "--comment", close_comment,
+    )
+    actions.append(f"Closed PR #{pr_number} as superseded by {superseded_by}")
+
+    linked_issues = _extract_linked_issue_numbers(context.get("body", ""))
+    for issue_num in linked_issues:
+        issue_comment = (
+            f"Follow-up: PR #{pr_number} was auto-closed because only "
+            f"non-functional differences remained after rebase. "
+            f"Equivalent work appears already in {superseded_by}."
+        )
+        try:
+            run_gh(
+                "issue", "comment", issue_num,
+                "--repo", full_repo,
+                "--body", issue_comment,
+            )
+            actions.append(f"Commented on linked issue #{issue_num}")
+        except Exception as e:
+            print(
+                f"[rebase_pr] issue #{issue_num} comment failed: {e}",
+                file=sys.stderr,
+            )
+            actions.append(f"Could not comment on linked issue #{issue_num}")
+            continue
+
+        try:
+            run_gh(
+                "issue", "close", issue_num,
+                "--repo", full_repo,
+                "--comment", (
+                    f"Closing as addressed by {superseded_by}; "
+                    f"see PR #{pr_number} closure note."
+                ),
+            )
+            actions.append(f"Closed linked issue #{issue_num}")
+        except Exception as e:
+            print(
+                f"[rebase_pr] issue #{issue_num} close failed: {e}",
+                file=sys.stderr,
+            )
+            actions.append(f"Could not close linked issue #{issue_num}")
+
+    return actions
 
 
 def build_comment_summary(context: dict) -> str:
@@ -328,6 +532,29 @@ def run_rebase(
 
     # ── Step 5: Collect diffstat before push ──────────────────────────
     diffstat = _get_diffstat(f"{rebase_remote}/{base}", project_path)
+    remaining_diff = _get_remaining_diff(f"{rebase_remote}/{base}", project_path)
+    changed_files = _get_changed_files(f"{rebase_remote}/{base}", project_path)
+
+    if not _has_review_feedback(context) and not _diff_has_meaningful_changes(remaining_diff, changed_files):
+        superseded_by = _find_superseding_reference(
+            f"{rebase_remote}/{base}",
+            project_path,
+            changed_files,
+        )
+        try:
+            actions_log.extend(
+                _close_superseded_pr(full_repo, pr_number, context, superseded_by)
+            )
+            _safe_checkout(original_branch, project_path)
+            summary = (
+                f"PR #{pr_number} closed after rebase: only non-functional "
+                f"differences remained.\n" + "\n".join(f"- {a}" for a in actions_log)
+            )
+            return True, summary
+        except Exception as e:
+            actions_log.append(
+                f"Auto-close attempt failed, continuing normal rebase flow: {str(e)[:120]}"
+            )
 
     # ── Step 6: Push the result ───────────────────────────────────────
     notify_fn(f"Pushing `{branch}`...")

@@ -15,6 +15,8 @@ from app.rebase_pr import (
     fetch_pr_context,
     build_comment_summary,
     run_rebase,
+    _diff_has_meaningful_changes,
+    _extract_linked_issue_numbers,
     _apply_review_feedback,
     _build_ci_fix_prompt,
     _build_rebase_comment,
@@ -466,6 +468,57 @@ class TestBuildCommentSummary:
         result = build_comment_summary(context)
         assert "Reviews" in result
         assert "Inline" not in result
+
+
+# ---------------------------------------------------------------------------
+# Meaningful remains detection helpers
+# ---------------------------------------------------------------------------
+
+class TestMeaningfulDiffDetection:
+    def test_detects_meaningful_code_change(self):
+        diff = (
+            "diff --git a/app.py b/app.py\n"
+            "--- a/app.py\n"
+            "+++ b/app.py\n"
+            "@@ -1 +1 @@\n"
+            "-x = 1\n"
+            "+x = 2\n"
+        )
+        assert _diff_has_meaningful_changes(diff, ["app.py"]) is True
+
+    def test_comment_only_change_is_not_meaningful(self):
+        diff = (
+            "diff --git a/app.py b/app.py\n"
+            "--- a/app.py\n"
+            "+++ b/app.py\n"
+            "@@ -1 +1 @@\n"
+            "-# old note\n"
+            "+# updated note\n"
+        )
+        assert _diff_has_meaningful_changes(diff, ["app.py"]) is False
+
+    def test_docs_only_change_is_not_meaningful(self):
+        diff = (
+            "diff --git a/README.md b/README.md\n"
+            "--- a/README.md\n"
+            "+++ b/README.md\n"
+            "@@ -1 +1 @@\n"
+            "-old text\n"
+            "+new text\n"
+        )
+        assert _diff_has_meaningful_changes(diff, ["README.md"]) is False
+
+
+class TestExtractLinkedIssueNumbers:
+    def test_extracts_keyword_and_url_issues(self):
+        body = (
+            "Fixes #42 and resolves #7.\n"
+            "Context: https://github.com/o/r/issues/99\n"
+        )
+        assert _extract_linked_issue_numbers(body) == ["7", "42", "99"]
+
+    def test_no_issue_links(self):
+        assert _extract_linked_issue_numbers("No linked issues here.") == []
 
 
 # ---------------------------------------------------------------------------
@@ -1025,6 +1078,32 @@ class TestRunRebase:
         with patch("app.notify.send_telegram") as mock_tg:
             success, _ = run_rebase("o", "r", "1", "/p")
             mock_tg.assert_called()
+
+    @patch("app.rebase_pr._run_ci_check_and_fix", return_value="")
+    @patch("app.rebase_pr._safe_checkout")
+    @patch("app.rebase_pr.fetch_pr_context")
+    def test_auto_closes_for_non_functional_remaining_diff(self, mock_ctx, mock_safe, mock_ci_check):
+        mock_ctx.return_value = {
+            "title": "Fix auth", "body": "Fixes #42", "branch": "koan/fix-auth",
+            "base": "main", "state": "OPEN", "author": "dev", "url": "https://...",
+            "diff": "", "review_comments": "", "reviews": "", "issue_comments": "",
+        }
+        notify = MagicMock()
+
+        with patch("app.rebase_pr._get_current_branch", return_value="main"), \
+             patch("app.rebase_pr._checkout_pr_branch"), \
+             patch("app.rebase_pr._rebase_with_conflict_resolution", return_value="origin"), \
+             patch("app.rebase_pr._get_remaining_diff", return_value="+# comment"), \
+             patch("app.rebase_pr._get_changed_files", return_value=["app.py"]), \
+             patch("app.rebase_pr._diff_has_meaningful_changes", return_value=False), \
+             patch("app.rebase_pr._find_superseding_reference", return_value="PR #900 (commit `abc1234`)"), \
+             patch("app.rebase_pr._close_superseded_pr", return_value=["Closed PR #42 as superseded"]), \
+             patch("app.rebase_pr._push_with_fallback") as mock_push:
+            success, summary = run_rebase("o", "r", "42", "/p", notify_fn=notify)
+            assert success is True
+            assert "closed after rebase" in summary.lower()
+            assert "superseded" in summary.lower()
+            mock_push.assert_not_called()
 
     @patch("app.rebase_pr._run_ci_check_and_fix", return_value="")
     @patch("app.rebase_pr._safe_checkout")
