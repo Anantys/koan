@@ -5,6 +5,7 @@ Provides:
 - get_projects_from_config(config) -> list[tuple[str, str]]: Extract (name, path) tuples
 - get_project_config(config, name) -> dict: Get merged defaults + project overrides
 - get_project_auto_merge(config, name) -> dict: Get auto-merge config for a project
+- get_ci_recovery_config(config, name) -> dict: Get CI recovery config for a project
 - get_project_cli_provider(config, name) -> str: Get CLI provider for a project
 - get_project_models(config, name) -> dict: Get model overrides for a project
 - get_project_tools(config, name) -> dict: Get tool restrictions for a project
@@ -176,6 +177,22 @@ def get_project_auto_merge(config: dict, project_name: str) -> dict:
         "base_branch": am.get("base_branch", "main"),
         "strategy": am.get("strategy", "squash"),
         "rules": am.get("rules", []),
+    }
+
+
+def get_ci_recovery_config(config: dict, project_name: str) -> dict:
+    """Get CI recovery config for a project from projects.yaml.
+
+    Returns a dict with keys: auto, retries, cooldown_minutes.
+    Falls back to defaults section, then sensible defaults.
+    """
+    project_cfg = get_project_config(config, project_name)
+    ci = project_cfg.get("ci_recovery", {}) or {}
+
+    return {
+        "auto": ci.get("auto", True),
+        "retries": ci.get("retries", 2),
+        "cooldown_minutes": ci.get("cooldown_minutes", 30),
     }
 
 

@@ -401,6 +401,17 @@ These features turn Kōan from a task runner into a full development workflow pa
 - `/check https://github.com/org/repo/pull/42` — Let Kōan decide what a PR needs
 </details>
 
+**`/ci_recovery`** — Show CI failure recovery status for all open Kōan PRs.
+
+- **Usage:** `/ci_recovery`
+- **Aliases:** `/ci_fix`
+
+<details>
+<summary>Use cases</summary>
+
+- `/ci_recovery` — See which PRs have active CI recovery sessions, attempt counts, and last attempt timestamps
+</details>
+
 **`/gh_request`** — Route a natural-language GitHub request to the appropriate action.
 
 - **Usage:** `/gh_request <github-url> <request text>`
@@ -1118,6 +1129,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/recreate <PR>` | `/rc` | I | Re-implement a PR from scratch |
 | `/pr <PR>` | — | I | Review and update a GitHub PR |
 | `/check <url>` | `/inspect` | I | Run project health checks on a PR/issue |
+| `/ci_recovery` | `/ci_fix` | I | Show CI failure recovery status for open Kōan PRs |
 | `/gh_request <url> <text>` | — | I | Route natural-language GitHub request to the right skill |
 | `/claudemd [project]` | `/claude`, `/claude.md`, `/claude_md` | I | Refresh a project's CLAUDE.md |
 | `/gha_audit [project]` | `/gha` | I | Audit GitHub Actions for security issues |

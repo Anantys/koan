@@ -1438,3 +1438,75 @@ class TestGetProjectSubmitToRepository:
         }
         result = get_project_submit_to_repository(config, "app")
         assert result == {"repo": "up/stream"}
+
+
+# ---------------------------------------------------------------------------
+# get_ci_recovery_config
+# ---------------------------------------------------------------------------
+
+class TestGetCIRecoveryConfig:
+    def test_returns_defaults_when_no_ci_recovery_config(self, koan_root):
+        _write_yaml(koan_root, """
+projects:
+  myapp:
+    path: /tmp/myapp
+""")
+        from app.projects_config import get_ci_recovery_config
+        config = load_projects_config(koan_root)
+        result = get_ci_recovery_config(config, "myapp")
+        assert result == {"auto": True, "retries": 2, "cooldown_minutes": 30}
+
+    def test_project_override_retries(self, koan_root):
+        _write_yaml(koan_root, """
+projects:
+  myapp:
+    path: /tmp/myapp
+    ci_recovery:
+      retries: 5
+""")
+        from app.projects_config import get_ci_recovery_config
+        config = load_projects_config(koan_root)
+        result = get_ci_recovery_config(config, "myapp")
+        assert result["retries"] == 5
+        assert result["auto"] is True  # default preserved
+        assert result["cooldown_minutes"] == 30  # default preserved
+
+    def test_project_override_auto_false(self, koan_root):
+        _write_yaml(koan_root, """
+projects:
+  myapp:
+    path: /tmp/myapp
+    ci_recovery:
+      auto: false
+""")
+        from app.projects_config import get_ci_recovery_config
+        config = load_projects_config(koan_root)
+        result = get_ci_recovery_config(config, "myapp")
+        assert result["auto"] is False
+
+    def test_defaults_section_override(self, koan_root):
+        _write_yaml(koan_root, """
+defaults:
+  ci_recovery:
+    retries: 3
+    cooldown_minutes: 60
+projects:
+  myapp:
+    path: /tmp/myapp
+""")
+        from app.projects_config import get_ci_recovery_config
+        config = load_projects_config(koan_root)
+        result = get_ci_recovery_config(config, "myapp")
+        assert result["retries"] == 3
+        assert result["cooldown_minutes"] == 60
+
+    def test_returns_defaults_for_unknown_project(self, koan_root):
+        _write_yaml(koan_root, """
+projects:
+  myapp:
+    path: /tmp/myapp
+""")
+        from app.projects_config import get_ci_recovery_config
+        config = load_projects_config(koan_root)
+        result = get_ci_recovery_config(config, "unknown_project")
+        assert result == {"auto": True, "retries": 2, "cooldown_minutes": 30}
