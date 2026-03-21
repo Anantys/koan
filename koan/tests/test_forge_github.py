@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.forge.base import ALL_FEATURES, FEATURE_PR, FEATURE_ISSUES
+from app.forge.base import FEATURE_PR, FEATURE_ISSUES, FEATURE_CI_STATUS, FEATURE_PR_REVIEW_COMMENTS
 from app.forge.github import GitHubForge
 
 
@@ -181,11 +181,11 @@ class TestPrView:
         assert result["title"] == "My PR"
 
     @patch("app.github.subprocess.run")
-    def test_returns_raw_on_json_error(self, mock_run):
+    def test_raises_on_json_error(self, mock_run):
         mock_run.return_value = MagicMock(returncode=0, stdout="not-json")
         forge = _make_forge()
-        result = forge.pr_view(repo="owner/repo", number=1)
-        assert "raw" in result
+        with pytest.raises(RuntimeError, match="Failed to parse PR view output"):
+            forge.pr_view(repo="owner/repo", number=1)
 
 
 class TestPrDiff:
@@ -330,10 +330,15 @@ class TestDetectFork:
 # ---------------------------------------------------------------------------
 
 class TestSupports:
-    def test_supports_all_features(self):
+    def test_supports_implemented_features(self):
         forge = _make_forge()
-        for feature in ALL_FEATURES:
+        for feature in (FEATURE_PR, FEATURE_ISSUES, FEATURE_CI_STATUS, FEATURE_PR_REVIEW_COMMENTS):
             assert forge.supports(feature) is True, f"Expected supports({feature!r}) to be True"
+
+    def test_does_not_support_unimplemented_features(self):
+        forge = _make_forge()
+        assert forge.supports("notifications") is False
+        assert forge.supports("reactions") is False
 
     def test_does_not_support_unknown_feature(self):
         forge = _make_forge()

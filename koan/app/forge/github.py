@@ -12,7 +12,7 @@ import json
 import subprocess
 from typing import Dict, List, Optional, Tuple
 
-from app.forge.base import ALL_FEATURES, ForgeProvider
+from app.forge.base import ForgeProvider
 
 
 class GitHubForge(ForgeProvider):
@@ -101,8 +101,10 @@ class GitHubForge(ForgeProvider):
         )
         try:
             return json.loads(output)
-        except (json.JSONDecodeError, TypeError):
-            return {"raw": output}
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise RuntimeError(
+                f"Failed to parse PR view output for {repo}#{number}: {exc}"
+            ) from exc
 
     def pr_diff(
         self,
@@ -212,5 +214,13 @@ class GitHubForge(ForgeProvider):
     # Feature matrix
     # ------------------------------------------------------------------
 
+    # Features actually implemented by GitHubForge.
+    _SUPPORTED_FEATURES = frozenset({
+        "pr",
+        "issues",
+        "ci_status",
+        "pr_review_comments",
+    })
+
     def supports(self, feature: str) -> bool:
-        return feature in ALL_FEATURES
+        return feature in self._SUPPORTED_FEATURES

@@ -16,11 +16,14 @@ Phase roadmap:
   Phase 4: forge_url config field + auto-detection from git remotes
 """
 
+import logging
 from typing import Optional
 
 from app.forge.base import ForgeProvider
 from app.forge.github import GitHubForge
 from app.forge.registry import DEFAULT_FORGE, get_forge_class
+
+log = logging.getLogger(__name__)
 
 
 def get_forge(project_name: Optional[str] = None) -> ForgeProvider:
@@ -45,6 +48,7 @@ def get_forge(project_name: Optional[str] = None) -> ForgeProvider:
         # Unknown forge type — fall back to GitHub to avoid breaking callers.
         cls = GitHubForge
 
+    # TODO(Phase 2): pass base_url to all forge classes, not just GitHubForge.
     if forge_url and cls is GitHubForge:
         return cls(base_url=forge_url)
     return cls()
@@ -111,6 +115,8 @@ def _resolve_forge_config(project_name: Optional[str]) -> tuple:
         return forge_type, forge_url
 
     except Exception:
+        log.warning("Failed to resolve forge config for project %r, "
+                    "falling back to default", project_name, exc_info=True)
         return DEFAULT_FORGE, None
 
 
