@@ -257,6 +257,37 @@ class TestWriteUsageMd:
         content = usage_md.read_text()
         assert "100%" in content
 
+    def test_includes_cache_line_when_available(self, tmp_path, usage_md):
+        state = {
+            "session_start": datetime.now().isoformat(),
+            "session_tokens": 100000,
+            "weekly_start": datetime.now().isoformat(),
+            "weekly_tokens": 100000,
+            "runs": 3,
+        }
+        config = {"usage": {"session_token_limit": 500000, "weekly_token_limit": 5000000}}
+        with patch(
+            "app.usage_estimator._get_today_cache_line",
+            return_value="Cache: 45% hit rate (12.3k read / 8.1k created)",
+        ):
+            _write_usage_md(state, usage_md, config)
+        content = usage_md.read_text()
+        assert "Cache: 45% hit rate" in content
+
+    def test_no_cache_line_when_empty(self, tmp_path, usage_md):
+        state = {
+            "session_start": datetime.now().isoformat(),
+            "session_tokens": 100000,
+            "weekly_start": datetime.now().isoformat(),
+            "weekly_tokens": 100000,
+            "runs": 3,
+        }
+        config = {"usage": {"session_token_limit": 500000, "weekly_token_limit": 5000000}}
+        with patch("app.usage_estimator._get_today_cache_line", return_value=""):
+            _write_usage_md(state, usage_md, config)
+        content = usage_md.read_text()
+        assert "Cache" not in content
+
 
 class TestCmdUpdate:
     @patch("app.usage_estimator.load_config", return_value={
