@@ -284,6 +284,24 @@ def get_interval_seconds() -> int:
     return _safe_int(config.get("interval_seconds", 300), 300)
 
 
+def get_same_project_stickiness_percent() -> int:
+    """Get same-project stickiness chance (0-100) for cache reuse.
+
+    When > 0, autonomous exploration may intentionally stay on the same
+    project as the previous run with this probability. This helps keep
+    prompt prefixes cache-hot across consecutive runs on the same project.
+
+    Config key: prompt_caching.same_project_stickiness_percent
+    Default: 0 (disabled, preserves legacy anti-repeat behavior)
+    """
+    config = _load_config()
+    prompt_cfg = config.get("prompt_caching", {})
+    if not isinstance(prompt_cfg, dict):
+        return 0
+    value = _safe_int(prompt_cfg.get("same_project_stickiness_percent", 0), 0)
+    return max(0, min(100, value))
+
+
 def get_fast_reply_model() -> str:
     """Get model to use for fast replies (command handlers like /usage, /sparring).
 

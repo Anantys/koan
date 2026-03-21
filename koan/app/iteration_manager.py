@@ -304,7 +304,9 @@ def _select_random_exploration_project(
 
     Uses session outcome history to weight selection: fresh projects
     (recently productive) are preferred over stale ones (consecutive
-    empty sessions).  Also avoids repeating the last explored project.
+    empty sessions). By default, avoids repeating the last explored
+    project, but can optionally stay on the same project to preserve
+    prompt-cache warmth across consecutive runs.
 
     Args:
         projects: List of eligible (name, path) tuples (must be non-empty).
@@ -316,6 +318,29 @@ def _select_random_exploration_project(
     """
     if len(projects) == 1:
         return projects[0]
+
+    # Optional cache-aware "fast lane": intentionally keep the same project
+    # as the previous run to maximize prompt prefix cache reuse.
+    if last_project and len(projects) > 1:
+        previous = next(((n, p) for n, p in projects if n == last_project), None)
+        if previous:
+            try:
+                from app.config import get_same_project_stickiness_percent
+
+                stickiness = get_same_project_stickiness_percent()
+            except (ImportError, OSError, ValueError) as e:
+                _log_iteration("error", f"Stickiness config lookup failed: {e}")
+                stickiness = 0
+
+            if stickiness > 0:
+                roll = random.randint(1, 100)
+                if roll <= stickiness:
+                    _log_iteration(
+                        "koan",
+                        f"Cache fast lane: reusing project '{last_project}' "
+                        f"(roll={roll} <= stickiness={stickiness})",
+                    )
+                    return previous
 
     # Load session outcomes once for both freshness and drift lookups
     # (avoids 2N file reads — one per project per function)

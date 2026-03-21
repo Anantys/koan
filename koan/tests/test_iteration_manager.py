@@ -2368,6 +2368,16 @@ class TestSelectRandomExplorationProject:
         assert isinstance(result, tuple)
         assert len(result) == 2
 
+    @patch("app.config._load_config", return_value={
+        "prompt_caching": {"same_project_stickiness_percent": 100}
+    })
+    def test_cache_stickiness_can_keep_last_project(self, _mock_cfg):
+        """When stickiness is enabled, selection may intentionally keep last project."""
+        projects = [("koan", "/path/to/koan"), ("backend", "/path/to/backend")]
+        for _ in range(10):
+            name, _ = _select_random_exploration_project(projects, "koan")
+            assert name == "koan"
+
 
 # === Tests: plan_iteration random project selection ===
 
@@ -2443,3 +2453,38 @@ class TestPlanIterationRandomSelection:
             )
             assert result["action"] == "autonomous"
             assert result["project_name"] == "backend"
+
+    @patch("app.config._load_config", return_value={
+        "prompt_caching": {"same_project_stickiness_percent": 100}
+    })
+    @patch("app.pick_mission.pick_mission", return_value="")
+    @patch("app.usage_estimator.cmd_refresh")
+    @patch("app.iteration_manager._filter_exploration_projects")
+    @patch("app.iteration_manager._check_focus", return_value=None)
+    @patch("random.randint", return_value=99)  # no contemplation
+    def test_autonomous_can_keep_last_project_with_stickiness(
+        self, mock_rand, mock_focus, mock_filter, mock_refresh, mock_pick, _mock_cfg,
+        instance_dir, koan_root, usage_state,
+    ):
+        """With stickiness=100, autonomous selection should keep the previous project."""
+        mock_filter.return_value = FilterResult(
+            projects=[("koan", "/koan"), ("backend", "/backend")],
+            pr_limited=[],
+        )
+
+        usage_md = instance_dir / "usage.md"
+        usage_md.write_text(
+            "Session (5hr) : 30% (reset in 3h)\nWeekly (7 day) : 20% (Resets in 5d)\n"
+        )
+
+        result = plan_iteration(
+            instance_dir=str(instance_dir),
+            koan_root=str(koan_root),
+            run_num=1,
+            count=0,
+            projects=PROJECTS_LIST,
+            last_project="koan",
+            usage_state_path=str(usage_state),
+        )
+        assert result["action"] == "autonomous"
+        assert result["project_name"] == "koan"
