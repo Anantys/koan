@@ -159,6 +159,23 @@ def _handle_pr(owner, repo, pr_number, instance_dir, koan_root, notify_fn):
     # Record the check
     mark_checked(instance_dir, url, updated_at)
 
+    # 3. Auto-forward unresolved review comments to agent as a mission
+    _dispatch_review_comments(
+        owner, repo, pr_number, pr_data, missions_path, instance_dir, actions,
+    )
+
+    # 4. Extract lessons from past merged/closed PR reviews (best-effort)
+    try:
+        from app.pr_review_learning import learn_from_reviews
+        project_path = _resolve_project_path(repo, owner=owner)
+        project_name = _resolve_project_name(repo, owner=owner)
+        if project_path:
+            learn_from_reviews(str(instance_dir), project_name, project_path)
+    except Exception as e:
+        import sys
+        print(f"[check_runner] learn_from_reviews failed (non-fatal): {e}",
+              file=sys.stderr)
+
     if not actions:
         head = pr_data.get("headRefName", "?")
         base = pr_data.get("baseRefName", "?")
@@ -176,6 +193,48 @@ def _handle_pr(owner, repo, pr_number, instance_dir, koan_root, notify_fn):
 
     notify_fn(msg)
     return True, msg
+
+
+def _dispatch_review_comments(
+    owner, repo, pr_number, pr_data, missions_path, instance_dir, actions,
+):
+    """Fetch unresolved review comments and queue a mission if new ones exist.
+
+    Skips the dispatch if the config key ``check.skip_draft_dispatch`` is true
+    *and* the PR is a draft.  By default draft PRs are included.
+
+    Appends an action string to *actions* when a mission is queued.
+    """
+    from app.utils import load_config
+
+    # Config: check.skip_draft_dispatch (default false — include drafts)
+    try:
+        config = load_config()
+        skip_drafts = config.get("check", {}).get("skip_draft_dispatch", False)
+    except Exception as e:
+        import sys
+        print(f"[check_runner] config load failed, using defaults: {e}", file=sys.stderr)
+        skip_drafts = False
+
+    if skip_drafts and pr_data.get("isDraft", False):
+        return
+
+    try:
+        from app.pr_review_learning import (
+            dispatch_review_comments_mission,
+            fetch_unresolved_review_comments,
+        )
+        comments = fetch_unresolved_review_comments(owner, repo, pr_number)
+        if comments:
+            dispatched = dispatch_review_comments_mission(
+                owner, repo, pr_number, comments, missions_path, str(instance_dir),
+            )
+            if dispatched:
+                actions.append("\U0001f4ac Review comment mission queued")
+    except Exception as e:
+        import sys
+        print(f"[check_runner] review comment dispatch failed (non-fatal): {e}",
+              file=sys.stderr)
 
 
 def _queue_rebase(owner, repo, pr_number, missions_path,
@@ -301,12 +360,8 @@ def _queue_plan(owner, repo, issue_number, title, instance_dir, koan_root):
 
 def _resolve_project_name(repo, owner=None):
     """Resolve a repo name to a known project name."""
-    from app.utils import project_name_for_path, resolve_project_path
-
-    project_path = resolve_project_path(repo, owner=owner)
-    if project_path:
-        return project_name_for_path(project_path)
-    return repo
+    from app.utils import resolve_project_name
+    return resolve_project_name(repo, owner=owner)
 
 
 def _resolve_project_path(repo, owner=None):
