@@ -273,6 +273,7 @@ def _record_session_outcome(
     duration_minutes: int,
     journal_content: str,
     mission_title: str = "",
+    last_action: str = "",
 ) -> None:
     """Record session outcome for staleness tracking (fire-and-forget)."""
     try:
@@ -284,6 +285,7 @@ def _record_session_outcome(
             duration_minutes=duration_minutes,
             journal_content=journal_content,
             mission_title=mission_title,
+            last_action=last_action,
         )
     except Exception as e:
         print(f"[mission_runner] Session outcome recording failed: {e}", file=sys.stderr)
@@ -295,6 +297,7 @@ def _record_cost_event(
     stdout_file: str,
     autonomous_mode: str,
     mission_title: str,
+    project_path: str = "",
 ) -> None:
     """Record structured usage event to JSONL cost tracker (fire-and-forget)."""
     try:
@@ -304,6 +307,15 @@ def _record_cost_event(
         detailed = extract_tokens_detailed(Path(stdout_file))
         if detailed is None:
             return
+
+        # Enrich with JSONL session data when available (Claude provider only)
+        if project_path and not detailed.get("cost_usd"):
+            from app.provider import get_provider_name
+            if get_provider_name() == "claude":
+                from app.session_jsonl import collect_jsonl_tokens
+                jsonl_data = collect_jsonl_tokens(project_path)
+                if jsonl_data and jsonl_data.get("cost_usd"):
+                    detailed["cost_usd"] = jsonl_data["cost_usd"]
 
         record_usage(
             instance_dir=Path(instance_dir),
@@ -743,6 +755,7 @@ def run_post_mission(
         _record_cost_event(
             instance_dir, project_name, stdout_file,
             autonomous_mode, mission_title,
+            project_path=project_path,
         )
 
         # 2. Compute duration (needed for quota early-return, reflection, and outcome tracking)
@@ -888,10 +901,25 @@ def run_post_mission(
         # 7. Record session outcome for staleness tracking
         # Always runs — even after deadline — since it's a fast local write.
         _report("recording session outcome")
+
+        # Collect last_action from JSONL session data for outcome enrichment
+        # (Claude provider only — JSONL files are Claude Code-specific)
+        _last_action = ""
+        try:
+            from app.provider import get_provider_name
+            if get_provider_name() == "claude":
+                from app.session_jsonl import collect_jsonl_tokens
+                _jsonl = collect_jsonl_tokens(project_path)
+                if _jsonl:
+                    _last_action = _jsonl.get("last_action", "")
+        except Exception as e:
+            print(f"[mission_runner] JSONL last_action extraction failed: {e}", file=sys.stderr)
+
         _record_session_outcome(
             instance_dir, project_name, autonomous_mode,
             duration_minutes, pending_content,
             mission_title=mission_title,
+            last_action=_last_action,
         )
         tracker.record("session_outcome", "success")
 
