@@ -805,7 +805,10 @@ class TestFlushOutbox:
         with patch("app.awake.OUTBOX_FILE", outbox):
             flush_outbox()
         mock_fmt.assert_called_once_with("Raw message here")
-        mock_send.assert_called_once_with("Formatted msg")
+        mock_send.assert_called_once()
+        call_kwargs = mock_send.call_args
+        assert call_kwargs[0][0] == "Formatted msg"
+        assert call_kwargs[1]["priority"].name == "ACTION"
         assert outbox.read_text() == ""
 
     @patch("app.awake._format_outbox_message", return_value="Formatted msg")
@@ -940,7 +943,86 @@ class TestFlushOutbox:
         outbox.write_text("All good")
         with patch("app.awake.OUTBOX_FILE", outbox):
             flush_outbox()
-        mock_send.assert_called_once_with("All good")
+        mock_send.assert_called_once()
+        call_kwargs = mock_send.call_args
+        assert call_kwargs[0][0] == "All good"
+        assert call_kwargs[1]["priority"].name == "ACTION"
+
+
+class TestOutboxPriorityParsing:
+    """Tests for _parse_outbox_priority() — header parsing and stripping."""
+
+    def test_no_header_defaults_to_action(self):
+        from app.awake import _parse_outbox_priority
+        from app.notify import NotificationPriority
+        priority, cleaned = _parse_outbox_priority("Hello world")
+        assert priority.name == "ACTION"
+        assert cleaned == "Hello world"
+
+    def test_urgent_header_parsed(self):
+        from app.awake import _parse_outbox_priority
+        priority, cleaned = _parse_outbox_priority("[priority:urgent]\nMessage")
+        assert priority.name == "URGENT"
+        assert cleaned == "Message"
+
+    def test_info_header_parsed(self):
+        from app.awake import _parse_outbox_priority
+        priority, cleaned = _parse_outbox_priority("[priority:info]\nSoft update")
+        assert priority.name == "INFO"
+        assert cleaned == "Soft update"
+
+    def test_warning_header_parsed(self):
+        from app.awake import _parse_outbox_priority
+        priority, cleaned = _parse_outbox_priority("[priority:warning]\nQuota low")
+        assert priority.name == "WARNING"
+        assert cleaned == "Quota low"
+
+    def test_multiple_blocks_highest_wins(self):
+        from app.awake import _parse_outbox_priority
+        content = "[priority:info]\nUpdate 1\n[priority:urgent]\nCritical alert"
+        priority, cleaned = _parse_outbox_priority(content)
+        assert priority.name == "URGENT"
+        assert "[priority:" not in cleaned
+
+    def test_header_stripped_from_content(self):
+        from app.awake import _parse_outbox_priority
+        _, cleaned = _parse_outbox_priority("[priority:action]\nMission complete")
+        assert "[priority:" not in cleaned
+        assert "Mission complete" in cleaned
+
+    @patch("app.awake._format_outbox_message", return_value="Formatted")
+    @patch("app.awake.send_telegram", return_value=True)
+    def test_flush_passes_priority_to_send(self, mock_send, mock_fmt, tmp_path):
+        """flush_outbox passes parsed priority to send_telegram."""
+        outbox = tmp_path / "outbox.md"
+        outbox.write_text("[priority:urgent]\nServer is down")
+        with patch("app.awake.OUTBOX_FILE", outbox):
+            flush_outbox()
+        mock_send.assert_called_once()
+        assert mock_send.call_args[1]["priority"].name == "URGENT"
+
+    @patch("app.awake._format_outbox_message", return_value="Formatted")
+    @patch("app.awake.send_telegram", return_value=True)
+    def test_legacy_entry_defaults_to_action(self, mock_send, mock_fmt, tmp_path):
+        """Legacy outbox entries without a header default to ACTION."""
+        outbox = tmp_path / "outbox.md"
+        outbox.write_text("Old-style message without header")
+        with patch("app.awake.OUTBOX_FILE", outbox):
+            flush_outbox()
+        assert mock_send.call_args[1]["priority"].name == "ACTION"
+
+    @patch("app.awake._format_outbox_message")
+    @patch("app.awake.send_telegram", return_value=True)
+    def test_priority_header_stripped_before_format(self, mock_send, mock_fmt, tmp_path):
+        """Priority header is stripped before content is passed to Claude formatter."""
+        mock_fmt.return_value = "fmt"
+        outbox = tmp_path / "outbox.md"
+        outbox.write_text("[priority:warning]\nQuota is low")
+        with patch("app.awake.OUTBOX_FILE", outbox):
+            flush_outbox()
+        formatted_input = mock_fmt.call_args[0][0]
+        assert "[priority:" not in formatted_input
+        assert "Quota is low" in formatted_input
 
 
 class TestRequeueOutbox:

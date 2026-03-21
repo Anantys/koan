@@ -53,18 +53,19 @@ def extract_session_summary(journal_path: Path, max_chars: int = 800) -> str:
     return "..." + content[-max_chars:]
 
 
-def append_to_outbox(instance_dir: Path, message: str):
+def append_to_outbox(instance_dir: Path, message: str, priority=None):
     """Append message to outbox.md with file locking.
 
     Args:
         instance_dir: Path to instance directory
         message: Message to append
+        priority: Optional NotificationPriority for the message
     """
     from app.utils import append_to_outbox as _append
 
     outbox_file = instance_dir / "outbox.md"
     try:
-        _append(outbox_file, message + "\n")
+        _append(outbox_file, message + "\n", priority=priority)
     except OSError as e:
         print(f"[send_retrospective] Error writing to outbox: {e}", file=sys.stderr)
 
@@ -91,7 +92,8 @@ def create_retrospective(instance_dir: Path, project_name: str):
 *Kōan paused due to quota limit. Use /resume command when quota resets.*
 """
 
-    append_to_outbox(instance_dir, retrospective)
+    from app.notify import NotificationPriority
+    append_to_outbox(instance_dir, retrospective, priority=NotificationPriority.WARNING)
     print(f"[send_retrospective] Retrospective sent to outbox ({len(retrospective)} chars)")
 
     # Also email the digest if email is configured

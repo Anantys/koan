@@ -764,7 +764,8 @@ def _notify_mission_from_mention(notif: dict) -> None:
         )
         if thread_url:
             msg += f"\n{thread_url}"
-        send_telegram(msg)
+        from app.notify import NotificationPriority
+        send_telegram(msg, priority=NotificationPriority.ACTION)
     except (ImportError, OSError) as e:
         log.debug("Failed to send notification message: %s", e)
 

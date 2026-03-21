@@ -73,6 +73,19 @@ skill_timeout: 3600
 # 0 = never contemplative, 10 = ~1 in 10 runs, 20 = ~1 in 5 runs
 contemplative_chance: 10
 
+# Notification priority filtering
+# Controls which priority levels are sent to Telegram vs written to the daily journal.
+# Priority levels (highest to lowest): urgent, action, warning, info
+#   urgent  — critical failures, quota exhausted (always sent)
+#   action  — mission complete, command responses (default threshold)
+#   warning — quota low, focus validation warnings
+#   info    — progress updates, reflections
+# Messages below min_priority are suppressed from Telegram and written to the daily
+# journal instead (under a "notifications" project entry), so nothing is lost.
+# Default: "action" (sends urgent + action; suppresses warning + info)
+# notifications:
+#   min_priority: action
+
 # Telegram
 # NOTE: Prefer setting these in .env (KOAN_TELEGRAM_TOKEN, KOAN_TELEGRAM_CHAT_ID)
 # These config values are only used if the env vars are not set.

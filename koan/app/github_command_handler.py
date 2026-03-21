@@ -1067,12 +1067,13 @@ def _notify_github_question(
 ) -> None:
     """Send ❓ Telegram notification when a question is received from GitHub."""
     try:
-        from app.notify import send_telegram
+        from app.notify import send_telegram, NotificationPriority
         # Truncate question for Telegram readability
         short = question[:200] + "…" if len(question) > 200 else question
         send_telegram(
             f"❓ GitHub question from @{author}\n"
-            f"{owner}/{repo}#{issue_number}: {short}"
+            f"{owner}/{repo}#{issue_number}: {short}",
+            priority=NotificationPriority.ACTION,
         )
     except Exception as e:
         log.warning("Failed to send GitHub question notification: %s", e)
@@ -1083,11 +1084,12 @@ def _notify_github_reply(
 ) -> None:
     """Send 💬 Telegram notification when Kōan posts a reply on GitHub."""
     try:
-        from app.notify import send_telegram
+        from app.notify import send_telegram, NotificationPriority
         short = reply_text[:200] + "…" if len(reply_text) > 200 else reply_text
         send_telegram(
             f"💬 Replied on GitHub\n"
-            f"{owner}/{repo}#{issue_number}: {short}"
+            f"{owner}/{repo}#{issue_number}: {short}",
+            priority=NotificationPriority.ACTION,
         )
     except Exception as e:
         log.warning("Failed to send GitHub reply notification: %s", e)

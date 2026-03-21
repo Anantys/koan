@@ -51,7 +51,7 @@ from app.command_handlers import (
 from app.format_outbox import format_message, load_soul, load_human_prefs, load_memory_context, fallback_format
 from app.health_check import write_heartbeat
 from app.language_preference import get_language_instruction
-from app.notify import TypingIndicator, reset_flood_state, send_telegram
+from app.notify import TypingIndicator, reset_flood_state, send_telegram, NotificationPriority
 from app.outbox_scanner import scan_and_log
 from app.shutdown_manager import is_shutdown_requested, clear_shutdown
 from app.config import (
@@ -413,6 +413,49 @@ def _staging_path():
     return OUTBOX_FILE.parent / "outbox-sending.md"
 
 
+# Pre-compiled regex for outbox priority header parsing
+_OUTBOX_PRIORITY_RE = re.compile(r'^\[priority:(urgent|action|warning|info)\]\n?', re.MULTILINE)
+
+_OUTBOX_PRIORITY_MAP = {
+    "urgent": NotificationPriority.URGENT,
+    "action": NotificationPriority.ACTION,
+    "warning": NotificationPriority.WARNING,
+    "info": NotificationPriority.INFO,
+}
+
+
+def _parse_outbox_priority(content: str) -> tuple:
+    """Parse the priority header from outbox content and strip it.
+
+    Scans the content for any [priority:name] headers (from append_to_outbox),
+    returns the highest-priority value found (most urgent wins) and the content
+    with all priority headers removed for clean formatting.
+
+    Legacy outbox entries (no header) default to ACTION.
+
+    Args:
+        content: Raw outbox content, possibly containing [priority:name] headers
+
+    Returns:
+        Tuple of (NotificationPriority, cleaned_content_str)
+    """
+    matches = _OUTBOX_PRIORITY_RE.findall(content)
+    if not matches:
+        return NotificationPriority.ACTION, content
+
+    # Find the highest-priority level across all blocks.
+    # Initialize with the first match (not ACTION) so info/warning are preserved.
+    max_priority = _OUTBOX_PRIORITY_MAP.get(matches[0], NotificationPriority.ACTION)
+    for name in matches[1:]:
+        p = _OUTBOX_PRIORITY_MAP.get(name, NotificationPriority.ACTION)
+        if p.value > max_priority.value:
+            max_priority = p
+
+    # Strip all priority headers from the content
+    cleaned = _OUTBOX_PRIORITY_RE.sub("", content).strip()
+    return max_priority, cleaned
+
+
 def _recover_staged_outbox():
     """Recover content from a staging file left by a previous crash.
 
@@ -494,9 +537,12 @@ def flush_outbox():
         staging.unlink(missing_ok=True)
         return
 
-    formatted = _format_outbox_message(content)
-    formatted = _expand_outbox_github_refs(formatted, content)
-    if send_telegram(formatted):
+    # Parse optional [priority:name] headers and strip them from content for formatting
+    priority, clean_content = _parse_outbox_priority(content)
+
+    formatted = _format_outbox_message(clean_content)
+    formatted = _expand_outbox_github_refs(formatted, clean_content)
+    if send_telegram(formatted, priority=priority):
         msg_id = _get_last_message_id()
         save_conversation_message(
             CONVERSATION_HISTORY_FILE, "assistant", formatted,

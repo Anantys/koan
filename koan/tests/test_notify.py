@@ -11,6 +11,7 @@ from app.notify import (
     send_typing, TypingIndicator,
     _send_raw_bypass_flood, _direct_send,
     invalidate_file_cache, _file_cache,
+    NotificationPriority,
 )
 
 pytestmark = pytest.mark.slow
@@ -75,7 +76,8 @@ class TestFormatAndSend:
 
         assert result is True
         mock_fmt.assert_called_once_with("raw msg", "soul", "prefs", "memory")
-        mock_send.assert_called_once_with("formatted msg")
+        mock_send.assert_called_once_with("formatted msg",
+                                          priority=NotificationPriority.ACTION)
 
     @patch("app.notify.send_telegram", return_value=True)
     def test_fallback_on_format_error(self, mock_send, instance_dir):
@@ -86,7 +88,8 @@ class TestFormatAndSend:
 
         assert result is True
         mock_fb.assert_called_once_with("raw")
-        mock_send.assert_called_once_with("clean msg")
+        mock_send.assert_called_once_with("clean msg",
+                                          priority=NotificationPriority.ACTION)
 
     @patch("app.notify.send_telegram", return_value=True)
     @patch("app.notify.load_dotenv")
@@ -113,7 +116,7 @@ class TestFormatAndSend:
             result = format_and_send("raw")
 
         assert result is True
-        mock_send.assert_called_once_with("fmt")
+        mock_send.assert_called_once_with("fmt", priority=NotificationPriority.ACTION)
 
     @patch("app.notify.send_telegram", return_value=True)
     def test_project_name_passed_to_memory(self, mock_send, instance_dir):
@@ -136,7 +139,8 @@ class TestFormatAndSend:
              patch("app.format_outbox.fallback_format", return_value="fallback"):
             result = format_and_send("raw", instance_dir=str(instance_dir))
         assert result is True
-        mock_send.assert_called_once_with("fallback")
+        mock_send.assert_called_once_with("fallback",
+                                          priority=NotificationPriority.ACTION)
 
     @patch("app.notify.send_telegram", return_value=True)
     def test_value_error_uses_fallback(self, mock_send, instance_dir):
@@ -146,7 +150,8 @@ class TestFormatAndSend:
              patch("app.format_outbox.fallback_format", return_value="fallback"):
             result = format_and_send("raw", instance_dir=str(instance_dir))
         assert result is True
-        mock_send.assert_called_once_with("fallback")
+        mock_send.assert_called_once_with("fallback",
+                                          priority=NotificationPriority.ACTION)
 
 
 class TestResetFloodState:
@@ -511,6 +516,207 @@ class TestMtimeFileCaching:
         assert len(_file_cache) == 1
         invalidate_file_cache()
         assert len(_file_cache) == 0
+
+
+class TestNotificationPriority:
+    """Tests for NotificationPriority enum values and ordering."""
+
+    def test_enum_values(self):
+        """Priority enum has correct rank values."""
+        assert NotificationPriority.INFO.value == 0
+        assert NotificationPriority.WARNING.value == 1
+        assert NotificationPriority.ACTION.value == 2
+        assert NotificationPriority.URGENT.value == 3
+
+    def test_priority_ordering(self):
+        """Higher urgency = higher rank."""
+        assert NotificationPriority.URGENT.value > NotificationPriority.ACTION.value
+        assert NotificationPriority.ACTION.value > NotificationPriority.WARNING.value
+        assert NotificationPriority.WARNING.value > NotificationPriority.INFO.value
+
+    def test_priority_names(self):
+        """Enum names are uppercase."""
+        assert NotificationPriority.URGENT.name == "URGENT"
+        assert NotificationPriority.ACTION.name == "ACTION"
+        assert NotificationPriority.WARNING.name == "WARNING"
+        assert NotificationPriority.INFO.name == "INFO"
+
+
+class TestPriorityFiltering:
+    """Tests for min_priority config filtering in send_telegram().
+
+    Note: these tests import send_telegram fresh to avoid module-reload
+    artifacts from TestNotifyCLI's run_module() calls that pop app.notify
+    from sys.modules.
+    """
+
+    def _get_send_telegram(self):
+        """Import send_telegram fresh to avoid module-reload artifacts."""
+        import importlib
+        import app.notify as notify_mod
+        return notify_mod.send_telegram
+
+    @patch("app.notify._get_min_priority")
+    @patch("app.messaging.get_messaging_provider")
+    def test_urgent_always_sent(self, mock_get_provider, mock_min_priority):
+        """URGENT messages are sent regardless of min_priority."""
+        import app.notify as notify_mod
+        mock_min_priority.return_value = notify_mod.NotificationPriority.URGENT
+        mock_provider = MagicMock()
+        mock_provider.send_message.return_value = True
+        mock_get_provider.return_value = mock_provider
+        result = notify_mod.send_telegram("critical",
+                                          priority=notify_mod.NotificationPriority.URGENT)
+        assert result is True
+        mock_provider.send_message.assert_called_once()
+
+    @patch("app.notify._get_min_priority")
+    @patch("app.messaging.get_messaging_provider")
+    def test_info_suppressed_when_min_action(self, mock_get_provider, mock_min_priority):
+        """INFO messages are suppressed when min_priority is ACTION."""
+        import app.notify as notify_mod
+        mock_min_priority.return_value = notify_mod.NotificationPriority.ACTION
+        mock_provider = MagicMock()
+        mock_get_provider.return_value = mock_provider
+        with patch("app.notify._write_suppressed_to_journal") as mock_journal:
+            result = notify_mod.send_telegram("low prio",
+                                              priority=notify_mod.NotificationPriority.INFO)
+        assert result is True  # suppression counts as success
+        mock_provider.send_message.assert_not_called()
+        mock_journal.assert_called_once()
+
+    @patch("app.notify._get_min_priority")
+    @patch("app.messaging.get_messaging_provider")
+    def test_warning_suppressed_when_min_action(self, mock_get_provider, mock_min_priority):
+        """WARNING messages are suppressed when min_priority is ACTION."""
+        import app.notify as notify_mod
+        mock_min_priority.return_value = notify_mod.NotificationPriority.ACTION
+        mock_provider = MagicMock()
+        mock_get_provider.return_value = mock_provider
+        with patch("app.notify._write_suppressed_to_journal") as mock_journal:
+            result = notify_mod.send_telegram("warning msg",
+                                              priority=notify_mod.NotificationPriority.WARNING)
+        assert result is True
+        mock_provider.send_message.assert_not_called()
+        mock_journal.assert_called_once()
+
+    @patch("app.notify._get_min_priority")
+    @patch("app.messaging.get_messaging_provider")
+    def test_info_sent_when_min_info(self, mock_get_provider, mock_min_priority):
+        """INFO messages are sent when min_priority is INFO."""
+        import app.notify as notify_mod
+        mock_min_priority.return_value = notify_mod.NotificationPriority.INFO
+        mock_provider = MagicMock()
+        mock_provider.send_message.return_value = True
+        mock_get_provider.return_value = mock_provider
+        result = notify_mod.send_telegram("info msg",
+                                          priority=notify_mod.NotificationPriority.INFO)
+        assert result is True
+        mock_provider.send_message.assert_called_once()
+
+    @patch("app.notify._get_min_priority")
+    def test_journal_write_on_suppression(self, mock_min_priority, tmp_path, monkeypatch):
+        """Suppressed messages are written to the journal."""
+        import app.notify as notify_mod
+        mock_min_priority.return_value = notify_mod.NotificationPriority.ACTION
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+
+        with patch("app.notify._write_suppressed_to_journal") as mock_journal:
+            notify_mod.send_telegram("soft ping",
+                                     priority=notify_mod.NotificationPriority.INFO)
+        mock_journal.assert_called_once()
+
+
+class TestPriorityEmojiRendering:
+    """Tests for priority emoji prefix in send_telegram().
+
+    Note: these tests use `app.notify` module directly to avoid module-reload
+    artifacts from TestNotifyCLI's run_module() calls.
+    """
+
+    @patch("app.notify._get_min_priority")
+    @patch("app.messaging.get_messaging_provider")
+    def test_urgent_gets_siren_emoji(self, mock_get_provider, mock_min_priority):
+        """URGENT messages get 🚨 prefix."""
+        import app.notify as notify_mod
+        mock_min_priority.return_value = notify_mod.NotificationPriority.INFO
+        mock_provider = MagicMock()
+        mock_provider.send_message.return_value = True
+        mock_get_provider.return_value = mock_provider
+        notify_mod.send_telegram("server down",
+                                 priority=notify_mod.NotificationPriority.URGENT)
+        sent = mock_provider.send_message.call_args[0][0]
+        assert sent.startswith("🚨")
+
+    @patch("app.notify._get_min_priority")
+    @patch("app.messaging.get_messaging_provider")
+    def test_warning_gets_warning_emoji(self, mock_get_provider, mock_min_priority):
+        """WARNING messages get ⚠️ prefix."""
+        import app.notify as notify_mod
+        mock_min_priority.return_value = notify_mod.NotificationPriority.INFO
+        mock_provider = MagicMock()
+        mock_provider.send_message.return_value = True
+        mock_get_provider.return_value = mock_provider
+        notify_mod.send_telegram("low quota",
+                                 priority=notify_mod.NotificationPriority.WARNING)
+        sent = mock_provider.send_message.call_args[0][0]
+        assert sent.startswith("⚠️")
+
+    @patch("app.notify._get_min_priority")
+    @patch("app.messaging.get_messaging_provider")
+    def test_action_no_prefix(self, mock_get_provider, mock_min_priority):
+        """ACTION messages get no emoji prefix."""
+        import app.notify as notify_mod
+        mock_min_priority.return_value = notify_mod.NotificationPriority.INFO
+        mock_provider = MagicMock()
+        mock_provider.send_message.return_value = True
+        mock_get_provider.return_value = mock_provider
+        notify_mod.send_telegram("mission done",
+                                 priority=notify_mod.NotificationPriority.ACTION)
+        sent = mock_provider.send_message.call_args[0][0]
+        assert sent == "mission done"
+
+    @patch("app.notify._get_min_priority")
+    @patch("app.messaging.get_messaging_provider")
+    def test_info_no_prefix(self, mock_get_provider, mock_min_priority):
+        """INFO messages get no emoji prefix."""
+        import app.notify as notify_mod
+        mock_min_priority.return_value = notify_mod.NotificationPriority.INFO
+        mock_provider = MagicMock()
+        mock_provider.send_message.return_value = True
+        mock_get_provider.return_value = mock_provider
+        notify_mod.send_telegram("update",
+                                 priority=notify_mod.NotificationPriority.INFO)
+        sent = mock_provider.send_message.call_args[0][0]
+        assert sent == "update"
+
+    @patch("app.notify._get_min_priority")
+    @patch("app.messaging.get_messaging_provider")
+    def test_idempotent_urgent_emoji(self, mock_get_provider, mock_min_priority):
+        """Emoji is not doubled if message already starts with it."""
+        import app.notify as notify_mod
+        mock_min_priority.return_value = notify_mod.NotificationPriority.INFO
+        mock_provider = MagicMock()
+        mock_provider.send_message.return_value = True
+        mock_get_provider.return_value = mock_provider
+        notify_mod.send_telegram("🚨 server down",
+                                 priority=notify_mod.NotificationPriority.URGENT)
+        sent = mock_provider.send_message.call_args[0][0]
+        assert sent.count("🚨") == 1
+
+    @patch("app.notify._get_min_priority")
+    @patch("app.messaging.get_messaging_provider")
+    def test_idempotent_warning_emoji(self, mock_get_provider, mock_min_priority):
+        """Warning emoji is not doubled if message already starts with it."""
+        import app.notify as notify_mod
+        mock_min_priority.return_value = notify_mod.NotificationPriority.INFO
+        mock_provider = MagicMock()
+        mock_provider.send_message.return_value = True
+        mock_get_provider.return_value = mock_provider
+        notify_mod.send_telegram("⚠️ disk space low",
+                                 priority=notify_mod.NotificationPriority.WARNING)
+        sent = mock_provider.send_message.call_args[0][0]
+        assert sent.count("⚠️") == 1
 
 
 # Flood protection tests moved to test_telegram_provider.py

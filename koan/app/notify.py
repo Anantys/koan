@@ -13,14 +13,33 @@ Usage from Python:
     send_telegram("Mission completed: security audit")
 """
 
+import logging
 import os
 import subprocess
 import sys
 import threading
+from enum import Enum
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
+log = logging.getLogger(__name__)
+
 from app.utils import load_dotenv
+
+
+class NotificationPriority(Enum):
+    """Four-level notification priority system.
+
+    Priority ranks (higher = more important):
+        urgent=3  — critical failures, quota exhausted
+        action=2  — mission complete, command responses (default)
+        warning=1 — quota low, focus validation
+        info=0    — progress updates, reflections
+    """
+    INFO = 0
+    WARNING = 1
+    ACTION = 2
+    URGENT = 3
 
 
 # mtime-based file read cache for format_and_send context files.
@@ -28,6 +47,73 @@ from app.utils import load_dotenv
 # Thread-safe via _file_cache_lock.
 _file_cache: Dict[str, Tuple[str, float]] = {}
 _file_cache_lock = threading.Lock()
+
+# Valid priority names for config parsing (lowercase)
+_PRIORITY_NAME_MAP = {
+    "info": NotificationPriority.INFO,
+    "warning": NotificationPriority.WARNING,
+    "action": NotificationPriority.ACTION,
+    "urgent": NotificationPriority.URGENT,
+}
+
+
+def _get_min_priority() -> NotificationPriority:
+    """Load min_priority from config at call time.
+
+    Reads notifications.min_priority from instance/config.yaml.
+    Defaults to ACTION if missing or invalid.
+
+    Returns:
+        NotificationPriority threshold — messages below this rank are suppressed.
+    """
+    try:
+        from app.utils import load_config
+        config = load_config()
+        notifications = config.get("notifications", {})
+        if not isinstance(notifications, dict):
+            return NotificationPriority.ACTION
+        raw = notifications.get("min_priority", "action")
+        if isinstance(raw, str):
+            key = raw.strip().lower()
+            result = _PRIORITY_NAME_MAP.get(key)
+            if result is not None:
+                return result
+            log.warning("Invalid min_priority value '%s', defaulting to 'action'.", raw)
+    except Exception as e:
+        log.warning("Could not load min_priority from config: %s", e)
+    return NotificationPriority.ACTION
+
+
+def _write_suppressed_to_journal(text: str, priority: NotificationPriority):
+    """Write a suppressed notification to the daily journal.
+
+    Used when a message's priority is below min_priority. Messages are preserved
+    in the journal under a "notifications" project entry so nothing is lost.
+
+    Args:
+        text: The notification text that was suppressed
+        priority: The priority level of the suppressed message
+    """
+    try:
+        from datetime import datetime as _dt
+        from app.utils import load_dotenv as _load_dotenv
+        import os as _os
+
+        _load_dotenv()
+        koan_root = _os.environ.get("KOAN_ROOT", "")
+        if not koan_root:
+            return
+
+        from app.journal import append_to_journal
+        instance_dir = Path(koan_root) / "instance"
+        timestamp = _dt.now().strftime("%H:%M:%S")
+        entry = (
+            f"\n### [{timestamp}] Suppressed ({priority.name.lower()})\n\n"
+            f"{text.strip()}\n"
+        )
+        append_to_journal(instance_dir, "notifications", entry)
+    except Exception as e:
+        log.warning("Failed to write suppressed message to journal: %s", e)
 
 
 class TypingIndicator:
@@ -189,15 +275,55 @@ def _direct_send_chunk(api_base: str, chat_id: str, chunk: str,
     return True
 
 
-def send_telegram(text: str) -> bool:
+def _apply_priority_emoji(text: str, priority: NotificationPriority) -> str:
+    """Prepend priority emoji to text for urgent and warning messages.
+
+    Idempotent: does not prepend if text already starts with the emoji.
+    action and info levels get no prefix.
+
+    Args:
+        text: Message text
+        priority: Notification priority level
+
+    Returns:
+        Text with emoji prepended if appropriate
+    """
+    _PRIORITY_EMOJIS = {
+        NotificationPriority.URGENT: "🚨",
+        NotificationPriority.WARNING: "⚠️",
+    }
+    emoji = _PRIORITY_EMOJIS.get(priority)
+    if emoji and not text.startswith(emoji):
+        return f"{emoji} {text}"
+    return text
+
+
+def send_telegram(text: str,
+                  priority: NotificationPriority = NotificationPriority.ACTION) -> bool:
     """Send a message via the active messaging provider (with flood protection).
 
     Retry logic is handled at the HTTP request level inside the provider's
     _send_raw() and notify's _direct_send(), so transient network failures
     are retried transparently (up to 3 attempts with 1s/2s/4s backoff).
 
+    Messages with priority below the configured min_priority are suppressed from
+    Telegram and written to the daily journal instead (nothing is lost).
+
+    Args:
+        text: Message text to send
+        priority: Notification priority level (default: ACTION)
+
     Returns True on success (suppression counts as success).
     """
+    # Check priority filter before sending
+    min_priority = _get_min_priority()
+    if priority.value < min_priority.value:
+        _write_suppressed_to_journal(text, priority)
+        return True  # Suppression counts as success
+
+    # Prepend priority emoji for urgent and warning messages (idempotent)
+    text = _apply_priority_emoji(text, priority)
+
     try:
         from app.messaging import get_messaging_provider
         provider = get_messaging_provider()
@@ -244,7 +370,8 @@ def invalidate_file_cache():
 
 
 def format_and_send(raw_message: str, instance_dir: str = None,
-                     project_name: str = "") -> bool:
+                     project_name: str = "",
+                     priority: NotificationPriority = NotificationPriority.ACTION) -> bool:
     """Format a message through Claude with Kōan's personality, then send to Telegram.
 
     Every message sent to Telegram should go through this function to ensure
@@ -254,6 +381,7 @@ def format_and_send(raw_message: str, instance_dir: str = None,
         raw_message: The raw/technical message to format
         instance_dir: Path to instance directory (auto-detected from KOAN_ROOT if None)
         project_name: Optional project name for scoped memory context
+        priority: Notification priority level (default: ACTION)
 
     Returns:
         True if message was sent successfully
@@ -270,7 +398,7 @@ def format_and_send(raw_message: str, instance_dir: str = None,
             instance_dir = str(Path(koan_root) / "instance")
         else:
             # Can't format without instance dir — send raw with basic cleanup
-            return send_telegram(fallback_format(raw_message))
+            return send_telegram(fallback_format(raw_message), priority=priority)
 
     instance_path = Path(instance_dir)
     try:
@@ -319,10 +447,10 @@ def format_and_send(raw_message: str, instance_dir: str = None,
                 print(f"[notify] GitHub ref expansion failed: {e}",
                       file=sys.stderr)
 
-        return send_telegram(formatted)
+        return send_telegram(formatted, priority=priority)
     except (OSError, subprocess.SubprocessError, ValueError) as e:
         print(f"[notify] Format error, sending fallback: {e}", file=sys.stderr)
-        return send_telegram(fallback_format(raw_message))
+        return send_telegram(fallback_format(raw_message), priority=priority)
 
 
 if __name__ == "__main__":

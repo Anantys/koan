@@ -168,11 +168,12 @@ def run_stale_mission_check(instance_dir: str) -> List[str]:
 def _send_stale_alert(stale_missions: List[str]) -> None:
     """Send a Telegram notification about stale missions."""
     try:
-        from app.notify import send_telegram
+        from app.notify import send_telegram, NotificationPriority
         count = len(stale_missions)
         header = f"⚠️ {count} mission(s) appear stale (no journal activity for >{STALE_MISSION_HOURS}h):"
         details = "\n".join(f"  • {m[:80]}" for m in stale_missions)
-        send_telegram(f"{header}\n{details}\n\nUse /cancel to remove or /list to review.")
+        send_telegram(f"{header}\n{details}\n\nUse /cancel to remove or /list to review.",
+                      priority=NotificationPriority.WARNING)
     except (ImportError, OSError):
         pass
 
@@ -230,10 +231,11 @@ def run_disk_space_check(koan_root: str) -> bool:
     _disk_space_alerted = True
     free_gb = get_disk_free_gb(koan_root)
     try:
-        from app.notify import send_telegram
+        from app.notify import send_telegram, NotificationPriority
         send_telegram(
             f"⚠️ Low disk space: {free_gb:.1f} GB free on KOAN_ROOT partition.\n"
-            f"Consider cleaning up journal files or old branches."
+            f"Consider cleaning up journal files or old branches.",
+            priority=NotificationPriority.WARNING,
         )
     except (ImportError, OSError):
         pass

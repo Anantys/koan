@@ -524,12 +524,30 @@ def resolve_project_path(repo_name: str, owner: Optional[str] = None) -> Optiona
     return None
 
 
-def append_to_outbox(outbox_path: Path, content: str):
+def append_to_outbox(outbox_path: Path, content: str, priority=None):
     """Append content to outbox.md with file locking.
 
     Safe to call from run.py via: python3 -c "from app.utils import append_to_outbox; ..."
     or from Python directly.
+
+    Args:
+        outbox_path: Path to outbox.md
+        content: Message content to append
+        priority: Optional NotificationPriority — when provided, prepends a
+                  [priority:name] header so flush_outbox() can parse and apply
+                  priority-based filtering. Legacy callers omitting priority
+                  default to ACTION in flush_outbox().
     """
+    if priority is not None:
+        # Import here to avoid circular imports (utils is imported at module level
+        # by many modules including notify.py which defines NotificationPriority)
+        try:
+            from app.notify import NotificationPriority
+            if isinstance(priority, NotificationPriority):
+                content = f"[priority:{priority.name.lower()}]\n{content}"
+        except ImportError:
+            pass  # If import fails, write without header (treated as action)
+
     with open(outbox_path, "a", encoding="utf-8") as f:
         fcntl.flock(f, fcntl.LOCK_EX)
         try:

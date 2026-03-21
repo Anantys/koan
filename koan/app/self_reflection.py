@@ -174,7 +174,8 @@ def notify_outbox(instance_dir: Path, observations: str):
 (Periodic self-reflection, see personality-evolution.md)
 """
 
-    append_to_outbox(outbox_file, message)
+    from app.notify import NotificationPriority
+    append_to_outbox(outbox_file, message, NotificationPriority.INFO)
 
 
 def main():

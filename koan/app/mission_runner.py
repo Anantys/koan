@@ -620,8 +620,9 @@ def _notify_pipeline_failures(
 
         prefix = f"[{mission_title}] " if mission_title else ""
         msg = f"⚠️ {prefix}Pipeline issues: {', '.join(issues)}"
+        from app.notify import NotificationPriority
         outbox_path = Path(instance_dir) / "outbox.md"
-        append_to_outbox(outbox_path, msg + "\n")
+        append_to_outbox(outbox_path, msg + "\n", priority=NotificationPriority.WARNING)
     except Exception as e:
         print(f"[mission_runner] Pipeline failure notification failed: {e}", file=sys.stderr)
 
