@@ -569,10 +569,10 @@ def _retry_failed_replies() -> None:
                     if len(_pending_error_replies) < _MAX_PENDING_REPLIES:
                         _pending_error_replies.append(entry)
             else:
-                print(
-                    f"[loop_manager] Dropping error reply after {attempts - 1} attempts "
+                _github_log(
+                    f"Dropping error reply after {attempts - 1} attempts "
                     f"({entry['owner']}/{entry['repo']}#{entry['issue_num']}): {e}",
-                    file=sys.stderr,
+                    "warning",
                 )
 
 
@@ -855,7 +855,7 @@ def _post_error_for_notification(notif: dict, error: str) -> None:
         post_error_reply(owner, repo, issue_num, comment_id, error,
                          comment_api_url=comment_api_url)
     except (ImportError, OSError, RuntimeError, subprocess.SubprocessError) as e:
-        print(f"[loop_manager] Error posting reply to GitHub, queuing for retry: {e}", file=sys.stderr)
+        _github_log(f"Error posting reply to GitHub, queuing for retry: {e}", "warning")
         entry = {
             "owner": owner, "repo": repo, "issue_num": issue_num,
             "comment_id": comment_id, "error": error,
