@@ -60,8 +60,9 @@ class ClaudeProvider(CLIProvider):
     def build_mcp_args(self, configs: Optional[List[str]] = None) -> List[str]:
         if not configs:
             return []
-        flags = ["--mcp-config"]
-        flags.extend(configs)
+        flags: List[str] = []
+        for config_path in configs:
+            flags.extend(["--mcp-config", config_path])
         return flags
 
     def build_plugin_args(self, plugin_dirs: Optional[List[str]] = None) -> List[str]:

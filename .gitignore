@@ -44,6 +44,9 @@ projects.docker.yaml
 # pytest-split durations (generated locally)
 .test_durations
 
+# MCP config (generated)
+.mcp-configs/
+
 # Process log files (root only, not koan/skills/core/logs/)
 /logs/
 .aider*

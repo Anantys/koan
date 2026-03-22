@@ -12,6 +12,7 @@ from app.projects_config import (
     get_project_cli_provider,
     get_project_exploration,
     get_project_max_open_prs,
+    get_project_mcp,
     get_project_models,
     get_project_submit_to_repository,
     get_project_tools,
@@ -997,6 +998,119 @@ class TestGetProjectTools:
         result = get_project_tools(config, "app")
         assert result["mission"] == ["Read", "Glob", "Grep"]
         assert result["chat"] == ["Read"]
+
+
+# ---------------------------------------------------------------------------
+# get_project_mcp
+# ---------------------------------------------------------------------------
+
+
+class TestGetProjectMcp:
+    """Tests for get_project_mcp() — per-project MCP server configs."""
+
+    def test_returns_project_mcp(self):
+        config = {
+            "projects": {
+                "webapp": {
+                    "path": "/webapp",
+                    "mcp": [
+                        {
+                            "name": "playwright",
+                            "command": "npx",
+                            "args": ["-y", "@anthropic/playwright-mcp@latest", "--headless"],
+                        }
+                    ],
+                },
+            },
+        }
+        result = get_project_mcp(config, "webapp")
+        assert len(result) == 1
+        assert result[0]["name"] == "playwright"
+        assert result[0]["command"] == "npx"
+        assert "--headless" in result[0]["args"]
+
+    def test_inherits_defaults(self):
+        config = {
+            "defaults": {
+                "mcp": [
+                    {"name": "playwright", "command": "npx", "args": ["--headless"]},
+                ],
+            },
+            "projects": {"app": {"path": "/app"}},
+        }
+        result = get_project_mcp(config, "app")
+        assert len(result) == 1
+        assert result[0]["name"] == "playwright"
+
+    def test_project_overrides_defaults(self):
+        """Project-level mcp fully replaces defaults (not appended)."""
+        config = {
+            "defaults": {
+                "mcp": [
+                    {"name": "default-server", "command": "default-cmd"},
+                ],
+            },
+            "projects": {
+                "webapp": {
+                    "path": "/webapp",
+                    "mcp": [
+                        {"name": "playwright", "command": "npx"},
+                    ],
+                },
+            },
+        }
+        result = get_project_mcp(config, "webapp")
+        assert len(result) == 1
+        assert result[0]["name"] == "playwright"
+
+    def test_returns_empty_when_not_configured(self):
+        config = {"projects": {"app": {"path": "/app"}}}
+        result = get_project_mcp(config, "app")
+        assert result == []
+
+    def test_filters_invalid_entries(self):
+        """Entries missing 'name' or 'command' are skipped."""
+        config = {
+            "projects": {
+                "app": {
+                    "path": "/app",
+                    "mcp": [
+                        {"name": "valid", "command": "cmd"},
+                        {"name": "missing-cmd"},
+                        {"command": "missing-name"},
+                        "not-a-dict",
+                        {"name": "", "command": "empty-name"},
+                    ],
+                },
+            },
+        }
+        result = get_project_mcp(config, "app")
+        assert len(result) == 1
+        assert result[0]["name"] == "valid"
+
+    def test_handles_non_list_mcp(self):
+        config = {
+            "projects": {"app": {"path": "/app", "mcp": "invalid"}},
+        }
+        result = get_project_mcp(config, "app")
+        assert result == []
+
+    def test_multiple_mcp_servers(self):
+        config = {
+            "projects": {
+                "app": {
+                    "path": "/app",
+                    "mcp": [
+                        {"name": "playwright", "command": "npx", "args": ["--headless"]},
+                        {"name": "custom-server", "command": "my-mcp-server"},
+                    ],
+                },
+            },
+        }
+        result = get_project_mcp(config, "app")
+        assert len(result) == 2
+        assert result[0]["name"] == "playwright"
+        assert result[1]["name"] == "custom-server"
 
 
 # ---------------------------------------------------------------------------

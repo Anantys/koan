@@ -111,8 +111,9 @@ class CopilotProvider(CLIProvider):
         if not configs:
             return []
         # Copilot supports MCP config files (same format)
-        flags = ["--mcp-config"]
-        flags.extend(configs)
+        flags: List[str] = []
+        for config_path in configs:
+            flags.extend(["--mcp-config", config_path])
         return flags
 
     def check_quota_available(self, project_path: str, timeout: int = 15) -> Tuple[bool, str]:

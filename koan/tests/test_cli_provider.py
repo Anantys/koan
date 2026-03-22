@@ -131,7 +131,7 @@ class TestClaudeProvider:
 
     def test_mcp_args(self):
         result = self.provider.build_mcp_args(["config1.json", "config2.json"])
-        assert result == ["--mcp-config", "config1.json", "config2.json"]
+        assert result == ["--mcp-config", "config1.json", "--mcp-config", "config2.json"]
 
     def test_mcp_args_empty(self):
         assert self.provider.build_mcp_args() == []

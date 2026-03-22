@@ -8,6 +8,7 @@ Provides:
 - get_project_cli_provider(config, name) -> str: Get CLI provider for a project
 - get_project_models(config, name) -> dict: Get model overrides for a project
 - get_project_tools(config, name) -> dict: Get tool restrictions for a project
+- get_project_mcp(config, name) -> list: Get MCP server configs for a project
 - get_project_exploration(config, name) -> bool: Get exploration flag for a project
 - get_project_max_open_prs(config, name) -> int: Get max open PRs limit for a project
 - get_project_github_authorized_users(config, name) -> list: Get GitHub authorized users
@@ -276,6 +277,31 @@ def get_project_tools(config: dict, project_name: str) -> dict:
     if not isinstance(tools, dict):
         return {}
     return tools
+
+
+def get_project_mcp(config: dict, project_name: str) -> list:
+    """Get MCP server configurations for a project from projects.yaml.
+
+    Returns a list of MCP server entry dicts, each with at least 'name' and
+    'command' keys. If a project defines 'mcp', it fully replaces the
+    defaults (same replace-not-append strategy as tools).
+
+    Returns empty list if not configured.
+    """
+    project_cfg = get_project_config(config, project_name)
+    mcp = project_cfg.get("mcp")
+    if not isinstance(mcp, list):
+        return []
+
+    # Validate and filter entries — each must have 'name' and 'command'
+    valid = []
+    for entry in mcp:
+        if not isinstance(entry, dict):
+            continue
+        if not entry.get("name") or not entry.get("command"):
+            continue
+        valid.append(entry)
+    return valid
 
 
 def get_project_exploration(config: dict, project_name: str) -> bool:

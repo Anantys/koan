@@ -51,6 +51,14 @@ defaults:
   #   mission: ["Read", "Glob", "Grep", "Edit", "Write", "Bash"]
   #   chat: ["Read", "Glob", "Grep"]
 
+  # MCP servers — external tool servers available during missions.
+  # Each entry needs 'name' and 'command'. If a project defines 'mcp',
+  # it fully replaces the defaults list.
+  # mcp:
+  #   - name: "playwright"
+  #     command: "npx"
+  #     args: ["-y", "@anthropic/playwright-mcp@latest", "--headless"]
+
   # Exploration — controls autonomous work on this project.
   #
   # When enabled, the agent may autonomously:
