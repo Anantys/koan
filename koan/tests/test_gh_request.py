@@ -94,7 +94,12 @@ class TestGhRequestHandler:
         assert "koan" in result
 
     def test_classification_fails_queues_generic(self, ctx):
-        """When classifier returns None, queue as generic /gh_request mission."""
+        """When classifier returns None, queue as plain-text mission (no / prefix).
+
+        Regression: previously queued as ``/gh_request ...`` which run.py
+        treated as a skill dispatch and failed with "Unknown skill command".
+        See https://github.com/Anantys-oss/koan/issues/994
+        """
         from skills.core.gh_request.handler import handle
 
         with patch("skills.core.gh_request.handler.resolve_project_for_repo") as mock_resolve, \
@@ -109,8 +114,13 @@ class TestGhRequestHandler:
         assert "queued" in result.lower()
         mock_insert.assert_called_once()
         mission = mock_insert.call_args[0][1]
-        assert "/gh_request" in mission
+        # Must NOT start with a /command — otherwise run.py skill dispatch rejects it
+        assert "[project:koan]" in mission
         assert "https://github.com/owner/repo/pull/42" in mission
+        assert "do something unusual" in mission
+        # The mission text (after the project tag) must not begin with /
+        mission_body = mission.split("]", 1)[1].strip()
+        assert not mission_body.startswith("/")
 
     def test_no_url_returns_error(self, ctx):
         """Without a URL, can't determine project."""
