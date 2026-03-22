@@ -1461,15 +1461,42 @@ def _run_iteration(
     fd_err, stderr_file = tempfile.mkstemp(prefix="koan-err-")
     os.close(fd_err)
     claude_exit = 1  # default to failure; overwritten on successful execution
+    plugin_dir = None  # generated plugin dir for Skill tool (cleaned up in finally)
     try:
         # Build CLI command (provider-agnostic with per-project overrides)
         from app.mission_runner import build_mission_command
         from app.debug import debug_log as _debug_log
+
+        # Generate plugin directory so Claude CLI can discover Kōan skills
+        plugin_dirs = None
+        try:
+            from app.plugin_generator import generate_plugin_dir, cleanup_plugin_dir
+            from app.skills import build_registry
+            extra_dirs = []
+            # Include project-local skills (<project>/.claude/skills/)
+            project_skills = Path(project_path) / ".claude" / "skills"
+            if project_skills.is_dir():
+                extra_dirs.append(project_skills)
+            instance_skills = instance / "skills"
+            if instance_skills.is_dir():
+                extra_dirs.append(instance_skills)
+            # Include user-installed Claude Code skills (~/.claude/skills/)
+            user_skills = Path.home() / ".claude" / "skills"
+            if user_skills.is_dir():
+                extra_dirs.append(user_skills)
+            registry = build_registry(extra_dirs=extra_dirs or None)
+            if registry.list_by_audience("agent", "command", "hybrid"):
+                plugin_dir = generate_plugin_dir(registry)
+                plugin_dirs = [str(plugin_dir)]
+        except Exception as e:
+            _debug_log(f"[run] plugin dir generation skipped: {e}")
+
         cmd = build_mission_command(
             prompt=prompt,
             autonomous_mode=autonomous_mode,
             extra_flags="",
             project_name=project_name,
+            plugin_dirs=plugin_dirs,
             system_prompt=system_prompt,
         )
 
@@ -1585,6 +1612,12 @@ def _run_iteration(
             log("error", f"Post-mission processing error: {e}\n{traceback.format_exc()}")
     finally:
         _cleanup_temp(stdout_file, stderr_file)
+        if plugin_dir:
+            try:
+                from app.plugin_generator import cleanup_plugin_dir
+                cleanup_plugin_dir(plugin_dir)
+            except Exception as e:
+                print(f"[run] plugin cleanup error: {e}", file=sys.stderr)
 
     # Report result — always notify on completion (success or failure)
     if claude_exit == 0:

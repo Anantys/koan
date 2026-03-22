@@ -1105,14 +1105,14 @@ projects:
 
         with patch("app.config._load_config", return_value={}):
             result = get_mission_tools("app")
-        assert result == "Read,Glob,Grep,Edit,Write,Bash"
+        assert result == "Read,Glob,Grep,Edit,Write,Bash,Skill"
 
     def test_empty_project_name_uses_global(self):
         from app.config import get_mission_tools
 
         with patch("app.config._load_config", return_value={}):
             result = get_mission_tools("")
-        assert result == "Read,Glob,Grep,Edit,Write,Bash"
+        assert result == "Read,Glob,Grep,Edit,Write,Bash,Skill"
 
     def test_defaults_section_tools_inherited(self, tmp_path, monkeypatch):
         monkeypatch.setenv("KOAN_ROOT", str(tmp_path))

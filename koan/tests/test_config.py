@@ -51,7 +51,7 @@ class TestGetMissionTools:
         from app.config import get_mission_tools
 
         with _mock_config({}):
-            assert get_mission_tools() == "Read,Glob,Grep,Edit,Write,Bash"
+            assert get_mission_tools() == "Read,Glob,Grep,Edit,Write,Bash,Skill"
 
     def test_custom(self):
         from app.config import get_mission_tools
@@ -91,7 +91,7 @@ class TestGetAllowedTools:
         from app.config import get_allowed_tools
 
         with _mock_config({}):
-            assert get_allowed_tools() == "Read,Glob,Grep,Edit,Write,Bash"
+            assert get_allowed_tools() == "Read,Glob,Grep,Edit,Write,Bash,Skill"
 
 
 # --- get_tools_description ---

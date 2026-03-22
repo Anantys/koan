@@ -126,6 +126,21 @@ TOOL_DEFINITIONS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "skill",
+            "description": "Execute a user-installed skill by name.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill": {"type": "string", "description": "The skill name to invoke"},
+                    "args": {"type": "string", "description": "Optional arguments for the skill"},
+                },
+                "required": ["skill"],
+            },
+        },
+    },
 ]
 
 # Re-use the canonical tool name mapping from the provider package
@@ -239,6 +254,44 @@ def _tool_shell(arguments: Dict[str, Any], cwd: str) -> str:
     return output
 
 
+def _tool_skill(arguments: Dict[str, Any], cwd: str) -> str:
+    skill_name = arguments["skill"]
+    args = arguments.get("args", "")
+
+    from app.skills import build_registry, execute_skill, SkillContext, SkillError
+
+    koan_root = Path(os.environ.get("KOAN_ROOT", ""))
+    instance_dir = koan_root / "instance"
+
+    # Build registry including project-local, instance, and user-installed skills
+    extra_dirs: list = []
+    project_skills = Path(cwd) / ".claude" / "skills"
+    if project_skills.is_dir():
+        extra_dirs.append(project_skills)
+    instance_skills = instance_dir / "skills"
+    if instance_skills.is_dir():
+        extra_dirs.append(instance_skills)
+    user_skills = Path.home() / ".claude" / "skills"
+    if user_skills.is_dir():
+        extra_dirs.append(user_skills)
+    registry = build_registry(extra_dirs=extra_dirs or None)
+
+    skill = registry.find(skill_name)
+    if skill is None:
+        return f"Error: skill '{skill_name}' not found"
+
+    ctx = SkillContext(
+        koan_root=koan_root,
+        instance_dir=instance_dir,
+        command_name=skill_name,
+        args=args,
+    )
+    result = execute_skill(skill, ctx)
+    if isinstance(result, SkillError):
+        return result.message
+    return result or f"Skill '{skill_name}' executed (no output)"
+
+
 _TOOL_HANDLERS = {
     "read_file": _tool_read_file,
     "write_file": _tool_write_file,
@@ -246,6 +299,7 @@ _TOOL_HANDLERS = {
     "glob": _tool_glob,
     "grep": _tool_grep,
     "shell": _tool_shell,
+    "skill": _tool_skill,
 }
 
 

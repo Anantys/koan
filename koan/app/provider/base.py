@@ -9,7 +9,7 @@ from typing import List, Optional, Tuple
 # ---------------------------------------------------------------------------
 
 # Claude Code tool names (canonical, used throughout koan codebase)
-CLAUDE_TOOLS = {"Bash", "Read", "Write", "Glob", "Grep", "Edit"}
+CLAUDE_TOOLS = {"Bash", "Read", "Write", "Glob", "Grep", "Edit", "Skill"}
 
 # Mapping from Kōan canonical tool names to OpenAI-style function names.
 # Used by Copilot provider (--allow-tool) and local LLM runner (function calling).
@@ -20,6 +20,7 @@ TOOL_NAME_MAP = {
     "Edit": "edit_file",
     "Glob": "glob",
     "Grep": "grep",
+    "Skill": "skill",
 }
 
 

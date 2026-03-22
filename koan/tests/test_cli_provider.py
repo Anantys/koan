@@ -354,7 +354,7 @@ class TestCopilotProvider:
         # Should allow the remaining tools: Read, Glob, Grep
         assert "--allow-tool" in result
         tool_names = [result[i + 1] for i in range(len(result)) if result[i] == "--allow-tool"]
-        assert set(tool_names) == {"read_file", "glob", "grep"}
+        assert set(tool_names) == {"read_file", "glob", "grep", "skill"}
 
     def test_model_args(self):
         p = self._make()

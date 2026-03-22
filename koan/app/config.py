@@ -98,7 +98,7 @@ def get_mission_tools(project_name: str = "") -> str:
 
     Missions run with full tool access including Bash for code execution.
 
-    Config key: tools.mission (default: Read, Glob, Grep, Edit, Write, Bash)
+    Config key: tools.mission (default: Read, Glob, Grep, Edit, Write, Bash, Skill)
     Per-project override: projects.yaml tools.mission
 
     Args:
@@ -107,7 +107,7 @@ def get_mission_tools(project_name: str = "") -> str:
     Returns:
         Comma-separated tool names.
     """
-    return _get_tools_for_role("mission", ["Read", "Glob", "Grep", "Edit", "Write", "Bash"], project_name)
+    return _get_tools_for_role("mission", ["Read", "Glob", "Grep", "Edit", "Write", "Bash", "Skill"], project_name)
 
 
 def get_contemplative_tools(project_name: str = "") -> str:
