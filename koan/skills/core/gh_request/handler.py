@@ -70,9 +70,12 @@ def handle(ctx) -> Optional[str]:
     command, classified_context = _classify_request(request_text, project_name, url)
 
     if not command:
-        # Classification failed or returned no match — queue as generic mission
-        # The agent will handle it naturally via Claude
-        mission_text = f"/gh_request {url} {request_text}" if url else f"/gh_request {request_text}"
+        # Classification failed or returned no match — queue as plain-text mission
+        # so the agent handles it naturally via Claude.
+        # IMPORTANT: do NOT prefix with /gh_request — run.py treats /commands as
+        # skill dispatches and will reject unknown ones with "Unknown skill command".
+        # See https://github.com/Anantys-oss/koan/issues/994
+        mission_text = f"{url} {request_text}".strip() if url else request_text
         mission_entry = f"- [project:{project_name}] {mission_text}"
         from app.utils import insert_pending_mission
         missions_path = ctx.instance_dir / "missions.md"
