@@ -21,14 +21,17 @@ Reply flow (when reply_enabled=true and command not recognized):
 
 import logging
 import re
-from typing import List, Optional, Tuple
+import time
+from typing import Dict, List, Optional, Tuple
 
 from app.bounded_set import BoundedSet
 from app.github_config import (
     get_github_authorized_users,
     get_github_natural_language,
     get_github_nickname,
+    get_github_reply_authorized_users,
     get_github_reply_enabled,
+    get_github_reply_rate_limit,
     get_github_subscribe_enabled,
     get_github_subscribe_max_per_cycle,
 )
@@ -52,6 +55,9 @@ log = logging.getLogger(__name__)
 # Bounded: FIFO eviction when limit is reached (oldest entries removed first).
 _MAX_TRACKED_ENTRIES = 10000
 _error_replies: BoundedSet = BoundedSet(maxlen=_MAX_TRACKED_ENTRIES)
+
+# Per-user rate tracking for AI replies: {username: [timestamp, ...]}
+_reply_timestamps: Dict[str, List[float]] = {}
 
 
 def _quarantine_github_mission(text: str, reason: str, author: str):
@@ -623,12 +629,35 @@ def _try_reply(
     comment_author = comment.get("user", {}).get("login", "")
     comment_id = str(comment.get("id", ""))
 
-    # Check permissions — same authorized_users as commands
-    allowed_users = get_github_authorized_users(config, project_name, projects_config)
-    if not check_user_permission(owner, repo, comment_author, allowed_users):
+    # Check permissions — use reply_authorized_users if configured, else authorized_users
+    reply_users = get_github_reply_authorized_users(config, project_name, projects_config)
+    if reply_users is None:
+        reply_users = get_github_authorized_users(config, project_name, projects_config)
+
+    # Wildcard for replies means "anyone" — skip permission check entirely
+    # (unlike command wildcard which checks GitHub write access)
+    if reply_users != ["*"] and not check_user_permission(owner, repo, comment_author, reply_users):
         log.debug(
             "GitHub reply: permission denied for @%s on %s/%s",
             comment_author, owner, repo,
+        )
+        return False
+
+    # Rate limit: prevent API quota abuse from broad reply permissions
+    rate_limit = get_github_reply_rate_limit(config)
+    now = time.time()
+    one_hour_ago = now - 3600
+    user_timestamps = _reply_timestamps.get(comment_author, [])
+    # Clean up stale entries (and remove key entirely if empty)
+    user_timestamps = [t for t in user_timestamps if t > one_hour_ago]
+    if user_timestamps:
+        _reply_timestamps[comment_author] = user_timestamps
+    else:
+        _reply_timestamps.pop(comment_author, None)
+    if len(user_timestamps) >= rate_limit:
+        log.warning(
+            "GitHub reply: rate limit (%d/h) exceeded for @%s on %s/%s",
+            rate_limit, comment_author, owner, repo,
         )
         return False
 
@@ -692,6 +721,9 @@ def _try_reply(
     _notify_github_reply(
         owner, repo, issue_number, reply_text,
     )
+
+    # Record successful reply for rate limiting
+    _reply_timestamps.setdefault(comment_author, []).append(time.time())
 
     log.info("GitHub reply: posted reply to @%s on %s/%s#%s", comment_author, owner, repo, issue_number)
     return True

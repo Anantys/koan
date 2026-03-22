@@ -10,6 +10,8 @@ Config schema in config.yaml:
       authorized_users: ["*"]
       max_age_hours: 24
       reply_enabled: false
+      reply_authorized_users: ["*"]   # separate from command permissions
+      reply_rate_limit: 5             # max replies per user per hour
       check_interval_seconds: 60
 
 Per-project override in projects.yaml:
@@ -17,6 +19,7 @@ Per-project override in projects.yaml:
       myproject:
         github:
           authorized_users: ["alice", "bob"]
+          reply_authorized_users: ["*"]
 """
 
 from typing import List, Optional
@@ -80,6 +83,45 @@ def get_github_natural_language(config: dict, project_name: Optional[str] = None
     # Fall back to global config.yaml
     github = config.get("github") or {}
     return bool(github.get("natural_language", False))
+
+
+def get_github_reply_authorized_users(config: dict, project_name: Optional[str] = None,
+                                       projects_config: Optional[dict] = None) -> Optional[List[str]]:
+    """Get the list of users authorized to receive AI replies.
+
+    Separate from command authorized_users — allows broader audience for
+    read-only replies while keeping command permissions restricted.
+
+    Returns a list of usernames or ["*"] if explicitly configured.
+    Returns None if not configured (caller should fall back to authorized_users).
+    """
+    # Check per-project override first
+    if project_name and projects_config:
+        from app.projects_config import get_project_github_reply_authorized_users
+        project_users = get_project_github_reply_authorized_users(projects_config, project_name)
+        if project_users is not None:
+            return project_users
+
+    # Fall back to global config.yaml
+    github = config.get("github") or {}
+    users = github.get("reply_authorized_users")
+    if users is None:
+        return None
+    return users if isinstance(users, list) else None
+
+
+def get_github_reply_rate_limit(config: dict) -> int:
+    """Get the max number of AI replies per user per hour.
+
+    Prevents API quota abuse when replies are open to a broad audience.
+    Default: 5. Floor: 1.
+    """
+    github = config.get("github") or {}
+    try:
+        val = int(github.get("reply_rate_limit", 5))
+        return max(1, val)
+    except (ValueError, TypeError):
+        return 5
 
 
 def get_github_reply_enabled(config: dict) -> bool:
