@@ -162,6 +162,34 @@ COMMENT_REPLIES_SCHEMA = {
 # Combined review schema (top-level object)
 # ---------------------------------------------------------------------------
 
+PLAN_ALIGNMENT_SCHEMA = {
+    "type": "object",
+    "description": (
+        "Optional plan alignment findings. Present only when the review was "
+        "performed against a plan (via --plan-url or auto-detection)."
+    ),
+    "properties": {
+        "requirements_met": {
+            "type": "array",
+            "description": "Plan requirements that are implemented in the diff.",
+            "items": {"type": "string"},
+        },
+        "requirements_missing": {
+            "type": "array",
+            "description": "Plan requirements not found or incomplete in the diff.",
+            "items": {"type": "string"},
+        },
+        "out_of_scope": {
+            "type": "array",
+            "description": (
+                "Changes in the diff not mentioned in the plan "
+                "(neutral observation — not necessarily bad)."
+            ),
+            "items": {"type": "string"},
+        },
+    },
+}
+
 REVIEW_SCHEMA = {
     "type": "object",
     "description": "Complete structured review output.",
@@ -170,6 +198,7 @@ REVIEW_SCHEMA = {
         "file_comments": FILE_COMMENTS_SCHEMA,
         "review_summary": REVIEW_SUMMARY_SCHEMA,
         "comment_replies": COMMENT_REPLIES_SCHEMA,
+        "plan_alignment": PLAN_ALIGNMENT_SCHEMA,
     },
 }
 
@@ -218,6 +247,16 @@ def validate_review(data: object) -> tuple:
         else:
             for i, item in enumerate(cr):
                 errors.extend(_validate_comment_reply(item, i))
+
+    # -- plan_alignment (optional) --
+    if "plan_alignment" in data:
+        pa = data["plan_alignment"]
+        if not isinstance(pa, dict):
+            errors.append("'plan_alignment' must be an object")
+        else:
+            for key in ("requirements_met", "requirements_missing", "out_of_scope"):
+                if key in pa and not isinstance(pa[key], list):
+                    errors.append(f"plan_alignment.{key}: must be an array")
 
     return (len(errors) == 0, errors)
 

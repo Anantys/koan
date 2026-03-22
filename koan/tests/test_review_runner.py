@@ -11,6 +11,10 @@ from app.review_runner import (
     build_review_prompt,
     fetch_repliable_comments,
     run_review,
+    _detect_plan_url,
+    _fetch_plan_body,
+    _truncate_plan,
+    _resolve_plan_body,
     _extract_review_body,
     _format_repliable_comments,
     _parse_review_json,
@@ -55,6 +59,20 @@ def review_skill_dir(tmp_path):
         "Issue: {ISSUE_COMMENTS}\n"
         "Repliable: {REPLIABLE_COMMENTS}\n"
     )
+    return tmp_path
+
+
+@pytest.fixture
+def plan_review_skill_dir(tmp_path):
+    """Create a skill dir with both review.md and review-with-plan.md prompts."""
+    prompts_dir = tmp_path / "prompts"
+    prompts_dir.mkdir()
+    base = (
+        "{TITLE}\n{AUTHOR}\n{BRANCH}\n{BASE}\n{BODY}\n{DIFF}\n"
+        "{REVIEWS}\n{REVIEW_COMMENTS}\n{ISSUE_COMMENTS}\n{REPLIABLE_COMMENTS}\n"
+    )
+    (prompts_dir / "review.md").write_text("Review PR: " + base)
+    (prompts_dir / "review-with-plan.md").write_text("Plan Review: {PLAN}\n" + base)
     return tmp_path
 
 
@@ -673,6 +691,7 @@ class TestMainCli:
             "owner", "repo", "42", "/tmp/project",
             skill_dir=Path(__file__).resolve().parent.parent / "skills" / "core" / "review",
             architecture=False,
+            plan_url=None,
         )
 
     @patch("app.review_runner.run_review")
@@ -1130,3 +1149,457 @@ class TestRunReviewWithReplies:
         assert success is True
         assert "Replied" not in summary
         mock_gh.assert_called_once()  # Only the review comment post
+
+
+# ---------------------------------------------------------------------------
+# Plan alignment — _detect_plan_url
+# ---------------------------------------------------------------------------
+
+class TestDetectPlanUrl:
+    def test_finds_issue_url_in_body(self):
+        """Extracts the first GitHub issue URL from a PR body."""
+        body = "Implements https://github.com/owner/repo/issues/42 as requested."
+        result = _detect_plan_url(body)
+        assert result == "https://github.com/owner/repo/issues/42"
+
+    def test_returns_none_when_no_issue_url(self):
+        """Returns None when the PR body has no issue URL."""
+        body = "This PR fixes a bug. No linked issue."
+        assert _detect_plan_url(body) is None
+
+    def test_ignores_pr_urls(self):
+        """PR URLs (/pull/) are not matched — only issue URLs."""
+        body = "Closes https://github.com/owner/repo/pull/10 and updates docs."
+        assert _detect_plan_url(body) is None
+
+    def test_returns_first_issue_url_when_multiple(self):
+        """Returns the first issue URL when multiple are present."""
+        body = (
+            "From https://github.com/owner/repo/issues/10 "
+            "and https://github.com/owner/repo/issues/20"
+        )
+        result = _detect_plan_url(body)
+        assert result == "https://github.com/owner/repo/issues/10"
+
+    def test_empty_body(self):
+        """Empty PR body returns None."""
+        assert _detect_plan_url("") is None
+
+    def test_closes_shorthand_not_matched(self):
+        """'Closes #42' shorthand (no full URL) returns None."""
+        body = "Closes #42."
+        assert _detect_plan_url(body) is None
+
+    def test_issue_url_in_multiline_body(self):
+        """Finds issue URL in a multi-line PR body."""
+        body = (
+            "## Summary\n\n"
+            "This PR implements the plan.\n\n"
+            "Closes https://github.com/acme/app/issues/99\n\n"
+            "## Changes\n\n- Added feature\n"
+        )
+        result = _detect_plan_url(body)
+        assert result == "https://github.com/acme/app/issues/99"
+
+
+# ---------------------------------------------------------------------------
+# Plan alignment — _fetch_plan_body
+# ---------------------------------------------------------------------------
+
+class TestFetchPlanBody:
+    @patch("app.review_runner.run_gh")
+    def test_returns_empty_when_no_plan_label(self, mock_gh):
+        """Returns empty string if the issue has no 'plan' label."""
+        mock_gh.return_value = json.dumps({
+            "body": "This is a regular issue.",
+            "labels": [{"name": "bug"}, {"name": "enhancement"}],
+        })
+        result = _fetch_plan_body("owner", "repo", "42")
+        assert result == ""
+
+    @patch("app.review_runner.run_gh")
+    def test_returns_body_when_plan_label(self, mock_gh):
+        """Returns issue body when 'plan' label is present."""
+        mock_gh.side_effect = [
+            json.dumps({
+                "body": "## Summary\n\nPlan content here.",
+                "labels": [{"name": "plan"}],
+            }),
+            "",  # No comments
+        ]
+        result = _fetch_plan_body("owner", "repo", "42")
+        assert result == "## Summary\n\nPlan content here."
+
+    @patch("app.review_runner.run_gh")
+    def test_strips_plan_footer(self, mock_gh):
+        """Strips the Kōan /plan footer from the returned body."""
+        mock_gh.side_effect = [
+            json.dumps({
+                "body": "## Summary\n\nPlan text.\n---\n*Generated by Kōan /plan — iteration 1*",
+                "labels": [{"name": "plan"}],
+            }),
+            "",  # No comments
+        ]
+        result = _fetch_plan_body("owner", "repo", "42")
+        assert result == "## Summary\n\nPlan text."
+        assert "Generated by Kōan" not in result
+
+    @patch("app.review_runner.run_gh")
+    def test_uses_latest_comment_with_implementation_phases(self, mock_gh):
+        """Uses the last comment body if it contains '### Implementation Phases'."""
+        comment_line = json.dumps({"body": "### Implementation Phases\n\nUpdated plan."})
+        mock_gh.side_effect = [
+            json.dumps({
+                "body": "Original plan body.",
+                "labels": [{"name": "plan"}],
+            }),
+            comment_line,
+        ]
+        result = _fetch_plan_body("owner", "repo", "42")
+        assert "Updated plan." in result
+        assert "Original plan body." not in result
+
+    @patch("app.review_runner.run_gh")
+    def test_returns_empty_on_fetch_error(self, mock_gh):
+        """Returns empty string if the GitHub API call fails."""
+        mock_gh.side_effect = RuntimeError("API error")
+        result = _fetch_plan_body("owner", "repo", "42")
+        assert result == ""
+
+    @patch("app.review_runner.run_gh")
+    def test_returns_empty_on_json_error(self, mock_gh):
+        """Returns empty string if the API response is not valid JSON."""
+        mock_gh.return_value = "not json"
+        result = _fetch_plan_body("owner", "repo", "42")
+        assert result == ""
+
+
+# ---------------------------------------------------------------------------
+# Plan alignment — _truncate_plan
+# ---------------------------------------------------------------------------
+
+class TestTruncatePlan:
+    def test_extracts_summary_section(self):
+        """Extracts ## Summary section from the plan."""
+        plan = (
+            "## Background\n\nSome history.\n\n"
+            "## Summary\n\nThis is the summary.\n\n"
+            "## Next Steps\n\nFuture work."
+        )
+        result = _truncate_plan(plan)
+        assert "This is the summary." in result
+
+    def test_extracts_implementation_phases_section(self):
+        """Extracts ### Implementation Phases section."""
+        plan = (
+            "## Summary\n\nBrief.\n\n"
+            "### Implementation Phases\n\n#### Phase 1\nDo this.\n\n"
+            "### Open Questions\n\nTBD."
+        )
+        result = _truncate_plan(plan)
+        assert "Phase 1" in result
+
+    def test_fallback_to_first_5000_chars(self):
+        """Falls back to first 5000 chars when no sections are found."""
+        plan = "x" * 10000
+        result = _truncate_plan(plan)
+        assert len(result) <= 5000 + 30  # 30 chars for the truncation note
+        assert "...(plan truncated)" in result
+
+
+# ---------------------------------------------------------------------------
+# Plan alignment — build_review_prompt with plan
+# ---------------------------------------------------------------------------
+
+class TestBuildReviewPromptWithPlan:
+    def test_selects_plan_prompt_when_plan_body_provided(self, pr_context, tmp_path):
+        """Selects review-with-plan.md when plan_body is provided."""
+        prompts_dir = tmp_path / "prompts"
+        prompts_dir.mkdir()
+        (prompts_dir / "review.md").write_text("Standard review: {TITLE} {AUTHOR} {BRANCH} {BASE} {BODY} {DIFF} {REVIEWS} {REVIEW_COMMENTS} {ISSUE_COMMENTS} {REPLIABLE_COMMENTS}")
+        (prompts_dir / "review-with-plan.md").write_text("Plan review: {PLAN} {TITLE} {AUTHOR} {BRANCH} {BASE} {BODY} {DIFF} {REVIEWS} {REVIEW_COMMENTS} {ISSUE_COMMENTS} {REPLIABLE_COMMENTS}")
+
+        prompt = build_review_prompt(pr_context, skill_dir=tmp_path, plan_body="The plan content.")
+        assert "Plan review:" in prompt
+        assert "The plan content." in prompt
+
+    def test_selects_standard_prompt_when_no_plan(self, pr_context, tmp_path):
+        """Selects review.md when no plan_body is provided."""
+        prompts_dir = tmp_path / "prompts"
+        prompts_dir.mkdir()
+        (prompts_dir / "review.md").write_text("Standard review: {TITLE} {AUTHOR} {BRANCH} {BASE} {BODY} {DIFF} {REVIEWS} {REVIEW_COMMENTS} {ISSUE_COMMENTS} {REPLIABLE_COMMENTS}")
+        (prompts_dir / "review-with-plan.md").write_text("Plan review: {PLAN} {TITLE} {AUTHOR} {BRANCH} {BASE} {BODY} {DIFF} {REVIEWS} {REVIEW_COMMENTS} {ISSUE_COMMENTS} {REPLIABLE_COMMENTS}")
+
+        prompt = build_review_prompt(pr_context, skill_dir=tmp_path, plan_body=None)
+        assert "Standard review:" in prompt
+        assert "Plan review:" not in prompt
+
+    def test_plan_overrides_architecture_flag(self, pr_context, tmp_path):
+        """Plan alignment takes priority over --architecture flag."""
+        prompts_dir = tmp_path / "prompts"
+        prompts_dir.mkdir()
+        (prompts_dir / "review-architecture.md").write_text("Architecture review: {TITLE} {AUTHOR} {BRANCH} {BASE} {BODY} {DIFF} {REVIEWS} {REVIEW_COMMENTS} {ISSUE_COMMENTS} {REPLIABLE_COMMENTS}")
+        (prompts_dir / "review-with-plan.md").write_text("Plan review: {PLAN} {TITLE} {AUTHOR} {BRANCH} {BASE} {BODY} {DIFF} {REVIEWS} {REVIEW_COMMENTS} {ISSUE_COMMENTS} {REPLIABLE_COMMENTS}")
+
+        prompt = build_review_prompt(
+            pr_context, skill_dir=tmp_path,
+            architecture=True, plan_body="The plan.",
+        )
+        assert "Plan review:" in prompt
+        assert "Architecture review:" not in prompt
+
+    def test_truncates_large_plan(self, pr_context, tmp_path):
+        """Plan is truncated when combined plan+diff context exceeds 80K chars."""
+        prompts_dir = tmp_path / "prompts"
+        prompts_dir.mkdir()
+        (prompts_dir / "review-with-plan.md").write_text("Plan: {PLAN} Diff: {DIFF} Title: {TITLE} {AUTHOR} {BRANCH} {BASE} {BODY} {REVIEWS} {REVIEW_COMMENTS} {ISSUE_COMMENTS} {REPLIABLE_COMMENTS}")
+
+        large_plan = "## Summary\n\nShort summary.\n\n" + "x" * 90_000
+        pr_context["diff"] = "small diff"
+        prompt = build_review_prompt(pr_context, skill_dir=tmp_path, plan_body=large_plan)
+        # The plan should have been truncated — not 90K chars
+        assert len(prompt) < 90_000 + 5000
+
+
+# ---------------------------------------------------------------------------
+# Plan alignment — _format_review_as_markdown with plan_alignment
+# ---------------------------------------------------------------------------
+
+class TestFormatReviewWithPlanAlignment:
+    def test_renders_plan_alignment_section(self):
+        """Renders ### Plan Alignment section when plan_alignment is present."""
+        review_data = {
+            **LGTM_REVIEW_JSON,
+            "plan_alignment": {
+                "requirements_met": ["Phase 1: _detect_plan_url added"],
+                "requirements_missing": ["Phase 3: --plan-url flag missing"],
+                "out_of_scope": [],
+            },
+        }
+        result = _format_review_as_markdown(review_data)
+        assert "### Plan Alignment" in result
+        assert "✅ **Met**" in result
+        assert "_detect_plan_url added" in result
+        assert "❌ **Missing**" in result
+        assert "--plan-url flag missing" in result
+
+    def test_plan_alignment_before_severity_sections(self):
+        """Plan alignment section appears before severity sections."""
+        review_data = {
+            **VALID_REVIEW_JSON,
+            "plan_alignment": {
+                "requirements_met": ["Req 1"],
+                "requirements_missing": [],
+                "out_of_scope": [],
+            },
+        }
+        result = _format_review_as_markdown(review_data)
+        plan_pos = result.find("### Plan Alignment")
+        severity_pos = result.find("### 🔴 Blocking")
+        assert plan_pos != -1
+        assert severity_pos != -1
+        assert plan_pos < severity_pos
+
+    def test_no_plan_alignment_section_when_absent(self):
+        """No Plan Alignment section when plan_alignment is not in data."""
+        result = _format_review_as_markdown(LGTM_REVIEW_JSON)
+        assert "### Plan Alignment" not in result
+
+    def test_renders_out_of_scope_items(self):
+        """Out-of-scope items are rendered when present."""
+        review_data = {
+            **LGTM_REVIEW_JSON,
+            "plan_alignment": {
+                "requirements_met": [],
+                "requirements_missing": [],
+                "out_of_scope": ["Extra helper added"],
+            },
+        }
+        result = _format_review_as_markdown(review_data)
+        assert "📋 **Out of scope**" in result
+        assert "Extra helper added" in result
+
+
+# ---------------------------------------------------------------------------
+# Plan alignment — run_review auto-detection
+# ---------------------------------------------------------------------------
+
+class TestRunReviewPlanAlignment:
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    def test_auto_detects_plan_from_pr_body(
+        self, mock_fetch, mock_claude, mock_gh, mock_repliable,
+        plan_review_skill_dir,
+    ):
+        """Auto-detects plan URL from PR body and includes plan in prompt."""
+        context = {
+            "title": "Implement plan",
+            "body": "Implements https://github.com/owner/repo/issues/10 per spec.",
+            "branch": "feature/plan",
+            "base": "main",
+            "state": "OPEN",
+            "author": "dev",
+            "url": "https://github.com/owner/repo/pull/5",
+            "diff": "--- a/f.py\n+++ b/f.py\n@@ -1 +1 @@\n+x = 1",
+            "review_comments": "",
+            "reviews": "",
+            "issue_comments": "",
+        }
+        mock_fetch.return_value = context
+
+        # First gh call: detect plan (gh api repos/.../issues/10)
+        # Then comment post
+        plan_issue = json.dumps({
+            "body": "## Summary\n\nPlan here.",
+            "labels": [{"name": "plan"}],
+        })
+        mock_gh.side_effect = [
+            plan_issue,  # _fetch_plan_body: issue
+            "",          # _fetch_plan_body: comments
+            "posted",    # _post_review_comment
+        ]
+        mock_claude.return_value = json.dumps(LGTM_REVIEW_JSON)
+
+        success, summary, _ = run_review(
+            "owner", "repo", "5", "/tmp/project",
+            notify_fn=MagicMock(),
+            skill_dir=plan_review_skill_dir,
+        )
+        assert success is True
+        # Verify that plan fetching was attempted (gh api called for issues/10)
+        assert mock_gh.call_count >= 2
+
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    def test_no_plan_when_no_issue_in_body(
+        self, mock_fetch, mock_claude, mock_gh, mock_repliable,
+        pr_context, review_skill_dir,
+    ):
+        """No plan alignment when PR body has no linked issue URL."""
+        pr_context["body"] = "Refactoring pass. No linked issue."
+        mock_fetch.return_value = pr_context
+        mock_claude.return_value = json.dumps(LGTM_REVIEW_JSON)
+
+        success, _, _ = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=MagicMock(),
+            skill_dir=review_skill_dir,
+        )
+        assert success is True
+        # run_gh only called once: to post the review comment
+        assert mock_gh.call_count == 1
+
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    def test_explicit_plan_url_overrides_auto_detection(
+        self, mock_fetch, mock_claude, mock_gh, mock_repliable,
+        pr_context, plan_review_skill_dir,
+    ):
+        """Explicit --plan-url fetches the specified issue, skipping auto-detect."""
+        pr_context["body"] = "No issue URLs here."
+        mock_fetch.return_value = pr_context
+        mock_claude.return_value = json.dumps(LGTM_REVIEW_JSON)
+
+        plan_issue = json.dumps({
+            "body": "## Summary\n\nExplicit plan.",
+            "labels": [],  # No 'plan' label — explicit URLs skip label check
+        })
+        mock_gh.side_effect = [
+            plan_issue,  # _resolve_plan_body: explicit issue fetch
+            "",          # comments
+            "posted",    # _post_review_comment
+        ]
+
+        success, _, _ = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=MagicMock(),
+            skill_dir=plan_review_skill_dir,
+            plan_url="https://github.com/owner/repo/issues/99",
+        )
+        assert success is True
+        # Ensure plan issue was fetched
+        first_call_args = mock_gh.call_args_list[0]
+        assert "issues/99" in " ".join(str(a) for a in first_call_args[0])
+
+
+# ---------------------------------------------------------------------------
+# Plan alignment — CLI --plan-url flag
+# ---------------------------------------------------------------------------
+
+class TestPlanUrlCliFlag:
+    @patch("app.review_runner.run_review")
+    def test_cli_passes_plan_url(self, mock_run):
+        """--plan-url is parsed and passed to run_review."""
+        from app.review_runner import main
+
+        mock_run.return_value = (True, "Review posted.", None)
+        exit_code = main([
+            "https://github.com/owner/repo/pull/42",
+            "--project-path", "/tmp/project",
+            "--plan-url", "https://github.com/owner/repo/issues/10",
+        ])
+
+        assert exit_code == 0
+        _, kwargs = mock_run.call_args
+        assert kwargs["plan_url"] == "https://github.com/owner/repo/issues/10"
+
+    @patch("app.review_runner.run_review")
+    def test_cli_plan_url_defaults_to_none(self, mock_run):
+        """--plan-url defaults to None when not provided."""
+        from app.review_runner import main
+
+        mock_run.return_value = (True, "Review posted.", None)
+        main([
+            "https://github.com/owner/repo/pull/42",
+            "--project-path", "/tmp/project",
+        ])
+
+        _, kwargs = mock_run.call_args
+        assert kwargs["plan_url"] is None
+
+
+# ---------------------------------------------------------------------------
+# Plan alignment — skill_dispatch --plan-url passthrough
+# ---------------------------------------------------------------------------
+
+class TestSkillDispatchPlanUrl:
+    def test_passes_plan_url_to_review_cmd(self):
+        """_build_review_cmd passes --plan-url when present in args."""
+        from app.skill_dispatch import dispatch_skill_mission
+
+        with patch("app.skill_dispatch.is_known_project", return_value=False):
+            cmd = dispatch_skill_mission(
+                "/review https://github.com/owner/repo/pull/5 "
+                "--plan-url https://github.com/owner/repo/issues/3",
+                project_name="myproject",
+                project_path="/tmp/proj",
+                koan_root="/tmp/koan",
+                instance_dir="/tmp/instance",
+            )
+
+        assert cmd is not None
+        assert "--plan-url" in cmd
+        idx = cmd.index("--plan-url")
+        assert cmd[idx + 1] == "https://github.com/owner/repo/issues/3"
+
+    def test_no_plan_url_when_absent(self):
+        """_build_review_cmd does not add --plan-url when not in args."""
+        from app.skill_dispatch import dispatch_skill_mission
+
+        with patch("app.skill_dispatch.is_known_project", return_value=False):
+            cmd = dispatch_skill_mission(
+                "/review https://github.com/owner/repo/pull/5",
+                project_name="myproject",
+                project_path="/tmp/proj",
+                koan_root="/tmp/koan",
+                instance_dir="/tmp/instance",
+            )
+
+        assert cmd is not None
+        assert "--plan-url" not in cmd

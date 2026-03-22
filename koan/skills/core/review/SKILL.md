@@ -10,7 +10,7 @@ github_context_aware: true
 commands:
   - name: review
     description: "Queue a code review for a PR or issue"
-    usage: "/review <github-pr-or-issue-url> [context] OR /review <github-repo-url> [--limit=N]"
+    usage: "/review <github-pr-or-issue-url> [context] [--plan-url <issue-url>] OR /review <github-repo-url> [--limit=N]"
     aliases: [rv]
 handler: handler.py
 ---
