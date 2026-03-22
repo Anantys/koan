@@ -94,7 +94,7 @@ class TestGhRequestHandler:
         assert "koan" in result
 
     def test_classification_fails_queues_generic(self, ctx):
-        """When classifier returns None, queue as generic /gh_request mission."""
+        """When classifier returns None, queue as plain mission (no /gh_request prefix)."""
         from skills.core.gh_request.handler import handle
 
         with patch("skills.core.gh_request.handler.resolve_project_for_repo") as mock_resolve, \
@@ -109,8 +109,10 @@ class TestGhRequestHandler:
         assert "queued" in result.lower()
         mock_insert.assert_called_once()
         mission = mock_insert.call_args[0][1]
-        assert "/gh_request" in mission
+        # No /gh_request prefix — Claude handles plain text naturally
+        assert "/gh_request" not in mission
         assert "https://github.com/owner/repo/pull/42" in mission
+        assert "do something unusual" in mission
 
     def test_no_url_returns_error(self, ctx):
         """Without a URL, can't determine project."""
