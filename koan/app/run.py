@@ -51,6 +51,7 @@ from app.signals import (
     PAUSE_FILE,
     PROJECT_FILE,
     SHUTDOWN_FILE,
+    SKIP_FILE,
     STATUS_FILE,
     STOP_FILE,
 )
@@ -261,8 +262,9 @@ def run_claude_task(
 
     Returns the child exit code.
     """
-    global _last_mission_timed_out
+    global _last_mission_timed_out, _last_mission_skipped
     _last_mission_timed_out = False
+    _last_mission_skipped = False
 
     _sig.task_running = True
     _sig.first_ctrl_c = 0
@@ -318,6 +320,19 @@ def run_claude_task(
                         proc.wait(timeout=30)
                         break
                     except subprocess.TimeoutExpired:
+                        # Check for skip signal (user sent /skip)
+                        koan_root_path = os.environ.get("KOAN_ROOT", "")
+                        skip_path = Path(koan_root_path, SKIP_FILE) if koan_root_path else None
+                        if skip_path and skip_path.exists():
+                            log("koan", "Skip signal detected — aborting current mission")
+                            skip_path.unlink(missing_ok=True)
+                            _last_mission_skipped = True
+                            _kill_process_group(proc)
+                            try:
+                                proc.wait(timeout=10)
+                            except subprocess.TimeoutExpired:
+                                log("error", f"Process {proc.pid} unkillable after skip — abandoning")
+                            break
                         if timed_out:
                             # Watchdog already fired but process survived —
                             # make one last kill attempt from the main thread.
@@ -344,7 +359,9 @@ def run_claude_task(
                 cleanup()
 
         exit_code = proc.returncode
-        if timed_out:
+        if _last_mission_skipped:
+            exit_code = 1
+        elif timed_out:
             exit_code = 1
             _last_mission_timed_out = True
     finally:
@@ -626,6 +643,7 @@ def main_loop():
     Path(koan_root, STOP_FILE).unlink(missing_ok=True)
     Path(koan_root, SHUTDOWN_FILE).unlink(missing_ok=True)
     Path(koan_root, CYCLE_FILE).unlink(missing_ok=True)
+    Path(koan_root, SKIP_FILE).unlink(missing_ok=True)
     clear_restart(koan_root)
 
     # Install SIGINT handler
@@ -1122,6 +1140,7 @@ _MISSION_RETRY_DELAY = 10  # seconds
 # were a transient network error (the retryable-pattern list matches
 # "timeout" which would otherwise trigger a second full-length run).
 _last_mission_timed_out = False
+_last_mission_skipped = False
 
 
 def _get_git_head(project_path: str) -> str:
@@ -1629,6 +1648,12 @@ def _run_iteration(
         # cli_skill translation may have changed mission_title to a different string.
         if original_mission_title:
             _finalize_mission(instance, original_mission_title, project_name, claude_exit)
+
+        # If mission was skipped, notify and skip heavy post-mission pipeline
+        if _last_mission_skipped and original_mission_title:
+            log("koan", f"Mission skipped: {original_mission_title[:60]}")
+            _notify(instance, f"⏭️ [{project_name}] Mission skipped: {original_mission_title[:60]}")
+            return True  # count as productive so loop continues immediately
 
         # Post-mission pipeline
         _status_prefix = f"Run {run_num}/{max_runs}"

@@ -141,6 +141,11 @@ If Kōan misclassifies your message, use `/chat` to force chat mode:
 - `/cancel auth` — Cancel the mission matching "auth"
 </details>
 
+**`/skip`** — Abort the current in-progress mission and move to the next one.
+
+- **Usage:** `/skip`
+- The running Claude subprocess is killed, the mission is moved to Failed, and the agent loop picks the next pending item.
+
 **`/priority`** — Move a pending mission to a different position in the queue.
 
 - **Usage:** `/priority <n>` (move to top) or `/priority <n> <position>`
@@ -1198,6 +1203,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/mission <text>` | — | B | Queue a new mission (`--now` for top priority) |
 | `/list` | `/queue`, `/ls` | B | List pending and in-progress missions |
 | `/cancel <n>` | `/remove`, `/clear` | B | Cancel a pending mission |
+| `/skip` | — | B | Abort current mission, pick next pending |
 | `/priority <n>` | — | B | Reorder a pending mission in the queue |
 | `/status` | `/st` | B | Quick status overview |
 | `/ping` | — | B | Check if the agent loop is alive |
