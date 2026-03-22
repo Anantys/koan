@@ -70,9 +70,9 @@ def handle(ctx) -> Optional[str]:
     command, classified_context = _classify_request(request_text, project_name, url)
 
     if not command:
-        # Classification failed or returned no match — queue as generic mission
-        # The agent will handle it naturally via Claude
-        mission_text = f"/gh_request {url} {request_text}" if url else f"/gh_request {request_text}"
+        # Classification failed or returned no match — queue as generic mission.
+        # Use plain text (no /gh_request prefix) so Claude handles it naturally.
+        mission_text = f"{url} {request_text}".strip() if url else request_text
         mission_entry = f"- [project:{project_name}] {mission_text}"
         from app.utils import insert_pending_mission
         missions_path = ctx.instance_dir / "missions.md"
