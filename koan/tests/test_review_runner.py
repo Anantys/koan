@@ -673,6 +673,7 @@ class TestMainCli:
             "owner", "repo", "42", "/tmp/project",
             skill_dir=Path(__file__).resolve().parent.parent / "skills" / "core" / "review",
             architecture=False,
+            comments=False,
         )
 
     @patch("app.review_runner.run_review")

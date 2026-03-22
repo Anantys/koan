@@ -343,13 +343,15 @@ def _build_pr_url_cmd(
 def _build_review_cmd(
     base_cmd: List[str], args: str, project_path: str,
 ) -> Optional[List[str]]:
-    """Build review_runner command, passing --architecture if present."""
+    """Build review_runner command, passing --architecture or --comments if present."""
     url_match = _PR_URL_RE.search(args)
     if not url_match:
         return None
     cmd = base_cmd + [url_match.group(0), "--project-path", project_path]
     if "--architecture" in args:
         cmd.append("--architecture")
+    if "--comments" in args:
+        cmd.append("--comments")
     return cmd
 
 

@@ -119,10 +119,16 @@ def build_review_prompt(
     context: dict,
     skill_dir: Optional[Path] = None,
     architecture: bool = False,
+    comments: bool = False,
     repliable_comments: Optional[List[dict]] = None,
 ) -> str:
     """Build a prompt for Claude to review a PR."""
-    prompt_name = "review-architecture" if architecture else "review"
+    if architecture:
+        prompt_name = "review-architecture"
+    elif comments:
+        prompt_name = "review-comments"
+    else:
+        prompt_name = "review"
     repliable_text = _format_repliable_comments(repliable_comments or [])
     return load_prompt_or_skill(
         skill_dir, prompt_name,
@@ -496,6 +502,7 @@ def run_review(
     notify_fn=None,
     skill_dir: Optional[Path] = None,
     architecture: bool = False,
+    comments: bool = False,
 ) -> Tuple[bool, str, Optional[dict]]:
     """Execute a read-only code review on a PR.
 
@@ -507,6 +514,7 @@ def run_review(
         notify_fn: Optional callback for progress notifications.
         skill_dir: Optional path to the review skill directory for prompts.
         architecture: If True, use architecture-focused review prompt.
+        comments: If True, use comment-quality review prompt.
 
     Returns:
         (success, summary, review_data) tuple. review_data is the validated
@@ -534,7 +542,7 @@ def run_review(
     # Step 2: Build review prompt
     prompt = build_review_prompt(
         context, skill_dir=skill_dir, architecture=architecture,
-        repliable_comments=repliable_comments,
+        comments=comments, repliable_comments=repliable_comments,
     )
 
     # Step 3: Run Claude review (read-only)
@@ -622,6 +630,10 @@ def main(argv=None):
         "--architecture", action="store_true",
         help="Use architecture-focused review (SOLID, layering, coupling)",
     )
+    parser.add_argument(
+        "--comments", action="store_true",
+        help="Use comment-quality review (accuracy, completeness, stale TODOs)",
+    )
     cli_args = parser.parse_args(argv)
 
     try:
@@ -636,6 +648,7 @@ def main(argv=None):
         owner, repo, pr_number, cli_args.project_path,
         skill_dir=skill_dir,
         architecture=cli_args.architecture,
+        comments=cli_args.comments,
     )
     print(summary)
     return 0 if success else 1

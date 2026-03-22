@@ -314,11 +314,12 @@ These features turn Kōan from a task runner into a full development workflow pa
 
 **`/review`** — Queue a code review for a pull request or issue.
 
-- **Usage:** `/review <github-pr-or-issue-url> [--architecture]`
+- **Usage:** `/review <github-pr-or-issue-url> [--architecture] [--comments]`
 - **Aliases:** `/rv`
 - **GitHub @mention:** `@koan-bot /review` on a PR
 - **Flags:**
   - `--architecture` — Architecture-focused review (SOLID principles, layering, coupling, abstraction boundaries)
+  - `--comments` — Comment quality review (factual accuracy, completeness, stale TODOs, misleading language)
 
 <details>
 <summary>Use cases</summary>
@@ -326,6 +327,7 @@ These features turn Kōan from a task runner into a full development workflow pa
 - `/review https://github.com/org/repo/pull/55` — Get a thorough code review
 - `/rv https://github.com/org/repo/pull/55` — Same thing, shorter
 - `/review https://github.com/org/repo/pull/55 --architecture` — Architecture-focused review
+- `/review https://github.com/org/repo/pull/55 --comments` — Comment quality review
 </details>
 
 **`/refactor`** — Queue a targeted refactoring mission.
