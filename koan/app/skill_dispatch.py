@@ -62,6 +62,13 @@ _SKILL_RUNNERS = {
     "incident": "skills.core.incident.incident_runner",
 }
 
+# Commands that look like /skills but should be sent to Claude as regular
+# missions. The /prefix is stripped and the remaining text becomes the task.
+# This avoids "Unknown skill command" errors for commands that are handled
+# on the bridge side (Telegram) but can also land in the mission queue
+# via GitHub notifications.
+_PASSTHROUGH_TO_CLAUDE = {"gh_request"}
+
 _PROJECT_TAG_RE = re.compile(r"^\[projec?t:([a-zA-Z0-9_-]+)\]\s*")
 _PROJECT_WORD_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
 
@@ -526,6 +533,23 @@ def validate_skill_args(command: str, args: str) -> Optional[str]:
         if not (_PR_URL_RE.search(args) or _ISSUE_URL_RE.search(args)):
             return "/check requires a GitHub URL (PR or issue)"
 
+    return None
+
+
+def strip_passthrough_command(mission_text: str) -> Optional[str]:
+    """If the mission uses a passthrough command, strip it and return the text.
+
+    Passthrough commands (e.g. /gh_request) look like skill missions but
+    should be sent to Claude as regular tasks. This function strips the
+    /command prefix and returns the remaining text for Claude to handle.
+
+    Returns:
+        The mission text without the /command prefix, or None if this is
+        not a passthrough command.
+    """
+    _, command, args = parse_skill_mission(mission_text)
+    if command in _PASSTHROUGH_TO_CLAUDE:
+        return args if args else command
     return None
 
 

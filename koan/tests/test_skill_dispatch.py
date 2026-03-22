@@ -8,6 +8,7 @@ from app.skill_dispatch import (
     parse_skill_mission,
     build_skill_command,
     dispatch_skill_mission,
+    strip_passthrough_command,
     validate_skill_args,
 )
 
@@ -1195,3 +1196,47 @@ class TestRegistryCacheThreadSafety:
         assert build_count["n"] == 1, (
             f"build_registry called {build_count['n']} times, expected 1"
         )
+
+
+# ---------------------------------------------------------------------------
+# strip_passthrough_command — GitHub #994
+# ---------------------------------------------------------------------------
+
+class TestStripPassthroughCommand:
+    """Passthrough commands are /commands that should be sent to Claude
+    as regular missions, not dispatched to a skill runner."""
+
+    def test_gh_request_with_url_and_text(self):
+        result = strip_passthrough_command(
+            "/gh_request https://github.com/owner/repo/pull/25 can you review this?"
+        )
+        assert result == "https://github.com/owner/repo/pull/25 can you review this?"
+
+    def test_gh_request_with_text_only(self):
+        result = strip_passthrough_command("/gh_request please fix the login bug")
+        assert result == "please fix the login bug"
+
+    def test_gh_request_no_args(self):
+        """When /gh_request has no args, return the command name as fallback."""
+        result = strip_passthrough_command("/gh_request")
+        assert result == "gh_request"
+
+    def test_gh_request_with_project_tag(self):
+        result = strip_passthrough_command(
+            "[project:koan] /gh_request can you review this?"
+        )
+        assert result == "can you review this?"
+
+    def test_regular_skill_not_passthrough(self):
+        result = strip_passthrough_command("/plan Add dark mode")
+        assert result is None
+
+    def test_rebase_not_passthrough(self):
+        result = strip_passthrough_command(
+            "/rebase https://github.com/owner/repo/pull/42"
+        )
+        assert result is None
+
+    def test_regular_mission_not_passthrough(self):
+        result = strip_passthrough_command("Fix the login bug")
+        assert result is None

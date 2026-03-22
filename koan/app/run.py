@@ -1007,7 +1007,22 @@ def _handle_skill_dispatch(
     # Check for cli_skill translation before failing unrecognized /commands
     if is_skill_mission(mission_title):
         from pathlib import Path as _Path
-        from app.skill_dispatch import translate_cli_skill_mission
+        from app.skill_dispatch import (
+            translate_cli_skill_mission,
+            strip_passthrough_command,
+        )
+
+        # Some /commands (e.g. /gh_request) are bridge-side handlers that
+        # can also land in the mission queue via GitHub notifications.
+        # Strip the prefix and let Claude handle them as regular missions.
+        passthrough_text = strip_passthrough_command(mission_title)
+        if passthrough_text is not None:
+            _debug_log(
+                f"[run] passthrough command: '{mission_title[:80]}' -> '{passthrough_text[:80]}'"
+            )
+            log("mission", "Decision: PASSTHROUGH (command stripped, sending to Claude)")
+            return False, passthrough_text
+
         translated = translate_cli_skill_mission(
             mission_text=mission_title,
             koan_root=_Path(koan_root),
