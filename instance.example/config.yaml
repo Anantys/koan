@@ -235,6 +235,10 @@ usage:
 #   reply_enabled: false             # AI replies to non-command @mentions (default: false)
 #                                    # When enabled, the bot replies to questions/requests
 #                                    # from authorized users with contextual AI-generated answers.
+#   reply_authorized_users: ["*"]    # Optional override for reply permissions.
+#                                    # If omitted, falls back to authorized_users.
+#                                    # Unlike command auth, ["*"] here means any commenter.
+#   reply_rate_limit: 5              # Max replies per user per hour (default: 5, min: 1)
 #   natural_language: false           # NLP intent parsing for @mentions (default: false)
 #                                    # When enabled, unrecognized commands are sent to Claude
 #                                    # for intent classification before falling back to error.

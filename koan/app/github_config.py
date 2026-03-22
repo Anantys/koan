@@ -8,6 +8,8 @@ Config schema in config.yaml:
       nickname: "koan-bot"
       commands_enabled: true
       authorized_users: ["*"]
+      reply_authorized_users: ["alice", "bob"]  # optional
+      reply_rate_limit: 5
       max_age_hours: 24
       reply_enabled: false
       check_interval_seconds: 60
@@ -17,6 +19,7 @@ Per-project override in projects.yaml:
       myproject:
         github:
           authorized_users: ["alice", "bob"]
+          reply_authorized_users: ["alice", "bob"]
 """
 
 from typing import List, Optional
@@ -90,6 +93,47 @@ def get_github_reply_enabled(config: dict) -> bool:
     """
     github = config.get("github") or {}
     return bool(github.get("reply_enabled", False))
+
+
+def get_github_reply_authorized_users(
+    config: dict,
+    project_name: Optional[str] = None,
+    projects_config: Optional[dict] = None,
+) -> Optional[List[str]]:
+    """Get the list of authorized GitHub users for reply generation.
+
+    Checks per-project github.reply_authorized_users first, then global
+    github.reply_authorized_users. Returns None when not configured so callers
+    can fall back to command-level authorized_users for backward compatibility.
+    """
+    # Check per-project override first
+    if project_name and projects_config:
+        from app.projects_config import get_project_github_reply_authorized_users
+        project_users = get_project_github_reply_authorized_users(
+            projects_config, project_name
+        )
+        if project_users is not None:
+            return project_users
+
+    # Fall back to global config.yaml
+    github = config.get("github") or {}
+    users = github.get("reply_authorized_users")
+    if users is None:
+        return None
+    return users if isinstance(users, list) else None
+
+
+def get_github_reply_rate_limit(config: dict) -> int:
+    """Get max replies per user per hour for GitHub reply flow.
+
+    Default: 5. Values below 1 are floored to 1.
+    """
+    github = config.get("github") or {}
+    try:
+        val = int(github.get("reply_rate_limit", 5))
+        return max(1, val)
+    except (ValueError, TypeError):
+        return 5
 
 
 def get_github_max_age_hours(config: dict) -> int:

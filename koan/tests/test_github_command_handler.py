@@ -8,6 +8,7 @@ import pytest
 
 from app.github_command_handler import (
     _error_replies,
+    _reply_timestamps,
     _extract_url_from_context,
     _fetch_and_filter_comment,
     _handle_help_command,
@@ -88,6 +89,14 @@ def sample_notification():
             "latest_comment_url": "https://api.github.com/repos/sukria/koan/issues/comments/99999",
         },
     }
+
+
+@pytest.fixture(autouse=True)
+def clear_reply_rate_state():
+    """Keep in-memory reply rate tracking isolated between tests."""
+    _reply_timestamps.clear()
+    yield
+    _reply_timestamps.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -746,6 +755,89 @@ class TestTryReply:
             "bot", "sukria", "koan", "koan", "what?",
         )
         assert result is False
+
+    @patch("app.github_command_handler.check_user_permission", return_value=False)
+    def test_falls_back_to_command_authorized_users_when_reply_list_unset(
+        self, mock_perm, reply_notification, reply_comment
+    ):
+        config = {
+            "github": {
+                "nickname": "bot",
+                "reply_enabled": True,
+                "authorized_users": ["maintainer"],
+            }
+        }
+        _try_reply(
+            reply_notification, reply_comment, config, None,
+            "bot", "sukria", "koan", "koan", "what?",
+        )
+        mock_perm.assert_called_once_with("sukria", "koan", "alice", ["maintainer"])
+
+    @patch("app.github_command_handler.check_user_permission")
+    def test_reply_wildcard_skips_permission_check(
+        self, mock_perm, reply_comment
+    ):
+        notif = {"id": "1", "subject": {"url": ""}, "repository": {"full_name": "o/r"}}
+        config = {
+            "github": {
+                "nickname": "bot",
+                "reply_enabled": True,
+                "authorized_users": ["maintainer"],
+                "reply_authorized_users": ["*"],
+            }
+        }
+        result = _try_reply(
+            notif, reply_comment, config, None,
+            "bot", "o", "r", "koan", "what?",
+        )
+        assert result is False
+        mock_perm.assert_not_called()
+
+    @patch("app.github_command_handler.check_user_permission", return_value=False)
+    def test_reply_empty_authorized_users_disables_replies(
+        self, mock_perm, reply_notification, reply_comment
+    ):
+        config = {
+            "github": {
+                "nickname": "bot",
+                "reply_enabled": True,
+                "authorized_users": ["*"],
+                "reply_authorized_users": [],
+            }
+        }
+        result = _try_reply(
+            reply_notification, reply_comment, config, None,
+            "bot", "sukria", "koan", "koan", "what?",
+        )
+        assert result is False
+        mock_perm.assert_called_once_with("sukria", "koan", "alice", [])
+
+    @patch("app.github_command_handler.check_user_permission")
+    @patch("app.github_command_handler.extract_issue_number_from_notification")
+    def test_reply_rate_limit_applies_per_user_per_hour(
+        self, mock_issue, mock_perm, reply_notification, reply_comment
+    ):
+        mock_issue.return_value = "42"
+        mock_perm.return_value = True
+        config = {
+            "github": {
+                "nickname": "bot",
+                "reply_enabled": True,
+                "authorized_users": ["*"],
+                "reply_rate_limit": 1,
+            }
+        }
+
+        _try_reply(
+            reply_notification, reply_comment, config, None,
+            "bot", "sukria", "koan", "koan", "first?",
+        )
+        _try_reply(
+            reply_notification, reply_comment, config, None,
+            "bot", "sukria", "koan", "koan", "second?",
+        )
+
+        assert mock_issue.call_count == 1
 
     @patch("app.github_command_handler._notify_github_reply")
     @patch("app.github_command_handler._notify_github_question")

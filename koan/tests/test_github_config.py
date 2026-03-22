@@ -9,7 +9,9 @@ from app.github_config import (
     get_github_max_age_hours,
     get_github_natural_language,
     get_github_nickname,
+    get_github_reply_authorized_users,
     get_github_reply_enabled,
+    get_github_reply_rate_limit,
     validate_github_config,
 )
 
@@ -160,6 +162,68 @@ class TestGetGithubReplyEnabled:
 
     def test_missing_key(self):
         assert get_github_reply_enabled({"github": {}}) is False
+
+
+class TestGetGithubReplyAuthorizedUsers:
+    def test_default_none_when_missing(self):
+        assert get_github_reply_authorized_users({}) is None
+
+    def test_global_explicit_list(self):
+        config = {"github": {"reply_authorized_users": ["alice", "bob"]}}
+        assert get_github_reply_authorized_users(config) == ["alice", "bob"]
+
+    def test_global_wildcard(self):
+        config = {"github": {"reply_authorized_users": ["*"]}}
+        assert get_github_reply_authorized_users(config) == ["*"]
+
+    def test_global_empty_list(self):
+        config = {"github": {"reply_authorized_users": []}}
+        assert get_github_reply_authorized_users(config) == []
+
+    def test_per_project_override(self):
+        config = {"github": {"reply_authorized_users": ["alice"]}}
+        projects_config = {
+            "defaults": {},
+            "projects": {
+                "myapp": {
+                    "path": "/tmp/myapp",
+                    "github": {"reply_authorized_users": ["bob"]},
+                }
+            },
+        }
+        result = get_github_reply_authorized_users(
+            config, project_name="myapp", projects_config=projects_config
+        )
+        assert result == ["bob"]
+
+    def test_per_project_fallback_to_global(self):
+        config = {"github": {"reply_authorized_users": ["alice"]}}
+        projects_config = {
+            "defaults": {},
+            "projects": {"myapp": {"path": "/tmp/myapp"}},
+        }
+        result = get_github_reply_authorized_users(
+            config, project_name="myapp", projects_config=projects_config
+        )
+        assert result == ["alice"]
+
+    def test_invalid_global_type_returns_none(self):
+        config = {"github": {"reply_authorized_users": "alice"}}
+        assert get_github_reply_authorized_users(config) is None
+
+
+class TestGetGithubReplyRateLimit:
+    def test_default(self):
+        assert get_github_reply_rate_limit({}) == 5
+
+    def test_custom(self):
+        assert get_github_reply_rate_limit({"github": {"reply_rate_limit": 9}}) == 9
+
+    def test_floor_at_1(self):
+        assert get_github_reply_rate_limit({"github": {"reply_rate_limit": 0}}) == 1
+
+    def test_invalid_returns_default(self):
+        assert get_github_reply_rate_limit({"github": {"reply_rate_limit": "bad"}}) == 5
 
 
 class TestGetGithubMaxAgeHours:

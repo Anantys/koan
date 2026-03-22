@@ -11,6 +11,7 @@ Provides:
 - get_project_exploration(config, name) -> bool: Get exploration flag for a project
 - get_project_max_open_prs(config, name) -> int: Get max open PRs limit for a project
 - get_project_github_authorized_users(config, name) -> list: Get GitHub authorized users
+- get_project_github_reply_authorized_users(config, name) -> Optional[list]: Get GitHub reply-authorized users
 
 File location: projects.yaml at KOAN_ROOT (next to .env).
 """
@@ -345,6 +346,25 @@ def get_project_github_natural_language(config: dict, project_name: str) -> Opti
     if value is None:
         return None
     return bool(value)
+
+
+def get_project_github_reply_authorized_users(
+    config: dict, project_name: str
+) -> Optional[list]:
+    """Get GitHub reply-authorized users for a project from projects.yaml.
+
+    Per-project github.reply_authorized_users overrides global config.
+    Returns:
+    - list of usernames (or ["*"]) when explicitly configured
+    - [] when explicitly configured as empty
+    - None when not configured (caller should fall back to command auth list)
+    """
+    project_cfg = get_project_config(config, project_name)
+    github = project_cfg.get("github", {}) or {}
+    users = github.get("reply_authorized_users")
+    if users is None:
+        return None
+    return users if isinstance(users, list) else None
 
 
 def get_project_submit_to_repository(config: dict, project_name: str) -> dict:

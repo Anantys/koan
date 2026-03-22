@@ -21,14 +21,17 @@ Reply flow (when reply_enabled=true and command not recognized):
 
 import logging
 import re
-from typing import List, Optional, Tuple
+import time
+from typing import Dict, List, Optional, Tuple
 
 from app.bounded_set import BoundedSet
 from app.github_config import (
     get_github_authorized_users,
     get_github_natural_language,
     get_github_nickname,
+    get_github_reply_authorized_users,
     get_github_reply_enabled,
+    get_github_reply_rate_limit,
     get_github_subscribe_enabled,
     get_github_subscribe_max_per_cycle,
 )
@@ -52,6 +55,24 @@ log = logging.getLogger(__name__)
 # Bounded: FIFO eviction when limit is reached (oldest entries removed first).
 _MAX_TRACKED_ENTRIES = 10000
 _error_replies: BoundedSet = BoundedSet(maxlen=_MAX_TRACKED_ENTRIES)
+_reply_timestamps: Dict[str, List[float]] = {}
+
+
+def _is_reply_rate_limited(comment_author: str, config: dict) -> bool:
+    """Check and update per-user reply rate limits (max replies per hour)."""
+    now = time.time()
+    window_start = now - 3600
+    timestamps = _reply_timestamps.get(comment_author, [])
+    timestamps = [ts for ts in timestamps if ts >= window_start]
+
+    limit = get_github_reply_rate_limit(config)
+    if len(timestamps) >= limit:
+        _reply_timestamps[comment_author] = timestamps
+        return True
+
+    timestamps.append(now)
+    _reply_timestamps[comment_author] = timestamps
+    return False
 
 
 def _quarantine_github_mission(text: str, reason: str, author: str):
@@ -623,11 +644,28 @@ def _try_reply(
     comment_author = comment.get("user", {}).get("login", "")
     comment_id = str(comment.get("id", ""))
 
-    # Check permissions — same authorized_users as commands
-    allowed_users = get_github_authorized_users(config, project_name, projects_config)
-    if not check_user_permission(owner, repo, comment_author, allowed_users):
+    reply_allowed_users = get_github_reply_authorized_users(
+        config, project_name, projects_config
+    )
+    if reply_allowed_users is None:
+        # Backward compatibility: default to command-level authorization.
+        allowed_users = get_github_authorized_users(config, project_name, projects_config)
+    else:
+        allowed_users = reply_allowed_users
+
+    # Explicit ["*"] for replies means anyone can ask a question.
+    if allowed_users != ["*"] and not check_user_permission(
+        owner, repo, comment_author, allowed_users
+    ):
         log.debug(
             "GitHub reply: permission denied for @%s on %s/%s",
+            comment_author, owner, repo,
+        )
+        return False
+
+    if _is_reply_rate_limited(comment_author, config):
+        log.warning(
+            "GitHub reply: rate limit exceeded for @%s on %s/%s",
             comment_author, owner, repo,
         )
         return False

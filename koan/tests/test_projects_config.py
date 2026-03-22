@@ -13,6 +13,7 @@ from app.projects_config import (
     get_project_exploration,
     get_project_max_open_prs,
     get_project_models,
+    get_project_github_reply_authorized_users,
     get_project_submit_to_repository,
     get_project_tools,
     resolve_base_branch,
@@ -587,6 +588,59 @@ class TestGetProjectMaxOpenPrs:
             "projects": {"app": None},
         }
         assert get_project_max_open_prs(config, "app") == 8
+
+
+# ---------------------------------------------------------------------------
+# get_project_github_reply_authorized_users
+# ---------------------------------------------------------------------------
+
+
+class TestGetProjectGithubReplyAuthorizedUsers:
+    """Tests for get_project_github_reply_authorized_users()."""
+
+    def test_returns_none_when_unset(self):
+        config = {"projects": {"app": {"path": "/app", "github": {}}}}
+        assert get_project_github_reply_authorized_users(config, "app") is None
+
+    def test_returns_list_when_set(self):
+        config = {
+            "projects": {
+                "app": {
+                    "path": "/app",
+                    "github": {"reply_authorized_users": ["alice", "bob"]},
+                }
+            }
+        }
+        assert get_project_github_reply_authorized_users(config, "app") == ["alice", "bob"]
+
+    def test_returns_empty_list_when_explicitly_empty(self):
+        config = {
+            "projects": {
+                "app": {
+                    "path": "/app",
+                    "github": {"reply_authorized_users": []},
+                }
+            }
+        }
+        assert get_project_github_reply_authorized_users(config, "app") == []
+
+    def test_defaults_inherited_via_get_project_config(self):
+        config = {
+            "defaults": {"github": {"reply_authorized_users": ["team"]}},
+            "projects": {"app": {"path": "/app"}},
+        }
+        assert get_project_github_reply_authorized_users(config, "app") == ["team"]
+
+    def test_invalid_type_returns_none(self):
+        config = {
+            "projects": {
+                "app": {
+                    "path": "/app",
+                    "github": {"reply_authorized_users": "alice"},
+                }
+            }
+        }
+        assert get_project_github_reply_authorized_users(config, "app") is None
 
 
 # ---------------------------------------------------------------------------
