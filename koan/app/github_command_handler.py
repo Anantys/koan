@@ -631,36 +631,29 @@ def _try_reply(
 
     # Check permissions — use reply_authorized_users if configured, else authorized_users
     reply_users = get_github_reply_authorized_users(config, project_name, projects_config)
-    if reply_users is not None:
-        # Explicit reply_authorized_users configured
-        if reply_users == ["*"]:
-            # Wildcard for replies means "anyone" — skip permission check entirely
-            # (unlike command wildcard which checks GitHub write access)
-            pass
-        elif not check_user_permission(owner, repo, comment_author, reply_users):
-            log.debug(
-                "GitHub reply: permission denied for @%s on %s/%s",
-                comment_author, owner, repo,
-            )
-            return False
-    else:
-        # Fall back to command authorized_users
-        allowed_users = get_github_authorized_users(config, project_name, projects_config)
-        if not check_user_permission(owner, repo, comment_author, allowed_users):
-            log.debug(
-                "GitHub reply: permission denied for @%s on %s/%s",
-                comment_author, owner, repo,
-            )
-            return False
+    if reply_users is None:
+        reply_users = get_github_authorized_users(config, project_name, projects_config)
+
+    # Wildcard for replies means "anyone" — skip permission check entirely
+    # (unlike command wildcard which checks GitHub write access)
+    if reply_users != ["*"] and not check_user_permission(owner, repo, comment_author, reply_users):
+        log.debug(
+            "GitHub reply: permission denied for @%s on %s/%s",
+            comment_author, owner, repo,
+        )
+        return False
 
     # Rate limit: prevent API quota abuse from broad reply permissions
     rate_limit = get_github_reply_rate_limit(config)
     now = time.time()
     one_hour_ago = now - 3600
     user_timestamps = _reply_timestamps.get(comment_author, [])
-    # Clean up stale entries
+    # Clean up stale entries (and remove key entirely if empty)
     user_timestamps = [t for t in user_timestamps if t > one_hour_ago]
-    _reply_timestamps[comment_author] = user_timestamps
+    if user_timestamps:
+        _reply_timestamps[comment_author] = user_timestamps
+    else:
+        _reply_timestamps.pop(comment_author, None)
     if len(user_timestamps) >= rate_limit:
         log.warning(
             "GitHub reply: rate limit (%d/h) exceeded for @%s on %s/%s",

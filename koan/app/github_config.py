@@ -10,6 +10,8 @@ Config schema in config.yaml:
       authorized_users: ["*"]
       max_age_hours: 24
       reply_enabled: false
+      reply_authorized_users: ["*"]   # separate from command permissions
+      reply_rate_limit: 5             # max replies per user per hour
       check_interval_seconds: 60
 
 Per-project override in projects.yaml:
@@ -17,6 +19,7 @@ Per-project override in projects.yaml:
       myproject:
         github:
           authorized_users: ["alice", "bob"]
+          reply_authorized_users: ["*"]
 """
 
 from typing import List, Optional
