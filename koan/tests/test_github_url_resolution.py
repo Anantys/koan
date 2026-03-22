@@ -875,6 +875,158 @@ class TestResolveProjectPathWithOwner:
 
         assert path == str(project_dir)
 
+    def test_partial_name_match_aliased_clone(self, tmp_path, monkeypatch):
+        """Aliased clone: repo 'perl-Convert-ASN1' cloned as 'Convert-ASN1'.
+
+        Steps 1-3 all fail (name mismatch), but step 3b catches it via
+        partial name matching + remote validation.
+        """
+        from app import utils
+        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
+
+        project_dir = tmp_path / "Convert-ASN1"
+        project_dir.mkdir()
+        config = {
+            "projects": {
+                "Convert-ASN1": {"path": str(project_dir)}
+            }
+        }
+        (tmp_path / "projects.yaml").write_text(yaml.dump(config))
+
+        with patch("app.utils.get_all_github_remotes",
+                   return_value=["cpan-authors/perl-convert-asn1"]):
+            from app.utils import resolve_project_path
+            path = resolve_project_path(
+                "perl-Convert-ASN1", owner="cpan-authors"
+            )
+
+        assert path == str(project_dir)
+
+    def test_partial_name_match_reverse(self, tmp_path, monkeypatch):
+        """Reverse alias: local name is longer than repo name.
+
+        E.g. local 'perl-Convert-ASN1' for repo 'Convert-ASN1'.
+        """
+        from app import utils
+        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
+
+        project_dir = tmp_path / "perl-Convert-ASN1"
+        project_dir.mkdir()
+        config = {
+            "projects": {
+                "perl-Convert-ASN1": {"path": str(project_dir)}
+            }
+        }
+        (tmp_path / "projects.yaml").write_text(yaml.dump(config))
+
+        with patch("app.utils.get_all_github_remotes",
+                   return_value=["cpan-authors/convert-asn1"]):
+            from app.utils import resolve_project_path
+            path = resolve_project_path(
+                "Convert-ASN1", owner="cpan-authors"
+            )
+
+        assert path == str(project_dir)
+
+    def test_partial_name_no_false_positive(self, tmp_path, monkeypatch):
+        """Partial name match doesn't fire when remote doesn't confirm.
+
+        Project 'ASN1' is a suffix of 'perl-Convert-ASN1' but remote
+        doesn't match — should return None.
+        """
+        from app import utils
+        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
+
+        project_dir = tmp_path / "ASN1"
+        project_dir.mkdir()
+        config = {
+            "projects": {
+                "ASN1": {"path": str(project_dir)}
+            }
+        }
+        (tmp_path / "projects.yaml").write_text(yaml.dump(config))
+
+        with patch("app.utils.get_all_github_remotes",
+                   return_value=["other-org/totally-different"]):
+            from app.utils import resolve_project_path
+            path = resolve_project_path(
+                "perl-Convert-ASN1", owner="cpan-authors"
+            )
+
+        assert path is None
+
+    def test_all_urls_cache_match(self, tmp_path, monkeypatch):
+        """In-memory all-URLs cache (workspace projects with fork remotes)."""
+        from app import utils
+        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
+        monkeypatch.setenv("KOAN_PROJECTS", "myfork:/home/myfork")
+
+        with patch("app.projects_merged.get_all_projects",
+                   return_value=[("myfork", "/home/myfork")]), \
+             patch("app.projects_merged.get_github_url_cache",
+                   return_value={"myfork": "atoomic/koan"}), \
+             patch("app.projects_merged.get_all_github_urls_cache",
+                   return_value={"myfork": ["atoomic/koan", "sukria/koan"]}):
+            from app.utils import resolve_project_path
+            path = resolve_project_path("koan", owner="sukria")
+
+        assert path == "/home/myfork"
+
+
+# ─────────────────────────────────────────────────────
+# Phase 4b: Partial name candidate helper
+# ─────────────────────────────────────────────────────
+
+
+class TestFindPartialNameCandidates:
+    """Tests for _find_partial_name_candidates() helper."""
+
+    def test_suffix_match_dash(self):
+        from app.utils import _find_partial_name_candidates
+        projects = [("Convert-ASN1", "/path/Convert-ASN1")]
+        result = _find_partial_name_candidates("perl-convert-asn1", projects)
+        assert len(result) == 1
+        assert result[0] == ("Convert-ASN1", "/path/Convert-ASN1")
+
+    def test_suffix_match_underscore(self):
+        from app.utils import _find_partial_name_candidates
+        projects = [("Convert_ASN1", "/path/Convert_ASN1")]
+        result = _find_partial_name_candidates("perl_convert_asn1", projects)
+        assert len(result) == 1
+
+    def test_reverse_suffix(self):
+        from app.utils import _find_partial_name_candidates
+        projects = [("perl-Convert-ASN1", "/path/perl-Convert-ASN1")]
+        result = _find_partial_name_candidates("convert-asn1", projects)
+        assert len(result) == 1
+
+    def test_no_match(self):
+        from app.utils import _find_partial_name_candidates
+        projects = [("totally-different", "/path/a")]
+        result = _find_partial_name_candidates("perl-convert-asn1", projects)
+        assert len(result) == 0
+
+    def test_exact_match_excluded(self):
+        """Exact matches are excluded (handled by earlier steps)."""
+        from app.utils import _find_partial_name_candidates
+        projects = [("convert-asn1", "/path/a")]
+        result = _find_partial_name_candidates("convert-asn1", projects)
+        assert len(result) == 0
+
+    def test_basename_match(self):
+        """Matches on directory basename, not just project name."""
+        from app.utils import _find_partial_name_candidates
+        projects = [("myproject", "/path/to/Convert-ASN1")]
+        result = _find_partial_name_candidates("perl-convert-asn1", projects)
+        assert len(result) == 1
+
+    def test_no_mid_word_match(self):
+        """Doesn't match if the suffix isn't at a word boundary."""
+        from app.utils import _find_partial_name_candidates
+        projects = [("onvert-ASN1", "/path/a")]  # no dash before
+        result = _find_partial_name_candidates("perl-convert-asn1", projects)
+        assert len(result) == 0
+
 
 # ─────────────────────────────────────────────────────
 # Phase 4: Skill handler owner passthrough

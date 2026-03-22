@@ -395,6 +395,60 @@ def project_name_for_path(project_path: str) -> str:
     return Path(project_path).name
 
 
+def _find_partial_name_candidates(
+    repo_lower: str, projects: list
+) -> list:
+    """Find projects whose name/basename partially matches the repo name.
+
+    Catches aliased clones: e.g. repo "perl-convert-asn1" with local dir
+    "convert-asn1".  Matches when one name is a dash-separated suffix of
+    the other.
+
+    Returns a list of (name, path) tuples — candidates to validate via remote.
+    """
+    candidates = []
+    for name, path in projects:
+        name_lower = name.lower()
+        basename_lower = Path(path).name.lower()
+        for local in (name_lower, basename_lower):
+            if local == repo_lower:
+                continue  # Already handled by exact-match steps
+            # repo name ends with -<local> (e.g., "perl-convert-asn1" ends with "-convert-asn1")
+            if repo_lower.endswith(f"-{local}") or repo_lower.endswith(f"_{local}"):
+                candidates.append((name, path))
+                break
+            # local name ends with -<repo> (e.g., local "perl-convert-asn1" for repo "convert-asn1")
+            if local.endswith(f"-{repo_lower}") or local.endswith(f"_{repo_lower}"):
+                candidates.append((name, path))
+                break
+    return candidates
+
+
+def _persist_and_cache_remotes(
+    name: str, path: str, all_remotes: list, projects: list
+) -> None:
+    """Persist discovered github remotes to yaml and in-memory cache."""
+    primary = get_github_remote(path)
+    try:
+        from app.projects_config import load_projects_config, save_projects_config
+        config = load_projects_config(str(KOAN_ROOT))
+        if config and name in config.get("projects", {}):
+            proj = config["projects"][name]
+            if isinstance(proj, dict) and proj.get("path"):
+                if primary and not proj.get("github_url"):
+                    proj["github_url"] = primary
+                proj["github_urls"] = all_remotes
+                save_projects_config(str(KOAN_ROOT), config)
+    except Exception as e:
+        print(f"[utils] Failed to persist github_urls for {name}: {e}", file=sys.stderr)
+    if primary:
+        try:
+            from app.projects_merged import set_github_url
+            set_github_url(name, primary)
+        except Exception as e:
+            print(f"[utils] Failed to cache github_url for {name}: {e}", file=sys.stderr)
+
+
 def resolve_project_path(repo_name: str, owner: Optional[str] = None) -> Optional[str]:
     """Find local project path matching a repository name.
 
@@ -404,6 +458,10 @@ def resolve_project_path(repo_name: str, owner: Optional[str] = None) -> Optiona
        so cross-owner matches work on the fast path
     2. Exact match on project name (case-insensitive)
     3. Match on directory basename (case-insensitive)
+    3b. Partial name match + remote validation: when the repo was cloned with
+        a different local name (e.g., perl-Convert-ASN1 → Convert-ASN1), check
+        if a project name/basename is a suffix of the repo name (or vice versa)
+        and validate via git remotes.
     4. Auto-discover from ALL git remotes (if owner provided): subprocess
        fallback for projects not yet populated by ensure_github_urls()
     5. Fallback to single project if only one configured
@@ -437,11 +495,18 @@ def resolve_project_path(repo_name: str, owner: Optional[str] = None) -> Optiona
                                 return path
         except Exception as e:
             print(f"[utils] GitHub URL match via projects.yaml failed: {e}", file=sys.stderr)
-        # Also check in-memory github_url cache (workspace projects)
+        # Also check in-memory github_url caches (workspace projects)
         try:
-            from app.projects_merged import get_github_url_cache
+            from app.projects_merged import get_all_github_urls_cache, get_github_url_cache
+            # Check primary URL cache
             for proj_name, gh_url in get_github_url_cache().items():
                 if gh_url.lower() == target:
+                    for name, path in projects:
+                        if name == proj_name:
+                            return path
+            # Check all-URLs cache (covers forks with upstream remotes)
+            for proj_name, urls in get_all_github_urls_cache().items():
+                if target in (u.lower() for u in urls):
                     for name, path in projects:
                         if name == proj_name:
                             return path
@@ -458,6 +523,19 @@ def resolve_project_path(repo_name: str, owner: Optional[str] = None) -> Optiona
         if Path(path).name.lower() == repo_name.lower():
             return path
 
+    # 3b. Partial name match + remote validation
+    #     Handles aliased clones: repo "perl-Convert-ASN1" cloned as "Convert-ASN1".
+    #     Checks if a project name/basename is a suffix of the repo name (or vice
+    #     versa) separated by a dash, then validates via git remote.
+    if target:
+        repo_lower = repo_name.lower()
+        candidates = _find_partial_name_candidates(repo_lower, projects)
+        for _cname, cpath in candidates:
+            all_remotes = get_all_github_remotes(cpath)
+            if target in all_remotes:
+                _persist_and_cache_remotes(_cname, cpath, all_remotes, projects)
+                return cpath
+
     # 4. Auto-discover from ALL git remotes (origin, upstream, etc.)
     #    This catches cross-owner matches: e.g. local origin is atoomic/koan
     #    but the PR URL points to sukria/koan (the upstream remote).
@@ -465,27 +543,7 @@ def resolve_project_path(repo_name: str, owner: Optional[str] = None) -> Optiona
         for name, path in projects:
             all_remotes = get_all_github_remotes(path)
             if target in all_remotes:
-                # Persist discovery to projects.yaml for yaml projects
-                primary = get_github_remote(path)
-                try:
-                    from app.projects_config import load_projects_config, save_projects_config
-                    config = load_projects_config(str(KOAN_ROOT))
-                    if config and name in config.get("projects", {}):
-                        proj = config["projects"][name]
-                        if isinstance(proj, dict) and proj.get("path"):
-                            if primary and not proj.get("github_url"):
-                                proj["github_url"] = primary
-                            proj["github_urls"] = all_remotes
-                            save_projects_config(str(KOAN_ROOT), config)
-                except Exception as e:
-                    print(f"[utils] Failed to persist github_urls for {name}: {e}", file=sys.stderr)
-                if primary:
-                    # Also cache in memory (works for workspace projects)
-                    try:
-                        from app.projects_merged import set_github_url
-                        set_github_url(name, primary)
-                    except Exception as e:
-                        print(f"[utils] Failed to cache github_url for {name}: {e}", file=sys.stderr)
+                _persist_and_cache_remotes(name, path, all_remotes, projects)
                 return path
 
     # 5. Fallback to single project (skip when owner-specific lookup found nothing)
