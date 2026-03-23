@@ -1018,7 +1018,7 @@ def _handle_skill_dispatch(
         passthrough_text = strip_passthrough_command(mission_title)
         if passthrough_text is not None:
             _debug_log(
-                f"[run] passthrough command: '{mission_title[:80]}' -> '{passthrough_text[:80]}'"
+                f"[run] passthrough command: '{mission_title}' -> '{passthrough_text}'"
             )
             log("mission", "Decision: PASSTHROUGH (command stripped, sending to Claude)")
             return False, passthrough_text

@@ -549,7 +549,7 @@ def strip_passthrough_command(mission_text: str) -> Optional[str]:
     """
     _, command, args = parse_skill_mission(mission_text)
     if command in _PASSTHROUGH_TO_CLAUDE:
-        return args if args else command
+        return args if args else None
     return None
 
 

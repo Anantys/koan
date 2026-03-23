@@ -1217,9 +1217,9 @@ class TestStripPassthroughCommand:
         assert result == "please fix the login bug"
 
     def test_gh_request_no_args(self):
-        """When /gh_request has no args, return the command name as fallback."""
+        """When /gh_request has no args, return None (not a meaningful mission)."""
         result = strip_passthrough_command("/gh_request")
-        assert result == "gh_request"
+        assert result is None
 
     def test_gh_request_with_project_tag(self):
         result = strip_passthrough_command(
