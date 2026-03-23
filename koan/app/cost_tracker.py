@@ -211,9 +211,19 @@ def _aggregate(entries: list) -> dict:
 
         # By model
         if model not in result["by_model"]:
-            result["by_model"][model] = {"input_tokens": 0, "output_tokens": 0, "count": 0}
+            result["by_model"][model] = {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "total_cost_usd": 0.0,
+                "count": 0,
+            }
         result["by_model"][model]["input_tokens"] += inp
         result["by_model"][model]["output_tokens"] += out
+        result["by_model"][model]["cache_creation_input_tokens"] += cache_create
+        result["by_model"][model]["cache_read_input_tokens"] += cache_read
+        result["by_model"][model]["total_cost_usd"] += cost
         result["by_model"][model]["count"] += 1
 
     # Compute cache hit rate: cache_read / (cache_read + non-cached input)
@@ -225,6 +235,53 @@ def _aggregate(entries: list) -> dict:
         result["cache_hit_rate"] = 0.0
 
     return result
+
+
+def estimate_cache_savings(summary: dict, pricing: Optional[dict] = None) -> Optional[float]:
+    """Estimate dollar savings from prompt cache reads.
+
+    Uses by-model cache read token counts and configured input-token pricing.
+    Anthropic prompt cache reads are billed at ~10% of regular input cost,
+    so savings are approximated as 90% of normal input price for cache-read tokens.
+
+    Args:
+        summary: Aggregated summary dict from _aggregate/summarize_*.
+        pricing: Optional pricing table from config.
+
+    Returns:
+        Estimated savings in USD, or None when pricing is unavailable.
+    """
+    if not pricing:
+        return None
+
+    by_model = summary.get("by_model", {}) if isinstance(summary, dict) else {}
+    if not isinstance(by_model, dict) or not by_model:
+        return 0.0
+
+    savings = 0.0
+    for model_id, model_data in by_model.items():
+        if not isinstance(model_data, dict):
+            continue
+
+        cache_read = model_data.get("cache_read_input_tokens", 0) or 0
+        if cache_read <= 0:
+            continue
+
+        model_price = None
+        model_lower = str(model_id).lower()
+        for key in pricing:
+            if str(key).lower() in model_lower:
+                model_price = pricing[key]
+                break
+
+        if not isinstance(model_price, dict):
+            continue
+
+        input_price = model_price.get("input", 0) or 0
+        # Approximation: read is billed at 10% => 90% saved vs uncached input.
+        savings += (cache_read / 1_000_000) * float(input_price) * 0.9
+
+    return round(savings, 6)
 
 
 def estimate_cost(tokens: dict, pricing: Optional[dict] = None) -> Optional[float]:
@@ -307,6 +364,9 @@ def daily_series(
             "date": current.isoformat(),
             "total_input": day_summary["total_input"],
             "total_output": day_summary["total_output"],
+            "cache_creation_input_tokens": day_summary["cache_creation_input_tokens"],
+            "cache_read_input_tokens": day_summary["cache_read_input_tokens"],
+            "cache_hit_rate": day_summary["cache_hit_rate"],
             "count": day_summary["count"],
             "cost": cost,
         })

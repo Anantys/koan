@@ -737,7 +737,13 @@ def usage_page():
 @app.route("/api/usage")
 def api_usage():
     """JSON usage data for the specified time range."""
-    from app.cost_tracker import summarize_range, get_pricing_config, estimate_cost, daily_series
+    from app.cost_tracker import (
+        summarize_range,
+        get_pricing_config,
+        estimate_cost,
+        estimate_cache_savings,
+        daily_series,
+    )
 
     days = request.args.get("days", "7", type=str)
     selected_project = request.args.get("project", "")
@@ -774,6 +780,7 @@ def api_usage():
 
     # Per-day time series for charts
     daily = daily_series(INSTANCE_DIR, start, end, project=selected_project or None)
+    estimated_cache_savings = estimate_cache_savings(summary, pricing)
 
     return jsonify({
         "days": days,
@@ -781,11 +788,15 @@ def api_usage():
         "end": end.isoformat(),
         "total_input": summary["total_input"],
         "total_output": summary["total_output"],
+        "cache_creation_input_tokens": summary["cache_creation_input_tokens"],
+        "cache_read_input_tokens": summary["cache_read_input_tokens"],
+        "cache_hit_rate": summary["cache_hit_rate"],
         "count": summary["count"],
         "by_project": by_project,
         "by_model": summary["by_model"],
         "has_pricing": pricing is not None,
         "estimated_cost": estimated_cost,
+        "estimated_cache_savings": estimated_cache_savings,
         "daily": daily,
     })
 

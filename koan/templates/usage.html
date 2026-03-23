@@ -49,6 +49,14 @@
         <div class="stat-label">Est. Cost</div>
         <div class="stat-value" id="total-cost">-</div>
     </div>
+    <div class="card">
+        <div class="stat-label">Prompt Cache Hit</div>
+        <div class="stat-value" id="cache-hit-rate">-</div>
+    </div>
+    <div class="card" id="cache-savings-card" style="display:none;">
+        <div class="stat-label">Est. Cache Savings</div>
+        <div class="stat-value" id="cache-savings">-</div>
+    </div>
 </div>
 
 <h2>Daily Token Spend</h2>
@@ -168,6 +176,18 @@ function renderDailyChart(daily, hasPricing) {
             backgroundColor: 'rgba(63,185,80,0.7)',
             stack: 'tokens',
         },
+        {
+            label: 'Cache Read',
+            data: daily.map(d => d.cache_read_input_tokens || 0),
+            backgroundColor: 'rgba(210,153,34,0.7)',
+            stack: 'tokens',
+        },
+        {
+            label: 'Cache Create',
+            data: daily.map(d => d.cache_creation_input_tokens || 0),
+            backgroundColor: 'rgba(248,81,73,0.55)',
+            stack: 'tokens',
+        },
     ];
 
     if (hasPricing && daily.some(d => d.cost !== null)) {
@@ -277,6 +297,19 @@ function loadAll() {
                 document.getElementById('total-cost').textContent = '$' + data.estimated_cost.toFixed(2);
             } else {
                 costCard.style.display = 'none';
+            }
+
+            // Cache cards
+            const hitRate = (data.cache_hit_rate || 0) * 100;
+            document.getElementById('cache-hit-rate').textContent = hitRate.toFixed(1) + '%';
+
+            const savingsCard = document.getElementById('cache-savings-card');
+            if (data.estimated_cache_savings !== null && data.estimated_cache_savings !== undefined) {
+                savingsCard.style.display = '';
+                document.getElementById('cache-savings').textContent =
+                    '$' + Number(data.estimated_cache_savings).toFixed(2);
+            } else {
+                savingsCard.style.display = 'none';
             }
 
             // Daily chart

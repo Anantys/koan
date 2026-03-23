@@ -1,7 +1,7 @@
 """Tests for pr_feedback.py — PR merge feedback loop for topic alignment."""
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -29,6 +29,11 @@ def _mock_gh_success(data):
 def _mock_gh_failure(msg="gh failed"):
     """Create a MagicMock simulating failed gh CLI output."""
     return MagicMock(returncode=1, stdout="", stderr=msg)
+
+
+def _iso_hours_ago(hours: int) -> str:
+    """Return an ISO UTC timestamp `hours` ago from now."""
+    return (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 # ─── categorize_pr ───────────────────────────────────────────────────────
@@ -249,15 +254,15 @@ class TestFetchMergedPrs:
             {
                 "number": 1,
                 "title": "fix: something",
-                "createdAt": "2026-02-20T10:00:00Z",
-                "mergedAt": "2026-02-20T14:00:00Z",
+                "createdAt": _iso_hours_ago(8),
+                "mergedAt": _iso_hours_ago(4),
                 "headRefName": "koan/fix-something",
             },
             {
                 "number": 2,
                 "title": "feat: other thing",
-                "createdAt": "2026-02-20T10:00:00Z",
-                "mergedAt": "2026-02-20T14:00:00Z",
+                "createdAt": _iso_hours_ago(8),
+                "mergedAt": _iso_hours_ago(4),
                 "headRefName": "feature/other-thing",
             },
         ])
@@ -286,8 +291,8 @@ class TestFetchMergedPrs:
         mock_run.return_value = _mock_gh_success([{
             "number": 1,
             "title": "test: add coverage",
-            "createdAt": "2026-02-20T10:00:00Z",
-            "mergedAt": "2026-02-20T14:00:00Z",
+            "createdAt": _iso_hours_ago(8),
+            "mergedAt": _iso_hours_ago(4),
             "headRefName": "koan/test-coverage",
         }])
 
