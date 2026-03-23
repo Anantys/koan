@@ -11,6 +11,7 @@ from app.github import (
     run_gh, pr_create, issue_create, api,
     get_gh_username, count_open_prs, cached_count_open_prs,
     batch_count_open_prs, fetch_issue_with_comments, detect_parent_repo,
+    resolve_target_repo, _upstream_remote_repo, _parse_remote_url,
 )
 import app.github as github_module
 
@@ -687,6 +688,100 @@ class TestDetectParentRepo:
     @patch("app.github.run_gh", return_value="  owner/repo  ")
     def test_strips_whitespace(self, mock_gh):
         assert detect_parent_repo("/my/fork") == "owner/repo"
+
+
+# ---------------------------------------------------------------------------
+# resolve_target_repo — fork detection with upstream remote fallback
+# ---------------------------------------------------------------------------
+
+
+class TestResolveTargetRepo:
+
+    @patch("app.github.detect_parent_repo", return_value="upstream/repo")
+    def test_prefers_github_parent(self, mock_detect):
+        assert resolve_target_repo("/proj") == "upstream/repo"
+
+    @patch("app.github.detect_parent_repo", return_value=None)
+    @patch("app.github._upstream_remote_repo", return_value="org/repo")
+    def test_falls_back_to_upstream_remote(self, mock_remote, mock_detect):
+        assert resolve_target_repo("/proj") == "org/repo"
+
+    @patch("app.github.detect_parent_repo", return_value=None)
+    @patch("app.github._upstream_remote_repo", return_value=None)
+    def test_returns_none_when_no_upstream(self, mock_remote, mock_detect):
+        assert resolve_target_repo("/proj") is None
+
+
+class TestUpstreamRemoteRepo:
+
+    @patch("app.github._get_remote_url")
+    def test_returns_upstream_when_different_from_origin(self, mock_url):
+        mock_url.side_effect = lambda path, remote: {
+            "upstream": "git@github.com:Anantys-oss/koan.git",
+            "origin": "https://github.com/Koan-Bot/koan.git",
+        }.get(remote)
+        assert _upstream_remote_repo("/proj") == "Anantys-oss/koan"
+
+    @patch("app.github._get_remote_url")
+    def test_returns_none_when_same_as_origin(self, mock_url):
+        mock_url.side_effect = lambda path, remote: {
+            "upstream": "git@github.com:owner/repo.git",
+            "origin": "https://github.com/owner/repo.git",
+        }.get(remote)
+        assert _upstream_remote_repo("/proj") is None
+
+    @patch("app.github._get_remote_url")
+    def test_returns_none_when_no_upstream(self, mock_url):
+        mock_url.side_effect = lambda path, remote: {
+            "origin": "https://github.com/owner/repo.git",
+        }.get(remote)
+        assert _upstream_remote_repo("/proj") is None
+
+    @patch("app.github._get_remote_url")
+    def test_returns_upstream_when_no_origin(self, mock_url):
+        mock_url.side_effect = lambda path, remote: {
+            "upstream": "git@github.com:org/repo.git",
+        }.get(remote)
+        assert _upstream_remote_repo("/proj") == "org/repo"
+
+
+class TestParseRemoteUrl:
+
+    def test_https_url(self):
+        assert _parse_remote_url("https://github.com/owner/repo.git") == "owner/repo"
+
+    def test_ssh_url(self):
+        assert _parse_remote_url("git@github.com:owner/repo.git") == "owner/repo"
+
+    def test_https_without_git_suffix(self):
+        assert _parse_remote_url("https://github.com/owner/repo") == "owner/repo"
+
+    def test_non_github_url(self):
+        assert _parse_remote_url("https://gitlab.com/owner/repo.git") is None
+
+
+# ---------------------------------------------------------------------------
+# issue_create — repo parameter
+# ---------------------------------------------------------------------------
+
+
+class TestIssueCreateRepo:
+
+    @patch("app.github.run_gh", return_value="https://github.com/org/repo/issues/1")
+    @patch("app.leak_detector.scan_and_redact", side_effect=lambda x, **kw: x)
+    def test_passes_repo_flag(self, mock_redact, mock_gh):
+        issue_create("title", "body", repo="upstream/repo")
+        args = mock_gh.call_args[0]
+        assert "--repo" in args
+        idx = args.index("--repo")
+        assert args[idx + 1] == "upstream/repo"
+
+    @patch("app.github.run_gh", return_value="https://github.com/org/repo/issues/1")
+    @patch("app.leak_detector.scan_and_redact", side_effect=lambda x, **kw: x)
+    def test_omits_repo_when_none(self, mock_redact, mock_gh):
+        issue_create("title", "body")
+        args = mock_gh.call_args[0]
+        assert "--repo" not in args
 
 
 # ---------------------------------------------------------------------------
