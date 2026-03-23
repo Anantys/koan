@@ -318,7 +318,8 @@ class TestHandle:
 
     def test_clone_failure(self, handler, ctx):
         ctx.args = "owner/repo"
-        with patch.object(handler, "_git_clone", side_effect=RuntimeError("timeout")):
+        with patch.object(handler, "_check_push_access", return_value=False), \
+             patch.object(handler, "_git_clone", side_effect=RuntimeError("timeout")):
             result = handler.handle(ctx)
         assert "Clone failed" in result
         assert "timeout" in result
@@ -380,14 +381,30 @@ class TestHandle:
         # Should proceed as no-push → fork
         assert "Fork:" in result
 
-    def test_sends_progress_message_on_clone(self, handler, ctx):
+    def test_sends_progress_message_push_access(self, handler, ctx):
         ctx.args = "owner/repo"
         with patch.object(handler, "_git_clone"), \
              patch.object(handler, "_check_push_access", return_value=True), \
              patch("app.projects_merged.refresh_projects"):
             handler.handle(ctx)
 
-        ctx.send_message.assert_any_call("Cloning owner/repo into workspace/repo...")
+        ctx.send_message.assert_any_call(
+            "Push access to owner/repo confirmed. "
+            "Cloning directly (no fork needed)..."
+        )
+
+    def test_sends_progress_message_no_push_access(self, handler, ctx):
+        ctx.args = "owner/repo"
+        with patch.object(handler, "_git_clone"), \
+             patch.object(handler, "_check_push_access", return_value=False), \
+             patch.object(handler, "_create_fork_and_configure", return_value="bot/repo"), \
+             patch("app.projects_merged.refresh_projects"):
+            handler.handle(ctx)
+
+        ctx.send_message.assert_any_call(
+            "No push access to owner/repo. "
+            "Will clone and create a personal fork..."
+        )
 
     def test_creates_workspace_dir_if_missing(self, handler, ctx):
         ctx.args = "owner/repo"
@@ -429,6 +446,54 @@ class TestHandle:
             result = handler.handle(ctx)
 
         assert "Project 'my-cool-project' added" in result
+
+    def test_push_access_shows_direct_push_remotes(self, handler, ctx):
+        ctx.args = "owner/repo"
+        with patch.object(handler, "_git_clone"), \
+             patch.object(handler, "_check_push_access", return_value=True), \
+             patch("app.projects_merged.refresh_projects"):
+            result = handler.handle(ctx)
+
+        assert "origin=upstream (direct push)" in result
+
+    def test_clone_failure_with_push_access(self, handler, ctx):
+        """Clone failure is reported even when push access was confirmed."""
+        ctx.args = "owner/repo"
+        with patch.object(handler, "_check_push_access", return_value=True), \
+             patch.object(handler, "_git_clone", side_effect=RuntimeError("timeout")):
+            result = handler.handle(ctx)
+        assert "Clone failed" in result
+        assert "timeout" in result
+
+
+# ===========================================================================
+# _check_push_access_safe
+# ===========================================================================
+
+
+class TestCheckPushAccessSafe:
+    @patch("app.github.run_gh", return_value="WRITE")
+    def test_success(self, mock_gh, handler):
+        assert handler._check_push_access_safe("owner", "repo") is True
+
+    @patch("app.github.run_gh", return_value="READ")
+    def test_no_access(self, mock_gh, handler):
+        assert handler._check_push_access_safe("owner", "repo") is False
+
+    @patch("app.github.run_gh", side_effect=RuntimeError("network"))
+    def test_retries_on_failure(self, mock_gh, handler):
+        result = handler._check_push_access_safe("owner", "repo")
+        assert result is False
+        # Called twice (initial + retry)
+        assert mock_gh.call_count == 2
+
+    @patch("app.github.run_gh")
+    def test_succeeds_on_retry(self, mock_gh, handler):
+        mock_gh.side_effect = [
+            RuntimeError("timeout"),  # first attempt fails
+            "ADMIN",                  # retry succeeds
+        ]
+        assert handler._check_push_access_safe("owner", "repo") is True
 
 
 # ===========================================================================

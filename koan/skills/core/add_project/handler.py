@@ -2,15 +2,19 @@
 
 Usage: /add_project <github-url> [name]
 
-Clones the repository into workspace/<name>, detects push access,
-and creates a personal fork if needed so PRs can be submitted.
+Clones the repository into workspace/<name>. Checks push access first:
+- If push access exists, clones directly (origin=upstream, no fork).
+- If no push access, creates a personal fork so PRs can be submitted.
 """
 
+import logging
 import os
 import re
 from pathlib import Path
 
 from app.git_utils import run_git_strict
+
+logger = logging.getLogger(__name__)
 
 
 def handle(ctx):
@@ -50,27 +54,30 @@ def handle(ctx):
     # Ensure workspace directory exists
     workspace_dir.mkdir(exist_ok=True)
 
-    # Notify: starting clone
-    ctx.send_message(f"Cloning {owner}/{repo} into workspace/{project_name}...")
+    # Check push access BEFORE cloning — determines setup strategy
+    has_push = _check_push_access_safe(owner, repo)
 
-    # Clone the repository
+    if has_push:
+        ctx.send_message(
+            f"Push access to {owner}/{repo} confirmed. "
+            f"Cloning directly (no fork needed)..."
+        )
+    else:
+        ctx.send_message(
+            f"No push access to {owner}/{repo}. "
+            f"Will clone and create a personal fork..."
+        )
+
+    # Clone the repository from upstream
     clone_url = f"https://github.com/{owner}/{repo}.git"
     try:
         _git_clone(clone_url, str(project_dir))
     except RuntimeError as e:
         return f"Clone failed: {e}"
 
-    # Check push access and fork if needed
+    # If no push access, create a fork and reconfigure remotes
     forked = False
-    try:
-        has_push = _check_push_access(owner, repo)
-    except Exception:
-        has_push = False
-
     if not has_push:
-        ctx.send_message(
-            f"No push access to {owner}/{repo}. Creating a personal fork..."
-        )
         try:
             fork_url = _create_fork_and_configure(
                 owner, repo, str(project_dir)
@@ -93,6 +100,8 @@ def handle(ctx):
     if forked:
         lines.append(f"  Fork: {fork_url}")
         lines.append("  Remotes: origin=fork, upstream=original")
+    else:
+        lines.append("  Remotes: origin=upstream (direct push)")
     lines.append(f"  Path: {project_dir}")
     return "\n".join(lines)
 
@@ -172,6 +181,7 @@ def _check_push_access(owner, repo):
     """Check if the current gh user has push access to owner/repo.
 
     Returns True if push/admin/maintain, False otherwise.
+    Raises on network/auth errors — callers should handle exceptions.
     """
     from app.github import run_gh
 
@@ -183,6 +193,35 @@ def _check_push_access(owner, repo):
     )
     permission = output.strip().upper()
     return permission in ("ADMIN", "MAINTAIN", "WRITE")
+
+
+def _check_push_access_safe(owner, repo):
+    """Check push access with retry and logging.
+
+    Returns True if push access confirmed, False if no access or check failed.
+    Logs the outcome for diagnostics.
+    """
+    for attempt in range(2):
+        try:
+            has_push = _check_push_access(owner, repo)
+            logger.info(
+                "Push access check for %s/%s: %s",
+                owner, repo, "granted" if has_push else "denied",
+            )
+            return has_push
+        except Exception as e:
+            if attempt == 0:
+                logger.warning(
+                    "Push access check for %s/%s failed (attempt 1), retrying: %s",
+                    owner, repo, e,
+                )
+            else:
+                logger.warning(
+                    "Push access check for %s/%s failed (attempt 2), "
+                    "defaulting to no-push (fork will be created): %s",
+                    owner, repo, e,
+                )
+    return False
 
 
 def _create_fork_and_configure(owner, repo, project_dir):
