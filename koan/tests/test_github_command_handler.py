@@ -2839,7 +2839,7 @@ class TestContextAwareCoreSkills:
         skills_dir = Path(__file__).parent.parent / "skills" / "core"
         return SkillRegistry(skills_dir)
 
-    @pytest.mark.parametrize("command_name", ["rebase", "recreate", "refactor"])
+    @pytest.mark.parametrize("command_name", ["rebase", "recreate", "refactor", "squash"])
     def test_skill_is_context_aware(self, core_registry, command_name):
         """Each PR-manipulation skill must have github_context_aware=True."""
         skill = core_registry.find_by_command(command_name)
@@ -2848,7 +2848,7 @@ class TestContextAwareCoreSkills:
             f"Skill '{command_name}' must have github_context_aware: true in SKILL.md"
         )
 
-    @pytest.mark.parametrize("command_name", ["rebase", "recreate", "refactor"])
+    @pytest.mark.parametrize("command_name", ["rebase", "recreate", "refactor", "squash"])
     def test_context_included_in_mission(self, core_registry, command_name):
         """When context is provided, it should appear in the built mission."""
         skill = core_registry.find_by_command(command_name)
@@ -2863,7 +2863,7 @@ class TestContextAwareCoreSkills:
         )
         assert f"/{command_name}" in mission
 
-    @pytest.mark.parametrize("command_name", ["rebase", "recreate", "refactor"])
+    @pytest.mark.parametrize("command_name", ["rebase", "recreate", "refactor", "squash"])
     def test_no_context_mission_unchanged(self, core_registry, command_name):
         """Without extra context, mission format should be unchanged."""
         skill = core_registry.find_by_command(command_name)

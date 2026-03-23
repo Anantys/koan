@@ -348,3 +348,69 @@ class TestSquashRunner:
         from app.squash_pr import main
         code = main(["not-a-url", "--project-path", "/tmp"])
         assert code == 1
+
+
+# ---------------------------------------------------------------------------
+# GitHub @mention integration
+# ---------------------------------------------------------------------------
+
+class TestGitHubMention:
+    """Verify squash is discoverable and usable via GitHub @mentions."""
+
+    def test_skill_has_github_enabled(self):
+        from app.skills import parse_skill_md
+        skill = parse_skill_md(
+            Path(__file__).parent.parent / "skills" / "core" / "squash" / "SKILL.md"
+        )
+        assert skill.github_enabled is True
+
+    def test_skill_has_github_context_aware(self):
+        from app.skills import parse_skill_md
+        skill = parse_skill_md(
+            Path(__file__).parent.parent / "skills" / "core" / "squash" / "SKILL.md"
+        )
+        assert skill.github_context_aware is True
+
+    def test_handler_accepts_url_with_trailing_context(self, handler, ctx):
+        """Simulates the GitHub mention path where URL + optional context are injected."""
+        ctx.args = "https://github.com/sukria/koan/pull/42 keep the first commit message"
+        with patch("app.utils.resolve_project_path", return_value="/home/koan"), \
+             patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]), \
+             patch("app.utils.insert_pending_mission") as mock_insert:
+            result = handler.handle(ctx)
+            assert "queued" in result.lower()
+            assert "#42" in result
+            mock_insert.assert_called_once()
+
+    def test_build_mission_from_command_includes_squash(self):
+        """build_mission_from_command produces correct mission for squash."""
+        from app.skills import SkillRegistry
+        from app.github_command_handler import build_mission_from_command
+
+        registry = SkillRegistry(
+            Path(__file__).parent.parent / "skills" / "core"
+        )
+        skill = registry.find_by_command("squash")
+        assert skill is not None
+
+        notif = {"subject": {"url": "https://api.github.com/repos/o/r/pulls/99"}}
+        mission = build_mission_from_command(skill, "squash", "", notif, "koan")
+        assert "/squash https://github.com/o/r/pull/99" in mission
+        assert "[project:koan]" in mission
+
+    def test_build_mission_with_context(self):
+        """Extra context from @mention is appended to the mission."""
+        from app.skills import SkillRegistry
+        from app.github_command_handler import build_mission_from_command
+
+        registry = SkillRegistry(
+            Path(__file__).parent.parent / "skills" / "core"
+        )
+        skill = registry.find_by_command("squash")
+
+        notif = {"subject": {"url": "https://api.github.com/repos/o/r/pulls/99"}}
+        mission = build_mission_from_command(
+            skill, "squash", "keep the first commit message", notif, "koan"
+        )
+        assert "keep the first commit message" in mission
+        assert "/squash" in mission
