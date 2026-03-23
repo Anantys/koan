@@ -6,6 +6,7 @@ which sets ``GH_TOKEN`` — this module has no auth logic.
 """
 
 import json
+import re
 import subprocess
 import time
 from typing import Dict, Optional
@@ -124,13 +125,14 @@ def pr_create(title, body, draft=True, base=None, repo=None, head=None, cwd=None
     return run_gh(*args, cwd=cwd)
 
 
-def issue_create(title, body, labels=None, cwd=None):
+def issue_create(title, body, labels=None, repo=None, cwd=None):
     """Create a GitHub issue via ``gh issue create``.
 
     Args:
         title: Issue title.
         body: Issue body (markdown).
         labels: Optional list of label names.
+        repo: Repository in ``owner/repo`` format (omit to use local repo).
         cwd: Working directory (must be inside a git repo).
 
     Returns:
@@ -143,6 +145,8 @@ def issue_create(title, body, labels=None, cwd=None):
     args = ["issue", "create", "--title", title, "--body", body]
     if labels:
         args.extend(["--label", ",".join(labels)])
+    if repo:
+        args.extend(["--repo", repo])
     return run_gh(*args, cwd=cwd)
 
 
@@ -273,6 +277,75 @@ def detect_parent_repo(project_path: str) -> Optional[str]:
         return None
     except (RuntimeError, subprocess.SubprocessError, OSError):
         return None
+
+
+_GITHUB_URL_RE = re.compile(
+    r"github\.com[:/]([^/]+)/([^/.]+?)(?:\.git)?$"
+)
+
+
+def _parse_remote_url(url: str) -> Optional[str]:
+    """Extract ``owner/repo`` from a GitHub remote URL."""
+    m = _GITHUB_URL_RE.search(url)
+    if m:
+        return f"{m.group(1)}/{m.group(2)}"
+    return None
+
+
+def _get_remote_url(project_path: str, remote: str) -> Optional[str]:
+    """Return the URL of a git remote, or None."""
+    try:
+        result = subprocess.run(
+            ["git", "remote", "get-url", remote],
+            capture_output=True, text=True, timeout=5,
+            cwd=project_path, stdin=subprocess.DEVNULL,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+    return None
+
+
+def _upstream_remote_repo(project_path: str) -> Optional[str]:
+    """Return ``owner/repo`` from the ``upstream`` git remote if it
+    differs from ``origin``.  Returns ``None`` when there's no
+    ``upstream`` remote or it points to the same repo as ``origin``.
+    """
+    upstream_url = _get_remote_url(project_path, "upstream")
+    if not upstream_url:
+        return None
+    upstream_repo = _parse_remote_url(upstream_url)
+    if not upstream_repo:
+        return None
+
+    # Only return upstream if it's different from origin
+    origin_url = _get_remote_url(project_path, "origin")
+    if origin_url:
+        origin_repo = _parse_remote_url(origin_url)
+        if origin_repo and origin_repo.lower() == upstream_repo.lower():
+            return None
+
+    return upstream_repo
+
+
+def resolve_target_repo(project_path: str) -> Optional[str]:
+    """Return the upstream ``owner/repo`` if working in a fork, else ``None``.
+
+    Resolution order:
+    1. GitHub fork parent (via ``gh repo view --json parent``)
+    2. Git ``upstream`` remote (if it differs from ``origin``)
+
+    When the local repo is a fork the returned value should be used as
+    the ``--repo`` argument for ``gh pr create`` / ``gh issue create``
+    so that operations target the upstream repository instead of the fork.
+    """
+    parent = detect_parent_repo(project_path)
+    if parent:
+        return parent
+
+    # Fallback: check if there's a distinct 'upstream' git remote
+    return _upstream_remote_repo(project_path)
 
 
 # TTL cache for count_open_prs results (avoids repeated gh CLI calls)

@@ -14,7 +14,13 @@ additional responsibilities beyond writing a report:
 3. **Create a GitHub issue when appropriate**: If your audit reveals issues worth tracking, use:
    ```bash
    cd {PROJECT_PATH}
-   gh issue create --title "Audit: [summary]" --body "$(cat <<'EOF'
+   # If repo is a fork, detect upstream and add: --repo <upstream-owner>/<repo>
+   UPSTREAM=$(gh repo view --json parent --jq '.parent.owner.login + "/" + .parent.name' 2>/dev/null)
+   REPO_FLAG=""
+   if [ -n "$UPSTREAM" ] && [ "$UPSTREAM" != "/" ] && [ "$UPSTREAM" != "null/null" ]; then
+     REPO_FLAG="--repo $UPSTREAM"
+   fi
+   gh issue create $REPO_FLAG --title "Audit: [summary]" --body "$(cat <<'EOF'
    ## Audit Findings — [date]
 
    [Summary of key findings]

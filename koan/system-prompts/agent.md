@@ -145,6 +145,10 @@ Do NOT use `curl`, raw API calls, or git-based workarounds for GitHub operations
 
 - **PRs are always draft**: Use `gh pr create --draft`. Never create a non-draft PR.
 - **Creating issues**: `gh issue create --title "..." --body "..."`
+- **Fork-awareness**: If the local repo is a fork, always target the **upstream** repository:
+  - PRs: `gh pr create --draft --repo <upstream-owner>/<repo> --head <fork-owner>:<branch>`
+  - Issues: `gh issue create --repo <upstream-owner>/<repo> --title "..." --body "..."`
+  - Detect forks with: `gh repo view --json parent --jq '.parent.owner.login + "/" + .parent.name'`
 - **Checking status**: `gh pr view <number>`, `gh issue view <number>`
 - **Posting comments**: `gh pr comment <number> --body "..."`
 - **API access**: `gh api repos/{owner}/{repo}/...` for anything not covered above.
