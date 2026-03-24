@@ -15,6 +15,7 @@ import re
 import subprocess
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
 from app.bounded_set import BoundedSet
@@ -26,6 +27,15 @@ log = logging.getLogger(__name__)
 # Reset at the start of each cycle by the caller (loop_manager).
 _sso_failure_count: int = 0
 
+# Consecutive fetch failures in fetch_unread_notifications.
+# After _FETCH_FAILURE_THRESHOLD consecutive failures, log at warning level
+# and notify via outbox so the user knows GitHub polling is broken.
+_consecutive_fetch_failures: int = 0
+_FETCH_FAILURE_THRESHOLD = 3
+# Track whether we already sent an outbox alert for the current failure streak,
+# so we don't spam the user on every subsequent failure.
+_fetch_failure_alerted: bool = False
+
 
 def reset_sso_failure_count() -> None:
     """Reset the per-cycle SSO failure counter."""
@@ -36,6 +46,73 @@ def reset_sso_failure_count() -> None:
 def get_sso_failure_count() -> int:
     """Return the number of SSO failures observed in the current cycle."""
     return _sso_failure_count
+
+
+def reset_fetch_failure_count() -> None:
+    """Reset the consecutive fetch failure counter."""
+    global _consecutive_fetch_failures, _fetch_failure_alerted
+    _consecutive_fetch_failures = 0
+    _fetch_failure_alerted = False
+
+
+def get_fetch_failure_count() -> int:
+    """Return the number of consecutive fetch failures."""
+    return _consecutive_fetch_failures
+
+
+def _record_fetch_failure(reason: str) -> None:
+    """Record a fetch failure, escalate logging and notify after threshold."""
+    global _consecutive_fetch_failures, _fetch_failure_alerted
+    _consecutive_fetch_failures += 1
+
+    if _consecutive_fetch_failures < _FETCH_FAILURE_THRESHOLD:
+        log.debug("GitHub API: failed to fetch notifications: %s", reason)
+        return
+
+    # Threshold reached — escalate to warning
+    log.warning(
+        "GitHub API: %d consecutive fetch failures (latest: %s). "
+        "Notification polling may be broken.",
+        _consecutive_fetch_failures,
+        reason,
+    )
+
+    # Send a one-time outbox alert so the user gets a Telegram notification
+    if not _fetch_failure_alerted:
+        _fetch_failure_alerted = True
+        _send_fetch_failure_alert(_consecutive_fetch_failures, reason)
+
+
+def _send_fetch_failure_alert(count: int, reason: str) -> None:
+    """Write a fetch-failure alert to outbox.md."""
+    try:
+        koan_root = os.environ.get("KOAN_ROOT", "")
+        if not koan_root:
+            return
+        outbox_path = Path(koan_root) / "instance" / "outbox.md"
+        if not outbox_path.parent.is_dir():
+            return
+        from app.utils import append_to_outbox
+        msg = (
+            f"⚠️ GitHub notification polling has failed {count} times in a row "
+            f"({reason}). @mentions may be missed until connectivity is restored.\n"
+        )
+        append_to_outbox(outbox_path, msg)
+    except Exception as exc:
+        log.debug("Failed to write fetch-failure alert to outbox: %s", exc)
+
+
+def _clear_fetch_failures() -> None:
+    """Reset failure counter on a successful fetch."""
+    global _consecutive_fetch_failures, _fetch_failure_alerted
+    if _consecutive_fetch_failures > 0:
+        if _fetch_failure_alerted:
+            log.info(
+                "GitHub API: notification fetch recovered after %d failures",
+                _consecutive_fetch_failures,
+            )
+        _consecutive_fetch_failures = 0
+        _fetch_failure_alerted = False
 
 
 def _record_sso_failure(context: str) -> None:
@@ -123,22 +200,25 @@ def fetch_unread_notifications(known_repos: Optional[Set[str]] = None,
             endpoint = f"notifications?since={since}&all=true"
         raw = api(endpoint, extra_args=["--paginate"])
     except (RuntimeError, subprocess.TimeoutExpired, OSError) as e:
-        log.debug("GitHub API: failed to fetch notifications: %s", e)
+        _record_fetch_failure(str(e))
         return FetchResult([], [])
 
     if not raw:
-        log.debug("GitHub API: empty response from notifications endpoint")
+        _record_fetch_failure("empty response")
         return FetchResult([], [])
 
     try:
         notifications = json.loads(raw)
     except json.JSONDecodeError:
-        log.debug("GitHub API: invalid JSON in notifications response")
+        _record_fetch_failure("invalid JSON")
         return FetchResult([], [])
 
     if not isinstance(notifications, list):
-        log.debug("GitHub API: unexpected response type: %s", type(notifications).__name__)
+        _record_fetch_failure(f"unexpected type: {type(notifications).__name__}")
         return FetchResult([], [])
+
+    # Successful parse — clear any failure streak
+    _clear_fetch_failures()
 
     log.debug(
         "GitHub API: %d total notifications%s",

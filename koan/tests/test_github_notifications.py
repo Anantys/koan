@@ -1,6 +1,8 @@
 """Tests for github_notifications.py — notification fetching, parsing, reactions."""
 
 import json
+import logging
+import os
 import subprocess
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
@@ -10,6 +12,7 @@ import pytest
 from app.github import SSOAuthRequired
 from app.github_notifications import (
     FetchResult,
+    _FETCH_FAILURE_THRESHOLD,
     _processed_comments,
     _reactions_endpoint,
     _search_comments_for_mention,
@@ -21,10 +24,12 @@ from app.github_notifications import (
     fetch_unread_notifications,
     find_mention_in_thread,
     get_comment_from_notification,
+    get_fetch_failure_count,
     get_sso_failure_count,
     is_notification_stale,
     is_self_mention,
     parse_mention_command,
+    reset_fetch_failure_count,
     reset_sso_failure_count,
 )
 
@@ -987,3 +992,121 @@ class TestSSOFailureTracking:
         })
         check_already_processed("123", "bot", "org", "repo")
         assert get_sso_failure_count() == 2
+
+
+class TestConsecutiveFetchFailures:
+    """Tests for fetch failure escalation: debug → warning after threshold."""
+
+    def setup_method(self):
+        reset_fetch_failure_count()
+
+    def teardown_method(self):
+        reset_fetch_failure_count()
+
+    @patch("app.github_notifications.api")
+    def test_single_failure_stays_debug(self, mock_api, caplog):
+        """Below threshold, failures log at debug only."""
+        mock_api.side_effect = RuntimeError("timeout")
+        with caplog.at_level(logging.DEBUG, logger="app.github_notifications"):
+            fetch_unread_notifications()
+
+        assert get_fetch_failure_count() == 1
+        assert not any(r.levelno >= logging.WARNING for r in caplog.records)
+
+    @patch("app.github_notifications.api")
+    def test_threshold_triggers_warning(self, mock_api, caplog):
+        """After _FETCH_FAILURE_THRESHOLD consecutive failures, log at WARNING."""
+        mock_api.side_effect = RuntimeError("network error")
+        with caplog.at_level(logging.DEBUG, logger="app.github_notifications"):
+            for _ in range(_FETCH_FAILURE_THRESHOLD):
+                fetch_unread_notifications()
+
+        assert get_fetch_failure_count() == _FETCH_FAILURE_THRESHOLD
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "consecutive fetch failures" in warnings[0].message
+
+    @patch("app.github_notifications._send_fetch_failure_alert")
+    @patch("app.github_notifications.api")
+    def test_outbox_alert_sent_once(self, mock_api, mock_alert):
+        """Outbox alert fires once at threshold, not on subsequent failures."""
+        mock_api.side_effect = RuntimeError("down")
+        for _ in range(_FETCH_FAILURE_THRESHOLD + 2):
+            fetch_unread_notifications()
+
+        assert mock_alert.call_count == 1
+
+    @patch("app.github_notifications._send_fetch_failure_alert")
+    @patch("app.github_notifications.api")
+    def test_success_resets_counter(self, mock_api, mock_alert):
+        """A successful fetch resets the failure counter."""
+        # Accumulate failures just below threshold
+        mock_api.side_effect = RuntimeError("err")
+        for _ in range(_FETCH_FAILURE_THRESHOLD - 1):
+            fetch_unread_notifications()
+        assert get_fetch_failure_count() == _FETCH_FAILURE_THRESHOLD - 1
+
+        # Successful fetch resets
+        mock_api.side_effect = None
+        mock_api.return_value = json.dumps([])
+        fetch_unread_notifications()
+        assert get_fetch_failure_count() == 0
+        mock_alert.assert_not_called()
+
+    @patch("app.github_notifications._send_fetch_failure_alert")
+    @patch("app.github_notifications.api")
+    def test_recovery_after_alert_allows_new_alert(self, mock_api, mock_alert):
+        """After recovery and new failure streak, a new alert can fire."""
+        # First streak: hit threshold
+        mock_api.side_effect = RuntimeError("err")
+        for _ in range(_FETCH_FAILURE_THRESHOLD):
+            fetch_unread_notifications()
+        assert mock_alert.call_count == 1
+
+        # Recover
+        mock_api.side_effect = None
+        mock_api.return_value = json.dumps([])
+        fetch_unread_notifications()
+
+        # Second streak
+        mock_api.side_effect = RuntimeError("err again")
+        for _ in range(_FETCH_FAILURE_THRESHOLD):
+            fetch_unread_notifications()
+        assert mock_alert.call_count == 2
+
+    @patch("app.github_notifications.api")
+    def test_empty_response_counts_as_failure(self, mock_api):
+        """Empty API response increments the failure counter."""
+        mock_api.return_value = ""
+        fetch_unread_notifications()
+        assert get_fetch_failure_count() == 1
+
+    @patch("app.github_notifications.api")
+    def test_invalid_json_counts_as_failure(self, mock_api):
+        """Invalid JSON increments the failure counter."""
+        mock_api.return_value = "not json"
+        fetch_unread_notifications()
+        assert get_fetch_failure_count() == 1
+
+    @patch("app.github_notifications.api")
+    def test_unexpected_type_counts_as_failure(self, mock_api):
+        """Non-list JSON response increments the failure counter."""
+        mock_api.return_value = json.dumps({"error": "bad"})
+        fetch_unread_notifications()
+        assert get_fetch_failure_count() == 1
+
+    @patch("app.github_notifications.api")
+    def test_send_fetch_failure_alert_writes_outbox(self, mock_api, tmp_path):
+        """_send_fetch_failure_alert writes to outbox.md."""
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        outbox = instance_dir / "outbox.md"
+        outbox.write_text("")
+
+        with patch.dict(os.environ, {"KOAN_ROOT": str(tmp_path)}):
+            from app.github_notifications import _send_fetch_failure_alert
+            _send_fetch_failure_alert(3, "network error")
+
+        content = outbox.read_text()
+        assert "failed 3 times" in content
+        assert "network error" in content
