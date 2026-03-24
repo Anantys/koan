@@ -44,17 +44,22 @@ class TestRestartCommandRouting:
 
 
 class TestUpdateCommandRouting:
-    """Tests for /update command routing."""
+    """Tests for /update command routing (hardcoded, not skill-dispatched)."""
 
-    @patch("app.command_handlers._dispatch_skill")
-    def test_update_routes_to_skill(self, mock_dispatch):
+    @patch("app.command_handlers.send_telegram")
+    @patch("app.command_handlers.atomic_write")
+    def test_update_is_hardcoded(self, mock_write, mock_send):
+        """Update writes CYCLE_FILE directly, not via skill dispatch."""
         handle_command("/update")
-        mock_dispatch.assert_called_once()
+        mock_write.assert_called_once()
+        mock_send.assert_called_once()
 
-    @patch("app.command_handlers._dispatch_skill")
-    def test_upgrade_routes_to_skill(self, mock_dispatch):
+    @patch("app.command_handlers.send_telegram")
+    @patch("app.command_handlers.atomic_write")
+    def test_upgrade_is_hardcoded(self, mock_write, mock_send):
         handle_command("/upgrade")
-        mock_dispatch.assert_called_once()
+        mock_write.assert_called_once()
+        mock_send.assert_called_once()
 
 
 class TestHelpText:
@@ -69,7 +74,7 @@ class TestHelpText:
         for line in help_text.split("\n"):
             if "/resume" in line and "alias" in line:
                 assert "/restart" not in line
-        # /restart should appear as an alias of /update, not /resume
+        # /restart should appear in system group (as a standalone skill)
         assert "/update" in help_text
         assert "/restart" in help_text
 

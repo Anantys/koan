@@ -1,215 +1,72 @@
-"""Tests for the /update skill handler (aliases: /restart, /upgrade)."""
+"""Tests for the /update command (hardcoded in command_handlers, writes CYCLE_FILE)."""
 
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
 
-from app.skills import SkillContext
-
-
-def _make_ctx(tmp_path, command_name="update", args=""):
-    """Create a SkillContext for testing."""
-    return SkillContext(
-        koan_root=tmp_path,
-        instance_dir=tmp_path / "instance",
-        command_name=command_name,
-        args=args,
-        send_message=MagicMock(),
-        handle_chat=MagicMock(),
-    )
-
-
-# Lazy imports inside handler functions → patch at source module
-_P_REQUEST = "app.restart_manager.request_restart"
-_P_REMOVE = "app.pause_manager.remove_pause"
-_P_PULL = "app.update_manager.pull_upstream"
+from app.signals import CYCLE_FILE
 
 
 class TestUpdateCommand:
-    """Tests for /update via the update skill handler."""
+    """Tests for /update via hardcoded command handler."""
 
-    @patch(_P_REQUEST)
-    @patch(_P_REMOVE)
-    @patch(_P_PULL)
-    def test_update_success_with_changes(self, mock_pull, mock_remove, mock_request, tmp_path):
-        from skills.core.update.handler import handle
-        from app.update_manager import UpdateResult
+    @patch("app.command_handlers.send_telegram")
+    @patch("app.command_handlers.atomic_write")
+    def test_update_writes_cycle_file(self, mock_write, mock_send):
+        from app.command_handlers import handle_command
+        handle_command("/update")
+        # Should write the cycle file
+        args = mock_write.call_args[0]
+        assert str(args[0]).endswith(CYCLE_FILE)
+        assert args[1] == "CYCLE"
 
-        mock_pull.return_value = UpdateResult(
-            success=True, old_commit="abc", new_commit="def",
-            commits_pulled=3, stashed=False,
-        )
-        ctx = _make_ctx(tmp_path, command_name="update")
-        result = handle(ctx)
+    @patch("app.command_handlers.send_telegram")
+    @patch("app.command_handlers.atomic_write")
+    def test_update_sends_confirmation(self, mock_write, mock_send):
+        from app.command_handlers import handle_command
+        handle_command("/update")
+        mock_send.assert_called_once()
+        assert "update" in mock_send.call_args[0][0].lower() or "Update" in mock_send.call_args[0][0]
 
-        mock_pull.assert_called_once_with(tmp_path)
-        mock_remove.assert_called_once()
-        mock_request.assert_called_once_with(str(tmp_path))
-        assert "3 new commits" in result
-        assert "Restarting" in result
+    @patch("app.command_handlers.send_telegram")
+    @patch("app.command_handlers.atomic_write")
+    def test_upgrade_alias_works(self, mock_write, mock_send):
+        from app.command_handlers import handle_command
+        handle_command("/upgrade")
+        args = mock_write.call_args[0]
+        assert str(args[0]).endswith(CYCLE_FILE)
 
-    @patch(_P_REQUEST)
-    @patch(_P_REMOVE)
-    @patch(_P_PULL)
-    def test_update_no_changes(self, mock_pull, mock_remove, mock_request, tmp_path):
-        from skills.core.update.handler import handle
-        from app.update_manager import UpdateResult
-
-        mock_pull.return_value = UpdateResult(
-            success=True, old_commit="abc", new_commit="abc",
-            commits_pulled=0,
-        )
-        ctx = _make_ctx(tmp_path, command_name="update")
-        result = handle(ctx)
-
-        # Should NOT restart when no changes
-        mock_request.assert_not_called()
-        assert "up to date" in result
-
-    @patch(_P_PULL)
-    def test_update_failure(self, mock_pull, tmp_path):
-        from skills.core.update.handler import handle
-        from app.update_manager import UpdateResult
-
-        mock_pull.return_value = UpdateResult(
-            success=False, old_commit="abc", new_commit="abc",
-            commits_pulled=0, error="network timeout",
-        )
-        ctx = _make_ctx(tmp_path, command_name="update")
-        result = handle(ctx)
-
-        assert "failed" in result.lower()
-        assert "network timeout" in result
-
-    @patch(_P_REQUEST)
-    @patch(_P_REMOVE)
-    @patch(_P_PULL)
-    def test_update_stashed_warning(self, mock_pull, mock_remove, mock_request, tmp_path):
-        from skills.core.update.handler import handle
-        from app.update_manager import UpdateResult
-
-        mock_pull.return_value = UpdateResult(
-            success=True, old_commit="abc", new_commit="def",
-            commits_pulled=1, stashed=True,
-        )
-        ctx = _make_ctx(tmp_path, command_name="update")
-        result = handle(ctx)
-
-        assert "stashed" in result.lower()
-
-    @patch(_P_REQUEST)
-    @patch(_P_REMOVE)
-    @patch(_P_PULL)
-    def test_update_single_commit_grammar(self, mock_pull, mock_remove, mock_request, tmp_path):
-        from skills.core.update.handler import handle
-        from app.update_manager import UpdateResult
-
-        mock_pull.return_value = UpdateResult(
-            success=True, old_commit="abc", new_commit="def",
-            commits_pulled=1,
-        )
-        ctx = _make_ctx(tmp_path, command_name="update")
-        result = handle(ctx)
-
-        assert "1 new commit)" in result
-        assert "commits)" not in result
-
-
-class TestRestartAlias:
-    """Tests that /restart behaves identically to /update (it's an alias)."""
-
-    @patch(_P_REQUEST)
-    @patch(_P_REMOVE)
-    @patch(_P_PULL)
-    def test_restart_runs_update_logic(self, mock_pull, mock_remove, mock_request, tmp_path):
-        """When invoked as /restart, the handler still pulls and restarts."""
-        from skills.core.update.handler import handle
-        from app.update_manager import UpdateResult
-
-        mock_pull.return_value = UpdateResult(
-            success=True, old_commit="abc", new_commit="def",
-            commits_pulled=2,
-        )
-        ctx = _make_ctx(tmp_path, command_name="restart")
-        result = handle(ctx)
-
-        mock_pull.assert_called_once_with(tmp_path)
-        mock_request.assert_called_once_with(str(tmp_path))
-        assert "Restarting" in result
-
-    @patch(_P_REQUEST)
-    @patch(_P_REMOVE)
-    @patch(_P_PULL)
-    def test_restart_no_changes_no_restart(self, mock_pull, mock_remove, mock_request, tmp_path):
-        from skills.core.update.handler import handle
-        from app.update_manager import UpdateResult
-
-        mock_pull.return_value = UpdateResult(
-            success=True, old_commit="abc", new_commit="abc",
-            commits_pulled=0,
-        )
-        ctx = _make_ctx(tmp_path, command_name="restart")
-        result = handle(ctx)
-
-        mock_request.assert_not_called()
-        assert "up to date" in result
-
-    @patch(_P_REQUEST)
-    @patch(_P_REMOVE)
-    @patch(_P_PULL)
-    def test_upgrade_runs_update_logic(self, mock_pull, mock_remove, mock_request, tmp_path):
-        """When invoked as /upgrade, the handler still pulls and restarts."""
-        from skills.core.update.handler import handle
-        from app.update_manager import UpdateResult
-
-        mock_pull.return_value = UpdateResult(
-            success=True, old_commit="abc", new_commit="def",
-            commits_pulled=1,
-        )
-        ctx = _make_ctx(tmp_path, command_name="upgrade")
-        result = handle(ctx)
-
-        mock_pull.assert_called_once_with(tmp_path)
-        mock_request.assert_called_once_with(str(tmp_path))
+    @patch("app.command_handlers.send_telegram")
+    @patch("app.command_handlers.atomic_write")
+    def test_update_does_not_dispatch_skill(self, mock_write, mock_send):
+        """Update is hardcoded, not dispatched via skill system."""
+        from app.command_handlers import handle_command
+        with patch("app.command_handlers._dispatch_skill") as mock_dispatch:
+            handle_command("/update")
+        mock_dispatch.assert_not_called()
 
 
 class TestSkillRegistration:
-    """Tests that the skill is properly registered."""
+    """Tests that /restart is a standalone skill separate from /update."""
 
-    def test_skill_md_exists(self):
-        skill_md = Path(__file__).parent.parent / "skills" / "core" / "update" / "SKILL.md"
+    def test_restart_skill_exists(self):
+        skill_md = Path(__file__).parent.parent / "skills" / "core" / "restart" / "SKILL.md"
         assert skill_md.exists()
 
-    def test_handler_exists(self):
-        handler = Path(__file__).parent.parent / "skills" / "core" / "update" / "handler.py"
+    def test_restart_handler_exists(self):
+        handler = Path(__file__).parent.parent / "skills" / "core" / "restart" / "handler.py"
         assert handler.exists()
 
-    def test_skill_discoverable(self):
-        """The skill registry should find /update, /upgrade, and /restart (separate)."""
-        from app.skills import build_registry
-        registry = build_registry()
-        update_skill = registry.find_by_command("update")
-        assert update_skill is not None
-
-        upgrade_skill = registry.find_by_command("upgrade")
-        assert upgrade_skill is not None
-
-        # /update and /upgrade resolve to the same skill
-        assert update_skill.name == upgrade_skill.name == "update"
-
-        # /restart is now a separate skill
-        restart_skill = registry.find_by_command("restart")
-        assert restart_skill is not None
-        assert restart_skill.name == "restart"
-
-    def test_restart_is_separate_skill(self):
-        """/restart should be a separate skill, not an alias of /update."""
+    def test_restart_skill_discoverable(self):
         from app.skills import build_registry
         registry = build_registry()
         restart_skill = registry.find_by_command("restart")
         assert restart_skill is not None
         assert restart_skill.name == "restart"
-        # update should not have restart as an alias
-        update_skill = registry.find_by_command("update")
-        assert "restart" not in update_skill.commands[0].aliases
+
+    def test_update_is_not_a_skill(self):
+        """Update is hardcoded, not a skill — registry should NOT find it."""
+        from app.skills import build_registry
+        registry = build_registry()
+        assert registry.find_by_command("update") is None

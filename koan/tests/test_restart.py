@@ -112,60 +112,8 @@ class TestRestartExitCode:
 # ---------------------------------------------------------------------------
 
 
-class TestRestartAsUpdateAlias:
-    """/restart is an alias for /update — both pull + restart."""
-
-    def test_restart_alias_pulls_and_restarts(self, tmp_path):
-        """Invoking handler with command_name='restart' runs update logic."""
-        from skills.core.update.handler import handle
-        from app.skills import SkillContext
-        from app.update_manager import UpdateResult
-        from unittest.mock import MagicMock
-
-        ctx = SkillContext(
-            koan_root=tmp_path,
-            instance_dir=tmp_path / "instance",
-            command_name="restart",
-            args="",
-            send_message=MagicMock(),
-            handle_chat=MagicMock(),
-        )
-        with patch("app.update_manager.pull_upstream") as mock_pull, \
-             patch("app.restart_manager.request_restart") as mock_request, \
-             patch("app.pause_manager.remove_pause"):
-            mock_pull.return_value = UpdateResult(
-                success=True, old_commit="aaa", new_commit="bbb",
-                commits_pulled=1,
-            )
-            result = handle(ctx)
-
-        mock_pull.assert_called_once_with(tmp_path)
-        mock_request.assert_called_once_with(str(tmp_path))
-        assert "Restarting" in result
-
-    def test_restart_alias_no_changes(self, tmp_path):
-        """When already up to date, /restart reports no changes."""
-        from skills.core.update.handler import handle
-        from app.skills import SkillContext
-        from app.update_manager import UpdateResult
-        from unittest.mock import MagicMock
-
-        ctx = SkillContext(
-            koan_root=tmp_path,
-            instance_dir=tmp_path / "instance",
-            command_name="restart",
-            args="",
-            send_message=MagicMock(),
-            handle_chat=MagicMock(),
-        )
-        with patch("app.update_manager.pull_upstream") as mock_pull:
-            mock_pull.return_value = UpdateResult(
-                success=True, old_commit="abc", new_commit="abc",
-                commits_pulled=0,
-            )
-            result = handle(ctx)
-
-        assert "up to date" in result
+class TestRestartAsStandaloneSkill:
+    """/restart is a standalone skill that requests restart without pulling code."""
 
     @patch("app.command_handlers._dispatch_skill")
     def test_command_routes_restart_to_skill(self, mock_dispatch):
@@ -261,10 +209,8 @@ class TestRestartIsStandaloneSkill:
         skill = registry.find_by_command("restart")
         assert skill is not None
         assert skill.name == "restart"
-        # restart is a standalone skill, not an alias of update
-        update_skill = registry.find_by_command("update")
-        assert update_skill.name == "update"
-        assert skill.name != update_skill.name
+        # /update is now hardcoded, not a skill
+        assert registry.find_by_command("update") is None
 
 
 class TestMainLoopRestartDetection:

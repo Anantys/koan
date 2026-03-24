@@ -1551,7 +1551,7 @@ class TestRunReviewPlanAlignment:
             "",          # _fetch_plan_body: comments
             "posted",    # _post_review_comment
         ]
-        mock_claude.return_value = json.dumps(LGTM_REVIEW_JSON)
+        mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
 
         success, summary, _ = run_review(
             "owner", "repo", "5", "/tmp/project",
@@ -1573,7 +1573,7 @@ class TestRunReviewPlanAlignment:
         """No plan alignment when PR body has no linked issue URL."""
         pr_context["body"] = "Refactoring pass. No linked issue."
         mock_fetch.return_value = pr_context
-        mock_claude.return_value = json.dumps(LGTM_REVIEW_JSON)
+        mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
 
         success, _, _ = run_review(
             "owner", "repo", "42", "/tmp/project",
@@ -1595,7 +1595,7 @@ class TestRunReviewPlanAlignment:
         """Explicit --plan-url fetches the specified issue, skipping auto-detect."""
         pr_context["body"] = "No issue URLs here."
         mock_fetch.return_value = pr_context
-        mock_claude.return_value = json.dumps(LGTM_REVIEW_JSON)
+        mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
 
         plan_issue = json.dumps({
             "body": "## Summary\n\nExplicit plan.",
