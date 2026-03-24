@@ -368,6 +368,10 @@ make test   # Run the test suite
 
 Check [CLAUDE.md](CLAUDE.md) for coding conventions and architecture details.
 
+## AI Policy
+
+This project uses AI tools to assist development. Humans review and approve every change before it is merged. See [AI_POLICY.md](AI_POLICY.md) for details.
+
 ## License
 
 [GPL-3.0](LICENSE) — Free as in freedom.
