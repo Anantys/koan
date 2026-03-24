@@ -762,7 +762,8 @@ class TestRunPrReview:
         mock_models.return_value = {"mission": "", "fallback": "sonnet"}
 
         mock_rebase_gh.side_effect = [
-            self._mock_pr_context(), "0", "diff", "", "", "",
+            self._mock_pr_context(), "0", "diff", "",  # timeline
+            "", "", "", "",  # comments, reviews, issue_comments, CI checks
         ]
         mock_claude.return_value = {"success": True, "output": "Fixed", "error": ""}
         mock_commit.return_value = True
