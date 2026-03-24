@@ -644,7 +644,8 @@ class TestRunPrReview:
         mock_models.return_value = {"mission": "", "fallback": "sonnet"}
 
         mock_rebase_gh.side_effect = [
-            self._mock_pr_context(), "0", "diff", "reviewer comment", "reviews", "thread",
+            self._mock_pr_context(), "0", "diff", "",  # timeline
+            "reviewer comment", "reviews", "thread", "",  # CI checks
         ]
         mock_claude.return_value = {"success": True, "output": "Fixed", "error": ""}
         mock_commit.return_value = True
@@ -692,7 +693,8 @@ class TestRunPrReview:
         mock_models.return_value = {"mission": "", "fallback": "sonnet"}
 
         mock_rebase_gh.side_effect = [
-            self._mock_pr_context(), "0", "diff", "comment", "review", "thread",
+            self._mock_pr_context(), "0", "diff", "",  # timeline
+            "comment", "review", "thread", "",  # CI checks
         ]
         # 3 Claude calls: review feedback, refactor, quality review
         mock_claude.return_value = {"success": True, "output": "Done", "error": ""}
