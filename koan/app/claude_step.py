@@ -439,6 +439,7 @@ def _build_pr_prompt(
         REVIEW_COMMENTS=context.get("review_comments", ""),
         REVIEWS=context.get("reviews", ""),
         ISSUE_COMMENTS=context.get("issue_comments", ""),
+        CI_FAILURES=context.get("ci_failures", ""),
     )
     return load_prompt_or_skill(skill_dir, prompt_name, **kwargs)
 

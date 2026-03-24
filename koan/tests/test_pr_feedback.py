@@ -31,6 +31,11 @@ def _iso_hours_ago(hours: int) -> str:
     return (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _iso_hours_ago(hours: int) -> str:
+    """Return an ISO UTC timestamp `hours` ago from now."""
+    return (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 # ─── categorize_pr ───────────────────────────────────────────────────────
 
 class TestCategorizePr:
