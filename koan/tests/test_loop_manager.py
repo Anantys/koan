@@ -2173,6 +2173,32 @@ class TestNotificationCacheIdValidation:
         assert "missing 'id'" in caplog.text
         assert "Test PR" in caplog.text
 
+    def test_cache_notif_survives_full_ttl_eviction(self):
+        """min() on an empty _notif_cache must not raise ValueError.
+
+        If _NOTIF_CACHE_TTL is pathologically low (or all entries are
+        somehow aged past TTL), the sweep can empty the cache entirely.
+        Without a guard, the subsequent min(_notif_cache, ...) crashes.
+        """
+        import app.loop_manager as lm
+        from app.loop_manager import _cache_notif, _notif_cache_lock
+
+        original_max = lm._NOTIF_CACHE_MAX
+        original_ttl = lm._NOTIF_CACHE_TTL
+        # TTL of -1 means every entry (including just-added) is "expired"
+        lm._NOTIF_CACHE_TTL = -1
+        # Max of -1 means len(cache) > max is True even when cache is empty (0 > -1)
+        lm._NOTIF_CACHE_MAX = -1
+        try:
+            # Without the guard, this raises ValueError: min() arg is empty sequence
+            _cache_notif({"id": "901", "updated_at": "2026-03-20T11:00:00Z"})
+            # Cache should be empty — everything was evicted by TTL sweep
+            with _notif_cache_lock:
+                assert len(lm._notif_cache) == 0
+        finally:
+            lm._NOTIF_CACHE_MAX = original_max
+            lm._NOTIF_CACHE_TTL = original_ttl
+
 
 # --- Thread-safety tests ---
 

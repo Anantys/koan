@@ -283,7 +283,7 @@ def _cache_notif(notif: dict) -> None:
         for k in expired:
             del _notif_cache[k]
         # If still over limit, evict oldest
-        if len(_notif_cache) > _NOTIF_CACHE_MAX:
+        if _notif_cache and len(_notif_cache) > _NOTIF_CACHE_MAX:
             oldest_key = min(_notif_cache, key=_notif_cache.get)
             del _notif_cache[oldest_key]
 
