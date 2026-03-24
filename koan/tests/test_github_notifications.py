@@ -11,6 +11,7 @@ import pytest
 
 from app.github import SSOAuthRequired
 from app.github_notifications import (
+    SSO_ESCALATION_THRESHOLD,
     FetchResult,
     _FETCH_FAILURE_THRESHOLD,
     _processed_comments,
@@ -19,11 +20,14 @@ from app.github_notifications import (
     add_reaction,
     api_url_to_web_url,
     check_already_processed,
+    check_sso_escalation,
     check_user_permission,
+    reset_consecutive_sso_state,
     extract_comment_metadata,
     fetch_unread_notifications,
     find_mention_in_thread,
     get_comment_from_notification,
+    get_consecutive_sso_failures,
     get_fetch_failure_count,
     get_sso_failure_count,
     is_notification_stale,
@@ -31,6 +35,7 @@ from app.github_notifications import (
     parse_mention_command,
     reset_fetch_failure_count,
     reset_sso_failure_count,
+    update_consecutive_sso_failures,
 )
 
 
@@ -960,9 +965,11 @@ class TestSearchCommentsForMention:
 class TestSSOFailureTracking:
     def setup_method(self):
         reset_sso_failure_count()
+        reset_consecutive_sso_state()
 
     def teardown_method(self):
         reset_sso_failure_count()
+        reset_consecutive_sso_state()
 
     @patch("app.github_notifications.api")
     def test_get_comment_sso_failure_records_count(self, mock_api):
@@ -1137,3 +1144,124 @@ class TestConsecutiveFetchFailures:
         content = outbox.read_text()
         assert "failed 3 times" in content
         assert "network error" in content
+
+
+# ---------------------------------------------------------------------------
+# Consecutive SSO failure tracking and escalation
+# ---------------------------------------------------------------------------
+
+class TestConsecutiveSSOFailures:
+    def setup_method(self):
+        reset_sso_failure_count()
+        reset_consecutive_sso_state()
+
+    def teardown_method(self):
+        reset_sso_failure_count()
+        reset_consecutive_sso_state()
+
+    def test_consecutive_counter_accumulates_across_cycles(self):
+        from app.github_notifications import _record_sso_failure
+
+        # Cycle 1: 2 failures
+        _record_sso_failure("a")
+        _record_sso_failure("b")
+        update_consecutive_sso_failures()
+        assert get_consecutive_sso_failures() == 2
+
+        # Cycle 2: reset per-cycle, add 1 more failure
+        reset_sso_failure_count()
+        _record_sso_failure("c")
+        update_consecutive_sso_failures()
+        assert get_consecutive_sso_failures() == 3
+
+    def test_clean_cycle_resets_consecutive_counter(self):
+        from app.github_notifications import _record_sso_failure
+
+        # Build up failures
+        _record_sso_failure("a")
+        _record_sso_failure("b")
+        update_consecutive_sso_failures()
+        assert get_consecutive_sso_failures() == 2
+
+        # Clean cycle
+        reset_sso_failure_count()
+        update_consecutive_sso_failures()
+        assert get_consecutive_sso_failures() == 0
+
+    def test_escalation_below_threshold_returns_false(self, monkeypatch):
+        from app.github_notifications import _record_sso_failure
+        monkeypatch.setenv("KOAN_ROOT", "/tmp/test-koan")
+
+        # Only 2 failures, below threshold of 5
+        _record_sso_failure("a")
+        _record_sso_failure("b")
+        update_consecutive_sso_failures()
+        assert check_sso_escalation() is False
+
+    def test_escalation_at_threshold_writes_outbox(self, monkeypatch):
+        from app.github_notifications import _record_sso_failure
+        monkeypatch.setenv("KOAN_ROOT", "/tmp/test-koan")
+
+        # Accumulate SSO_ESCALATION_THRESHOLD failures
+        for i in range(SSO_ESCALATION_THRESHOLD):
+            _record_sso_failure(f"fail-{i}")
+        update_consecutive_sso_failures()
+
+        with patch("app.utils.append_to_outbox") as mock_outbox:
+            result = check_sso_escalation()
+            assert result is True
+            mock_outbox.assert_called_once()
+            msg = mock_outbox.call_args[0][1]
+            assert "SSO" in msg
+            assert "gh auth refresh" in msg
+            assert str(SSO_ESCALATION_THRESHOLD) in msg
+
+    def test_escalation_fires_only_once_per_streak(self, monkeypatch):
+        from app.github_notifications import _record_sso_failure
+        monkeypatch.setenv("KOAN_ROOT", "/tmp/test-koan")
+
+        for i in range(SSO_ESCALATION_THRESHOLD):
+            _record_sso_failure(f"fail-{i}")
+        update_consecutive_sso_failures()
+
+        with patch("app.utils.append_to_outbox") as mock_outbox:
+            assert check_sso_escalation() is True
+            assert check_sso_escalation() is False  # second call suppressed
+            assert mock_outbox.call_count == 1
+
+    def test_escalation_rearms_after_clean_cycle(self, monkeypatch):
+        from app.github_notifications import _record_sso_failure
+        monkeypatch.setenv("KOAN_ROOT", "/tmp/test-koan")
+
+        # First streak
+        for i in range(SSO_ESCALATION_THRESHOLD):
+            _record_sso_failure(f"fail-{i}")
+        update_consecutive_sso_failures()
+
+        with patch("app.utils.append_to_outbox"):
+            check_sso_escalation()
+
+        # Clean cycle resets everything
+        reset_sso_failure_count()
+        update_consecutive_sso_failures()
+
+        # New streak
+        for i in range(SSO_ESCALATION_THRESHOLD):
+            reset_sso_failure_count()
+            _record_sso_failure(f"fail2-{i}")
+            update_consecutive_sso_failures()
+
+        with patch("app.utils.append_to_outbox") as mock_outbox:
+            assert check_sso_escalation() is True
+            mock_outbox.assert_called_once()
+
+    def test_no_escalation_without_koan_root(self, monkeypatch):
+        from app.github_notifications import _record_sso_failure
+        monkeypatch.delenv("KOAN_ROOT", raising=False)
+
+        for i in range(SSO_ESCALATION_THRESHOLD):
+            _record_sso_failure(f"fail-{i}")
+        update_consecutive_sso_failures()
+
+        # KOAN_ROOT not set — should return False gracefully
+        assert check_sso_escalation() is False

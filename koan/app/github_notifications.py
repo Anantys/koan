@@ -36,11 +36,34 @@ _FETCH_FAILURE_THRESHOLD = 3
 # so we don't spam the user on every subsequent failure.
 _fetch_failure_alerted: bool = False
 
+# Consecutive SSO failures across cycles.  Only reset when a full cycle
+# completes with zero SSO failures, indicating the token works again.
+_consecutive_sso_failures: int = 0
+
+# Threshold at which an outbox alert is sent.
+SSO_ESCALATION_THRESHOLD: int = 5
+
+# Track whether the outbox escalation has already fired for the current
+# failure streak so we don't spam on every subsequent cycle.
+_sso_escalation_sent: bool = False
+
 
 def reset_sso_failure_count() -> None:
-    """Reset the per-cycle SSO failure counter."""
+    """Reset the per-cycle SSO failure counter.
+
+    Called at the start of each notification cycle.  Does NOT reset the
+    cross-cycle consecutive counter — that is handled by
+    ``update_consecutive_sso_failures()``.
+    """
     global _sso_failure_count
     _sso_failure_count = 0
+
+
+def reset_consecutive_sso_state() -> None:
+    """Reset all consecutive SSO failure state.  For tests only."""
+    global _consecutive_sso_failures, _sso_escalation_sent
+    _consecutive_sso_failures = 0
+    _sso_escalation_sent = False
 
 
 def get_sso_failure_count() -> int:
@@ -115,8 +138,64 @@ def _clear_fetch_failures() -> None:
         _fetch_failure_alerted = False
 
 
+def get_consecutive_sso_failures() -> int:
+    """Return the number of consecutive SSO failures across cycles."""
+    return _consecutive_sso_failures
+
+
+def update_consecutive_sso_failures() -> None:
+    """Update the cross-cycle consecutive failure counter.
+
+    Call this AFTER a notification cycle completes.  If the cycle had
+    SSO failures, they are added to the running total.  If the cycle
+    was clean, the running total resets to zero.
+    """
+    global _consecutive_sso_failures, _sso_escalation_sent
+    if _sso_failure_count > 0:
+        _consecutive_sso_failures += _sso_failure_count
+    else:
+        _consecutive_sso_failures = 0
+        _sso_escalation_sent = False
+
+
+def check_sso_escalation() -> bool:
+    """Check if SSO failures should be escalated to outbox.
+
+    Returns True if an outbox alert was written, False otherwise.
+    The alert fires once per failure streak (reset when failures stop).
+    """
+    global _sso_escalation_sent
+    if _sso_escalation_sent:
+        return False
+    if _consecutive_sso_failures < SSO_ESCALATION_THRESHOLD:
+        return False
+
+    koan_root = os.environ.get("KOAN_ROOT", "")
+    if not koan_root:
+        return False
+
+    outbox_path = Path(koan_root) / "instance" / "outbox.md"
+    try:
+        from app.utils import append_to_outbox
+        append_to_outbox(
+            outbox_path,
+            f"⚠️ GitHub SSO auth has failed {_consecutive_sso_failures} times "
+            "consecutively — token needs re-authorization.\n"
+            "Run: `gh auth refresh -h github.com -s read:org`\n",
+        )
+        _sso_escalation_sent = True
+        log.warning(
+            "SSO escalation: %d consecutive failures, alert written to outbox",
+            _consecutive_sso_failures,
+        )
+        return True
+    except Exception as e:
+        log.debug("Failed to write SSO escalation to outbox: %s", e)
+        return False
+
+
 def _record_sso_failure(context: str) -> None:
-    """Record an SSO failure and log a warning (once per context)."""
+    """Record an SSO failure and log a warning (once per cycle)."""
     global _sso_failure_count
     _sso_failure_count += 1
     if _sso_failure_count == 1:

@@ -209,10 +209,6 @@ _NOTIF_CACHE_MAX = 2000
 _notif_cache: dict = {}
 _notif_cache_lock = threading.Lock()
 
-# SSO alert cooldown: only send one Telegram alert per hour.
-_SSO_ALERT_COOLDOWN = 3600  # 1 hour
-_last_sso_alert: float = 0
-
 # Lock protecting all module-level mutable GitHub state above.
 # Acquired for short state reads/writes only — never held during API calls.
 _github_state_lock = threading.Lock()
@@ -502,41 +498,36 @@ def _get_effective_check_interval() -> int:
 
 
 def _check_sso_failures() -> None:
-    """After a notification cycle, check for SSO failures and alert once per cooldown."""
-    global _last_sso_alert
-
-    from app.github_notifications import get_sso_failure_count
+    """After a notification cycle, update consecutive counter and escalate if needed."""
+    from app.github_notifications import (
+        get_sso_failure_count,
+        update_consecutive_sso_failures,
+        check_sso_escalation,
+        get_consecutive_sso_failures,
+    )
 
     count = get_sso_failure_count()
+    update_consecutive_sso_failures()
+
     if count == 0:
         return
 
-    now = time.time()
-    with _github_state_lock:
-        if now - _last_sso_alert < _SSO_ALERT_COOLDOWN:
-            return
-        _last_sso_alert = now
-
+    consecutive = get_consecutive_sso_failures()
     _github_log(
-        f"SSO auth failure: {count} API call(s) returned 403 — "
+        f"SSO auth failure: {count} call(s) this cycle, "
+        f"{consecutive} consecutive — "
         "run: gh auth refresh -h github.com -s read:org",
         "warning",
     )
-    try:
-        from app.notify import send_telegram
-        send_telegram(
-            "⚠️ GitHub API returning 403 for enterprise org repos — "
-            "SSO token needs re-authorization.\n"
-            "Run: gh auth refresh -h github.com -s read:org"
-        )
-    except (ImportError, OSError) as e:
-        log.debug("Failed to send SSO alert: %s", e)
+
+    # Escalate to outbox after threshold (fires once per streak)
+    check_sso_escalation()
 
 
 def reset_github_backoff() -> None:
     """Reset backoff state. Useful for tests and when external events suggest activity."""
     global _last_github_check, _last_github_check_iso, _consecutive_empty_checks, _github_config_logged, _github_interval_loaded
-    global _github_config_cache, _github_config_cache_mtime, _last_sso_alert
+    global _github_config_cache, _github_config_cache_mtime
     with _github_state_lock:
         _last_github_check = 0
         _last_github_check_iso = ""
@@ -545,7 +536,6 @@ def reset_github_backoff() -> None:
         _github_interval_loaded = False
         _github_config_cache = _GITHUB_CONFIG_UNSET
         _github_config_cache_mtime = 0
-        _last_sso_alert = 0
     with _notif_cache_lock:
         _notif_cache.clear()
 

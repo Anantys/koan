@@ -2279,46 +2279,66 @@ class TestThreadSafety:
 class TestCheckSSOFailures:
     def setup_method(self):
         from app.loop_manager import reset_github_backoff
-        from app.github_notifications import reset_sso_failure_count
+        from app.github_notifications import reset_sso_failure_count, reset_consecutive_sso_state
         reset_github_backoff()
         reset_sso_failure_count()
+        reset_consecutive_sso_state()
 
     def teardown_method(self):
         from app.loop_manager import reset_github_backoff
-        from app.github_notifications import reset_sso_failure_count
+        from app.github_notifications import reset_sso_failure_count, reset_consecutive_sso_state
         reset_github_backoff()
         reset_sso_failure_count()
+        reset_consecutive_sso_state()
 
-    @patch("app.loop_manager.log")
+    @patch("app.loop_manager._github_log")
     def test_no_alert_when_no_sso_failures(self, mock_log):
         from app.loop_manager import _check_sso_failures
         _check_sso_failures()
         # Should not log any warning
-        mock_log.warning.assert_not_called()
+        mock_log.assert_not_called()
 
-    def test_sends_telegram_on_sso_failure(self):
+    def test_logs_warning_on_sso_failure(self):
         from app.loop_manager import _check_sso_failures
         from app.github_notifications import _record_sso_failure
         _record_sso_failure("test")
 
-        with patch("app.notify.send_telegram") as mock_tg:
+        with patch("app.loop_manager._github_log") as mock_log:
             _check_sso_failures()
-            mock_tg.assert_called_once()
-            msg = mock_tg.call_args[0][0]
+            mock_log.assert_called_once()
+            msg = mock_log.call_args[0][0]
             assert "SSO" in msg
-            assert "gh auth refresh" in msg
 
-    def test_cooldown_prevents_repeated_alerts(self):
+    def test_escalation_after_threshold(self, monkeypatch):
+        """After enough consecutive failures, check_sso_escalation fires."""
+        from app.loop_manager import _check_sso_failures
+        from app.github_notifications import (
+            _record_sso_failure, reset_sso_failure_count,
+            SSO_ESCALATION_THRESHOLD,
+        )
+        monkeypatch.setenv("KOAN_ROOT", "/tmp/test-koan")
+
+        with patch("app.utils.append_to_outbox") as mock_outbox:
+            # Run enough cycles with failures to reach threshold
+            for i in range(SSO_ESCALATION_THRESHOLD):
+                reset_sso_failure_count()
+                _record_sso_failure(f"test-{i}")
+                _check_sso_failures()
+
+            assert mock_outbox.call_count == 1
+            msg = mock_outbox.call_args[0][1]
+            assert "SSO" in msg
+
+    def test_no_escalation_below_threshold(self, monkeypatch):
         from app.loop_manager import _check_sso_failures
         from app.github_notifications import _record_sso_failure, reset_sso_failure_count
+        monkeypatch.setenv("KOAN_ROOT", "/tmp/test-koan")
 
-        with patch("app.notify.send_telegram") as mock_tg:
-            _record_sso_failure("test1")
-            _check_sso_failures()
-            assert mock_tg.call_count == 1
+        with patch("app.utils.append_to_outbox") as mock_outbox:
+            # Only 2 cycles with failures — below threshold
+            for i in range(2):
+                reset_sso_failure_count()
+                _record_sso_failure(f"test-{i}")
+                _check_sso_failures()
 
-            # Second call within cooldown — should not alert again
-            reset_sso_failure_count()
-            _record_sso_failure("test2")
-            _check_sso_failures()
-            assert mock_tg.call_count == 1
+            mock_outbox.assert_not_called()
