@@ -582,6 +582,25 @@ def resolve_project_path(repo_name: str, owner: Optional[str] = None) -> Optiona
     return None
 
 
+def resolve_project_name(repo_name: str, owner: Optional[str] = None) -> str:
+    """Resolve a GitHub repo name to a known local project name.
+
+    Combines :func:`resolve_project_path` and :func:`project_name_for_path`.
+    Falls back to *repo_name* if the repository is not found among known projects.
+
+    Args:
+        repo_name: GitHub repository name (without owner).
+        owner: Optional GitHub owner for more accurate matching.
+
+    Returns:
+        Project name string (never empty).
+    """
+    project_path = resolve_project_path(repo_name, owner=owner)
+    if project_path:
+        return project_name_for_path(project_path)
+    return repo_name
+
+
 def append_to_outbox(outbox_path: Path, content: str):
     """Append content to outbox.md with file locking.
 

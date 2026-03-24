@@ -12,6 +12,7 @@ CLI:
 """
 
 import json
+import sys
 from pathlib import Path
 from typing import Tuple
 
@@ -156,6 +157,38 @@ def _handle_pr(owner, repo, pr_number, instance_dir, koan_root, notify_fn):
         _queue_pr_review(owner, repo, pr_number, missions_path)
         actions.append("\U0001f4dd PR review queued \u2014 no reviews yet")
 
+    # 3. Auto-forward unresolved review comments to agent
+    if not needs_reb:
+        try:
+            from app.pr_review_learning import (
+                dispatch_review_comments_mission,
+                fetch_unresolved_review_comments,
+            )
+            from app.utils import resolve_project_name
+
+            include_drafts = _get_review_dispatch_include_drafts()
+            if not is_draft or include_drafts:
+                project_path = _resolve_project_path(repo, owner=owner)
+                comments = fetch_unresolved_review_comments(
+                    owner, repo, pr_number, project_path=project_path,
+                )
+                if comments:
+                    project_name = resolve_project_name(repo, owner=owner)
+                    dispatched = dispatch_review_comments_mission(
+                        owner, repo, pr_number, comments,
+                        missions_path, str(instance_dir),
+                        project_name=project_name,
+                    )
+                    if dispatched:
+                        actions.append(
+                            "\U0001f4ac Review comment mission queued"
+                        )
+        except Exception as e:
+            print(
+                f"[check_runner] Review comment dispatch failed: {e}",
+                file=sys.stderr,
+            )
+
     # Record the check
     mark_checked(instance_dir, url, updated_at)
 
@@ -175,6 +208,21 @@ def _handle_pr(owner, repo, pr_number, instance_dir, koan_root, notify_fn):
         msg = f"\U0001f527 PR #{pr_number} ({title[:60]}):\n{summary}"
 
     notify_fn(msg)
+
+    # Learn from reviews (best-effort, never fails the check)
+    try:
+        from app.pr_review_learning import learn_from_reviews
+        project_path = _resolve_project_path(repo, owner=owner)
+        if project_path:
+            from app.utils import resolve_project_name
+            project_name = resolve_project_name(repo, owner=owner)
+            learn_from_reviews(str(instance_dir), project_name, project_path)
+    except Exception as e:
+        print(
+            f"[check_runner] learn_from_reviews failed: {e}",
+            file=sys.stderr,
+        )
+
     return True, msg
 
 
@@ -301,12 +349,26 @@ def _queue_plan(owner, repo, issue_number, title, instance_dir, koan_root):
 
 def _resolve_project_name(repo, owner=None):
     """Resolve a repo name to a known project name."""
-    from app.utils import project_name_for_path, resolve_project_path
+    from app.utils import resolve_project_name
+    return resolve_project_name(repo, owner=owner)
 
-    project_path = resolve_project_path(repo, owner=owner)
-    if project_path:
-        return project_name_for_path(project_path)
-    return repo
+
+def _get_review_dispatch_include_drafts() -> bool:
+    """Return whether draft PRs should receive review-comment dispatch.
+
+    Reads ``review_dispatch.include_drafts`` from config.yaml.
+    Defaults to ``True`` (drafts included) when not set.
+    """
+    try:
+        from app.utils import load_config
+        config = load_config()
+        return bool(
+            config.get("review_dispatch", {}).get("include_drafts", True)
+        )
+    except Exception as e:
+        print(f"[check_runner] Config read failed, defaulting include_drafts=True: {e}",
+              file=sys.stderr)
+        return True
 
 
 def _resolve_project_path(repo, owner=None):

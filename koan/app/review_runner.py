@@ -31,6 +31,22 @@ from app.review_schema import validate_review
 _ISSUE_URL_RE = re.compile(ISSUE_URL_PATTERN)
 
 
+def is_bot_user(item: dict) -> bool:
+    """Return True if the comment author is a bot.
+
+    Checks the ``user_type`` field (pre-extracted from ``user.type``) or
+    falls back to reading ``item["user"]["type"]`` directly.  Centralised
+    here so every caller uses the same rule and it's easy to extend (e.g.,
+    blocking ``dependabot[bot]`` by login name).
+    """
+    if item.get("user_type") == "Bot":
+        return True
+    user = item.get("user")
+    if isinstance(user, dict) and user.get("type") == "Bot":
+        return True
+    return False
+
+
 def fetch_repliable_comments(
     owner: str, repo: str, pr_number: str,
 ) -> List[dict]:
@@ -54,7 +70,7 @@ def fetch_repliable_comments(
             for line in raw.strip().split("\n"):
                 try:
                     item = json.loads(line)
-                    if item.get("user_type") == "Bot":
+                    if is_bot_user(item):
                         continue
                     comments.append({
                         "id": item["id"],
@@ -80,7 +96,7 @@ def fetch_repliable_comments(
             for line in raw.strip().split("\n"):
                 try:
                     item = json.loads(line)
-                    if item.get("user_type") == "Bot":
+                    if is_bot_user(item):
                         continue
                     comments.append({
                         "id": item["id"],
