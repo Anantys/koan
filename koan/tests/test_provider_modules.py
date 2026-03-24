@@ -26,7 +26,7 @@ class TestConstants:
     """Verify that tool name constants are sane."""
 
     def test_claude_tools_contains_expected(self):
-        expected = {"Bash", "Read", "Write", "Glob", "Grep", "Edit"}
+        expected = {"Bash", "Read", "Write", "Glob", "Grep", "Edit", "Skill"}
         assert CLAUDE_TOOLS == expected
 
     def test_tool_name_map_keys_are_claude_tools(self):
