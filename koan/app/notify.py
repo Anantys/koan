@@ -48,6 +48,11 @@ class NotificationPriority(Enum):
 _file_cache: Dict[str, Tuple[str, float]] = {}
 _file_cache_lock = threading.Lock()
 
+# Sentinel returned when a notification is suppressed by min_priority filtering.
+# Truthy so fire-and-forget callers (`if send_telegram(...)`) still treat it as "ok",
+# but distinguishable from True for callers that need to know delivery vs suppression.
+NOTIFICATION_SUPPRESSED = "suppressed"
+
 # Valid priority names for config parsing (lowercase)
 _PRIORITY_NAME_MAP = {
     "info": NotificationPriority.INFO,
@@ -313,13 +318,16 @@ def send_telegram(text: str,
         text: Message text to send
         priority: Notification priority level (default: ACTION)
 
-    Returns True on success (suppression counts as success).
+    Returns:
+        True if the message was delivered successfully.
+        NOTIFICATION_SUPPRESSED if the message was silently dropped by min_priority.
+        False if sending failed.
     """
     # Check priority filter before sending
     min_priority = _get_min_priority()
     if priority.value < min_priority.value:
         _write_suppressed_to_journal(text, priority)
-        return True  # Suppression counts as success
+        return NOTIFICATION_SUPPRESSED
 
     # Prepend priority emoji for urgent and warning messages (idempotent)
     text = _apply_priority_emoji(text, priority)
