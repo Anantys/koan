@@ -587,9 +587,10 @@ class TestHandleQuotaExhaustion:
         stdout_file = str(tmp_path / "stdout")
         stderr_file = str(tmp_path / "stderr")
         with open(stdout_file, "w") as f:
-            f.write("rate limit exceeded resets 5pm (Europe/Paris)")
-        with open(stderr_file, "w") as f:
             f.write("")
+        # "rate limit" is a loose pattern — must be in stderr to trigger
+        with open(stderr_file, "w") as f:
+            f.write("rate limit exceeded resets 5pm (Europe/Paris)")
 
         instance = str(tmp_path / "instance")
         os.makedirs(instance)
@@ -700,6 +701,153 @@ class TestHandleQuotaExhaustion:
         assert state is not None
         assert state.reason == "quota"
         assert state.is_quota is True
+
+
+class TestStdoutFalsePositives:
+    """Test that loose quota patterns in stdout don't trigger false positives.
+
+    Claude's response text (stdout) may legitimately discuss API rate limiting,
+    retry-after headers, etc. Only strict patterns (actual CLI error messages)
+    should trigger from stdout.  Loose patterns should only match in stderr.
+
+    This class was added after a real incident where a /plan mission discussing
+    "rate limit" in an API design triggered a false positive quota pause.
+    """
+
+    def test_rate_limit_in_plan_text_does_not_trigger(self, tmp_path):
+        """Repro for the original bug: plan text mentioning rate limiting."""
+        from app.quota_handler import handle_quota_exhaustion
+
+        stdout_file = str(tmp_path / "stdout")
+        stderr_file = str(tmp_path / "stderr")
+        # This is Claude's response discussing API rate limiting — NOT an error
+        with open(stdout_file, "w") as f:
+            f.write(
+                "- **CMC returns `None` fields** (API partial response or "
+                "rate limit): Skip all threshold checks for that ticker."
+            )
+        with open(stderr_file, "w") as f:
+            f.write("")
+
+        instance = str(tmp_path / "instance")
+        os.makedirs(instance)
+
+        result = handle_quota_exhaustion(
+            str(tmp_path), instance, "koan", 13, stdout_file, stderr_file
+        )
+        assert result is None, "Loose pattern 'rate limit' in stdout should not trigger"
+
+    def test_retry_after_in_code_review_does_not_trigger(self, tmp_path):
+        from app.quota_handler import handle_quota_exhaustion
+
+        stdout_file = str(tmp_path / "stdout")
+        stderr_file = str(tmp_path / "stderr")
+        with open(stdout_file, "w") as f:
+            f.write("The API should return a Retry-After header when throttled.")
+        with open(stderr_file, "w") as f:
+            f.write("")
+
+        instance = str(tmp_path / "instance")
+        os.makedirs(instance)
+
+        result = handle_quota_exhaustion(
+            str(tmp_path), instance, "koan", 5, stdout_file, stderr_file
+        )
+        assert result is None, "Loose pattern 'retry-after' in stdout should not trigger"
+
+    def test_http_429_in_code_does_not_trigger(self, tmp_path):
+        from app.quota_handler import handle_quota_exhaustion
+
+        stdout_file = str(tmp_path / "stdout")
+        stderr_file = str(tmp_path / "stderr")
+        with open(stdout_file, "w") as f:
+            f.write("Handle HTTP 429 responses with exponential backoff.")
+        with open(stderr_file, "w") as f:
+            f.write("")
+
+        instance = str(tmp_path / "instance")
+        os.makedirs(instance)
+
+        result = handle_quota_exhaustion(
+            str(tmp_path), instance, "koan", 5, stdout_file, stderr_file
+        )
+        assert result is None, "Loose pattern 'HTTP 429' in stdout should not trigger"
+
+    def test_too_many_requests_in_docs_does_not_trigger(self, tmp_path):
+        from app.quota_handler import handle_quota_exhaustion
+
+        stdout_file = str(tmp_path / "stdout")
+        stderr_file = str(tmp_path / "stderr")
+        with open(stdout_file, "w") as f:
+            f.write("Returns 'too many requests' when the rate limit is exceeded.")
+        with open(stderr_file, "w") as f:
+            f.write("")
+
+        instance = str(tmp_path / "instance")
+        os.makedirs(instance)
+
+        result = handle_quota_exhaustion(
+            str(tmp_path), instance, "koan", 5, stdout_file, stderr_file
+        )
+        assert result is None, "Loose pattern 'too many requests' in stdout should not trigger"
+
+    def test_strict_pattern_in_stdout_still_triggers(self, tmp_path):
+        """Strict patterns like 'out of extra usage' are safe in stdout."""
+        from app.quota_handler import handle_quota_exhaustion
+
+        stdout_file = str(tmp_path / "stdout")
+        stderr_file = str(tmp_path / "stderr")
+        with open(stdout_file, "w") as f:
+            f.write("Error: out of extra usage. resets 10am (Europe/Paris)")
+        with open(stderr_file, "w") as f:
+            f.write("")
+
+        instance = str(tmp_path / "instance")
+        os.makedirs(instance)
+
+        result = handle_quota_exhaustion(
+            str(tmp_path), instance, "koan", 5, stdout_file, stderr_file
+        )
+        assert result is not None, "Strict pattern in stdout should still trigger"
+
+    def test_loose_pattern_in_stderr_triggers(self, tmp_path):
+        """Loose patterns in stderr (actual CLI errors) should still trigger."""
+        from app.quota_handler import handle_quota_exhaustion
+
+        stdout_file = str(tmp_path / "stdout")
+        stderr_file = str(tmp_path / "stderr")
+        with open(stdout_file, "w") as f:
+            f.write("Some normal output")
+        with open(stderr_file, "w") as f:
+            f.write("Error: rate limit exceeded")
+
+        instance = str(tmp_path / "instance")
+        os.makedirs(instance)
+
+        result = handle_quota_exhaustion(
+            str(tmp_path), instance, "koan", 5, stdout_file, stderr_file
+        )
+        assert result is not None, "Loose pattern in stderr should trigger"
+
+    def test_loose_pattern_in_stderr_with_content_stdout(self, tmp_path):
+        """Stderr rate limit should trigger even if stdout has normal content."""
+        from app.quota_handler import handle_quota_exhaustion
+
+        stdout_file = str(tmp_path / "stdout")
+        stderr_file = str(tmp_path / "stderr")
+        with open(stdout_file, "w") as f:
+            f.write("Plan: implement rate limiting for the API\n"
+                    "Step 1: Add retry-after headers")
+        with open(stderr_file, "w") as f:
+            f.write("HTTP 429 Too Many Requests")
+
+        instance = str(tmp_path / "instance")
+        os.makedirs(instance)
+
+        result = handle_quota_exhaustion(
+            str(tmp_path), instance, "koan", 5, stdout_file, stderr_file
+        )
+        assert result is not None, "Stderr quota error should trigger regardless of stdout"
 
 
 class TestCLI:
