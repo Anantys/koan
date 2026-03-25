@@ -51,7 +51,7 @@ from app.command_handlers import (
 from app.format_outbox import format_message, load_soul, load_human_prefs, load_memory_context, fallback_format
 from app.health_check import write_heartbeat
 from app.language_preference import get_language_instruction
-from app.notify import TypingIndicator, reset_flood_state, send_telegram, NotificationPriority
+from app.notify import TypingIndicator, reset_flood_state, send_telegram, NotificationPriority, NOTIFICATION_SUPPRESSED
 from app.outbox_scanner import scan_and_log
 from app.shutdown_manager import is_shutdown_requested, clear_shutdown
 from app.config import (
@@ -542,7 +542,14 @@ def flush_outbox():
 
     formatted = _format_outbox_message(clean_content)
     formatted = _expand_outbox_github_refs(formatted, clean_content)
-    if send_telegram(formatted, priority=priority):
+    result = send_telegram(formatted, priority=priority)
+    if result is NOTIFICATION_SUPPRESSED:
+        preview = formatted[:150].replace("\n", " ")
+        if len(formatted) > 150:
+            preview += "..."
+        log("outbox", f"Outbox suppressed (priority below threshold): {preview}")
+        staging.unlink(missing_ok=True)
+    elif result:
         msg_id = _get_last_message_id()
         save_conversation_message(
             CONVERSATION_HISTORY_FILE, "assistant", formatted,

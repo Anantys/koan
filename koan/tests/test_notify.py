@@ -11,7 +11,7 @@ from app.notify import (
     send_typing, TypingIndicator,
     _send_raw_bypass_flood, _direct_send,
     invalidate_file_cache, _file_cache,
-    NotificationPriority,
+    NotificationPriority, NOTIFICATION_SUPPRESSED,
 )
 
 pytestmark = pytest.mark.slow
@@ -581,7 +581,9 @@ class TestPriorityFiltering:
         with patch("app.notify._write_suppressed_to_journal") as mock_journal:
             result = notify_mod.send_telegram("low prio",
                                               priority=notify_mod.NotificationPriority.INFO)
-        assert result is True  # suppression counts as success
+        assert result is NOTIFICATION_SUPPRESSED
+        assert result  # still truthy for fire-and-forget callers
+        assert result is not True  # distinguishable from actual delivery
         mock_provider.send_message.assert_not_called()
         mock_journal.assert_called_once()
 
@@ -596,7 +598,7 @@ class TestPriorityFiltering:
         with patch("app.notify._write_suppressed_to_journal") as mock_journal:
             result = notify_mod.send_telegram("warning msg",
                                               priority=notify_mod.NotificationPriority.WARNING)
-        assert result is True
+        assert result is NOTIFICATION_SUPPRESSED
         mock_provider.send_message.assert_not_called()
         mock_journal.assert_called_once()
 
