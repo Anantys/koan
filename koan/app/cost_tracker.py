@@ -370,9 +370,6 @@ def daily_series(
             "cache_hit_rate": day_summary["cache_hit_rate"],
             "count": day_summary["count"],
             "cost": cost,
-            "cache_read_input_tokens": day_summary["cache_read_input_tokens"],
-            "cache_creation_input_tokens": day_summary["cache_creation_input_tokens"],
-            "cache_hit_rate": day_summary["cache_hit_rate"],
         })
         current += timedelta(days=1)
     return result

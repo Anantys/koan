@@ -364,6 +364,33 @@ class TestCacheTracking:
         assert row["cache_read_input_tokens"] == 800
         assert row["cache_hit_rate"] > 0
 
+    def test_daily_series_has_exact_expected_keys(self, instance_dir):
+        """Verify daily_series rows contain exactly the expected keys.
+
+        Regression test: duplicate dict keys (cache_read_input_tokens,
+        cache_creation_input_tokens, cache_hit_rate) were present in the
+        dict literal, causing the per-day values to silently overwrite
+        earlier assignments.
+        """
+        record_usage(
+            instance_dir,
+            "koan",
+            "claude-sonnet-4-20250514",
+            100,
+            50,
+            cache_creation_input_tokens=200,
+            cache_read_input_tokens=800,
+        )
+        today = date.today()
+        rows = daily_series(instance_dir, today, today)
+        assert len(rows) == 1
+        expected_keys = {
+            "date", "total_input", "total_output",
+            "cache_creation_input_tokens", "cache_read_input_tokens",
+            "cache_hit_rate", "count", "cost",
+        }
+        assert set(rows[0].keys()) == expected_keys
+
 
 class TestEstimateCost:
     def test_returns_none_without_pricing(self):
