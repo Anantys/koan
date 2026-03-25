@@ -25,6 +25,8 @@ from typing import List, Optional, Tuple
 
 from app.github import run_gh
 from app.github_url_parser import ISSUE_URL_PATTERN
+from app.issue_tracker import fetch_issue_context
+from app.issue_tracker_config import get_issue_tracker_config
 from app.prompts import load_prompt_or_skill
 from app.rebase_pr import fetch_pr_context
 from app.review_schema import validate_review
@@ -270,12 +272,23 @@ def build_review_prompt(
     architecture: bool = False,
     repliable_comments: Optional[List[dict]] = None,
     plan_body: Optional[str] = None,
+    issue_context: str = "",
 ) -> str:
     """Build a prompt for Claude to review a PR.
 
     When plan_body is provided, selects the plan-aware prompt variant
     (review-with-plan) regardless of the architecture flag. When architecture
     is True but no plan is present, uses the architecture prompt.
+
+    Args:
+        context: PR context dict (title, author, branch, base, body, diff, etc.)
+        skill_dir: Optional skill directory for custom prompt overrides.
+        architecture: If True, use architecture-focused prompt variant.
+        repliable_comments: List of comments with IDs for reply targeting.
+        plan_body: Plan text for plan-alignment review variant.
+        issue_context: Pre-formatted issue tracker context block (from
+            fetch_issue_context()). Injected as {ISSUE_CONTEXT} in the prompt.
+            Empty string means the placeholder renders as nothing.
     """
     if plan_body:
         if architecture:
@@ -302,6 +315,7 @@ def build_review_prompt(
         REVIEWS=context["reviews"],
         ISSUE_COMMENTS=context["issue_comments"],
         REPLIABLE_COMMENTS=repliable_text,
+        ISSUE_CONTEXT=issue_context,
     )
 
     if plan_body:
@@ -780,6 +794,9 @@ def run_review(
     skill_dir: Optional[Path] = None,
     architecture: bool = False,
     plan_url: Optional[str] = None,
+    project_name: Optional[str] = None,
+    global_config: Optional[dict] = None,
+    projects_config: Optional[dict] = None,
 ) -> Tuple[bool, str, Optional[dict]]:
     """Execute a read-only code review on a PR.
 
@@ -793,6 +810,9 @@ def run_review(
         architecture: If True, use architecture-focused review prompt.
         plan_url: Optional explicit GitHub issue URL for the plan to check
             alignment against. When None, auto-detection from PR body is used.
+        project_name: Optional project name for per-project issue tracker config.
+        global_config: Parsed config.yaml dict for issue tracker config lookup.
+        projects_config: Parsed projects.yaml dict for per-project overrides.
 
     Returns:
         (success, summary, review_data) tuple. review_data is the validated
@@ -840,10 +860,31 @@ def run_review(
     # Step 1b: Detect and fetch plan body for alignment checking
     plan_body = _resolve_plan_body(plan_url, context.get("body", ""))
 
+    # Step 1d: Fetch issue tracker context (JIRA / GitHub cross-repo issues)
+    issue_context = ""
+    if global_config is not None:
+        tracker_config = get_issue_tracker_config(
+            global_config,
+            project_name=project_name,
+            projects_config=projects_config,
+        )
+        if tracker_config:
+            try:
+                issue_context = fetch_issue_context(
+                    context.get("body") or "", tracker_config
+                )
+            except Exception as e:
+                print(
+                    f"[review_runner] issue tracker fetch failed: {e} — continuing without context",
+                    file=sys.stderr,
+                )
+                issue_context = ""
+
     # Step 2: Build review prompt
     prompt = build_review_prompt(
         context, skill_dir=skill_dir, architecture=architecture,
         repliable_comments=repliable_comments, plan_body=plan_body or None,
+        issue_context=issue_context,
     )
 
     # Step 3: Run Claude review (read-only)
