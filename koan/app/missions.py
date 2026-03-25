@@ -532,8 +532,10 @@ def inject_subtasks(
             lines[i:i + 1] = subtask_lines
             return normalize_content("\n".join(lines))
 
-    # Parent not found — append sub-tasks at bottom of pending instead
-    return insert_mission(content, subtask_lines[-1], urgent=False)
+    # Parent not found — append all sub-tasks at bottom of pending
+    for line in subtask_lines:
+        content = insert_mission(content, line, urgent=False)
+    return content
 
 
 def group_by_project(content: str) -> Dict[str, Dict[str, List[str]]]:

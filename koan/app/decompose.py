@@ -22,10 +22,12 @@ Architecture mirrors pr_review_learning.py:
 """
 
 import json
+import logging
 import re
-import sys
 from pathlib import Path
 from typing import List, Optional
+
+logger = logging.getLogger(__name__)
 
 # Maximum number of sub-tasks to accept from the classifier
 _MAX_SUBTASKS = 6
@@ -57,13 +59,13 @@ def decompose_mission(
         from app.config import get_model_config
         from app.prompts import load_prompt
     except ImportError as e:
-        print(f"[decompose] Import error: {e}", file=sys.stderr)
+        logger.error("Import error: %s", e)
         return None
 
     try:
         prompt = load_prompt("decompose-mission", MISSION_TEXT=mission_text.strip())
     except (FileNotFoundError, OSError) as e:
-        print(f"[decompose] Prompt load error: {e}", file=sys.stderr)
+        logger.error("Prompt load error: %s", e)
         return None
 
     models = get_model_config()
@@ -87,14 +89,11 @@ def decompose_mission(
             cwd=cwd,
         )
         if result.returncode != 0:
-            print(
-                f"[decompose] CLI call failed: {result.stderr[:200]}",
-                file=sys.stderr,
-            )
+            logger.error("CLI call failed: %s", result.stderr[:200])
             return None
         output = result.stdout.strip()
     except Exception as e:
-        print(f"[decompose] CLI error: {e}", file=sys.stderr)
+        logger.error("CLI error: %s", e)
         return None
 
     return _parse_decompose_output(output)
@@ -109,16 +108,18 @@ def _parse_decompose_output(output: str) -> Optional[List[str]]:
     if not output:
         return None
 
-    # Try to extract JSON object from output (Claude may wrap it in text)
-    json_match = re.search(r'\{.*\}', output, re.DOTALL)
+    # Try to extract JSON object from output (Claude may wrap it in text).
+    # Use a pattern that handles one level of nested braces (for the subtasks array),
+    # avoiding greedy matching across unrelated brace groups.
+    json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', output)
     if not json_match:
-        print(f"[decompose] No JSON found in output: {output[:200]}", file=sys.stderr)
+        logger.warning("No JSON found in output: %s", output[:200])
         return None
 
     try:
         data = json.loads(json_match.group(0))
     except json.JSONDecodeError as e:
-        print(f"[decompose] JSON parse error: {e} — output: {output[:200]}", file=sys.stderr)
+        logger.warning("JSON parse error: %s — output: %s", e, output[:200])
         return None
 
     classification = data.get("type", "atomic")
@@ -127,7 +128,7 @@ def _parse_decompose_output(output: str) -> Optional[List[str]]:
 
     subtasks = data.get("subtasks", [])
     if not isinstance(subtasks, list) or not subtasks:
-        print("[decompose] Composite with empty subtasks — treating as atomic", file=sys.stderr)
+        logger.warning("Composite with empty subtasks — treating as atomic")
         return None
 
     # Filter and cap sub-tasks
@@ -136,10 +137,7 @@ def _parse_decompose_output(output: str) -> Optional[List[str]]:
         return None
 
     if len(valid) > _MAX_SUBTASKS:
-        print(
-            f"[decompose] Capping sub-tasks from {len(valid)} to {_MAX_SUBTASKS}",
-            file=sys.stderr,
-        )
+        logger.info("Capping sub-tasks from %d to %d", len(valid), _MAX_SUBTASKS)
         valid = valid[:_MAX_SUBTASKS]
 
     return valid
