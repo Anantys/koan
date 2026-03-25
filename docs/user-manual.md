@@ -389,6 +389,19 @@ Use this before `/plan` when the idea is architecturally complex, when you want 
 - `/rebase https://github.com/org/repo/pull/42` — Resolve conflicts and update the PR
 </details>
 
+**`/reviewrebase`** — Review a PR then rebase it, so review insights feed the rebase.
+
+- **Usage:** `/reviewrebase <pr-url>`
+- **Aliases:** `/rr`
+- **GitHub @mention:** `@koan-bot /rr` on a PR
+
+<details>
+<summary>Use cases</summary>
+
+- `/rr https://github.com/org/repo/pull/42` — Queues `/review` then `/rebase` in sequence
+- Extra context after the URL is passed to the review step (e.g., `/rr <url> focus on error handling`)
+</details>
+
 **`/squash`** — Squash all PR commits into a single clean commit.
 
 - **Usage:** `/squash <pr-url>`
@@ -891,6 +904,7 @@ Ten skills can be triggered by commenting `@koan-bot <command>` on GitHub issues
 | `/fix` | `@koan-bot /fix` on an issue |
 | `/review` | `@koan-bot /review` on a PR |
 | `/rebase` | `@koan-bot /rebase` on a PR |
+| `/reviewrebase` | `@koan-bot /rr` on a PR |
 | `/recreate` | `@koan-bot /recreate` on a PR |
 | `/refactor` | `@koan-bot /refactor` on a PR or issue |
 | `/plan` | `@koan-bot /plan <idea>` on an issue |
@@ -1157,6 +1171,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/refactor <desc>` | `/rf` | I | Targeted refactoring mission |
 | `/ask <comment-url>` | — | I | Ask a question about a PR/issue — posts AI reply to GitHub |
 | `/rebase <PR>` | `/rb` | I | Rebase a PR onto its base branch |
+| `/reviewrebase <PR>` | `/rr` | I | Review then rebase a PR (combo) |
 | `/squash <PR>` | `/sq` | I | Squash all PR commits into one clean commit |
 | `/recreate <PR>` | `/rc` | I | Re-implement a PR from scratch |
 | `/pr <PR>` | — | I | Review and update a GitHub PR |
