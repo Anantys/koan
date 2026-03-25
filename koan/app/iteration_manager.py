@@ -643,6 +643,109 @@ def _decide_autonomous_action(
     return AutonomousDecision(action="autonomous", focus_remaining=None)
 
 
+def _maybe_decompose(
+    instance: Path,
+    mission_project: str,
+    mission_title: str,
+) -> tuple:
+    """Decompose a mission into sub-tasks if it is tagged [decompose].
+
+    Checks whether the mission qualifies for decomposition (has [decompose]
+    tag, or auto-decompose is enabled in config) and whether it has not
+    already been decomposed (no [decomposed:*] or [group:*] tags).
+
+    If decomposition is warranted, calls the classifier, injects sub-tasks
+    into missions.md, and returns (None, None) to signal the caller to skip
+    this iteration.
+
+    If decomposition is not warranted or fails, returns (mission_project,
+    mission_title) unchanged.
+
+    Args:
+        instance: Path to the instance directory.
+        mission_project: Project name from the mission picker.
+        mission_title: Mission text from the mission picker.
+
+    Returns:
+        (mission_project, mission_title) — unchanged if not decomposed.
+        (None, None) — if sub-tasks were injected (caller should skip).
+    """
+    try:
+        from app.decompose import should_decompose, is_already_decomposed, decompose_mission
+    except ImportError as e:
+        _log_iteration("error", f"Decompose import error: {e}")
+        return mission_project, mission_title
+
+    # Never decompose skill-dispatch missions (start with /)
+    stripped = mission_title.lstrip()
+    if stripped.startswith("/"):
+        return mission_project, mission_title
+
+    # Never re-decompose already-decomposed or sub-task missions
+    if is_already_decomposed(mission_title):
+        return mission_project, mission_title
+
+    # Check if decomposition is requested
+    tag_based = should_decompose(mission_title)
+    auto_based = False
+    try:
+        from app.config import load_config
+        cfg = load_config()
+        auto_based = bool(cfg.get("decompose", {}).get("auto", False))
+    except Exception as e:
+        _log_iteration("error", f"Decompose config load error: {e}")
+
+    if not tag_based and not auto_based:
+        return mission_project, mission_title
+
+    _log_iteration("koan", f"Decomposing mission: {mission_title[:80]}")
+
+    # Resolve project path for CLI cwd
+    project_path = ""
+    try:
+        from app.utils import get_known_projects
+        for name, path in get_known_projects():
+            if name == mission_project:
+                project_path = path
+                break
+    except Exception as e:
+        _log_iteration("error", f"Decompose project path lookup error: {e}")
+
+    subtasks = decompose_mission(mission_title, project_path)
+
+    if subtasks is None:
+        # Atomic — strip [decompose] tag and proceed normally
+        import re
+        cleaned = re.sub(r'\s*\[decompose\]\s*', ' ', mission_title, flags=re.IGNORECASE).strip()
+        _log_iteration("koan", "Mission classified as atomic — proceeding normally")
+        return mission_project, cleaned
+
+    # Composite — inject sub-tasks and signal caller to skip
+    import hashlib
+    import time as _time
+    group_id = hashlib.sha256(
+        f"{mission_title}{_time.time()}".encode()
+    ).hexdigest()[:8]
+
+    missions_path = instance / "missions.md"
+    try:
+        from app.utils import modify_missions_file
+        from app.missions import inject_subtasks
+
+        def _inject(content):
+            return inject_subtasks(content, mission_title, subtasks, group_id)
+
+        modify_missions_file(missions_path, _inject)
+        _log_iteration("koan",
+            f"Decomposed into {len(subtasks)} sub-tasks (group:{group_id}): "
+            + ", ".join(t[:40] for t in subtasks))
+    except Exception as e:
+        _log_iteration("error", f"Decompose inject error: {e}")
+        return mission_project, mission_title
+
+    return None, None
+
+
 def plan_iteration(
     instance_dir: str,
     koan_root: str,
@@ -739,6 +842,29 @@ def plan_iteration(
         _log_iteration("mission", f"Mission picked: [{mission_project}] {mission_title[:80]}")
     else:
         _log_iteration("koan", "No pending mission — entering autonomous mode")
+
+    # Step 4b: Decompose mission if tagged [decompose] or auto-decompose enabled
+    if mission_project and mission_title:
+        mission_project, mission_title = _maybe_decompose(
+            instance, mission_project, mission_title
+        )
+        if not mission_project and not mission_title:
+            # Decomposition injected sub-tasks — skip this iteration
+            _log_iteration("koan", "Mission decomposed into sub-tasks — skipping parent")
+            focus_area = resolve_focus_area(autonomous_mode, has_mission=False)
+            return _make_result(
+                action="autonomous",
+                project_name=projects[0][0] if projects else "default",
+                project_path=projects[0][1] if projects else "",
+                autonomous_mode=autonomous_mode,
+                focus_area=focus_area,
+                available_pct=available_pct,
+                decision_reason="Mission decomposed into sub-tasks",
+                display_lines=display_lines,
+                recurring_injected=recurring_injected,
+                schedule_mode=schedule_state.mode if schedule_state else "normal",
+                tracker_error=tracker_error,
+            )
 
     # Step 5: Resolve project
     if mission_project and mission_title:
