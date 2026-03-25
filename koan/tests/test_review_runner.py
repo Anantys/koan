@@ -76,6 +76,20 @@ def plan_review_skill_dir(tmp_path):
     return tmp_path
 
 
+@pytest.fixture
+def issue_context_skill_dir(tmp_path):
+    """Create a skill dir with a review prompt that includes {ISSUE_CONTEXT}."""
+    prompts_dir = tmp_path / "prompts"
+    prompts_dir.mkdir()
+    (prompts_dir / "review.md").write_text(
+        "Review PR: {TITLE}\nAuthor: {AUTHOR}\nBranch: {BRANCH} -> {BASE}\n"
+        "Body: {BODY}\n{ISSUE_CONTEXT}\nDiff: {DIFF}\n"
+        "Reviews: {REVIEWS}\nComments: {REVIEW_COMMENTS}\n"
+        "Issue: {ISSUE_COMMENTS}\nRepliable: {REPLIABLE_COMMENTS}\n"
+    )
+    return tmp_path
+
+
 # ---------------------------------------------------------------------------
 # build_review_prompt
 # ---------------------------------------------------------------------------
@@ -98,6 +112,31 @@ class TestBuildReviewPrompt:
         assert "{BASE}" not in prompt
         assert "{BODY}" not in prompt
         assert "{DIFF}" not in prompt
+
+    def test_issue_context_injected_when_provided(self, pr_context, issue_context_skill_dir):
+        """Issue context block appears in prompt when non-empty."""
+        issue_ctx = "## Issue Tracker Context\n- PROJ-42: Fix login timeout\n  > Users reported..."
+        prompt = build_review_prompt(
+            pr_context,
+            skill_dir=issue_context_skill_dir,
+            issue_context=issue_ctx,
+        )
+        assert "## Issue Tracker Context" in prompt
+        assert "PROJ-42" in prompt
+        assert "Fix login timeout" in prompt
+
+    def test_issue_context_empty_by_default(self, pr_context, issue_context_skill_dir):
+        """When issue_context not provided, {ISSUE_CONTEXT} renders as empty string."""
+        prompt = build_review_prompt(pr_context, skill_dir=issue_context_skill_dir)
+        assert "{ISSUE_CONTEXT}" not in prompt
+        # The placeholder renders as empty — no tracker heading should appear
+        assert "## Issue Tracker Context" not in prompt
+
+    def test_issue_context_empty_string_no_regression(self, pr_context, review_skill_dir):
+        """Passing empty issue_context to a prompt without the placeholder is harmless."""
+        prompt_with = build_review_prompt(pr_context, skill_dir=review_skill_dir, issue_context="")
+        prompt_without = build_review_prompt(pr_context, skill_dir=review_skill_dir)
+        assert prompt_with == prompt_without
 
 
 # ---------------------------------------------------------------------------
