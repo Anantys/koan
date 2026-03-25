@@ -122,18 +122,19 @@ class TestRunGh:
 
     @patch("app.retry.time.sleep")
     @patch("app.github.subprocess.run")
-    def test_retries_secondary_rate_limit_when_idempotent(self, mock_run, mock_sleep):
-        """Secondary rate limits are retried when idempotent=True (default)."""
-        mock_run.side_effect = [
-            MagicMock(returncode=1, stderr="You have exceeded a secondary rate limit"),
-            MagicMock(returncode=0, stdout="ok\n"),
-        ]
-        assert run_gh("api", "repos/o/r", idempotent=True) == "ok"
-        assert mock_run.call_count == 2
+    def test_secondary_rate_limit_never_retried_even_when_idempotent(self, mock_run, mock_sleep):
+        """Secondary rate limits are never retried — retrying escalates GitHub's response."""
+        mock_run.return_value = MagicMock(
+            returncode=1, stderr="You have exceeded a secondary rate limit"
+        )
+        with pytest.raises(RuntimeError, match="secondary rate limit"):
+            run_gh("api", "repos/o/r", idempotent=True)
+        assert mock_run.call_count == 1
+        mock_sleep.assert_not_called()
 
     @patch("app.retry.time.sleep")
     @patch("app.github.subprocess.run")
-    def test_no_retry_on_secondary_rate_limit_when_not_idempotent(self, mock_run, mock_sleep):
+    def test_secondary_rate_limit_never_retried_when_not_idempotent(self, mock_run, mock_sleep):
         """Secondary rate limits are NOT retried when idempotent=False."""
         mock_run.return_value = MagicMock(
             returncode=1, stderr="You have exceeded a secondary rate limit"

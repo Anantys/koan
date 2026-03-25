@@ -22,6 +22,7 @@ def retry_with_backoff(
     backoff: Sequence[float] = DEFAULT_BACKOFF,
     retryable: Tuple[Type[BaseException], ...] = (),
     is_transient: Optional[Callable[[BaseException], bool]] = None,
+    non_retryable: Optional[Callable[[BaseException], bool]] = None,
     get_retry_delay: Optional[Callable[[BaseException], Optional[float]]] = None,
     label: str = "",
 ):
@@ -35,6 +36,10 @@ def retry_with_backoff(
         is_transient: Optional predicate for finer filtering of retryable
             exceptions. If provided and returns False, the exception is
             re-raised immediately without retry.
+        non_retryable: Optional predicate that identifies exceptions that
+            must never be retried, regardless of other settings. Checked
+            before is_transient. Use this for conditions where retrying
+            would make things worse (e.g. secondary rate limits).
         get_retry_delay: Optional callable that extracts a specific delay
             (in seconds) from an exception. When provided and returns a
             non-None value, that delay overrides the default backoff schedule.
@@ -51,6 +56,8 @@ def retry_with_backoff(
         try:
             return fn()
         except retryable as exc:
+            if non_retryable and non_retryable(exc):
+                raise
             if is_transient and not is_transient(exc):
                 raise
             last_exc = exc

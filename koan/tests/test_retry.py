@@ -134,6 +134,83 @@ class TestRetryWithBackoff:
         mock_sleep.assert_not_called()
 
 
+class TestNonRetryable:
+    """Tests for the non_retryable parameter in retry_with_backoff()."""
+
+    @patch("app.retry.time.sleep")
+    def test_non_retryable_aborts_immediately(self, mock_sleep):
+        """When non_retryable returns True, exception is re-raised without retry."""
+        def fail():
+            raise RuntimeError("secondary rate limit")
+
+        with pytest.raises(RuntimeError, match="secondary rate limit"):
+            retry_with_backoff(
+                fail,
+                max_attempts=3,
+                retryable=(RuntimeError,),
+                non_retryable=lambda e: "secondary" in str(e),
+            )
+        mock_sleep.assert_not_called()
+
+    @patch("app.retry.time.sleep")
+    def test_non_retryable_false_allows_retry(self, mock_sleep):
+        """When non_retryable returns False, normal retry proceeds."""
+        calls = {"n": 0}
+
+        def flaky():
+            calls["n"] += 1
+            if calls["n"] < 2:
+                raise RuntimeError("connection timeout")
+            return "ok"
+
+        result = retry_with_backoff(
+            flaky,
+            retryable=(RuntimeError,),
+            non_retryable=lambda e: "secondary" in str(e),
+        )
+        assert result == "ok"
+        assert calls["n"] == 2
+
+    @patch("app.retry.time.sleep")
+    def test_non_retryable_checked_before_is_transient(self, mock_sleep):
+        """non_retryable takes precedence over is_transient."""
+        transient_called = {"called": False}
+
+        def fail():
+            raise RuntimeError("secondary rate limit timeout")
+
+        def is_transient(exc):
+            transient_called["called"] = True
+            return True
+
+        with pytest.raises(RuntimeError, match="secondary rate limit"):
+            retry_with_backoff(
+                fail,
+                max_attempts=3,
+                retryable=(RuntimeError,),
+                non_retryable=lambda e: "secondary" in str(e),
+                is_transient=is_transient,
+            )
+        # non_retryable should short-circuit before is_transient is consulted
+        assert not transient_called["called"]
+
+    @patch("app.retry.time.sleep")
+    def test_secondary_rate_limit_never_retried(self, mock_sleep):
+        """Integration: is_gh_secondary_rate_limit as non_retryable blocks retry."""
+        def fail():
+            raise RuntimeError("gh failed: ... — You have exceeded a secondary rate limit")
+
+        with pytest.raises(RuntimeError, match="secondary rate limit"):
+            retry_with_backoff(
+                fail,
+                max_attempts=3,
+                retryable=(RuntimeError,),
+                non_retryable=is_gh_secondary_rate_limit,
+                is_transient=is_gh_transient,
+            )
+        mock_sleep.assert_not_called()
+
+
 class TestIsGhTransient:
     """Tests for is_gh_transient() keyword detection."""
 
