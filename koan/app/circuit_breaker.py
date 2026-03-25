@@ -40,6 +40,12 @@ from typing import Any, Callable, Dict, Optional, Union
 _SENTINEL = object()
 
 
+def _default_log(msg: str) -> None:
+    """Default log function — writes to stderr without using print()."""
+    sys.stderr.write(msg + "\n")
+    sys.stderr.flush()
+
+
 class CircuitBreaker:
     """Per-process circuit breaker for fire-and-forget subsystems.
 
@@ -52,6 +58,7 @@ class CircuitBreaker:
         threshold: int = 2,
         reset_after: float = 0,
         log_prefix: str = "circuit_breaker",
+        log_fn: Optional[Callable[[str], None]] = None,
     ):
         """
         Args:
@@ -59,10 +66,13 @@ class CircuitBreaker:
             reset_after: Seconds after which an open circuit resets to
                 half-open (0 = never auto-reset, manual only).
             log_prefix: Prefix for log messages (e.g. "mission_runner").
+            log_fn: Callable for log output. Receives a formatted string.
+                Defaults to writing to stderr.
         """
         self.threshold = threshold
         self.reset_after = reset_after
         self.log_prefix = log_prefix
+        self._log = log_fn or _default_log
         self._failures: Dict[str, int] = {}
         self._open_since: Dict[str, float] = {}
         self._last_error: Dict[str, str] = {}
@@ -92,10 +102,9 @@ class CircuitBreaker:
         self._last_error[name] = str(error)
         if count >= self.threshold and name not in self._open_since:
             self._open_since[name] = time.monotonic()
-            print(
+            self._log(
                 f"[{self.log_prefix}] {name}: circuit OPEN after "
-                f"{count} failures (last: {error})",
-                file=sys.stderr,
+                f"{count} failures (last: {error})"
             )
 
     def reset(self, name: Optional[str] = None) -> None:
@@ -142,8 +151,12 @@ class CircuitBreaker:
                 return default_factory()
             if default is _SENTINEL:
                 return None
+            # Copy mutable defaults to prevent shared-instance bugs
+            if isinstance(default, (dict, list, set)):
+                return copy(default)
             return default
 
+        log_fn = self._log
         log_prefix = self.log_prefix
 
         def decorator(fn: Callable) -> Callable:
@@ -157,10 +170,7 @@ class CircuitBreaker:
                     return result
                 except Exception as e:
                     self.record_failure(name, e)
-                    print(
-                        f"[{log_prefix}] {name} failed: {e}",
-                        file=sys.stderr,
-                    )
+                    log_fn(f"[{log_prefix}] {name} failed: {e}")
                     return _get_default()
 
             return wrapper

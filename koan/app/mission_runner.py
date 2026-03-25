@@ -29,10 +29,17 @@ from typing import Callable, Dict, List, Optional
 
 from app.circuit_breaker import CircuitBreaker
 
+
+def _breaker_log(msg: str) -> None:
+    """Log circuit breaker messages to stderr without print()."""
+    sys.stderr.write(msg + "\n")
+    sys.stderr.flush()
+
+
 # Module-level circuit breaker for fire-and-forget subsystems.
 # Threshold=2: a subsystem must fail twice before being skipped.
 # No auto-reset — circuits stay open for the process lifetime.
-_breaker = CircuitBreaker(threshold=2, log_prefix="mission_runner")
+_breaker = CircuitBreaker(threshold=2, log_prefix="mission_runner", log_fn=_breaker_log)
 
 # Maximum wall-clock time for the entire post-mission pipeline (seconds).
 # Individual steps have their own timeouts (tests: 120s, reflection: 60s,
@@ -93,7 +100,7 @@ class _PipelineTracker:
             return result
         except Exception as e:
             self.record(step, "fail", str(e))
-            print(f"[mission_runner] {step} failed: {e}", file=sys.stderr)
+            sys.stderr.write(f"[mission_runner] {step} failed: {e}\n")
             return None
 
     def summary_lines(self) -> List[str]:
@@ -141,7 +148,7 @@ def _write_pipeline_summary(
         entry = header + "\n" + "\n".join(lines) + "\n"
         append_to_journal(Path(instance_dir), project_name, entry)
     except Exception as e:
-        print(f"[mission_runner] Pipeline summary write failed: {e}", file=sys.stderr)
+        sys.stderr.write(f"[mission_runner] Pipeline summary write failed: {e}\n")
 
 
 def build_mission_command(
@@ -428,6 +435,8 @@ def _get_quality_gate_mode(instance_dir: str, project_name: str) -> str:
     """Get the quality gate mode for a project.
 
     Returns one of: "strict", "warn", "off". Default: "warn".
+    On config error, returns "strict" to block auto-merge — a broken
+    config should not silently allow merges.
     """
     try:
         from app.projects_config import load_projects_config, get_project_config
@@ -440,7 +449,8 @@ def _get_quality_gate_mode(instance_dir: str, project_name: str) -> str:
             if gate in ("strict", "warn", "off"):
                 return gate
     except Exception as e:
-        print(f"[mission_runner] Quality gate config error: {e}", file=sys.stderr)
+        sys.stderr.write(f"[mission_runner] Quality gate config error: {e}\n")
+        return "strict"
     return "warn"
 
 
@@ -582,13 +592,13 @@ def check_auto_merge(
                 try:
                     post_quality_comment(project_path, quality_report)
                 except Exception as e:
-                    print(f"[mission_runner] Quality comment failed: {e}", file=sys.stderr)
+                    sys.stderr.write(f"[mission_runner] Quality comment failed: {e}\n")
                 return None
 
         auto_merge_branch(instance_dir, project_name, project_path, branch)
         return branch
     except Exception as e:
-        print(f"[mission_runner] Auto-merge check failed: {e}", file=sys.stderr)
+        sys.stderr.write(f"[mission_runner] Auto-merge check failed: {e}\n")
         return None
 
 
@@ -628,7 +638,7 @@ def _notify_pipeline_failures(
         outbox_path = Path(instance_dir) / "outbox.md"
         append_to_outbox(outbox_path, msg + "\n")
     except Exception as e:
-        print(f"[mission_runner] Pipeline failure notification failed: {e}", file=sys.stderr)
+        sys.stderr.write(f"[mission_runner] Pipeline failure notification failed: {e}\n")
 
 
 @_breaker.guard("hooks")
