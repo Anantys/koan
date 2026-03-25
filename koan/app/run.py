@@ -1189,6 +1189,12 @@ def _maybe_retry_mission(
         log("koan", "Skipping retry — mission was killed by watchdog timeout")
         return claude_exit, stdout_file, stderr_file
 
+    # User-initiated aborts must not be retried — the user explicitly asked
+    # to stop this mission.
+    if _last_mission_aborted:
+        log("koan", "Skipping retry — mission was aborted by user")
+        return claude_exit, stdout_file, stderr_file
+
     # Read output for classification
     try:
         stdout_text = Path(stdout_file).read_text()
