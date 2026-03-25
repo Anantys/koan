@@ -560,13 +560,8 @@ def _detect_provider(koan_root: Path) -> str:
 
 def _ollama_http_ready() -> bool:
     """Check if Ollama server is responding on HTTP."""
-    try:
-        import urllib.request
-        req = urllib.request.Request("http://localhost:11434/", method="GET")
-        with urllib.request.urlopen(req, timeout=2) as resp:
-            return resp.status == 200
-    except OSError:
-        return False
+    from app.ollama_client import is_server_running
+    return is_server_running(timeout=2)
 
 
 def _needs_ollama(provider: str) -> bool:

@@ -9,5 +9,7 @@ commands:
     description: Ollama model and server management
     usage: /ollama [list|pull|remove|show|status|help]
     aliases: []
+group: system
 handler: handler.py
+worker: true
 ---

@@ -28,7 +28,7 @@ def _get_provider_name() -> str:
     try:
         from app.provider import get_provider_name
         return get_provider_name()
-    except Exception:
+    except (ImportError, AttributeError):
         return ""
 
 
@@ -48,7 +48,7 @@ def handle(ctx):
     elif subcmd in ("list", "ls", "models"):
         return _handle_list()
     elif subcmd == "pull":
-        return _handle_pull(subcmd_args)
+        return _handle_pull(subcmd_args, ctx)
     elif subcmd in ("remove", "rm", "delete"):
         return _handle_remove(subcmd_args)
     elif subcmd in ("show", "info"):
@@ -122,8 +122,13 @@ def _handle_list() -> str:
     return "\n".join(lines)
 
 
-def _handle_pull(name: str) -> str:
-    """Pull (download) a model."""
+def _handle_pull(name: str, ctx=None) -> str:
+    """Pull (download) a model.
+
+    Uses the non-streaming Ollama API — the call blocks until the download
+    completes (up to 10 minutes).  Sends an early notification so the user
+    knows the download has started.
+    """
     if not name:
         return "Usage: /ollama pull <model-name>\nExample: /ollama pull qwen3-coder"
 
@@ -131,6 +136,10 @@ def _handle_pull(name: str) -> str:
 
     if not is_server_running():
         return "Ollama server is not running.\nStart with: ollama serve"
+
+    # Notify before the blocking download — large models can take minutes
+    if ctx and getattr(ctx, "send_message", None):
+        ctx.send_message(f"Pulling '{name}'... this may take a while for large models.")
 
     ok, msg = pull_model(name)
     if ok:
@@ -206,5 +215,5 @@ def _append_configured_model(lines: list) -> None:
             model = p._get_default_model()
             if model:
                 lines.append(f"  Configured: {model}")
-    except Exception:
+    except (ImportError, AttributeError):
         pass
