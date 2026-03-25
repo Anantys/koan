@@ -12,6 +12,7 @@ CLI:
 """
 
 import json
+import sys
 from pathlib import Path
 from typing import Tuple
 
@@ -172,7 +173,6 @@ def _handle_pr(owner, repo, pr_number, instance_dir, koan_root, notify_fn):
         if project_path:
             learn_from_reviews(str(instance_dir), project_name, project_path)
     except Exception as e:
-        import sys
         print(f"[check_runner] learn_from_reviews failed (non-fatal): {e}",
               file=sys.stderr)
 
@@ -219,7 +219,6 @@ def _dispatch_review_comments(
         auto_dispatch = check_config.get("auto_dispatch_reviews", True)
         skip_drafts = check_config.get("skip_draft_dispatch", False)
     except Exception as e:
-        import sys
         print(f"[check_runner] config load failed, using defaults: {e}", file=sys.stderr)
         auto_dispatch = True
         skip_drafts = False
@@ -243,7 +242,6 @@ def _dispatch_review_comments(
             if dispatched:
                 actions.append("\U0001f4ac Review comment mission queued")
     except Exception as e:
-        import sys
         print(f"[check_runner] review comment dispatch failed (non-fatal): {e}",
               file=sys.stderr)
 
