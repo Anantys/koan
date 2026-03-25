@@ -767,6 +767,9 @@ def process_single_notification(
 
     # Resolve project — fall back to repo name when not in projects.yaml.
     # This lets @mentions work on repos the bot has PRs on but aren't configured.
+    # NOTE: the fallback only works when the repo is already cloned locally
+    # (e.g., in workspace/). If it isn't, the mission will fail at execution
+    # with "Unknown project". Auto-cloning unknown repos is a future enhancement.
     project_info = resolve_project_from_notification(notification)
     if project_info:
         project_name, owner, repo = project_info
