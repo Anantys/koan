@@ -8,6 +8,7 @@ Ollama API docs: https://github.com/ollama/ollama/blob/main/docs/api.md
 """
 
 import json
+import socket
 import urllib.request
 import urllib.error
 from typing import Any, Dict, List, Optional, Tuple
@@ -46,8 +47,10 @@ def _api_request(
         return False, detail
     except urllib.error.URLError as e:
         return False, f"Connection failed: {e.reason}"
-    except Exception as e:
-        return False, str(e)
+    except socket.timeout:
+        return False, "Request timed out"
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        return False, f"Invalid response: {e}"
 
 
 def is_server_running(host: str = DEFAULT_HOST, timeout: int = 3) -> bool:
@@ -93,7 +96,12 @@ def show_model(name: str, host: str = DEFAULT_HOST, timeout: int = 10) -> Tuple[
 def pull_model(name: str, host: str = DEFAULT_HOST, timeout: int = 600) -> Tuple[bool, str]:
     """Pull (download) a model.
 
-    Uses the non-streaming API (stream=false) for simplicity.
+    Uses the non-streaming API (stream=false).  This means the HTTP
+    request blocks until the entire download completes (up to
+    ``timeout`` seconds, default 10 minutes).  There is no progress
+    feedback during the download — the caller should inform the user
+    that the operation may take a while for large models.
+
     Returns (success, status_message).
     """
     ok, data = _api_request(

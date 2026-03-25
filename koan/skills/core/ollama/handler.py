@@ -135,6 +135,8 @@ def _handle_pull(name: str) -> str:
     ok, msg = pull_model(name)
     if ok:
         return f"Model '{name}' pulled successfully."
+    if "timed out" in msg.lower():
+        return f"Pull of '{name}' timed out — large models can take a while. Try again or pull manually: ollama pull {name}"
     return f"Failed to pull '{name}': {msg}"
 
 
