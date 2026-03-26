@@ -785,7 +785,6 @@ def _try_assignment_notification(
     notification: dict,
     registry: SkillRegistry,
     config: dict,
-    projects_config: Optional[dict],
 ) -> bool:
     """Handle assignment-based notifications (review_requested, assign).
 
@@ -838,6 +837,34 @@ def _try_assignment_notification(
         mark_notification_read(str(notification.get("id", "")))
         return False
 
+    koan_root = os.environ.get("KOAN_ROOT", "")
+    if not koan_root:
+        log.error("GitHub assign: KOAN_ROOT not set")
+        return False
+
+    from app.missions import list_pending
+    from app.utils import insert_pending_mission
+
+    missions_path = Path(koan_root) / "instance" / "missions.md"
+
+    # Deduplicate: skip if a mission for the same URL is already pending.
+    # This prevents duplicate missions when both an assignment notification
+    # and an @mention comment arrive for the same PR/issue.
+    try:
+        content = missions_path.read_text() if missions_path.exists() else ""
+        pending = list_pending(content)
+        url_lower = web_url.lower()
+        for line in pending:
+            if url_lower in line.lower():
+                log.debug(
+                    "GitHub assign: mission for %s already pending, skipping",
+                    web_url,
+                )
+                mark_notification_read(str(notification.get("id", "")))
+                return True  # Already handled — not an error
+    except OSError:
+        pass  # If we can't read, proceed with insertion (worst case: a dup)
+
     # Build and insert mission
     mission_entry = f"- [project:{project_name}] /{command_name} {web_url} 📬"
     log.info(
@@ -845,14 +872,6 @@ def _try_assignment_notification(
         command_name, reason, owner, repo,
     )
 
-    koan_root = os.environ.get("KOAN_ROOT", "")
-    if not koan_root:
-        log.error("GitHub assign: KOAN_ROOT not set")
-        return False
-
-    from app.utils import insert_pending_mission
-
-    missions_path = Path(koan_root) / "instance" / "missions.md"
     try:
         insert_pending_mission(missions_path, mission_entry)
     except OSError as e:
@@ -892,7 +911,7 @@ def process_single_notification(
     if not comment:
         # No @mention found — try assignment path (review_requested, assign)
         if _try_assignment_notification(
-            notification, registry, config, projects_config,
+            notification, registry, config,
         ):
             return True, None
         # Try subscription path for subscribed/author notifications

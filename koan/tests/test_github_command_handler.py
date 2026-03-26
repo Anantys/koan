@@ -3138,7 +3138,7 @@ class TestTryAssignmentNotification:
              patch("app.github_command_handler.is_notification_stale", return_value=False), \
              patch("app.github_command_handler.mark_notification_read"):
             result = _try_assignment_notification(
-                review_notification, review_registry, {}, None,
+                review_notification, review_registry, {},
             )
 
         assert result is True
@@ -3160,7 +3160,7 @@ class TestTryAssignmentNotification:
              patch("app.github_command_handler.is_notification_stale", return_value=False), \
              patch("app.github_command_handler.mark_notification_read"):
             result = _try_assignment_notification(
-                assign_notification, review_registry, {}, None,
+                assign_notification, review_registry, {},
             )
 
         assert result is True
@@ -3171,7 +3171,7 @@ class TestTryAssignmentNotification:
     def test_irrelevant_reason_returns_false(self, review_registry):
         """Notifications with non-assignment reasons are ignored."""
         notif = {"reason": "mention", "id": "1"}
-        result = _try_assignment_notification(notif, review_registry, {}, None)
+        result = _try_assignment_notification(notif, review_registry, {})
         assert result is False
 
     def test_stale_notification_skipped(
@@ -3181,7 +3181,7 @@ class TestTryAssignmentNotification:
         with patch("app.github_command_handler.is_notification_stale", return_value=True), \
              patch("app.github_command_handler.mark_notification_read") as mock_mark:
             result = _try_assignment_notification(
-                review_notification, review_registry, {}, None,
+                review_notification, review_registry, {},
             )
 
         assert result is False
@@ -3196,7 +3196,7 @@ class TestTryAssignmentNotification:
                    return_value=None), \
              patch("app.github_command_handler.mark_notification_read") as mock_mark:
             result = _try_assignment_notification(
-                review_notification, review_registry, {}, None,
+                review_notification, review_registry, {},
             )
 
         assert result is False
@@ -3216,7 +3216,7 @@ class TestTryAssignmentNotification:
                    return_value=("koan", "sukria", "koan")), \
              patch("app.github_command_handler.mark_notification_read") as mock_mark:
             result = _try_assignment_notification(
-                notif, review_registry, {}, None,
+                notif, review_registry, {},
             )
 
         assert result is False
@@ -3239,7 +3239,7 @@ class TestTryAssignmentNotification:
             "repository": {"full_name": "sukria/koan"},
             "subject": {"url": "https://api.github.com/repos/sukria/koan/pulls/10"},
         }
-        result = _try_assignment_notification(notif, reg, {}, None)
+        result = _try_assignment_notification(notif, reg, {})
         assert result is False
 
     def test_assignment_reason_mapping(self):
