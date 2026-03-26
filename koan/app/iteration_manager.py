@@ -144,6 +144,20 @@ def _inject_recurring(instance_dir: Path):
         return []
 
 
+def _drain_ci_queue(instance_dir: Path):
+    """Drain one CI queue entry (non-blocking).
+
+    Returns:
+        status message string, or None if queue is empty / still pending.
+    """
+    try:
+        from app.ci_queue_runner import drain_one
+        return drain_one(str(instance_dir))
+    except (ImportError, OSError, ValueError) as e:
+        _log_iteration("error", f"CI queue drain error: {e}")
+        return None
+
+
 def _fallback_mission_extract(instance_dir: Path, projects_str: str,
                               context_msg: str):
     """Attempt direct mission extraction when the picker fails or returns empty.
