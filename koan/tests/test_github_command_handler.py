@@ -8,6 +8,7 @@ import pytest
 
 from app.github_command_handler import (
     _error_replies,
+    _expand_combo_mission,
     _extract_url_from_context,
     _fetch_and_filter_comment,
     _handle_help_command,
@@ -2909,3 +2910,154 @@ class TestContextAwareCoreSkills:
         mission = build_mission_from_command(skill, command_name, "", notif, "myproject")
 
         assert mission == f"- [project:myproject] /{command_name} https://github.com/o/r/pull/42 📬"
+
+
+class TestExpandComboMission:
+    """Tests for _expand_combo_mission — expanding /rr into /review + /rebase."""
+
+    def test_rr_expands_to_review_and_rebase(self):
+        """The /rr combo should expand into /review and /rebase missions."""
+        mission = "- [project:koan] /rr https://github.com/o/r/pull/42 📬"
+        result = _expand_combo_mission("rr", mission, "koan")
+        assert len(result) == 2
+        assert "/review https://github.com/o/r/pull/42 📬" in result[0]
+        assert "/rebase https://github.com/o/r/pull/42 📬" in result[1]
+
+    def test_reviewrebase_expands(self):
+        """The /reviewrebase alias should also expand."""
+        mission = "- [project:koan] /reviewrebase https://github.com/o/r/pull/42 📬"
+        result = _expand_combo_mission("reviewrebase", mission, "koan")
+        assert len(result) == 2
+        assert "/review" in result[0]
+        assert "/rebase" in result[1]
+
+    def test_non_combo_passthrough(self):
+        """Non-combo commands should return the original mission unchanged."""
+        mission = "- [project:koan] /rebase https://github.com/o/r/pull/42 📬"
+        result = _expand_combo_mission("rebase", mission, "koan")
+        assert result == [mission]
+
+    def test_preserves_project_tag(self):
+        """Expanded missions should keep the [project:] tag."""
+        mission = "- [project:myproj] /rr https://github.com/o/r/pull/42 📬"
+        result = _expand_combo_mission("rr", mission, "myproj")
+        for entry in result:
+            assert "[project:myproj]" in entry
+
+    def test_preserves_url_and_context(self):
+        """URL and trailing markers should be preserved in expanded missions."""
+        mission = "- [project:koan] /rr https://github.com/o/r/pull/42 focus on security 📬"
+        result = _expand_combo_mission("rr", mission, "koan")
+        for entry in result:
+            assert "https://github.com/o/r/pull/42" in entry
+            assert "focus on security" in entry
+            assert "📬" in entry
+
+
+class TestComboSkillGithubIntegration:
+    """Integration test: @bot rr via GitHub @mention expands into sub-missions."""
+
+    @patch("app.github_command_handler.mark_notification_read")
+    @patch("app.github_command_handler.add_reaction", return_value=True)
+    @patch("app.github_command_handler.check_user_permission", return_value=True)
+    @patch("app.github_command_handler.check_already_processed", return_value=False)
+    @patch("app.github_command_handler.is_self_mention", return_value=False)
+    @patch("app.github_command_handler.is_notification_stale", return_value=False)
+    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler.resolve_project_from_notification")
+    @patch("app.utils.insert_pending_mission")
+    def test_rr_mention_inserts_two_sub_missions(
+        self, mock_insert, mock_resolve, mock_get_comment,
+        mock_stale, mock_self, mock_processed, mock_perm,
+        mock_react, mock_read, tmp_path,
+    ):
+        """@bot rr on a PR should insert /review and /rebase, not /rr."""
+        # Build a registry that includes the review_rebase skill
+        from app.skills import build_registry
+        registry = build_registry()
+
+        mock_resolve.return_value = ("koan", "sukria", "koan")
+        mock_get_comment.return_value = {
+            "id": 99999,
+            "url": "https://api.github.com/repos/sukria/koan/issues/comments/99999",
+            "body": "@testbot rr",
+            "user": {"login": "alice"},
+        }
+
+        notification = {
+            "id": "12345",
+            "reason": "mention",
+            "updated_at": "2026-02-11T20:00:00Z",
+            "repository": {"full_name": "sukria/koan"},
+            "subject": {
+                "type": "PullRequest",
+                "url": "https://api.github.com/repos/sukria/koan/pulls/42",
+                "latest_comment_url": "https://api.github.com/repos/sukria/koan/issues/comments/99999",
+            },
+        }
+
+        config = {"github": {"nickname": "testbot", "authorized_users": ["*"]}}
+
+        with patch.dict("os.environ", {"KOAN_ROOT": str(tmp_path)}):
+            success, error = process_single_notification(
+                notification, registry, config, None, "testbot",
+            )
+
+        assert success is True
+        assert error is None
+        # Should have inserted TWO missions, not one
+        assert mock_insert.call_count == 2
+        calls = [c[0][1] for c in mock_insert.call_args_list]
+        assert any("/review" in c for c in calls), f"Expected /review in {calls}"
+        assert any("/rebase" in c for c in calls), f"Expected /rebase in {calls}"
+        # Neither should contain /rr
+        for c in calls:
+            assert "/rr " not in c, f"Found unexpanded /rr in mission: {c}"
+
+    @patch("app.github_command_handler.mark_notification_read")
+    @patch("app.github_command_handler.add_reaction", return_value=True)
+    @patch("app.github_command_handler.check_user_permission", return_value=True)
+    @patch("app.github_command_handler.check_already_processed", return_value=False)
+    @patch("app.github_command_handler.is_self_mention", return_value=False)
+    @patch("app.github_command_handler.is_notification_stale", return_value=False)
+    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler.resolve_project_from_notification")
+    @patch("app.utils.insert_pending_mission")
+    def test_regular_command_still_inserts_one_mission(
+        self, mock_insert, mock_resolve, mock_get_comment,
+        mock_stale, mock_self, mock_processed, mock_perm,
+        mock_react, mock_read, tmp_path,
+    ):
+        """Non-combo commands like @bot rebase should still insert exactly one mission."""
+        from app.skills import build_registry
+        registry = build_registry()
+
+        mock_resolve.return_value = ("koan", "sukria", "koan")
+        mock_get_comment.return_value = {
+            "id": 99999,
+            "url": "https://api.github.com/repos/sukria/koan/issues/comments/99999",
+            "body": "@testbot rebase",
+            "user": {"login": "alice"},
+        }
+
+        notification = {
+            "id": "12345",
+            "reason": "mention",
+            "updated_at": "2026-02-11T20:00:00Z",
+            "repository": {"full_name": "sukria/koan"},
+            "subject": {
+                "type": "PullRequest",
+                "url": "https://api.github.com/repos/sukria/koan/pulls/42",
+                "latest_comment_url": "https://api.github.com/repos/sukria/koan/issues/comments/99999",
+            },
+        }
+
+        config = {"github": {"nickname": "testbot", "authorized_users": ["*"]}}
+
+        with patch.dict("os.environ", {"KOAN_ROOT": str(tmp_path)}):
+            success, error = process_single_notification(
+                notification, registry, config, None, "testbot",
+            )
+
+        assert success is True
+        assert mock_insert.call_count == 1

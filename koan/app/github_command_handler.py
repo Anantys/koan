@@ -76,6 +76,53 @@ def _quarantine_github_mission(text: str, reason: str, author: str):
         log.warning("GitHub: failed to write quarantine entry: %s", reason)
 
 
+def _expand_combo_mission(
+    command_name: str,
+    mission_entry: str,
+    project_name: str,
+) -> list:
+    """Expand a combo skill mission into its constituent sub-missions.
+
+    Combo skills (e.g. /rr) are bridge-side handlers that queue multiple
+    sub-commands.  When triggered via GitHub @mentions, the mission goes
+    through the agent loop, which needs a dedicated expansion step.
+    Expanding here — at the notification handler level — is more reliable
+    because it mirrors what the Telegram bridge handler does: insert the
+    sub-missions directly.
+
+    Args:
+        command_name: The parsed command (e.g. "rr").
+        mission_entry: The full mission line (e.g. "- [project:X] /rr URL 📬").
+        project_name: The resolved project name.
+
+    Returns:
+        A list of mission entries.  For non-combo commands this is
+        ``[mission_entry]`` (passthrough).  For combo commands it's the
+        expanded sub-missions.
+    """
+    from app.skill_dispatch import get_combo_sub_commands
+
+    sub_commands = get_combo_sub_commands(command_name)
+    if not sub_commands:
+        return [mission_entry]
+
+    # Extract the URL + context portion from the original mission.
+    # mission_entry looks like: "- [project:X] /rr <url> [context] 📬"
+    # We need to replace "/rr" with "/review", "/rebase" etc.
+    import re
+    pattern = rf"(/){re.escape(command_name)}(\s)"
+    entries = []
+    for sub_cmd in sub_commands:
+        expanded = re.sub(pattern, rf"\g<1>{sub_cmd}\g<2>", mission_entry, count=1)
+        entries.append(expanded)
+
+    log.info(
+        "GitHub: expanded combo /%s into %d sub-missions for %s",
+        command_name, len(entries), project_name,
+    )
+    return entries
+
+
 def validate_command(command_name: str, registry: SkillRegistry) -> Optional[object]:
     """Check if a command maps to a skill with github_enabled.
 
@@ -898,8 +945,17 @@ def process_single_notification(
         mark_notification_read(str(notification.get("id", "")))
         return False, "KOAN_ROOT not configured"
     missions_path = Path(koan_root) / "instance" / "missions.md"
+
+    # Combo skills (e.g. /rr) are bridge-side handlers that queue
+    # multiple sub-commands. Expand them here instead of relying on
+    # the agent loop's fallback expansion, which is fragile.
+    mission_entries = _expand_combo_mission(
+        command_name, mission_entry, project_name,
+    )
+
     try:
-        insert_pending_mission(missions_path, mission_entry)
+        for entry in mission_entries:
+            insert_pending_mission(missions_path, entry)
     except OSError as e:
         log.warning("GitHub: failed to insert mission: %s", e)
         # Mark notification as read to prevent infinite re-processing
