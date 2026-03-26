@@ -346,8 +346,8 @@ def _check_ci_recovery(owner, repo, pr_number, pr_url, instance_dir, koan_root):
         try:
             config = load_projects_config(koan_root_env) or {}
         except Exception as e:
-            import sys
-            print(f"[check_runner] failed to load projects config: {e}", file=sys.stderr)
+            import logging
+            logging.getLogger(__name__).warning("failed to load projects config: %s", e)
             config = {}
 
     return handle_ci_failure(

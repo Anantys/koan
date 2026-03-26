@@ -45,7 +45,12 @@ def handle_ci_failure(
     attempt_count = get_ci_attempt_count(instance_dir, pr_url)
 
     if attempt_count >= cfg["retries"]:
+        # Only escalate once — check if already escalated
+        ci_status = get_ci_status(instance_dir, pr_url)
+        if ci_status and ci_status.get("status") == "escalated":
+            return "skipped_max_retries"
         _write_escalation(instance_dir, pr_url, attempt_count, cfg["retries"])
+        set_ci_status(instance_dir, pr_url, "escalated", attempt_count)
         return "escalated"
 
     # Check cooldown
@@ -133,29 +138,28 @@ def _dispatch_mission(instance_dir, pr_url, pr_number, project_name, error_summa
 
 def _write_escalation(instance_dir, pr_url, attempt_count, max_retries):
     """Write an escalation message to outbox.md."""
-    from app.utils import atomic_write
+    from app.utils import append_to_outbox
 
     outbox_path = Path(instance_dir) / "outbox.md"
     msg = format_escalation_message(pr_url, attempt_count, max_retries)
 
-    # Append to outbox (read existing + append)
-    existing = ""
-    if outbox_path.exists():
-        try:
-            existing = outbox_path.read_text()
-        except OSError:
-            existing = ""
-
-    atomic_write(outbox_path, existing + msg + "\n")
+    append_to_outbox(outbox_path, msg + "\n")
 
 
 def _mission_already_queued(instance_dir, pr_number):
     """Return True if a CI fix mission for this PR is already in missions.md."""
+    import fcntl
+
     missions_path = Path(instance_dir) / "missions.md"
     if not missions_path.exists():
         return False
     try:
-        content = missions_path.read_text()
+        with open(missions_path, "r", encoding="utf-8") as f:
+            fcntl.flock(f, fcntl.LOCK_SH)
+            try:
+                content = f.read()
+            finally:
+                fcntl.flock(f, fcntl.LOCK_UN)
         return f"Fix CI failure on PR #{pr_number}" in content
     except OSError:
         return False

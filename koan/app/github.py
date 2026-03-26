@@ -466,8 +466,8 @@ def get_failed_check_runs(pr_number, repo):
         checks = json.loads(raw)
         return [c for c in checks if c.get("conclusion") == "FAILURE"]
     except Exception as e:
-        import sys
-        print(f"[github] get_failed_check_runs error: {e}", file=sys.stderr)
+        import logging
+        logging.getLogger(__name__).warning("get_failed_check_runs error: %s", e)
         return []
 
 
@@ -495,8 +495,8 @@ def fetch_ci_failure_logs(repo, run_id, max_lines=200):
             lines.append("[truncated]")
         return "\n".join(lines)
     except Exception as e:
-        import sys
-        print(f"[github] fetch_ci_failure_logs error: {e}", file=sys.stderr)
+        import logging
+        logging.getLogger(__name__).warning("fetch_ci_failure_logs error: %s", e)
         return ""
 
 
