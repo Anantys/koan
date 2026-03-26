@@ -174,10 +174,13 @@ def run_claude(cmd: list, cwd: str, timeout: int = 600) -> dict:
         }
 
 
-def commit_if_changes(project_path: str, message: str) -> bool:
+def commit_if_changes(project_path: str, message: str, amend: bool = False) -> bool:
     """Stage all changes and commit if there are any.
 
-    Returns True if a commit was created.
+    Args:
+        amend: If True, amend the previous commit instead of creating a new one.
+
+    Returns True if a commit was created (or amended).
     """
     status = subprocess.run(
         ["git", "status", "--porcelain"],
@@ -188,7 +191,10 @@ def commit_if_changes(project_path: str, message: str) -> bool:
         return False
 
     _run_git(["git", "add", "-A"], cwd=project_path)
-    _run_git(["git", "commit", "-m", message], cwd=project_path)
+    if amend:
+        _run_git(["git", "commit", "--amend", "--no-edit"], cwd=project_path)
+    else:
+        _run_git(["git", "commit", "-m", message], cwd=project_path)
     return True
 
 
@@ -202,12 +208,14 @@ def run_claude_step(
     max_turns: int = 20,
     timeout: int = 600,
     use_skill: bool = False,
+    amend: bool = False,
 ) -> bool:
     """Run a Claude Code step: invoke CLI, commit changes, log result.
 
     Args:
         use_skill: If True, include the Skill tool in allowed tools
                    so Claude can invoke registered skills (e.g. /refactor).
+        amend: If True, amend the previous commit instead of creating a new one.
 
     Returns True if the step produced a commit.
     """
@@ -227,7 +235,7 @@ def run_claude_step(
 
     result = run_claude(cmd, project_path, timeout=timeout)
     if result["success"]:
-        committed = commit_if_changes(project_path, commit_msg)
+        committed = commit_if_changes(project_path, commit_msg, amend=amend)
         if committed and success_label:
             actions_log.append(success_label)
             return True
