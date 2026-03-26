@@ -245,6 +245,36 @@ def _get_tdd_section(mission_title: str) -> str:
     return load_prompt("tdd-mode")
 
 
+def _get_testing_antipatterns_section(mission_title: str) -> str:
+    """Return the testing anti-patterns reference for test-involving missions.
+
+    Injected when:
+    - Mission is tagged [tdd], OR
+    - Mission title contains keywords that typically require test additions
+
+    Skipped for non-testing missions (docs, reviews, analysis) and for
+    autonomous mode (no mission title) to avoid wasting context.
+    """
+    if not mission_title:
+        return ""
+
+    from app.missions import extract_tdd_tag
+
+    if extract_tdd_tag(mission_title):
+        from app.prompts import load_prompt
+        return load_prompt("testing-anti-patterns")
+
+    try:
+        from app.mission_verifier import _expects_tests
+        if _expects_tests(mission_title):
+            from app.prompts import load_prompt
+            return load_prompt("testing-anti-patterns")
+    except (ImportError, Exception):
+        pass
+
+    return ""
+
+
 def _get_verbose_section(instance: str) -> str:
     """Build the verbose mode section if .koan-verbose exists."""
     koan_root = str(Path(instance).parent)
@@ -397,6 +427,9 @@ def build_agent_prompt(
     # Append TDD mode section if mission is tagged [tdd]
     prompt += _get_tdd_section(mission_title)
 
+    # Append testing anti-patterns reference for [tdd] or test-expecting missions
+    prompt += _get_testing_antipatterns_section(mission_title)
+
     # Append verification gate for mission-driven runs
     prompt += _get_verification_gate_section(mission_title)
 
@@ -473,6 +506,10 @@ def build_agent_prompt_parts(
     tdd = _get_tdd_section(mission_title)
     if tdd:
         sys_parts.append(tdd)
+
+    antipatterns = _get_testing_antipatterns_section(mission_title)
+    if antipatterns:
+        sys_parts.append(antipatterns)
 
     verification = _get_verification_gate_section(mission_title)
     if verification:

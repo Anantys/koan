@@ -17,6 +17,7 @@ from app.prompt_builder import (
     _get_staleness_section,
     _get_mission_type_section,
     _get_tdd_section,
+    _get_testing_antipatterns_section,
     _get_verification_gate_section,
     _get_verbose_section,
     _get_security_flagging_section,
@@ -1145,6 +1146,52 @@ class TestGetTddSection:
         )
 
         assert "TDD Mode" not in result
+
+
+# --- Tests for _get_testing_antipatterns_section ---
+
+
+class TestGetTestingAntipatternsSection:
+    """Tests for testing anti-patterns reference injection."""
+
+    def test_tdd_tag_injects_antipatterns(self):
+        """Mission tagged [tdd] should inject testing anti-patterns reference."""
+        result = _get_testing_antipatterns_section("[tdd] Add user validation")
+        assert "Anti-Pattern" in result
+        assert "Self-Check" in result
+
+    def test_test_expecting_keyword_injects_antipatterns(self):
+        """Mission with test-expecting keywords should inject anti-patterns reference."""
+        # 'implement', 'fix', 'add', 'create', 'build' all trigger _expects_tests
+        result = _get_testing_antipatterns_section("implement login feature")
+        assert "Anti-Pattern" in result
+
+    def test_fix_keyword_injects_antipatterns(self):
+        """'fix' keyword in mission title should inject anti-patterns reference."""
+        result = _get_testing_antipatterns_section("fix authentication bug")
+        assert "Anti-Pattern" in result
+
+    def test_non_testing_mission_returns_empty(self):
+        """Non-testing missions (docs, review, audit) should not inject anti-patterns."""
+        assert _get_testing_antipatterns_section("update README") == ""
+        assert _get_testing_antipatterns_section("review PR changes") == ""
+        assert _get_testing_antipatterns_section("audit security setup") == ""
+
+    def test_empty_mission_returns_empty(self):
+        """Autonomous mode (no mission) should not inject anti-patterns."""
+        assert _get_testing_antipatterns_section("") == ""
+
+    def test_no_double_injection_with_tdd_tag(self):
+        """[tdd] missions should include anti-patterns exactly once."""
+        result = _get_testing_antipatterns_section("[tdd] implement login")
+        count = result.count("Testing Anti-Patterns Reference")
+        assert count == 1
+
+    def test_project_tag_does_not_false_positive(self):
+        """[project:X] brackets should not trigger anti-patterns injection."""
+        # 'update docs' is not a test-expecting mission — project tag is irrelevant
+        result = _get_testing_antipatterns_section("[project:koan] update docs")
+        assert result == ""
 
 
 # --- Tests for _get_verification_gate_section ---
