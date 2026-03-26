@@ -51,13 +51,23 @@ def get_issue_tracker_config(
         None when the feature is disabled or the config is incomplete.
     """
     # Start with global defaults
-    global_tracker = (global_config or {}).get("issue_tracker") or {}
+    global_raw = (global_config or {}).get("issue_tracker")
+    # Normalize string shorthand (e.g. issue_tracker: github) to dict
+    if isinstance(global_raw, str):
+        global_tracker = {"type": global_raw}
+    else:
+        global_tracker = global_raw or {}
 
     # Apply per-project override (shallow merge, same pattern as projects_config.py)
+    # Supports string shorthand in projects.yaml too (e.g. issue_tracker: jira)
     if project_name and projects_config:
         from app.projects_config import get_project_config
         project_cfg = get_project_config(projects_config, project_name)
-        project_tracker = project_cfg.get("issue_tracker") or {}
+        project_raw = project_cfg.get("issue_tracker")
+        if isinstance(project_raw, str):
+            project_tracker = {"type": project_raw}
+        else:
+            project_tracker = project_raw or {}
         merged = {**global_tracker, **project_tracker}
     else:
         merged = dict(global_tracker)

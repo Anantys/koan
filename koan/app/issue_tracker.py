@@ -206,6 +206,8 @@ def _extract_jira_description(description) -> str:
 
 def _adf_to_text(node: dict, depth: int = 0) -> str:
     """Recursively extract text from an ADF document node."""
+    if depth > 50:
+        return ""
     if not isinstance(node, dict):
         return ""
     node_type = node.get("type", "")
@@ -315,7 +317,7 @@ def fetch_github_issues(refs: List[Tuple[str, str, int]], config: dict) -> str:
 # Top-level dispatcher
 # ---------------------------------------------------------------------------
 
-def fetch_issue_context(pr_body: str, config: dict) -> str:
+def fetch_issue_context(pr_body: str, config: Optional[dict]) -> str:
     """Fetch issue context for PR review enrichment.
 
     Parses the PR body for issue references, fetches summaries from the

@@ -438,6 +438,7 @@ def _build_pr_url_cmd(
 
 def _build_review_cmd(
     base_cmd: List[str], args: str, project_path: str,
+    project_name: str = "", koan_root: str = "",
 ) -> Optional[List[str]]:
     """Build review_runner command, passing --architecture and --plan-url if present."""
     url_match = _PR_URL_RE.search(args)
@@ -452,6 +453,11 @@ def _build_review_cmd(
     )
     if plan_url_match:
         cmd.extend(["--plan-url", plan_url_match.group(1)])
+    # Pass project context for issue tracker config resolution
+    if project_name:
+        cmd.extend(["--project-name", project_name])
+    if koan_root:
+        cmd.extend(["--koan-root", koan_root])
     return cmd
 
 
