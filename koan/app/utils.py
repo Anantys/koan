@@ -582,6 +582,18 @@ def resolve_project_path(repo_name: str, owner: Optional[str] = None) -> Optiona
     return None
 
 
+def resolve_project_name(repo_name: str, owner: Optional[str] = None) -> str:
+    """Resolve a repo name to a known project name.
+
+    Delegates to resolve_project_path() + project_name_for_path().
+    Falls back to the bare repo name when no local project matches.
+    """
+    project_path = resolve_project_path(repo_name, owner=owner)
+    if project_path:
+        return project_name_for_path(project_path)
+    return repo_name
+
+
 def append_to_outbox(outbox_path: Path, content: str, priority=None):
     """Append content to outbox.md with file locking.
 

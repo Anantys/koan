@@ -12,6 +12,7 @@ CLI:
 """
 
 import json
+import sys
 from pathlib import Path
 from typing import Tuple
 
@@ -159,6 +160,29 @@ def _handle_pr(owner, repo, pr_number, instance_dir, koan_root, notify_fn):
     # Record the check
     mark_checked(instance_dir, url, updated_at)
 
+    # 3. Auto-forward unresolved review comments to agent as a mission
+    from app.utils import load_config
+    try:
+        config = load_config()
+    except Exception as e:
+        print(f"[check_runner] load_config failed, using defaults: {e}", file=sys.stderr)
+        config = {}
+    _dispatch_review_comments(
+        owner, repo, pr_number, pr_data, missions_path, instance_dir, actions,
+        config=config,
+    )
+
+    # 4. Extract lessons from past merged/closed PR reviews (best-effort)
+    try:
+        from app.pr_review_learning import learn_from_reviews
+        project_path = _resolve_project_path(repo, owner=owner)
+        project_name = _resolve_project_name(repo, owner=owner)
+        if project_path:
+            learn_from_reviews(str(instance_dir), project_name, project_path)
+    except Exception as e:
+        print(f"[check_runner] learn_from_reviews failed (non-fatal): {e}",
+              file=sys.stderr)
+
     if not actions:
         head = pr_data.get("headRefName", "?")
         base = pr_data.get("baseRefName", "?")
@@ -176,6 +200,56 @@ def _handle_pr(owner, repo, pr_number, instance_dir, koan_root, notify_fn):
 
     notify_fn(msg)
     return True, msg
+
+
+def _dispatch_review_comments(
+    owner, repo, pr_number, pr_data, missions_path, instance_dir, actions,
+    *, config=None,
+):
+    """Fetch unresolved review comments and queue a mission if new ones exist.
+
+    Controlled by two config keys under ``check:``:
+
+    - ``auto_dispatch_reviews`` (default ``True``): master toggle for the
+      entire feature.  When ``False``, no dispatch is attempted.
+    - ``skip_draft_dispatch`` (default ``False``): when ``True``, draft PRs
+      are excluded from dispatch.
+
+    Appends an action string to *actions* when a mission is queued.
+
+    Args:
+        config: Pre-loaded config dict (avoids re-reading config.yaml).
+    """
+    if config is None:
+        config = {}
+
+    # Config: check.auto_dispatch_reviews (default true — enabled)
+    # Config: check.skip_draft_dispatch (default false — include drafts)
+    check_config = config.get("check", {})
+    auto_dispatch = check_config.get("auto_dispatch_reviews", True)
+    skip_drafts = check_config.get("skip_draft_dispatch", False)
+
+    if not auto_dispatch:
+        return
+
+    if skip_drafts and pr_data.get("isDraft", False):
+        return
+
+    try:
+        from app.pr_review_learning import (
+            dispatch_review_comments_mission,
+            fetch_unresolved_review_comments,
+        )
+        comments = fetch_unresolved_review_comments(owner, repo, pr_number)
+        if comments:
+            dispatched = dispatch_review_comments_mission(
+                owner, repo, pr_number, comments, missions_path, str(instance_dir),
+            )
+            if dispatched:
+                actions.append("\U0001f4ac Review comment mission queued")
+    except Exception as e:
+        print(f"[check_runner] review comment dispatch failed (non-fatal): {e}",
+              file=sys.stderr)
 
 
 def _queue_rebase(owner, repo, pr_number, missions_path,
@@ -301,12 +375,8 @@ def _queue_plan(owner, repo, issue_number, title, instance_dir, koan_root):
 
 def _resolve_project_name(repo, owner=None):
     """Resolve a repo name to a known project name."""
-    from app.utils import project_name_for_path, resolve_project_path
-
-    project_path = resolve_project_path(repo, owner=owner)
-    if project_path:
-        return project_name_for_path(project_path)
-    return repo
+    from app.utils import resolve_project_name
+    return resolve_project_name(repo, owner=owner)
 
 
 def _resolve_project_path(repo, owner=None):
@@ -326,7 +396,6 @@ def main(argv=None):
     """
     import argparse
     import os
-    import sys
 
     parser = argparse.ArgumentParser(
         description="Check a GitHub PR or issue and take appropriate action."
@@ -369,5 +438,4 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    import sys
     sys.exit(main())
