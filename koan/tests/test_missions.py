@@ -30,6 +30,7 @@ from app.missions import (
     quarantine_mission,
     QUARANTINE_MAX_BYTES,
     reorder_mission,
+    requeue_mission,
     sanitize_mission_text,
     stamp_queued,
     stamp_started,
@@ -1321,6 +1322,68 @@ class TestFailMission:
         sections = parse_sections(result)
         assert len(sections["pending"]) == 0
         assert len(sections["failed"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# requeue_mission — move from In Progress back to Pending
+# ---------------------------------------------------------------------------
+
+class TestRequeueMission:
+    def test_basic_requeue(self):
+        content = (
+            "## Pending\n\n"
+            "## In Progress\n\n"
+            "- Fix login bug\n"
+        )
+        result = requeue_mission(content, "Fix login bug")
+        sections = parse_sections(result)
+        assert len(sections["in_progress"]) == 0
+        assert len(sections["pending"]) == 1
+        assert "Fix login bug" in sections["pending"][0]
+
+    def test_requeue_strips_started_timestamp(self):
+        content = (
+            "## Pending\n\n"
+            "## In Progress\n\n"
+            "- Fix login bug ▶(2026-03-26T22:00)\n"
+        )
+        result = requeue_mission(content, "Fix login bug")
+        sections = parse_sections(result)
+        assert len(sections["pending"]) == 1
+        assert "▶" not in sections["pending"][0]
+        assert "Fix login bug" in sections["pending"][0]
+
+    def test_requeue_preserves_project_tag(self):
+        content = (
+            "## Pending\n\n"
+            "## In Progress\n\n"
+            "- [project:koan] Fix login bug ▶(2026-03-26T22:00)\n"
+        )
+        result = requeue_mission(content, "Fix login bug")
+        sections = parse_sections(result)
+        assert len(sections["pending"]) == 1
+        assert "[project:koan]" in sections["pending"][0]
+
+    def test_requeue_not_found_returns_unchanged(self):
+        content = (
+            "## Pending\n\n"
+            "## In Progress\n\n"
+            "- Some other mission\n"
+        )
+        result = requeue_mission(content, "Fix login bug")
+        assert result == normalize_content(content)
+
+    def test_requeue_with_existing_pending(self):
+        content = (
+            "## Pending\n\n"
+            "- Existing task\n\n"
+            "## In Progress\n\n"
+            "- Fix login bug ▶(2026-03-26T22:00)\n"
+        )
+        result = requeue_mission(content, "Fix login bug")
+        sections = parse_sections(result)
+        assert len(sections["pending"]) == 2
+        assert len(sections["in_progress"]) == 0
 
 
 # ---------------------------------------------------------------------------
