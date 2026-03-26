@@ -18,7 +18,10 @@ def handle(ctx):
     # Resolve project path
     project_name, project_path = _resolve_project(args, ctx)
     if not project_path:
-        return "No project found. Usage: /branches [project_name]"
+        if project_name.startswith("_prompt_"):
+            names = project_name[len("_prompt_"):]
+            return f"Which project? Usage: /branches <project>\nAvailable: {names}"
+        return "No project found. Usage: /branches <project_name>"
 
     # Gather data
     branches_info = _get_branches_info(project_path)
@@ -38,7 +41,11 @@ def handle(ctx):
 
 
 def _resolve_project(args: str, ctx) -> Tuple[str, Optional[str]]:
-    """Resolve project name and path from args or context."""
+    """Resolve project name and path from args or context.
+
+    A project name argument is required when multiple projects exist.
+    When only one project is configured, it is used automatically.
+    """
     from app.utils import get_known_projects
 
     projects = get_known_projects()  # list of (name, path) tuples
@@ -55,11 +62,14 @@ def _resolve_project(args: str, ctx) -> Tuple[str, Optional[str]]:
                 return name, path
         return args, None
 
-    # Default: first project or koan itself
-    if "koan" in proj_dict:
-        return "koan", proj_dict["koan"]
-    name, path = projects[0]
-    return name, path
+    # No args: auto-select only when there's a single project
+    if len(proj_dict) == 1:
+        name = next(iter(proj_dict))
+        return name, proj_dict[name]
+
+    # Multiple projects: require explicit selection
+    names = ", ".join(sorted(proj_dict.keys()))
+    return f"_prompt_{names}", None
 
 
 def _get_branches_info(project_path: str) -> List[Dict]:
