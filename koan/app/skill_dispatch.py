@@ -80,6 +80,7 @@ _SKILL_RUNNERS = {
     "claude.md": "app.claudemd_refresh",
     "claude_md": "app.claudemd_refresh",
     "incident": "skills.core.incident.incident_runner",
+    "audit": "skills.core.audit.audit_runner",
 }
 
 # Commands that look like /skills but should be sent to Claude as regular
@@ -259,6 +260,9 @@ def build_skill_command(
         "claude.md": lambda: _build_claudemd_cmd(base_cmd, project_name, project_path),
         "claude_md": lambda: _build_claudemd_cmd(base_cmd, project_name, project_path),
         "incident": lambda: _build_incident_cmd(base_cmd, args, project_path, instance_dir),
+        "audit": lambda: _build_audit_cmd(
+            base_cmd, args, project_name, project_path, instance_dir,
+        ),
     }
 
     builder = _COMMAND_BUILDERS.get(command)
@@ -527,21 +531,56 @@ def _build_incident_cmd(
     return cmd
 
 
+def _build_audit_cmd(
+    base_cmd: List[str],
+    args: str,
+    project_name: str,
+    project_path: str,
+    instance_dir: str,
+) -> List[str]:
+    """Build audit_runner command.
+
+    Extra context is passed via --context-file (temp file) to avoid
+    shell escaping issues with long text.
+    """
+    import tempfile
+
+    cmd = base_cmd + [
+        "--project-path", project_path,
+        "--project-name", project_name,
+        "--instance-dir", instance_dir,
+    ]
+
+    # Write extra context to a temp file to avoid shell escaping issues
+    if args.strip():
+        fd, path = tempfile.mkstemp(prefix="koan-audit-", suffix=".txt")
+        with open(fd, "w", encoding="utf-8") as f:
+            f.write(args)
+        cmd.extend(["--context-file", path])
+
+    return cmd
+
+
 def cleanup_skill_temp_files(skill_cmd: List[str]) -> None:
     """Remove temp files created by skill command builders.
 
     Currently handles:
     - ``--error-file`` temp files from ``_build_incident_cmd()``
+    - ``--context-file`` temp files from ``_build_audit_cmd()``
 
     Safe to call on any skill_cmd — silently skips if no temp files found.
     """
     import os
 
+    _TEMP_FILE_FLAGS = {
+        "--error-file": "/koan-incident-",
+        "--context-file": "/koan-audit-",
+    }
     for i, token in enumerate(skill_cmd):
-        if token == "--error-file" and i + 1 < len(skill_cmd):
+        prefix = _TEMP_FILE_FLAGS.get(token)
+        if prefix and i + 1 < len(skill_cmd):
             path = skill_cmd[i + 1]
-            # Only remove files we created (koan-incident-* in temp dir)
-            if "/koan-incident-" in path:
+            if prefix in path:
                 try:
                     os.unlink(path)
                 except OSError:

@@ -1106,6 +1106,27 @@ See [docs/auto-update.md](auto-update.md) for details.
 - `/dead_code` — Scan the default project
 </details>
 
+### Codebase Audit
+
+**`/audit`** — Audit a project for optimizations, simplifications, and potential issues. Creates a GitHub issue for each finding with detailed problem description, impact analysis, suggested fix, and severity/effort classification.
+
+- **Usage:** `/audit <project-name> [extra context]`
+- **GitHub @mention:** `@koan-bot /audit` on an issue or PR
+
+<details>
+<summary>Use cases</summary>
+
+- `/audit koan` — Full audit of the koan project
+- `/audit webapp focus on the auth module` — Audit with specific focus
+- `/audit mylib look for performance bottlenecks` — Targeted performance audit
+</details>
+
+Each finding becomes a GitHub issue with:
+- **Problem** — What's wrong and why it matters
+- **Why This Matters** — Impact on bugs, performance, or maintainability
+- **Suggested Fix** — Concrete description of what to change
+- **Details table** — Severity, category, location, and effort estimate
+
 ### Incident Triage
 
 **`/incident`** — Triage a production error from a stack trace or log snippet. Kōan will parse the error, identify the root cause, propose a fix with tests, and submit a draft PR.
@@ -1209,13 +1230,14 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/add_project <url>` | `/add_project` | P | Add a project from GitHub |
 | `/delete_project <name>` | `/delete`, `/del` | P | Remove a project from workspace |
 | `/profile <project>` | `/perf`, `/benchmark` | P | Performance profiling mission |
+| `/audit <project> [ctx]` | — | P | Audit project, create GitHub issues |
 | `/tech_debt [project]` | `/td`, `/debt` | P | Scan project for tech debt |
 | `/dead_code [project]` | `/dc` | P | Scan for unused code |
 | `/incident <error>` | — | P | Triage a production error |
 | `/scaffold_skill <scope> <name> <desc>` | `/scaffold`, `/new_skill` | P | Generate SKILL.md + handler.py for a new custom skill |
 
-Skills marked with GitHub @mention support: `/brainstorm`, `/plan`, `/implement`, `/fix`, `/review`, `/rebase`, `/recreate`, `/refactor`, `/profile`, `/gh_request`. See [GitHub Commands](github-commands.md) for details.
+Skills marked with GitHub @mention support: `/audit`, `/brainstorm`, `/plan`, `/implement`, `/fix`, `/review`, `/rebase`, `/recreate`, `/refactor`, `/profile`, `/gh_request`. See [GitHub Commands](github-commands.md) for details.
 
 ---
 
-*This manual covers all 41 core skills. For the full command reference with tabular format, see [docs/skills.md](skills.md). For skill authoring, see [koan/skills/README.md](../koan/skills/README.md).*
+*This manual covers all 42 core skills. For the full command reference with tabular format, see [docs/skills.md](skills.md). For skill authoring, see [koan/skills/README.md](../koan/skills/README.md).*
