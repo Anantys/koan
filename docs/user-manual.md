@@ -436,6 +436,18 @@ Use this before `/plan` when the idea is architecturally complex, when you want 
 - `/pr https://github.com/org/repo/pull/55` — Review a PR and apply updates
 </details>
 
+**`/branches`** — List koan branches and open PRs with recommended merge order and stats.
+
+- **Usage:** `/branches [project_name]`
+- **Aliases:** `/br`, `/prs`
+
+<details>
+<summary>Use cases</summary>
+
+- `/branches` — Show all koan branches for the default project with merge recommendations
+- `/branches koan` — Show branches for a specific project
+</details>
+
 **`/check`** — Run project health checks on a PR or issue (rebase, review, plan as needed).
 
 - **Usage:** `/check <pr-or-issue-url>`
@@ -1175,6 +1187,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/squash <PR>` | `/sq` | I | Squash all PR commits into one clean commit |
 | `/recreate <PR>` | `/rc` | I | Re-implement a PR from scratch |
 | `/pr <PR>` | — | I | Review and update a GitHub PR |
+| `/branches [project]` | `/br`, `/prs` | B | List koan branches + PRs with merge order |
 | `/check <url>` | `/inspect` | I | Run project health checks on a PR/issue |
 | `/gh_request <url> <text>` | — | I | Route natural-language GitHub request to the right skill |
 | `/claudemd [project]` | `/claude`, `/claude.md`, `/claude_md` | I | Refresh a project's CLAUDE.md |
