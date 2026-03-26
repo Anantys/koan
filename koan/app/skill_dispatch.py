@@ -266,7 +266,7 @@ def build_skill_command(
         "rebase": lambda: _build_pr_url_cmd(base_cmd, args, project_path),
         "recreate": lambda: _build_pr_url_cmd(base_cmd, args, project_path),
         "squash": lambda: _build_pr_url_cmd(base_cmd, args, project_path),
-        "review": lambda: _build_review_cmd(base_cmd, args, project_path),
+        "review": lambda: _build_review_cmd(base_cmd, args, project_path, project_name, koan_root),
         "ai": lambda: _build_ai_cmd(base_cmd, project_name, project_path, instance_dir),
         "check": lambda: _build_check_cmd(base_cmd, args, instance_dir, koan_root),
         "tech_debt": lambda: _build_tech_debt_cmd(

@@ -22,8 +22,10 @@ Per-project override in projects.yaml:
 When type is "github", no additional credentials are needed — the existing
 gh CLI auth is used.
 
-Returns None (not an empty dict) when the section is absent or the config
-is incomplete — callers use None as the "feature disabled" signal.
+Returns {"type": "github"} when the section is absent or has no type
+(GitHub is the zero-config default). Returns None when the config is
+explicitly incomplete (e.g. JIRA missing credentials) — callers use None
+as the "feature disabled" signal.
 """
 
 import sys
@@ -48,7 +50,8 @@ def get_issue_tracker_config(
 
     Returns:
         A dict with at minimum ``{"type": "jira"|"github"}`` on success.
-        None when the feature is disabled or the config is incomplete.
+        Defaults to ``{"type": "github"}`` when no section is configured.
+        None when the config is explicitly incomplete (e.g. JIRA missing credentials).
     """
     # Start with global defaults
     global_raw = (global_config or {}).get("issue_tracker")
@@ -74,8 +77,8 @@ def get_issue_tracker_config(
 
     tracker_type = merged.get("type", "").strip().lower()
     if not tracker_type:
-        # No issue_tracker section configured — feature disabled
-        return None
+        # No issue_tracker section configured — default to GitHub (zero-config)
+        return {"type": "github"}
 
     if tracker_type == "jira":
         api_token = merged.get("api_token") or ""
