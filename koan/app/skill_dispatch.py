@@ -89,6 +89,15 @@ _SKILL_RUNNERS = {
 # via GitHub notifications.
 _PASSTHROUGH_TO_CLAUDE = {"gh_request"}
 
+# Combo skills: bridge-side handlers that queue multiple sub-missions.
+# When these arrive in the agent loop (e.g. from a GitHub @mention),
+# we expand them into their constituent sub-commands instead of failing.
+# Each entry maps command_name -> list of sub-commands to queue.
+_COMBO_SKILLS = {
+    "rr": ["review", "rebase"],
+    "reviewrebase": ["review", "rebase"],
+}
+
 _PROJECT_TAG_RE = re.compile(r"^\[projec?t:([a-zA-Z0-9_-]+)\]\s*")
 _PROJECT_WORD_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
 
@@ -586,6 +595,48 @@ def strip_passthrough_command(mission_text: str) -> Optional[str]:
     if command in _PASSTHROUGH_TO_CLAUDE:
         return args if args else None
     return None
+
+
+def expand_combo_skill(
+    mission_text: str,
+    instance_dir: str,
+) -> bool:
+    """Expand a combo skill mission into its constituent sub-missions.
+
+    Combo skills (e.g. /rr) are bridge-side handlers that queue multiple
+    sub-commands. When they arrive in the agent loop (via GitHub @mentions),
+    we expand them into separate pending missions.
+
+    Args:
+        mission_text: The full mission text (e.g. "[project:koan] /rr <url>").
+        instance_dir: Path to the instance directory.
+
+    Returns:
+        True if the mission was expanded (caller should mark it done),
+        False if not a combo skill.
+    """
+    project_id, command, args = parse_skill_mission(mission_text)
+    sub_commands = _COMBO_SKILLS.get(command)
+    if not sub_commands:
+        return False
+
+    from app.utils import insert_pending_mission
+
+    missions_path = Path(instance_dir) / "missions.md"
+    tag = f"[project:{project_id}] " if project_id else ""
+
+    # Insert sub-missions in order (insert_pending_mission appends to bottom
+    # of Pending by default, so FIFO ordering is preserved).
+    for sub_cmd in sub_commands:
+        entry = f"- {tag}/{sub_cmd} {args}".rstrip()
+        insert_pending_mission(missions_path, entry)
+
+    print(
+        f"  Combo skill /{command} expanded into: "
+        + ", ".join(f"/{c}" for c in sub_commands),
+        file=sys.stderr,
+    )
+    return True
 
 
 def translate_cli_skill_mission(

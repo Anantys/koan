@@ -9,6 +9,7 @@ from app.skill_dispatch import (
     build_skill_command,
     dispatch_skill_mission,
     strip_passthrough_command,
+    expand_combo_skill,
     validate_skill_args,
 )
 
@@ -1240,3 +1241,87 @@ class TestStripPassthroughCommand:
     def test_regular_mission_not_passthrough(self):
         result = strip_passthrough_command("Fix the login bug")
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# expand_combo_skill
+# ---------------------------------------------------------------------------
+
+class TestExpandComboSkill:
+    """Combo skills expand into multiple sub-missions in the queue."""
+
+    def test_rr_expands_to_review_and_rebase(self, tmp_path):
+        """The /rr combo skill should insert /review and /rebase missions."""
+        missions_md = tmp_path / "missions.md"
+        missions_md.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+
+        result = expand_combo_skill(
+            "[project:koan] /rr https://github.com/owner/repo/pull/42",
+            str(tmp_path),
+        )
+
+        assert result is True
+        content = missions_md.read_text()
+        assert "/review https://github.com/owner/repo/pull/42" in content
+        assert "/rebase https://github.com/owner/repo/pull/42" in content
+        # Both should have project tag
+        assert "[project:koan] /review" in content
+        assert "[project:koan] /rebase" in content
+
+    def test_reviewrebase_alias_works(self, tmp_path):
+        """The primary command /reviewrebase should also expand."""
+        missions_md = tmp_path / "missions.md"
+        missions_md.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+
+        result = expand_combo_skill(
+            "[project:koan] /reviewrebase https://github.com/owner/repo/pull/42",
+            str(tmp_path),
+        )
+
+        assert result is True
+        content = missions_md.read_text()
+        assert "/review" in content
+        assert "/rebase" in content
+
+    def test_review_order_preserved(self, tmp_path):
+        """/review should come before /rebase in the pending section."""
+        missions_md = tmp_path / "missions.md"
+        missions_md.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+
+        expand_combo_skill(
+            "[project:koan] /rr https://github.com/owner/repo/pull/42",
+            str(tmp_path),
+        )
+
+        content = missions_md.read_text()
+        review_pos = content.index("/review")
+        rebase_pos = content.index("/rebase")
+        assert review_pos < rebase_pos, "/review should come before /rebase"
+
+    def test_non_combo_returns_false(self, tmp_path):
+        """Regular skills should not be expanded."""
+        missions_md = tmp_path / "missions.md"
+        missions_md.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+
+        result = expand_combo_skill("/rebase https://github.com/owner/repo/pull/42", str(tmp_path))
+        assert result is False
+
+    def test_regular_mission_returns_false(self, tmp_path):
+        """Non-skill missions should not be expanded."""
+        result = expand_combo_skill("Fix the login bug", str(tmp_path))
+        assert result is False
+
+    def test_no_project_tag(self, tmp_path):
+        """/rr without project tag should still expand (no tag in sub-missions)."""
+        missions_md = tmp_path / "missions.md"
+        missions_md.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+
+        result = expand_combo_skill(
+            "/rr https://github.com/owner/repo/pull/42",
+            str(tmp_path),
+        )
+
+        assert result is True
+        content = missions_md.read_text()
+        assert "/review https://github.com/owner/repo/pull/42" in content
+        assert "[project:" not in content

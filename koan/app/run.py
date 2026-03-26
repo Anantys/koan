@@ -1053,7 +1053,17 @@ def _handle_skill_dispatch(
         from app.skill_dispatch import (
             translate_cli_skill_mission,
             strip_passthrough_command,
+            expand_combo_skill,
         )
+
+        # Combo skills (e.g. /rr) are bridge-side handlers that queue
+        # multiple sub-missions. Expand them and mark the original done.
+        if expand_combo_skill(mission_title, instance):
+            log("mission", "Decision: COMBO EXPAND (sub-missions queued)")
+            _notify(instance, f"🔀 [{project_name}] Combo skill expanded into sub-missions")
+            _finalize_mission(instance, mission_title, project_name, exit_code=0)
+            _commit_instance(instance)
+            return True, mission_title
 
         # Some /commands (e.g. /gh_request) are bridge-side handlers that
         # can also land in the mission queue via GitHub notifications.
