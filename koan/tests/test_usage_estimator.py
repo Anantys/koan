@@ -20,6 +20,7 @@ from app.usage_estimator import (
     cmd_refresh,
     cmd_reset_session,
     cmd_reset_time,
+    cmd_set_remaining,
     SESSION_DURATION_HOURS,
 )
 
@@ -752,3 +753,112 @@ class TestCmdResetSession:
             with pytest.raises(SystemExit) as exc_info:
                 main()
             assert exc_info.value.code == 1
+
+
+# ---------------------------------------------------------------------------
+# cmd_set_remaining — manual quota override
+# ---------------------------------------------------------------------------
+
+class TestCmdSetRemaining:
+    """Test cmd_set_remaining for /quota <N> override."""
+
+    def test_sets_session_tokens_for_remaining(self, state_file, tmp_path):
+        """32% remaining → 68% used → 340k tokens (with 500k limit)."""
+        usage_md = tmp_path / "usage.md"
+        # Seed a state with high tokens
+        state_file.write_text(json.dumps({
+            "session_start": datetime.now().isoformat(),
+            "session_tokens": 450_000,
+            "weekly_start": datetime.now().isoformat(),
+            "weekly_tokens": 2_000_000,
+            "runs": 10,
+        }))
+
+        with patch("app.usage_estimator.load_config", return_value={}):
+            cmd_set_remaining(32, state_file, usage_md)
+
+        state = json.loads(state_file.read_text())
+        # Default limit 500k, 68% used = 340k
+        assert state["session_tokens"] == 340_000
+
+    def test_resets_session_start(self, state_file, tmp_path):
+        """Session start is reset to now so the 5h window restarts."""
+        usage_md = tmp_path / "usage.md"
+        old_start = (datetime.now() - timedelta(hours=4)).isoformat()
+        state_file.write_text(json.dumps({
+            "session_start": old_start,
+            "session_tokens": 400_000,
+            "weekly_start": datetime.now().isoformat(),
+            "weekly_tokens": 1_000_000,
+            "runs": 8,
+        }))
+
+        with patch("app.usage_estimator.load_config", return_value={}):
+            cmd_set_remaining(50, state_file, usage_md)
+
+        state = json.loads(state_file.read_text())
+        new_start = datetime.fromisoformat(state["session_start"])
+        assert (datetime.now() - new_start).total_seconds() < 5
+
+    def test_writes_usage_md(self, state_file, tmp_path):
+        """usage.md is updated with the new percentage."""
+        usage_md = tmp_path / "usage.md"
+        state_file.write_text(json.dumps(_fresh_state()))
+
+        with patch("app.usage_estimator.load_config", return_value={}):
+            cmd_set_remaining(75, state_file, usage_md)
+
+        content = usage_md.read_text()
+        assert "25%" in content  # 100 - 75 = 25% used
+
+    def test_clamps_to_zero(self, state_file, tmp_path):
+        """Negative values are clamped to 0% remaining."""
+        usage_md = tmp_path / "usage.md"
+        state_file.write_text(json.dumps(_fresh_state()))
+
+        with patch("app.usage_estimator.load_config", return_value={}):
+            cmd_set_remaining(-10, state_file, usage_md)
+
+        state = json.loads(state_file.read_text())
+        assert state["session_tokens"] == 500_000  # 100% used
+
+    def test_clamps_to_hundred(self, state_file, tmp_path):
+        """Values above 100 are clamped to 100% remaining."""
+        usage_md = tmp_path / "usage.md"
+        state_file.write_text(json.dumps(_fresh_state()))
+
+        with patch("app.usage_estimator.load_config", return_value={}):
+            cmd_set_remaining(200, state_file, usage_md)
+
+        state = json.loads(state_file.read_text())
+        assert state["session_tokens"] == 0  # 0% used
+
+    def test_preserves_weekly_tokens(self, state_file, tmp_path):
+        """Override only affects session tokens, not weekly."""
+        usage_md = tmp_path / "usage.md"
+        state_file.write_text(json.dumps({
+            "session_start": datetime.now().isoformat(),
+            "session_tokens": 400_000,
+            "weekly_start": datetime.now().isoformat(),
+            "weekly_tokens": 3_000_000,
+            "runs": 5,
+        }))
+
+        with patch("app.usage_estimator.load_config", return_value={}):
+            cmd_set_remaining(50, state_file, usage_md)
+
+        state = json.loads(state_file.read_text())
+        assert state["weekly_tokens"] == 3_000_000
+
+    def test_respects_custom_limits(self, state_file, tmp_path):
+        """Custom session_token_limit from config is respected."""
+        usage_md = tmp_path / "usage.md"
+        state_file.write_text(json.dumps(_fresh_state()))
+        config = {"usage": {"session_token_limit": 1_000_000}}
+
+        with patch("app.usage_estimator.load_config", return_value=config):
+            cmd_set_remaining(30, state_file, usage_md)
+
+        state = json.loads(state_file.read_text())
+        # 70% of 1M = 700k
+        assert state["session_tokens"] == 700_000

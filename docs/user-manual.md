@@ -185,7 +185,7 @@ If Kōan misclassifies your message, use `/chat` to force chat mode:
 - `/logs` — Quick check of recent agent and bridge output without SSH access
 </details>
 
-**`/quota`** — Check remaining API quota (live, no cache).
+**`/quota [remaining_%]`** — Check remaining API quota (live, no cache), or override the internal estimate.
 
 - **Aliases:** `/q`
 
@@ -193,6 +193,8 @@ If Kōan misclassifies your message, use `/chat` to force chat mode:
 <summary>Use cases</summary>
 
 - `/quota` — See how much API budget is left before adding heavy missions
+- `/quota 32` — Tell Kōan it has 32% remaining (fixes drift when internal estimate is wrong)
+- If Kōan is paused due to quota but the API is actually available, `/quota 50` will correct the estimate and clear the pause
 </details>
 
 **`/verbose`** / **`/silent`** — Toggle real-time progress updates. When verbose is on, Kōan sends progress messages as it works.
@@ -628,7 +630,7 @@ Kōan automatically adapts its work intensity based on remaining API quota:
 | **REVIEW** | <15% | Read-only analysis, code audits, lightweight tasks |
 | **WAIT** | <5% | Graceful pause until quota resets |
 
-You don't need to manage this — Kōan adjusts automatically. Use `/quota` to see the current mode.
+You don't need to manage this — Kōan adjusts automatically. Use `/quota` to see the current mode. If the internal estimate drifts from reality, use `/quota <N>` to override (e.g., `/quota 50` tells Kōan it has 50% remaining).
 
 ### Exploration Mode
 
@@ -1155,7 +1157,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/metrics` | — | B | Mission success rates and reliability stats |
 | `/live` | `/progress` | B | Show live progress of current mission |
 | `/logs` | — | B | Show last 10 lines from run and awake logs |
-| `/quota` | `/q` | B | Check LLM quota (live) |
+| `/quota [N]` | `/q` | B | Check LLM quota (live), or override remaining % |
 | `/chat <msg>` | — | B | Force chat mode (bypass mission detection) |
 | `/verbose` | — | B | Enable real-time progress updates |
 | `/silent` | — | B | Disable real-time progress updates |

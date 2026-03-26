@@ -307,6 +307,35 @@ def cmd_reset_session(state_file: Path, usage_md: Path):
     _write_usage_md(state, usage_md, config)
 
 
+def cmd_set_remaining(remaining_pct: int, state_file: Path, usage_md: Path):
+    """Override session usage so that the remaining budget matches the given percentage.
+
+    Called by /quota <N> when the human knows the real remaining quota
+    and the internal estimate has drifted.
+
+    Args:
+        remaining_pct: Remaining budget percentage (0-100).
+        state_file: Path to usage_state.json.
+        usage_md: Path to usage.md.
+    """
+    config = load_config()
+    state = _load_state(state_file)
+
+    # Clamp to valid range
+    remaining_pct = max(0, min(100, remaining_pct))
+    used_pct = 100 - remaining_pct
+
+    session_limit, _ = _get_limits(config)
+    state["session_tokens"] = int(session_limit * used_pct / 100)
+
+    # Reset session start to now so the 5h window restarts
+    state["session_start"] = datetime.now().isoformat()
+    state["runs"] = max(state.get("runs", 0), 1)
+
+    _save_state(state_file, state)
+    _write_usage_md(state, usage_md, config)
+
+
 def cmd_reset_time(state_file: Path) -> int:
     """Compute when the current session resets (UNIX timestamp).
 

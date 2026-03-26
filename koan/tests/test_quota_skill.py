@@ -553,6 +553,24 @@ class TestQuotaCommandRouting:
         assert "Agent" in output
 
     @patch("app.command_handlers.send_telegram")
+    @patch("skills.core.quota.handler.STATS_CACHE_PATH", Path("/nonexistent"))
+    @patch("skills.core.quota.handler._load_config", return_value={})
+    def test_quota_with_args_routes_via_skill(self, mock_config, mock_send, tmp_path):
+        """``/quota 32`` routes through the skill and applies override."""
+        from app.command_handlers import handle_command
+
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir(exist_ok=True)
+
+        with patch("app.command_handlers.KOAN_ROOT", tmp_path), \
+             patch("app.command_handlers.INSTANCE_DIR", instance_dir):
+            handle_command("/quota 32")
+        mock_send.assert_called_once()
+        output = mock_send.call_args[0][0]
+        assert "32%" in output
+        assert "override" in output.lower()
+
+    @patch("app.command_handlers.send_telegram")
     def test_quota_appears_in_help(self, mock_send, tmp_path):
         from app.command_handlers import _handle_help_detail
 
@@ -713,3 +731,129 @@ class TestFormatCostBreakdown:
         assert "Session quota" in result
         assert "Usage (7 days)" in result
         assert "koan" in result
+
+
+# ---------------------------------------------------------------------------
+# Quota override (/quota <N>)
+# ---------------------------------------------------------------------------
+
+class TestQuotaOverride:
+    """Test the /quota <N> override feature."""
+
+    def test_override_sets_remaining_percentage(self, tmp_path):
+        """``/quota 32`` sets internal usage so remaining is 32%."""
+        from skills.core.quota.handler import handle
+
+        ctx = _make_ctx(tmp_path, args="32")
+        _write_usage_state(ctx.instance_dir, session_tokens=400_000)
+
+        result = handle(ctx)
+        assert "32%" in result
+        assert "68% used" in result
+        assert "override" in result.lower()
+
+        # Verify usage_state.json was updated
+        state = json.loads((ctx.instance_dir / "usage_state.json").read_text())
+        # With default 500k limit, 68% used = 340k tokens
+        assert state["session_tokens"] == 340_000
+
+    def test_override_updates_usage_md(self, tmp_path):
+        """Override rewrites usage.md to reflect the new percentage."""
+        from skills.core.quota.handler import handle
+
+        ctx = _make_ctx(tmp_path, args="50")
+        _write_usage_state(ctx.instance_dir)
+
+        handle(ctx)
+
+        usage_md = ctx.instance_dir / "usage.md"
+        assert usage_md.exists()
+        content = usage_md.read_text()
+        assert "50%" in content
+
+    def test_override_clears_quota_pause(self, tmp_path):
+        """Override clears .koan-pause when paused for quota."""
+        from skills.core.quota.handler import handle
+
+        ctx = _make_ctx(tmp_path, args="60")
+        _write_usage_state(ctx.instance_dir)
+        (tmp_path / ".koan-pause").write_text("quota\n1234567890\nresets 10am\n")
+
+        result = handle(ctx)
+        assert "pause cleared" in result.lower()
+        assert not (tmp_path / ".koan-pause").exists()
+
+    def test_override_does_not_clear_manual_pause(self, tmp_path):
+        """Override doesn't clear .koan-pause when paused manually."""
+        from skills.core.quota.handler import handle
+
+        ctx = _make_ctx(tmp_path, args="60")
+        _write_usage_state(ctx.instance_dir)
+        (tmp_path / ".koan-pause").write_text("manual\n1234567890\n\n")
+
+        result = handle(ctx)
+        assert "pause cleared" not in result.lower()
+        assert (tmp_path / ".koan-pause").exists()
+
+    def test_override_invalid_input(self, tmp_path):
+        """Non-numeric argument returns usage help."""
+        from skills.core.quota.handler import handle
+
+        ctx = _make_ctx(tmp_path, args="abc")
+        result = handle(ctx)
+        assert "usage:" in result.lower() or "example" in result.lower()
+
+    def test_override_out_of_range(self, tmp_path):
+        """Values outside 0-100 are rejected."""
+        from skills.core.quota.handler import handle
+
+        ctx = _make_ctx(tmp_path, args="150")
+        result = handle(ctx)
+        assert "between 0 and 100" in result
+
+    def test_override_zero_remaining(self, tmp_path):
+        """``/quota 0`` sets 100% used."""
+        from skills.core.quota.handler import handle
+
+        ctx = _make_ctx(tmp_path, args="0")
+        _write_usage_state(ctx.instance_dir)
+        result = handle(ctx)
+        assert "0%" in result
+        assert "100% used" in result
+
+    def test_override_hundred_remaining(self, tmp_path):
+        """``/quota 100`` sets 0% used."""
+        from skills.core.quota.handler import handle
+
+        ctx = _make_ctx(tmp_path, args="100")
+        _write_usage_state(ctx.instance_dir)
+        result = handle(ctx)
+        assert "100%" in result
+        assert "0% used" in result
+
+    def test_override_resets_session_start(self, tmp_path):
+        """Override resets the session start time so the 5h window restarts."""
+        from skills.core.quota.handler import handle
+
+        ctx = _make_ctx(tmp_path, args="80")
+        old_start = (datetime.now() - timedelta(hours=4)).isoformat()
+        _write_usage_state(ctx.instance_dir, session_start=old_start)
+
+        handle(ctx)
+        state = json.loads((ctx.instance_dir / "usage_state.json").read_text())
+        new_start = datetime.fromisoformat(state["session_start"])
+        # Session start should be very recent (within last 5 seconds)
+        assert (datetime.now() - new_start).total_seconds() < 5
+
+    def test_display_mode_still_works_with_no_args(self, tmp_path):
+        """No args still shows the display output (no regression)."""
+        from skills.core.quota.handler import handle
+
+        ctx = _make_ctx(tmp_path, args="")
+        _write_usage_state(ctx.instance_dir)
+
+        with patch("skills.core.quota.handler.STATS_CACHE_PATH", Path("/nonexistent")), \
+             patch("skills.core.quota.handler._load_config", return_value={}):
+            result = handle(ctx)
+        assert "Session quota" in result
+        assert "Agent" in result
