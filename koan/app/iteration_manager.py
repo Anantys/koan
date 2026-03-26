@@ -158,6 +158,57 @@ def _drain_ci_queue(instance_dir: Path):
         return None
 
 
+def _run_babysit_check(
+    instance_dir: Path,
+    koan_root: str,
+    count: int,
+    autonomous_mode: str,
+) -> Optional[str]:
+    """Run PR babysit check if enabled and conditions are met.
+
+    Only runs when:
+    - pr_babysit.enabled is true in config.yaml
+    - autonomous_mode is not 'wait' or 'review' (budget guard)
+    - count is a multiple of check_interval
+
+    Returns:
+        Summary string if any action was taken, None otherwise.
+    """
+    try:
+        from app.pr_babysit import _get_babysit_config, _babysit_enabled, run_babysit
+        if not _babysit_enabled():
+            return None
+
+        # Budget guard — skip in low-budget modes
+        if autonomous_mode in ("wait", "review"):
+            return None
+
+        cfg = _get_babysit_config()
+        check_interval = int(cfg.get("check_interval", 3))
+        if count % check_interval != 0:
+            return None
+
+        from app.config import get_branch_prefix
+        branch_prefix = cfg.get("branch_prefix", "").strip() or get_branch_prefix()
+
+        # Load projects config
+        projects_config = None
+        try:
+            from app.projects_config import load_projects_config
+            projects_config = load_projects_config(koan_root)
+        except (ImportError, OSError, ValueError):
+            pass
+
+        summary = run_babysit(
+            str(instance_dir), koan_root, branch_prefix, projects_config,
+        )
+        return summary or None
+
+    except (ImportError, OSError, ValueError) as e:
+        _log_iteration("error", f"Babysit check error: {e}")
+        return None
+
+
 def _fallback_mission_extract(instance_dir: Path, projects_str: str,
                               context_msg: str):
     """Attempt direct mission extraction when the picker fails or returns empty.
@@ -765,6 +816,11 @@ def plan_iteration(
 
     # Step 3b: Drain CI queue (one entry per iteration, non-blocking)
     ci_drain_msg = _drain_ci_queue(instance)
+
+    # Step 3c: PR babysit check (runs after recurring injection, before mission pick)
+    babysit_summary = _run_babysit_check(instance, koan_root, count, autonomous_mode)
+    if babysit_summary:
+        _log_iteration("koan", f"Babysit: {babysit_summary}")
 
     # Step 4: Pick mission
     mission_project, mission_title = _pick_mission(

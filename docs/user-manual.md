@@ -491,6 +491,42 @@ review_dispatch:
 - Reviewer leaves comments on a PR → next `/check` run creates a mission to address them
 </details>
 
+**`/babysit`** — Monitor open PRs created by Kōan and auto-queue fixes for CI failures, review comments, and merge conflicts.
+
+- **Usage:** `/babysit [on|off|<pr-url>]`
+
+Enable in `config.yaml`:
+```yaml
+pr_babysit:
+  enabled: true             # Master switch (default: false)
+  check_interval: 3         # Check every N iterations (default: 3)
+  max_retries: 2            # Max auto-fix attempts per PR per failure type (default: 2)
+  cooldown_minutes: 60      # Min minutes between actions on the same PR (default: 60)
+  stale_days: 7             # Notify human if PR untouched for N days (default: 7)
+  notify_on_fix: true       # Send Telegram notification when a fix is queued (default: true)
+```
+
+What triggers action:
+
+| Signal | Detection | Action |
+|--------|-----------|--------|
+| CI check failure | `gh pr checks` — any failed status | `/fix` mission with failure context |
+| Review with "changes requested" | `reviewDecision == CHANGES_REQUESTED` | `/review <pr-url>` mission |
+| New review comments | Comment count increased vs. tracker | `/review <pr-url>` mission |
+| Merge conflicts | `mergeable == CONFLICTING` | `/rebase <pr-url>` mission |
+| Stale PR (no activity > N days) | `updatedAt` age check | Telegram notification (no auto-action) |
+
+Safety features: retry cap (`max_retries`), cooldown between actions (`cooldown_minutes`), mission deduplication, budget guard (skipped in REVIEW/WAIT modes).
+
+<details>
+<summary>Use cases</summary>
+
+- `/babysit` — Show status of all monitored PRs and current config state
+- `/babysit on` — Enable automated PR monitoring
+- `/babysit off` — Disable automated PR monitoring
+- `/babysit https://github.com/org/repo/pull/42` — Force-check a specific PR right now
+</details>
+
 **`/gh_request`** — Route a natural-language GitHub request to the appropriate action.
 
 - **Usage:** `/gh_request <github-url> <request text>`
@@ -1283,6 +1319,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/pr <PR>` | — | I | Review and update a GitHub PR |
 | `/branches [project]` | `/br`, `/prs` | B | List koan branches + PRs with merge order |
 | `/check <url>` | `/inspect` | I | Run project health checks on a PR/issue |
+| `/babysit [on\|off\|<PR>]` | — | I | Monitor open PRs; auto-queue fixes for CI/review/conflicts |
 | `/gh_request <url> <text>` | — | I | Route natural-language GitHub request to the right skill |
 | `/claudemd [project]` | `/claude`, `/claude.md`, `/claude_md` | I | Refresh a project's CLAUDE.md |
 | `/gha_audit [project]` | `/gha` | I | Audit GitHub Actions for security issues |
