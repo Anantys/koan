@@ -1623,6 +1623,32 @@ def _run_iteration(
                 log("error", f"Failed to read CLI output: {e}, {e2}")
         _reset_terminal()
 
+        # --- Auth error detection (logged-out Claude) ---
+        # If Claude is logged out, requeue the mission instead of failing it
+        # and pause the agent until the human re-authenticates.
+        if claude_exit != 0 and original_mission_title:
+            from app.cli_errors import ErrorCategory, classify_cli_error
+            try:
+                _auth_stdout = Path(stdout_file).read_text()
+            except OSError:
+                _auth_stdout = ""
+            try:
+                _auth_stderr = Path(stderr_file).read_text()
+            except OSError:
+                _auth_stderr = ""
+            _auth_category = classify_cli_error(claude_exit, _auth_stdout, _auth_stderr)
+            if _auth_category == ErrorCategory.AUTH:
+                log("error", "Claude is logged out — requeueing mission to Pending")
+                _requeue_mission_in_file(instance, original_mission_title)
+                from app.pause_manager import create_pause
+                create_pause(koan_root, "auth")
+                _notify(instance, (
+                    "🔐 Claude is logged out. Please run `claude /login` to re-authenticate.\n\n"
+                    "The current mission has been moved back to Pending. "
+                    "Use /resume after logging in."
+                ))
+                return True  # consumed API budget before auth expired
+
         # Complete/fail mission in missions.md (safety net — idempotent if Claude already did it)
         # Done BEFORE post-mission pipeline so quota exhaustion can't skip it.
         # Use original_mission_title because that's the needle in "In Progress".
@@ -1893,6 +1919,19 @@ def _update_mission_in_file(instance: str, mission_title: str, *, failed: bool =
     except Exception as e:
         label = "fail" if failed else "complete"
         log("error", f"Could not {label} mission in missions.md: {e}")
+
+
+def _requeue_mission_in_file(instance: str, mission_title: str):
+    """Move mission from In Progress back to Pending via locked write."""
+    try:
+        from app.missions import requeue_mission
+        from app.utils import modify_missions_file
+        missions_path = Path(instance, "missions.md")
+        if not missions_path.exists():
+            return
+        modify_missions_file(missions_path, lambda c: requeue_mission(c, mission_title))
+    except Exception as e:
+        log("error", f"Could not requeue mission in missions.md: {e}")
 
 
 def _finalize_mission(instance: str, mission_title: str, project_name: str, exit_code: int):

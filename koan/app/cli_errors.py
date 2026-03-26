@@ -22,6 +22,7 @@ class ErrorCategory(Enum):
     RETRYABLE = "retryable"
     TERMINAL = "terminal"
     QUOTA = "quota"
+    AUTH = "auth"
     UNKNOWN = "unknown"
 
 
@@ -61,6 +62,19 @@ _TERMINAL_PATTERNS = [
     r"403\s+Forbidden",
 ]
 
+# Patterns indicating Claude is logged out / OAuth expired — needs human
+# intervention (re-login).  Checked before generic TERMINAL so we can
+# distinguish "auth expired, requeue the mission" from "bad API key, give up".
+_AUTH_PATTERNS = [
+    r"please\s+run\s+/login",
+    r"oauth\s+token\s+has\s+expired",
+    r"please\s+obtain\s+a\s+new\s+token",
+    r"refresh\s+your\s+existing\s+token",
+    r"not\s+authenticated",
+    r"please\s+log\s+in",
+]
+
+_AUTH_RE = re.compile("|".join(_AUTH_PATTERNS), re.IGNORECASE)
 _RETRYABLE_RE = re.compile("|".join(_RETRYABLE_PATTERNS), re.IGNORECASE)
 _TERMINAL_RE = re.compile("|".join(_TERMINAL_PATTERNS), re.IGNORECASE)
 
@@ -94,6 +108,12 @@ def classify_cli_error(
 
     if detect_quota_exhaustion(combined):
         return ErrorCategory.QUOTA
+
+    # Auth errors — Claude is logged out, needs human intervention.
+    # Checked before generic TERMINAL so "401 + OAuth expired" routes here
+    # instead of falling into the generic "unauthorized" terminal bucket.
+    if _AUTH_RE.search(combined):
+        return ErrorCategory.AUTH
 
     # Terminal errors — don't retry
     if _TERMINAL_RE.search(combined):

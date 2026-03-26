@@ -157,3 +157,40 @@ class TestClassifyCliError:
         stderr = "Error: Invalid API key provided. Check your ANTHROPIC_API_KEY."
         result = classify_cli_error(1, stderr=stderr)
         assert result == ErrorCategory.TERMINAL
+
+    # -- Auth errors (logged-out Claude) ----------------------------------------
+
+    @pytest.mark.parametrize("stderr", [
+        'Please run /login · API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"OAuth token has expired."}}',
+        "OAuth token has expired. Please obtain a new token or refresh your existing token.",
+        "Please run /login",
+        "Error: not authenticated",
+        "Please log in to continue",
+        "please obtain a new token",
+        "refresh your existing token",
+    ])
+    def test_auth_errors(self, stderr):
+        result = classify_cli_error(1, stderr=stderr)
+        assert result == ErrorCategory.AUTH, f"Expected AUTH for: {stderr}"
+
+    def test_auth_takes_priority_over_terminal(self):
+        """Auth errors with 401/unauthorized text should be AUTH, not TERMINAL."""
+        stderr = (
+            'Please run /login · API Error: 401 '
+            '{"type":"error","error":{"type":"authentication_error",'
+            '"message":"OAuth token has expired."}}'
+        )
+        result = classify_cli_error(1, stderr=stderr)
+        assert result == ErrorCategory.AUTH
+
+    def test_real_claude_logged_out(self):
+        """Real-world logged-out error from the issue report."""
+        stderr = (
+            'Please run /login · API Error: 401 '
+            '{"type":"error","error":{"type":"authentication_error",'
+            '"message":"OAuth token has expired. Please obtain a new token '
+            'or refresh your existing token."},'
+            '"request_id":"req_011CZSUUxgv7cvbLAuhJY4ux"}'
+        )
+        result = classify_cli_error(1, stderr=stderr)
+        assert result == ErrorCategory.AUTH
