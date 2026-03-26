@@ -76,7 +76,7 @@ EFFORT: <small|medium|large>
 - **Read-only.** Do not modify any files. This is a pure analysis task.
 - **Be specific.** Always include exact file paths and line numbers.
 - **Be actionable.** Each finding must have a concrete suggested fix, not just "improve this".
-- **Quality over quantity.** Report at most 10 findings. Focus on the most impactful issues.
+- **Quality over quantity.** Report at most {MAX_ISSUES} findings. Focus on the most impactful issues — pick the ones that matter most.
 - **No trivial findings.** Skip style-only issues unless they actively harm readability.
 - **Each finding must be self-contained.** A developer should be able to understand and fix it from the issue alone.
 - **Use the exact separator format** (`---FINDING---`) so findings can be parsed programmatically.

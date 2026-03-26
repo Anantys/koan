@@ -99,6 +99,39 @@ class TestHandleQueueMission:
         assert "nonexistent" in result
         assert "web" in result
 
+    @patch("app.utils.resolve_project_path", return_value="/path/koan")
+    @patch("app.utils.insert_pending_mission")
+    def test_with_limit_override(self, mock_insert, mock_resolve, handler, ctx):
+        ctx.args = "koan focus on auth limit=10"
+        result = handler.handle(ctx)
+
+        assert "Audit queued" in result
+        assert "limit=10" in result
+        mission_entry = mock_insert.call_args[0][1]
+        assert "limit=10" in mission_entry
+        assert "/audit focus on auth" in mission_entry
+        # limit=10 should not be in the context part
+        assert "limit=10 limit=10" not in mission_entry
+
+    @patch("app.utils.resolve_project_path", return_value="/path/koan")
+    @patch("app.utils.insert_pending_mission")
+    def test_default_limit_not_in_mission(self, mock_insert, mock_resolve, handler, ctx):
+        ctx.args = "koan"
+        handler.handle(ctx)
+        mission_entry = mock_insert.call_args[0][1]
+        assert "limit=" not in mission_entry
+
+    @patch("app.utils.resolve_project_path", return_value="/path/koan")
+    @patch("app.utils.insert_pending_mission")
+    def test_limit_without_context(self, mock_insert, mock_resolve, handler, ctx):
+        ctx.args = "koan limit=3"
+        result = handler.handle(ctx)
+
+        assert "Audit queued" in result
+        assert "limit=3" in result
+        mission_entry = mock_insert.call_args[0][1]
+        assert "limit=3" in mission_entry
+
 
 # ---------------------------------------------------------------------------
 # Runner tests — parsing
@@ -106,8 +139,10 @@ class TestHandleQueueMission:
 
 from skills.core.audit.audit_runner import (
     AuditFinding,
+    DEFAULT_MAX_ISSUES,
     build_audit_prompt,
     parse_findings,
+    prioritize_findings,
     _build_issue_body,
     _save_audit_report,
     create_issues,
@@ -186,6 +221,81 @@ class TestParseFindingsBasic:
         raw = "---FINDING---\nTITLE: fix something\nPROBLEM: it's broken\n"
         findings = parse_findings(raw)
         assert len(findings) == 0  # missing location = invalid
+
+
+class TestPrioritizeFindings:
+    def _make_finding(self, severity):
+        return AuditFinding(
+            title=f"{severity} issue",
+            severity=severity,
+            location="a.py:1",
+            problem="broken",
+        )
+
+    def test_keeps_all_when_under_limit(self):
+        findings = [self._make_finding("high"), self._make_finding("low")]
+        result = prioritize_findings(findings, max_issues=5)
+        assert len(result) == 2
+
+    def test_truncates_to_limit(self):
+        findings = [
+            self._make_finding("low"),
+            self._make_finding("medium"),
+            self._make_finding("critical"),
+            self._make_finding("high"),
+        ]
+        result = prioritize_findings(findings, max_issues=2)
+        assert len(result) == 2
+        assert result[0].severity == "critical"
+        assert result[1].severity == "high"
+
+    def test_default_limit_is_five(self):
+        findings = [self._make_finding("low") for _ in range(8)]
+        result = prioritize_findings(findings)
+        assert len(result) == DEFAULT_MAX_ISSUES
+
+    def test_preserves_order_within_same_severity(self):
+        findings = [
+            AuditFinding(title="A", severity="medium", location="a:1", problem="p"),
+            AuditFinding(title="B", severity="medium", location="b:1", problem="p"),
+            AuditFinding(title="C", severity="medium", location="c:1", problem="p"),
+        ]
+        result = prioritize_findings(findings, max_issues=2)
+        assert result[0].title == "A"
+        assert result[1].title == "B"
+
+
+class TestLimitExtraction:
+    """Test limit=N parsing from handler."""
+
+    def test_extract_limit_present(self):
+        handler = _load_handler()
+        limit, cleaned = handler._extract_limit("focus on auth limit=10")
+        assert limit == 10
+        assert cleaned == "focus on auth"
+
+    def test_extract_limit_absent(self):
+        handler = _load_handler()
+        limit, cleaned = handler._extract_limit("focus on auth")
+        assert limit == handler.DEFAULT_MAX_ISSUES
+        assert cleaned == "focus on auth"
+
+    def test_extract_limit_only(self):
+        handler = _load_handler()
+        limit, cleaned = handler._extract_limit("limit=3")
+        assert limit == 3
+        assert cleaned == ""
+
+    def test_extract_limit_case_insensitive(self):
+        handler = _load_handler()
+        limit, cleaned = handler._extract_limit("focus LIMIT=7")
+        assert limit == 7
+        assert cleaned == "focus"
+
+    def test_extract_limit_zero_becomes_one(self):
+        handler = _load_handler()
+        limit, _ = handler._extract_limit("limit=0")
+        assert limit == 1
 
 
 class TestAuditFinding:
@@ -269,6 +379,20 @@ class TestBuildPrompt:
             skill_dir=Path(__file__).parent.parent / "skills" / "core" / "audit",
         )
         assert "Additional Focus" not in prompt
+
+    def test_prompt_default_max_issues(self):
+        prompt = build_audit_prompt(
+            "test",
+            skill_dir=Path(__file__).parent.parent / "skills" / "core" / "audit",
+        )
+        assert f"at most {DEFAULT_MAX_ISSUES} findings" in prompt
+
+    def test_prompt_custom_max_issues(self):
+        prompt = build_audit_prompt(
+            "test", max_issues=12,
+            skill_dir=Path(__file__).parent.parent / "skills" / "core" / "audit",
+        )
+        assert "at most 12 findings" in prompt
 
 
 class TestSaveAuditReport:
@@ -437,6 +561,49 @@ class TestRunAudit:
         assert success
         assert "no findings" in summary.lower()
 
+    @patch("skills.core.audit.audit_runner.build_audit_prompt", return_value="prompt")
+    @patch("skills.core.audit.audit_runner._run_claude_audit", return_value=SAMPLE_OUTPUT)
+    @patch("skills.core.audit.audit_runner.create_issues")
+    def test_max_issues_truncates_findings(self, mock_issues, mock_scan, mock_prompt, tmp_path):
+        mock_issues.return_value = ["https://github.com/o/r/issues/1"]
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        notify = MagicMock()
+
+        # SAMPLE_OUTPUT has 3 findings, limit to 1
+        success, summary = run_audit(
+            project_path="/path/proj",
+            project_name="proj",
+            instance_dir=str(instance_dir),
+            max_issues=1,
+            notify_fn=notify,
+        )
+
+        assert success
+        assert "1 findings" in summary
+        # create_issues should receive only 1 finding
+        assert len(mock_issues.call_args[0][0]) == 1
+        # The kept finding should be the highest severity one (high)
+        assert mock_issues.call_args[0][0][0].severity == "high"
+
+    @patch("skills.core.audit.audit_runner.build_audit_prompt", return_value="prompt")
+    @patch("skills.core.audit.audit_runner._run_claude_audit", return_value=SAMPLE_OUTPUT)
+    @patch("skills.core.audit.audit_runner.create_issues")
+    def test_max_issues_passed_to_prompt(self, mock_issues, mock_scan, mock_prompt, tmp_path):
+        mock_issues.return_value = []
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+
+        run_audit(
+            project_path="/path/proj",
+            project_name="proj",
+            instance_dir=str(instance_dir),
+            max_issues=8,
+            notify_fn=MagicMock(),
+        )
+
+        assert mock_prompt.call_args[1].get("max_issues") == 8
+
 
 class TestCLI:
     @patch("skills.core.audit.audit_runner.run_audit", return_value=(True, "Done"))
@@ -493,6 +660,27 @@ class TestCLI:
         skill_dir = kwargs.get("skill_dir")
         assert skill_dir is not None
         assert skill_dir.name == "audit"
+
+    @patch("skills.core.audit.audit_runner.run_audit", return_value=(True, "Done"))
+    def test_main_with_max_issues(self, mock_run, tmp_path):
+        main([
+            "--project-path", "/path/proj",
+            "--project-name", "proj",
+            "--instance-dir", str(tmp_path),
+            "--max-issues", "8",
+        ])
+        _, kwargs = mock_run.call_args
+        assert kwargs.get("max_issues") == 8
+
+    @patch("skills.core.audit.audit_runner.run_audit", return_value=(True, "Done"))
+    def test_main_default_max_issues(self, mock_run, tmp_path):
+        main([
+            "--project-path", "/path/proj",
+            "--project-name", "proj",
+            "--instance-dir", str(tmp_path),
+        ])
+        _, kwargs = mock_run.call_args
+        assert kwargs.get("max_issues") == DEFAULT_MAX_ISSUES
 
 
 # ---------------------------------------------------------------------------
@@ -555,3 +743,20 @@ class TestSkillDispatch:
         assert project == "koan"
         assert command == "audit"
         assert args == "focus on error handling"
+
+    def test_build_skill_command_with_limit(self):
+        from app.skill_dispatch import build_skill_command
+
+        cmd = build_skill_command(
+            command="audit",
+            args="focus on auth limit=8",
+            project_name="myproj",
+            project_path="/path/myproj",
+            koan_root="/koan",
+            instance_dir="/koan/instance",
+        )
+
+        assert cmd is not None
+        assert "--max-issues" in cmd
+        idx = cmd.index("--max-issues")
+        assert cmd[idx + 1] == "8"

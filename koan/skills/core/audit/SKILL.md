@@ -10,7 +10,7 @@ github_context_aware: true
 commands:
   - name: audit
     description: Audit a project for optimizations, simplifications, and issues — creates GitHub issues for findings
-    usage: /audit <project-name> [extra context]
+    usage: /audit <project-name> [extra context] [limit=N]
     aliases: []
 handler: handler.py
 worker: true

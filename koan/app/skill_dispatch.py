@@ -541,8 +541,10 @@ def _build_audit_cmd(
     """Build audit_runner command.
 
     Extra context is passed via --context-file (temp file) to avoid
-    shell escaping issues with long text.
+    shell escaping issues with long text.  ``limit=N`` is extracted
+    and forwarded as ``--max-issues N``.
     """
+    import re
     import tempfile
 
     cmd = base_cmd + [
@@ -550,6 +552,13 @@ def _build_audit_cmd(
         "--project-name", project_name,
         "--instance-dir", instance_dir,
     ]
+
+    # Extract limit=N before writing context
+    limit_match = re.search(r"\blimit=(\d+)\b", args, re.IGNORECASE)
+    if limit_match:
+        cmd.extend(["--max-issues", limit_match.group(1)])
+        args = (args[:limit_match.start()] + args[limit_match.end():]).strip()
+        args = re.sub(r"  +", " ", args)
 
     # Write extra context to a temp file to avoid shell escaping issues
     if args.strip():

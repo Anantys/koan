@@ -8,13 +8,14 @@ Pipeline:
 1. Build audit prompt with project context and optional extra guidance
 2. Run Claude Code CLI (read-only tools) to analyze the codebase
 3. Parse Claude's structured findings (---FINDING--- blocks)
-4. Create a GitHub issue for each finding
-5. Save audit summary to project learnings
+4. Enforce max_issues limit (keep only top N by severity)
+5. Create a GitHub issue for each finding
+6. Save audit summary to project learnings
 
 CLI:
     python3 -m skills.core.audit.audit_runner \
         --project-path <path> --project-name <name> --instance-dir <dir> \
-        [--context "focus on auth module"]
+        [--context "focus on auth module"] [--max-issues 5]
 """
 
 import re
@@ -23,6 +24,10 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from app.prompts import load_prompt_or_skill
+
+DEFAULT_MAX_ISSUES = 5
+
+_SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 
 
 # ---------------------------------------------------------------------------
@@ -70,8 +75,9 @@ def build_audit_prompt(
     project_name: str,
     extra_context: str = "",
     skill_dir: Optional[Path] = None,
+    max_issues: int = DEFAULT_MAX_ISSUES,
 ) -> str:
-    """Build the audit prompt with optional extra context."""
+    """Build the audit prompt with optional extra context and issue limit."""
     context_block = ""
     if extra_context:
         context_block = (
@@ -86,6 +92,7 @@ def build_audit_prompt(
         skill_dir, "audit",
         PROJECT_NAME=project_name,
         EXTRA_CONTEXT=context_block,
+        MAX_ISSUES=str(max_issues),
     )
 
 
@@ -149,6 +156,26 @@ def parse_findings(raw_output: str) -> List[AuditFinding]:
             findings.append(finding)
 
     return findings
+
+
+def prioritize_findings(
+    findings: List[AuditFinding],
+    max_issues: int = DEFAULT_MAX_ISSUES,
+) -> List[AuditFinding]:
+    """Keep only the top *max_issues* findings, ranked by severity.
+
+    Severity order: critical > high > medium > low.
+    Ties preserve the original order from the audit output.
+    """
+    if len(findings) <= max_issues:
+        return findings
+
+    # Stable sort by severity (critical first)
+    ranked = sorted(
+        findings,
+        key=lambda f: _SEVERITY_ORDER.get(f.severity, 99),
+    )
+    return ranked[:max_issues]
 
 
 # ---------------------------------------------------------------------------
@@ -290,6 +317,7 @@ def run_audit(
     project_name: str,
     instance_dir: str,
     extra_context: str = "",
+    max_issues: int = DEFAULT_MAX_ISSUES,
     notify_fn=None,
     skill_dir: Optional[Path] = None,
 ) -> Tuple[bool, str]:
@@ -300,6 +328,7 @@ def run_audit(
         project_name: Project name for labeling.
         instance_dir: Path to instance directory.
         extra_context: Optional focus guidance from the user.
+        max_issues: Maximum number of findings to create issues for.
         notify_fn: Optional callback for progress notifications.
         skill_dir: Optional path to the audit skill directory for prompts.
 
@@ -317,6 +346,7 @@ def run_audit(
     notify_fn(f"\U0001f50e Auditing {project_name}{context_hint}...")
     prompt = build_audit_prompt(
         project_name, extra_context, skill_dir=skill_dir,
+        max_issues=max_issues,
     )
 
     # Step 2: Run Claude audit (read-only)
@@ -334,14 +364,24 @@ def run_audit(
         notify_fn(f"\u2705 Audit of {project_name} found no actionable issues.")
         return True, "Audit completed — no findings."
 
-    notify_fn(
-        f"\U0001f4cb Found {len(findings)} issue(s). Creating GitHub issues..."
-    )
+    # Step 4: Enforce max_issues limit (keep top N by severity)
+    original_count = len(findings)
+    findings = prioritize_findings(findings, max_issues)
+    if len(findings) < original_count:
+        notify_fn(
+            f"\U0001f4cb Found {original_count} issue(s), "
+            f"keeping top {len(findings)}. Creating GitHub issues..."
+        )
+    else:
+        notify_fn(
+            f"\U0001f4cb Found {len(findings)} issue(s). "
+            f"Creating GitHub issues..."
+        )
 
-    # Step 4: Create GitHub issues
+    # Step 5: Create GitHub issues
     issue_urls = create_issues(findings, project_path, notify_fn=notify_fn)
 
-    # Step 5: Save report
+    # Step 6: Save report
     report_path = _save_audit_report(
         instance_path, project_name, findings, issue_urls,
     )
@@ -388,6 +428,10 @@ def main(argv=None):
         "--context-file", default=None,
         help="Read context from a file (for long text)",
     )
+    parser.add_argument(
+        "--max-issues", type=int, default=DEFAULT_MAX_ISSUES,
+        help=f"Maximum number of findings to create issues for (default: {DEFAULT_MAX_ISSUES})",
+    )
     cli_args = parser.parse_args(argv)
 
     # Context from file takes precedence
@@ -405,6 +449,7 @@ def main(argv=None):
         project_name=cli_args.project_name,
         instance_dir=cli_args.instance_dir,
         extra_context=context,
+        max_issues=cli_args.max_issues,
         skill_dir=skill_dir,
     )
     print(summary)

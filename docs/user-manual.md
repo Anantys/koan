@@ -1110,15 +1110,16 @@ See [docs/auto-update.md](auto-update.md) for details.
 
 **`/audit`** — Audit a project for optimizations, simplifications, and potential issues. Creates a GitHub issue for each finding with detailed problem description, impact analysis, suggested fix, and severity/effort classification.
 
-- **Usage:** `/audit <project-name> [extra context]`
+- **Usage:** `/audit <project-name> [extra context] [limit=N]`
 - **GitHub @mention:** `@koan-bot /audit` on an issue or PR
+- Default: top 5 most important findings. Use `limit=N` to override.
 
 <details>
 <summary>Use cases</summary>
 
-- `/audit koan` — Full audit of the koan project
+- `/audit koan` — Full audit of the koan project (top 5 findings)
 - `/audit webapp focus on the auth module` — Audit with specific focus
-- `/audit mylib look for performance bottlenecks` — Targeted performance audit
+- `/audit mylib look for performance bottlenecks limit=10` — Targeted audit with custom limit
 </details>
 
 Each finding becomes a GitHub issue with:
@@ -1230,7 +1231,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/add_project <url>` | `/add_project` | P | Add a project from GitHub |
 | `/delete_project <name>` | `/delete`, `/del` | P | Remove a project from workspace |
 | `/profile <project>` | `/perf`, `/benchmark` | P | Performance profiling mission |
-| `/audit <project> [ctx]` | — | P | Audit project, create GitHub issues |
+| `/audit <project> [ctx] [limit=N]` | — | P | Audit project, create GitHub issues (top N, default 5) |
 | `/tech_debt [project]` | `/td`, `/debt` | P | Scan project for tech debt |
 | `/dead_code [project]` | `/dc` | P | Scan for unused code |
 | `/incident <error>` | — | P | Triage a production error |
