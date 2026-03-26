@@ -210,6 +210,10 @@ usage:
 # When configured, Kōan fetches ticket/issue summaries referenced in PR descriptions
 # and injects them into the review prompt as additional context.
 # Supported types: "jira" (JIRA REST API) and "github" (cross-repo issues via gh CLI).
+# Default: GitHub (zero-config — cross-repo issue refs are enriched automatically).
+# Per-project override: set issue_tracker in projects.yaml (string shorthand supported).
+# See docs/issue-tracker.md for full documentation.
+#
 # SECURITY: api_token is stored here — instance/ is gitignored to prevent accidental commit.
 # For JIRA on-prem with a non-standard API version, include the version in base_url,
 # e.g. "https://jira.example.com/rest/api/3".
@@ -221,6 +225,7 @@ usage:
 #
 # For GitHub cross-repo issues (owner/repo#123 refs), use type: github.
 # No additional credentials needed — existing gh CLI authentication is used.
+# This is the default behavior even without any issue_tracker section.
 # issue_tracker:
 #   type: github
 

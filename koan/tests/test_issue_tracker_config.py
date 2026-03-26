@@ -8,23 +8,27 @@ from app.issue_tracker_config import get_issue_tracker_config
 class TestGetIssueTrackerConfig:
     """Tests for get_issue_tracker_config()."""
 
-    # -- absent / empty config -------------------------------------------------
+    # -- absent / empty config — defaults to GitHub ----------------------------
 
-    def test_returns_none_when_section_absent(self):
-        """Returns None when no issue_tracker section in config."""
-        assert get_issue_tracker_config({}) is None
+    def test_defaults_to_github_when_section_absent(self):
+        """Defaults to GitHub when no issue_tracker section in config."""
+        result = get_issue_tracker_config({})
+        assert result == {"type": "github"}
 
-    def test_returns_none_when_section_is_none(self):
-        """Returns None when issue_tracker section is None."""
-        assert get_issue_tracker_config({"issue_tracker": None}) is None
+    def test_defaults_to_github_when_section_is_none(self):
+        """Defaults to GitHub when issue_tracker section is None."""
+        result = get_issue_tracker_config({"issue_tracker": None})
+        assert result == {"type": "github"}
 
-    def test_returns_none_when_type_missing(self):
-        """Returns None when type key is absent."""
-        assert get_issue_tracker_config({"issue_tracker": {"base_url": "x"}}) is None
+    def test_defaults_to_github_when_type_missing(self):
+        """Defaults to GitHub when type key is absent."""
+        result = get_issue_tracker_config({"issue_tracker": {"base_url": "x"}})
+        assert result == {"type": "github"}
 
-    def test_returns_none_when_type_empty_string(self):
-        """Returns None when type is empty string."""
-        assert get_issue_tracker_config({"issue_tracker": {"type": ""}}) is None
+    def test_defaults_to_github_when_type_empty_string(self):
+        """Defaults to GitHub when type is empty string."""
+        result = get_issue_tracker_config({"issue_tracker": {"type": ""}})
+        assert result == {"type": "github"}
 
     def test_returns_none_for_unknown_type(self):
         """Returns None (with warning) for unknown tracker type."""
