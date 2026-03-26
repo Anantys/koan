@@ -1,7 +1,7 @@
 """Koan quota skill — live LLM quota check + manual override.
 
 /quota        — show current quota metrics
-/quota <N>    — override: tell koan it has N% remaining (fixes drift)
+/quota <N>    — override: tell koan that N% has been used (fixes drift)
 """
 
 import json
@@ -30,14 +30,14 @@ def handle(ctx):
 
 
 def _handle_override(ctx, args):
-    """Override internal quota estimation with human-provided remaining %."""
+    """Override internal quota estimation with human-provided used %."""
     try:
-        remaining_pct = int(args)
+        used_pct = int(args)
     except ValueError:
-        return f"Usage: /quota <remaining_%>\nExample: /quota 32 (= 32% remaining)"
+        return f"Usage: /quota <used_%>\nExample: /quota 5 (= 5% used, 95% remaining)"
 
-    if remaining_pct < 0 or remaining_pct > 100:
-        return "Remaining percentage must be between 0 and 100."
+    if used_pct < 0 or used_pct > 100:
+        return "Used percentage must be between 0 and 100."
 
     instance_dir = ctx.instance_dir
     koan_root = ctx.koan_root
@@ -45,8 +45,8 @@ def _handle_override(ctx, args):
     usage_md = instance_dir / "usage.md"
 
     # Apply the override
-    from app.usage_estimator import cmd_set_remaining
-    cmd_set_remaining(remaining_pct, state_file, usage_md)
+    from app.usage_estimator import cmd_set_used
+    cmd_set_used(used_pct, state_file, usage_md)
 
     # If paused for quota, clear the pause
     unpaused = False
@@ -58,8 +58,8 @@ def _handle_override(ctx, args):
             unpaused = True
 
     # Confirm
-    used_pct = 100 - remaining_pct
-    msg = f"Quota override applied: {remaining_pct}% remaining ({used_pct}% used)."
+    remaining_pct = 100 - used_pct
+    msg = f"Quota override applied: {used_pct}% used ({remaining_pct}% remaining)."
     if unpaused:
         msg += "\nQuota pause cleared — agent will resume on next iteration."
     return msg

@@ -740,22 +740,22 @@ class TestFormatCostBreakdown:
 class TestQuotaOverride:
     """Test the /quota <N> override feature."""
 
-    def test_override_sets_remaining_percentage(self, tmp_path):
-        """``/quota 32`` sets internal usage so remaining is 32%."""
+    def test_override_sets_used_percentage(self, tmp_path):
+        """``/quota 32`` sets internal usage to 32% used."""
         from skills.core.quota.handler import handle
 
         ctx = _make_ctx(tmp_path, args="32")
         _write_usage_state(ctx.instance_dir, session_tokens=400_000)
 
         result = handle(ctx)
-        assert "32%" in result
-        assert "68% used" in result
+        assert "32% used" in result
+        assert "68% remaining" in result
         assert "override" in result.lower()
 
         # Verify usage_state.json was updated
         state = json.loads((ctx.instance_dir / "usage_state.json").read_text())
-        # With default 500k limit, 68% used = 340k tokens
-        assert state["session_tokens"] == 340_000
+        # With default 500k limit, 32% used = 160k tokens
+        assert state["session_tokens"] == 160_000
 
     def test_override_updates_usage_md(self, tmp_path):
         """Override rewrites usage.md to reflect the new percentage."""
@@ -811,25 +811,25 @@ class TestQuotaOverride:
         result = handle(ctx)
         assert "between 0 and 100" in result
 
-    def test_override_zero_remaining(self, tmp_path):
-        """``/quota 0`` sets 100% used."""
+    def test_override_zero_used(self, tmp_path):
+        """``/quota 0`` sets 0% used (100% remaining)."""
         from skills.core.quota.handler import handle
 
         ctx = _make_ctx(tmp_path, args="0")
         _write_usage_state(ctx.instance_dir)
         result = handle(ctx)
-        assert "0%" in result
-        assert "100% used" in result
+        assert "0% used" in result
+        assert "100% remaining" in result
 
-    def test_override_hundred_remaining(self, tmp_path):
-        """``/quota 100`` sets 0% used."""
+    def test_override_hundred_used(self, tmp_path):
+        """``/quota 100`` sets 100% used (0% remaining)."""
         from skills.core.quota.handler import handle
 
         ctx = _make_ctx(tmp_path, args="100")
         _write_usage_state(ctx.instance_dir)
         result = handle(ctx)
-        assert "100%" in result
-        assert "0% used" in result
+        assert "100% used" in result
+        assert "0% remaining" in result
 
     def test_override_resets_session_start(self, tmp_path):
         """Override resets the session start time so the 5h window restarts."""
