@@ -223,6 +223,25 @@ class TestHandle:
             result = handle(ctx)
         assert "No project" in result
 
+    def test_no_args_multiple_projects_prompts(self, koan_root, instance_dir):
+        ctx = _make_ctx(koan_root, instance_dir)
+        projects = {"alpha": "/tmp/alpha", "beta": "/tmp/beta"}
+        with patch("app.utils.get_known_projects", return_value=projects):
+            result = handle(ctx)
+        assert "Which project?" in result
+        assert "alpha" in result
+        assert "beta" in result
+
+    def test_no_args_single_project_auto_selects(self, koan_root, instance_dir):
+        ctx = _make_ctx(koan_root, instance_dir)
+        with patch("app.utils.get_known_projects",
+                    return_value={"solo": "/tmp/solo"}), \
+             patch("skills.core.branches.handler._get_branches_info", return_value=[]), \
+             patch("skills.core.branches.handler._get_open_prs", return_value=[]):
+            result = handle(ctx)
+        assert "No koan branches" in result
+        assert "solo" in result
+
     def test_no_branches_no_prs(self, koan_root, instance_dir):
         ctx = _make_ctx(koan_root, instance_dir, args="myproject")
         with patch("app.utils.get_known_projects",
