@@ -147,3 +147,65 @@ class TestHasChanged:
     def test_different_urls_independent(self, instance_dir):
         mark_checked(instance_dir, "url-a", "ts-1")
         assert has_changed(instance_dir, "url-b", "ts-1") is True
+
+
+# ---------------------------------------------------------------------------
+# CI status tracking
+# ---------------------------------------------------------------------------
+
+from app.check_tracker import (
+    get_ci_status,
+    set_ci_status,
+    get_ci_attempt_count,
+    clear_ci_status,
+)
+
+
+class TestCIStatus:
+    PR_URL = "https://github.com/owner/repo/pull/42"
+
+    def test_get_ci_status_returns_none_when_no_entry(self, instance_dir):
+        assert get_ci_status(instance_dir, self.PR_URL) is None
+
+    def test_set_and_get_roundtrip(self, instance_dir):
+        set_ci_status(instance_dir, self.PR_URL, "fix_dispatched", 1)
+        ci = get_ci_status(instance_dir, self.PR_URL)
+        assert ci is not None
+        assert ci["status"] == "fix_dispatched"
+        assert ci["attempt_count"] == 1
+        assert "last_attempt_at" in ci
+
+    def test_get_ci_attempt_count_returns_zero_when_absent(self, instance_dir):
+        assert get_ci_attempt_count(instance_dir, self.PR_URL) == 0
+
+    def test_get_ci_attempt_count_returns_stored_value(self, instance_dir):
+        set_ci_status(instance_dir, self.PR_URL, "failed", 3)
+        assert get_ci_attempt_count(instance_dir, self.PR_URL) == 3
+
+    def test_clear_ci_status_removes_ci_sub_key(self, instance_dir):
+        set_ci_status(instance_dir, self.PR_URL, "failed", 1)
+        clear_ci_status(instance_dir, self.PR_URL)
+        assert get_ci_status(instance_dir, self.PR_URL) is None
+
+    def test_clear_ci_status_preserves_updated_at(self, instance_dir):
+        mark_checked(instance_dir, self.PR_URL, "2026-01-01T00:00:00Z")
+        set_ci_status(instance_dir, self.PR_URL, "failed", 1)
+        clear_ci_status(instance_dir, self.PR_URL)
+        data = _load(instance_dir)
+        assert data[self.PR_URL]["updated_at"] == "2026-01-01T00:00:00Z"
+
+    def test_clear_ci_status_noop_when_absent(self, instance_dir):
+        # Should not raise
+        clear_ci_status(instance_dir, self.PR_URL)
+
+    def test_set_ci_status_overwrites_previous(self, instance_dir):
+        set_ci_status(instance_dir, self.PR_URL, "fix_dispatched", 1)
+        set_ci_status(instance_dir, self.PR_URL, "fix_dispatched", 2)
+        assert get_ci_attempt_count(instance_dir, self.PR_URL) == 2
+
+    def test_multiple_prs_tracked_independently(self, instance_dir):
+        url2 = "https://github.com/owner/repo/pull/99"
+        set_ci_status(instance_dir, self.PR_URL, "failed", 1)
+        set_ci_status(instance_dir, url2, "failed", 2)
+        assert get_ci_attempt_count(instance_dir, self.PR_URL) == 1
+        assert get_ci_attempt_count(instance_dir, url2) == 2

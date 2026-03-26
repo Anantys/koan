@@ -209,11 +209,21 @@ usage:
 # Per-project overrides are now configured in projects.yaml.
 # Supported per-project settings:
 #   - git_auto_merge: per-project merge rules
+#   - ci_recovery: per-project CI failure recovery settings
 #   - cli_provider: override AI provider ("claude", "codex", "copilot", "local")
 #   - models: override model selection (mission, chat, lightweight, etc.)
 #   - tools: restrict available tools (mission, chat tool lists)
 #   - github: override authorized_users for GitHub @mention commands
 # See projects.example.yaml for documentation and examples.
+
+# CI failure recovery — automated recovery for failing CI on Kōan-created PRs
+# When a Kōan PR fails CI, Kōan fetches the logs and queues a fix mission.
+# After max retries, escalates to the human via Telegram.
+# Per-project overrides available in projects.yaml under ci_recovery:
+# ci_recovery:
+#   auto: true               # Enable automated CI recovery (default: true)
+#   retries: 2               # Max fix attempts before escalation (default: 2)
+#   cooldown_minutes: 30     # Min minutes between fix attempts (default: 30)
 
 # Plan review loop — validates generated plans before posting to GitHub
 # A lightweight subagent (Haiku) reviews each plan for missing file paths,
