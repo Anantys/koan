@@ -783,6 +783,7 @@ class TestMainCli:
             skill_dir=Path(__file__).resolve().parent.parent / "skills" / "core" / "review",
             architecture=False,
             plan_url=None,
+            errors=False,
         )
 
     @patch("app.review_runner.run_review")

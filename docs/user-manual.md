@@ -342,11 +342,12 @@ Use this before `/plan` when the idea is architecturally complex, when you want 
 
 **`/review`** — Queue a code review for a pull request or issue.
 
-- **Usage:** `/review <github-pr-or-issue-url> [--architecture]`
+- **Usage:** `/review <github-pr-or-issue-url> [--architecture] [--errors] [--plan-url <issue-url>]`
 - **Aliases:** `/rv`
 - **GitHub @mention:** `@koan-bot /review` on a PR
 - **Flags:**
   - `--architecture` — Architecture-focused review (SOLID principles, layering, coupling, abstraction boundaries)
+  - `--errors` — Run an additional **silent-failure-hunter** pass that scans for swallowed exceptions, silent null returns, unhandled promises, and other silent error paths. Also auto-triggered when the diff contains error-handling patterns (`try/except`, `catch`, etc.)
 
 <details>
 <summary>Use cases</summary>
@@ -354,6 +355,8 @@ Use this before `/plan` when the idea is architecturally complex, when you want 
 - `/review https://github.com/org/repo/pull/55` — Get a thorough code review
 - `/rv https://github.com/org/repo/pull/55` — Same thing, shorter
 - `/review https://github.com/org/repo/pull/55 --architecture` — Architecture-focused review
+- `/review https://github.com/org/repo/pull/55 --errors` — Include silent-failure-hunter analysis
+- `/review https://github.com/org/repo/pull/55 --architecture --errors` — Both passes
 </details>
 
 **`/refactor`** — Queue a targeted refactoring mission.
@@ -1223,7 +1226,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/deepplan <idea\|issue-url>` | `/deeplan` | I | Spec-first design: explore approaches, post spec, queue /plan |
 | `/implement <issue>` | `/impl` | I | Implement a GitHub issue |
 | `/fix <issue>` | — | I | Full bug-fix pipeline (understand → plan → test → fix → PR) |
-| `/review <PR> [--architecture]` | `/rv` | I | Review a pull request |
+| `/review <PR> [--architecture] [--errors]` | `/rv` | I | Review a pull request |
 | `/refactor <desc>` | `/rf` | I | Targeted refactoring mission |
 | `/ask <comment-url>` | — | I | Ask a question about a PR/issue — posts AI reply to GitHub |
 | `/rebase <PR>` | `/rb` | I | Rebase a PR onto its base branch |
