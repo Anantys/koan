@@ -161,8 +161,14 @@ def _handle_pr(owner, repo, pr_number, instance_dir, koan_root, notify_fn):
     mark_checked(instance_dir, url, updated_at)
 
     # 3. Auto-forward unresolved review comments to agent as a mission
+    from app.utils import load_config
+    try:
+        config = load_config()
+    except Exception:
+        config = {}
     _dispatch_review_comments(
         owner, repo, pr_number, pr_data, missions_path, instance_dir, actions,
+        config=config,
     )
 
     # 4. Extract lessons from past merged/closed PR reviews (best-effort)
@@ -197,6 +203,7 @@ def _handle_pr(owner, repo, pr_number, instance_dir, koan_root, notify_fn):
 
 def _dispatch_review_comments(
     owner, repo, pr_number, pr_data, missions_path, instance_dir, actions,
+    *, config=None,
 ):
     """Fetch unresolved review comments and queue a mission if new ones exist.
 
@@ -208,20 +215,18 @@ def _dispatch_review_comments(
       are excluded from dispatch.
 
     Appends an action string to *actions* when a mission is queued.
+
+    Args:
+        config: Pre-loaded config dict (avoids re-reading config.yaml).
     """
-    from app.utils import load_config
+    if config is None:
+        config = {}
 
     # Config: check.auto_dispatch_reviews (default true — enabled)
     # Config: check.skip_draft_dispatch (default false — include drafts)
-    try:
-        config = load_config()
-        check_config = config.get("check", {})
-        auto_dispatch = check_config.get("auto_dispatch_reviews", True)
-        skip_drafts = check_config.get("skip_draft_dispatch", False)
-    except Exception as e:
-        print(f"[check_runner] config load failed, using defaults: {e}", file=sys.stderr)
-        auto_dispatch = True
-        skip_drafts = False
+    check_config = config.get("check", {})
+    auto_dispatch = check_config.get("auto_dispatch_reviews", True)
+    skip_drafts = check_config.get("skip_draft_dispatch", False)
 
     if not auto_dispatch:
         return
@@ -390,7 +395,6 @@ def main(argv=None):
     """
     import argparse
     import os
-    import sys
 
     parser = argparse.ArgumentParser(
         description="Check a GitHub PR or issue and take appropriate action."
@@ -433,5 +437,4 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    import sys
     sys.exit(main())
