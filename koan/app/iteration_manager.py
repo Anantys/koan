@@ -731,6 +731,9 @@ def plan_iteration(
     # Step 3: Inject recurring missions
     recurring_injected = _inject_recurring(instance)
 
+    # Step 3b: Drain CI queue (one entry per iteration, non-blocking)
+    ci_drain_msg = _drain_ci_queue(instance)
+
     # Step 4: Pick mission
     mission_project, mission_title = _pick_mission(
         instance, projects_str, run_num, autonomous_mode, last_project,

@@ -350,17 +350,14 @@ def run_rebase(
             "\n".join(f"- {a}" for a in actions_log)
         )
 
-    # ── Step 7: Check CI and fix failures ──────────────────────────────
-    ci_section = _run_ci_check_and_fix(
+    # ── Step 7: Enqueue async CI check ─────────────────────────────────
+    ci_section = _enqueue_ci_check(
         branch=branch,
-        base=base,
         full_repo=full_repo,
         pr_number=pr_number,
         project_path=project_path,
         context=context,
         actions_log=actions_log,
-        notify_fn=notify_fn,
-        skill_dir=skill_dir,
     )
 
     # ── Step 8: Comment on the PR ─────────────────────────────────────
@@ -700,6 +697,39 @@ def _force_push(remote: str, branch: str, project_path: str) -> None:
             ["git", "push", remote, branch, "--force"],
             cwd=project_path,
         )
+
+
+def _enqueue_ci_check(
+    branch: str,
+    full_repo: str,
+    pr_number: str,
+    project_path: str,
+    context: dict,
+    actions_log: List[str],
+) -> str:
+    """Enqueue an async CI check instead of blocking. Returns CI section for PR comment."""
+    import os
+
+    koan_root = os.environ.get("KOAN_ROOT")
+    if not koan_root:
+        actions_log.append("CI check skipped (KOAN_ROOT not set)")
+        return "CI check skipped (not running under Kōan)."
+
+    instance_dir = os.path.join(koan_root, "instance")
+    pr_url = context.get("url") or f"https://github.com/{full_repo}/pull/{pr_number}"
+
+    try:
+        from app.ci_queue import enqueue
+        added = enqueue(instance_dir, pr_url, branch, full_repo, pr_number, project_path)
+        if added:
+            actions_log.append("CI check enqueued (async)")
+        else:
+            actions_log.append("CI check re-enqueued (async)")
+        return "CI will be checked asynchronously."
+    except Exception as e:
+        print(f"[rebase] CI enqueue failed: {e}", file=sys.stderr)
+        actions_log.append(f"CI enqueue failed: {str(e)[:100]}")
+        return "CI check could not be enqueued."
 
 
 def _run_ci_check_and_fix(
