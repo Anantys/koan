@@ -164,7 +164,8 @@ def _handle_pr(owner, repo, pr_number, instance_dir, koan_root, notify_fn):
     from app.utils import load_config
     try:
         config = load_config()
-    except Exception:
+    except Exception as e:
+        print(f"[check_runner] load_config failed, using defaults: {e}", file=sys.stderr)
         config = {}
     _dispatch_review_comments(
         owner, repo, pr_number, pr_data, missions_path, instance_dir, actions,
