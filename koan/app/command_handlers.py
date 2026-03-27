@@ -730,7 +730,7 @@ def _handle_start():
         send_telegram(f"❌ {msg}")
 
 
-def _quarantine_mission(text: str, reason: str, source: str = "unknown"):
+def quarantine_mission(text: str, reason: str, source: str = "unknown"):
     """Write a blocked/flagged mission to the quarantine file for human review."""
     from app.missions import quarantine_mission
 
@@ -777,14 +777,14 @@ def handle_mission(text: str):
                     f"🛡️ Mission blocked — suspicious content detected: {guard_result.reason}"
                 )
                 log("guard", f"BLOCKED mission: {guard_result.reason} | {mission_text[:100]}")
-                _quarantine_mission(mission_text, guard_result.reason, source="telegram")
+                quarantine_mission(mission_text, guard_result.reason, source="telegram")
                 return
             else:
                 send_telegram(
                     f"⚠️ Warning — mission queued but flagged: {guard_result.reason}"
                 )
                 log("guard", f"WARNING mission: {guard_result.reason} | {mission_text[:100]}")
-                _quarantine_mission(mission_text, guard_result.reason, source="telegram")
+                quarantine_mission(mission_text, guard_result.reason, source="telegram")
 
     # Format mission entry with project tag if specified
     if project:

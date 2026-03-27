@@ -318,6 +318,18 @@ def handle_chat(text: str):
     # Save user message to history
     save_conversation_message(CONVERSATION_HISTORY_FILE, "user", text)
 
+    # Scan for prompt injection — warn-only (never block chat; tools are read-only)
+    from app.prompt_guard import scan_mission_text
+    from app.config import get_prompt_guard_config
+    from app.command_handlers import quarantine_mission
+
+    guard_config = get_prompt_guard_config()
+    if guard_config["enabled"]:
+        guard_result = scan_mission_text(text)
+        if guard_result.blocked:
+            log("guard", f"WARNING chat: {guard_result.reason} | {text[:100]}")
+            quarantine_mission(text, guard_result.reason, source="telegram-chat")
+
     prompt = _build_chat_prompt(text)
     chat_tools_list = get_chat_tools().split(",")
     models = get_model_config()
