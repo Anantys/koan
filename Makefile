@@ -50,8 +50,9 @@ say: setup
 	@cd koan && KOAN_ROOT=$(PWD) PYTHONPATH=. ../$(PYTHON) -c "from app.awake import handle_message; handle_message('$(m)')"
 
 test: setup
-	$(VENV)/bin/pip install -q pytest 2>/dev/null
-	cd koan && KOAN_ROOT=/tmp/test-koan PYTHONPATH=. ../$(PYTHON) -m pytest tests/ -v
+	$(VENV)/bin/pip install -q pytest pytest-cov 2>/dev/null
+	cd koan && KOAN_ROOT=/tmp/test-koan PYTHONPATH=. ../$(PYTHON) -m pytest tests/ -v \
+		--cov=app --cov-report=term-missing --cov-report=html:htmlcov
 
 migrate: setup
 	cd koan && KOAN_ROOT=$(PWD) PYTHONPATH=. ../$(PYTHON) app/migrate_memory.py

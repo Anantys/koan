@@ -14,3 +14,16 @@ markers = [
     "slow: marks tests as slow (run in dedicated CI groups)",
 ]
 timeout = 60
+
+[tool.coverage.run]
+source = ["app"]
+omit = [
+    "app/setup_wizard.py",
+    "app/onboarding.py",
+]
+parallel = true
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true
+precision = 1

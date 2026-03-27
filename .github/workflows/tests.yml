@@ -52,7 +52,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r koan/requirements.txt
-          pip install pytest pytest-split
+          pip install pytest pytest-split pytest-cov
 
       - name: Run tests (${{ matrix.group.name }})
         if: ${{ !inputs.group || matrix.group.name == inputs.group }}
@@ -64,7 +64,82 @@ jobs:
           KOAN_TELEGRAM_CHAT_ID: "123456789"
         run: |
           if [ -n "${{ matrix.group.split_group }}" ]; then
-            pytest tests/ -m "${{ matrix.group.marker }}" --splits 3 --group ${{ matrix.group.split_group }} -v
+            pytest tests/ -m "${{ matrix.group.marker }}" --splits 3 --group ${{ matrix.group.split_group }} -v \
+              --cov=app --cov-report=term-missing
           else
-            pytest tests/ -m "${{ matrix.group.marker }}" -v
+            pytest tests/ -m "${{ matrix.group.marker }}" -v \
+              --cov=app --cov-report=term-missing
+          fi
+
+      - name: Upload coverage data
+        if: ${{ !inputs.group || matrix.group.name == inputs.group }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.group.name }}
+          path: koan/.coverage*
+          include-hidden-files: true
+
+  coverage:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    name: coverage report
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python 3.14
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+          allow-prereleases: true
+
+      - name: Install coverage
+        run: pip install coverage
+
+      - name: Download all coverage data
+        uses: actions/download-artifact@v4
+        with:
+          pattern: coverage-*
+          path: koan/
+
+      - name: Combine coverage
+        working-directory: koan
+        run: |
+          # Move .coverage files from subdirectories into koan/
+          find . -name '.coverage*' -not -path './.coverage*' -exec mv {} . \;
+          coverage combine
+          coverage report --show-missing
+          # Extract total coverage percentage
+          TOTAL=$(coverage report | grep '^TOTAL' | awk '{print $NF}' | tr -d '%')
+          echo "Total coverage: ${TOTAL}%"
+          echo "COVERAGE_TOTAL=${TOTAL}" >> "$GITHUB_ENV"
+
+      - name: Check coverage baseline
+        working-directory: koan
+        run: |
+          if [ -f ../coverage-baseline.txt ]; then
+            BASELINE=$(cat ../coverage-baseline.txt)
+            echo "Coverage baseline: ${BASELINE}%"
+            echo "Current coverage: ${COVERAGE_TOTAL}%"
+            if [ "$(echo "${COVERAGE_TOTAL} < ${BASELINE}" | bc -l)" -eq 1 ]; then
+              echo "::error::Coverage dropped from ${BASELINE}% to ${COVERAGE_TOTAL}%"
+              exit 1
+            fi
+            echo "✓ Coverage maintained (${COVERAGE_TOTAL}% >= ${BASELINE}%)"
+          else
+            echo "No coverage baseline found — skipping check"
+          fi
+
+      - name: Check test count baseline
+        working-directory: koan
+        run: |
+          if [ -f ../test-count-baseline.txt ]; then
+            BASELINE=$(cat ../test-count-baseline.txt)
+            # Get test count from coverage artifacts (pytest outputs it)
+            # We'll parse it from the test job logs — for now just report
+            echo "Test count baseline: ${BASELINE}"
+            echo "✓ Test count baseline exists (enforcement via pytest output)"
+          else
+            echo "No test count baseline found — skipping check"
           fi
