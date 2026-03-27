@@ -165,8 +165,8 @@ class HookRegistry:
         config = {}
         try:
             config = load_config() or {}
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"[hooks] Could not load config for loop guard: {exc}", file=sys.stderr)
         max_fires = (
             config.get("automation_rules", {}).get("max_fires_per_minute", 5)
         )

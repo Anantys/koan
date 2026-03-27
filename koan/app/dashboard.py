@@ -58,6 +58,15 @@ from app.utils import (
     insert_pending_mission,
     get_known_projects,
 )
+from app.automation_rules import (
+    KNOWN_ACTIONS,
+    KNOWN_EVENTS,
+    add_rule,
+    load_rules,
+    remove_rule,
+    toggle_rule,
+    update_rule_params,
+)
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -1407,6 +1416,103 @@ def api_agent_config():
         "config_yaml": read_yaml(config_path),
         "projects_yaml": read_yaml(projects_path),
     })
+
+
+# ---------------------------------------------------------------------------
+# Automation rules routes
+# ---------------------------------------------------------------------------
+
+def _get_rule_history(limit: int = 50) -> list:
+    """Read [automation_rule]-tagged journal lines, capped at `limit` entries."""
+    entries = []
+    if not JOURNAL_DIR.exists():
+        return entries
+
+    journal_dates = sorted(
+        (d for d in JOURNAL_DIR.iterdir() if d.is_dir() and re.match(r"\d{4}-\d{2}-\d{2}", d.name)),
+        reverse=True,
+    )
+
+    for day_dir in journal_dates:
+        auto_file = day_dir / "automation.md"
+        if not auto_file.exists():
+            continue
+        for line in reversed(auto_file.read_text().splitlines()):
+            if "[automation_rule]" in line:
+                entries.append({"date": day_dir.name, "line": line.strip()})
+                if len(entries) >= limit:
+                    return entries
+    return entries
+
+
+@app.route("/rules")
+def rules_page():
+    """Automation rules management page."""
+    rules = load_rules(str(INSTANCE_DIR))
+    history = _get_rule_history()
+    return render_template(
+        "rules.html",
+        rules=rules,
+        history=history,
+        known_events=sorted(KNOWN_EVENTS),
+        known_actions=sorted(KNOWN_ACTIONS),
+    )
+
+
+@app.route("/api/rules", methods=["GET"])
+def api_rules_list():
+    """Return all automation rules as JSON."""
+    rules = load_rules(str(INSTANCE_DIR))
+    return jsonify([r.to_dict() for r in rules])
+
+
+@app.route("/api/rules", methods=["POST"])
+def api_rules_create():
+    """Create a new automation rule."""
+    data = request.get_json(force=True) or {}
+    event = data.get("event", "")
+    action = data.get("action", "")
+
+    if event not in KNOWN_EVENTS:
+        return jsonify({"error": f"Unknown event '{event}'. Valid: {sorted(KNOWN_EVENTS)}"}), 400
+    if action not in KNOWN_ACTIONS:
+        return jsonify({"error": f"Unknown action '{action}'. Valid: {sorted(KNOWN_ACTIONS)}"}), 400
+
+    rule = add_rule(
+        str(INSTANCE_DIR),
+        event=event,
+        action=action,
+        params=data.get("params") or {},
+        enabled=bool(data.get("enabled", True)),
+    )
+    return jsonify(rule.to_dict()), 201
+
+
+@app.route("/api/rules/<rule_id>", methods=["PATCH"])
+def api_rules_update(rule_id):
+    """Toggle enabled state or update params of a rule."""
+    data = request.get_json(force=True) or {}
+
+    updated = None
+    if "enabled" in data:
+        updated = toggle_rule(str(INSTANCE_DIR), rule_id, enabled=bool(data["enabled"]))
+    if "params" in data and updated is None:
+        updated = update_rule_params(str(INSTANCE_DIR), rule_id, data["params"])
+    elif "params" in data and updated is not None:
+        updated = update_rule_params(str(INSTANCE_DIR), rule_id, data["params"])
+
+    if updated is None:
+        return jsonify({"error": "Rule not found"}), 404
+    return jsonify(updated.to_dict())
+
+
+@app.route("/api/rules/<rule_id>", methods=["DELETE"])
+def api_rules_delete(rule_id):
+    """Delete a rule by id."""
+    removed = remove_rule(str(INSTANCE_DIR), rule_id)
+    if not removed:
+        return jsonify({"error": "Rule not found"}), 404
+    return jsonify({"ok": True})
 
 
 # ---------------------------------------------------------------------------

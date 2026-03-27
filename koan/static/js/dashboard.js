@@ -158,6 +158,7 @@
         'd': '/',
         'g': '/progress',
         'a': '/agent',
+        'r': '/rules',
     };
 
     function isInputFocused() {

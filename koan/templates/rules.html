@@ -1,0 +1,433 @@
+{% extends "base.html" %}
+{% block title %}Kōan — Automation Rules{% endblock %}
+{% block content %}
+<style>
+    .rules-page { max-width: 900px; margin: 0 auto; padding: 1.5rem 1rem; }
+    .rules-page h2 { font-size: 1.1rem; font-weight: 600; margin: 0 0 1rem; }
+
+    /* Table */
+    .rules-table { width: 100%; border-collapse: collapse; margin-bottom: 2rem; }
+    .rules-table th {
+        text-align: left;
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--text-muted);
+        padding: 0.4rem 0.6rem;
+        border-bottom: 1px solid var(--border);
+    }
+    .rules-table td {
+        padding: 0.55rem 0.6rem;
+        border-bottom: 1px solid var(--border);
+        font-size: 0.85rem;
+        vertical-align: middle;
+    }
+    .rules-table tr:last-child td { border-bottom: none; }
+    .rules-table tr.rule-disabled td { opacity: 0.45; }
+
+    /* Badges */
+    .badge-event {
+        display: inline-block;
+        padding: 0.15rem 0.4rem;
+        border-radius: 3px;
+        font-size: 0.75rem;
+        font-family: var(--mono);
+        background: var(--badge-blue-bg, #1e3a5f);
+        color: var(--badge-blue-fg, #60b0f4);
+    }
+    .badge-action {
+        display: inline-block;
+        padding: 0.15rem 0.4rem;
+        border-radius: 3px;
+        font-size: 0.75rem;
+        font-family: var(--mono);
+        background: var(--badge-green-bg, #1a3d2b);
+        color: var(--badge-green-fg, #4caf7d);
+    }
+    .badge-action.action-pause,
+    .badge-action.action-resume {
+        background: var(--badge-orange-bg, #3d2a10);
+        color: var(--badge-orange-fg, #f0a040);
+    }
+    .badge-action.action-auto_merge {
+        background: var(--badge-purple-bg, #2d1a40);
+        color: var(--badge-purple-fg, #b07ef0);
+    }
+
+    .params-summary {
+        font-family: var(--mono);
+        font-size: 0.75rem;
+        color: var(--text-muted);
+        max-width: 200px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    /* Toggle switch */
+    .toggle-switch {
+        position: relative;
+        display: inline-block;
+        width: 36px;
+        height: 20px;
+    }
+    .toggle-switch input { opacity: 0; width: 0; height: 0; }
+    .toggle-track {
+        position: absolute;
+        cursor: pointer;
+        top: 0; left: 0; right: 0; bottom: 0;
+        background: var(--border);
+        border-radius: 20px;
+        transition: background 0.2s;
+    }
+    .toggle-track::before {
+        content: '';
+        position: absolute;
+        width: 14px; height: 14px;
+        left: 3px; bottom: 3px;
+        background: white;
+        border-radius: 50%;
+        transition: transform 0.2s;
+    }
+    .toggle-switch input:checked + .toggle-track { background: var(--accent, #4c9eeb); }
+    .toggle-switch input:checked + .toggle-track::before { transform: translateX(16px); }
+
+    .delete-btn {
+        background: none;
+        border: 1px solid var(--border);
+        color: var(--text-muted);
+        padding: 0.15rem 0.4rem;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 0.75rem;
+    }
+    .delete-btn:hover { border-color: #c0392b; color: #c0392b; }
+
+    /* Rule builder form */
+    .rule-builder {
+        background: var(--card-bg, var(--bg-secondary, #1a1a1a));
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 1rem;
+        margin-bottom: 2rem;
+    }
+    .rule-builder h3 { margin: 0 0 0.75rem; font-size: 0.95rem; }
+    .form-row {
+        display: flex;
+        gap: 0.75rem;
+        flex-wrap: wrap;
+        align-items: flex-end;
+        margin-bottom: 0.5rem;
+    }
+    .form-group { display: flex; flex-direction: column; gap: 0.25rem; }
+    .form-group label { font-size: 0.75rem; color: var(--text-muted); }
+    .form-group select,
+    .form-group input {
+        padding: 0.35rem 0.5rem;
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        background: var(--bg);
+        color: var(--text);
+        font-size: 0.85rem;
+        min-width: 140px;
+    }
+    #rule-params-fields { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+    .save-btn {
+        padding: 0.35rem 1rem;
+        background: var(--accent, #4c9eeb);
+        color: white;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 0.85rem;
+        align-self: flex-end;
+    }
+    .save-btn:hover { opacity: 0.85; }
+
+    /* Empty state */
+    .empty-state {
+        text-align: center;
+        padding: 2rem;
+        color: var(--text-muted);
+        font-size: 0.9rem;
+    }
+
+    /* History table */
+    .history-table { width: 100%; border-collapse: collapse; }
+    .history-table th {
+        text-align: left;
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--text-muted);
+        padding: 0.4rem 0.6rem;
+        border-bottom: 1px solid var(--border);
+    }
+    .history-table td {
+        padding: 0.45rem 0.6rem;
+        border-bottom: 1px solid var(--border);
+        font-size: 0.8rem;
+        font-family: var(--mono);
+        color: var(--text-muted);
+    }
+    .history-table tr:last-child td { border-bottom: none; }
+    .history-date { color: var(--text-muted); font-size: 0.75rem; min-width: 80px; }
+</style>
+
+<div class="rules-page">
+    <h2>Automation Rules</h2>
+
+    <!-- Active rules table -->
+    <div id="rules-container">
+        {% if rules %}
+        <table class="rules-table" id="rules-table">
+            <thead>
+                <tr>
+                    <th>Event</th>
+                    <th>Action</th>
+                    <th>Params</th>
+                    <th>Enabled</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody id="rules-tbody">
+                {% for rule in rules %}
+                <tr class="rule-row{% if not rule.enabled %} rule-disabled{% endif %}" data-rule-id="{{ rule.id }}">
+                    <td><span class="badge-event">{{ rule.event }}</span></td>
+                    <td><span class="badge-action action-{{ rule.action }}">{{ rule.action }}</span></td>
+                    <td>
+                        <span class="params-summary" title="{{ rule.params | tojson }}">
+                            {% if rule.params %}{{ rule.params | tojson }}{% else %}&mdash;{% endif %}
+                        </span>
+                    </td>
+                    <td>
+                        <label class="toggle-switch">
+                            <input type="checkbox" class="rule-toggle"
+                                   data-rule-id="{{ rule.id }}"
+                                   {% if rule.enabled %}checked{% endif %}>
+                            <span class="toggle-track"></span>
+                        </label>
+                    </td>
+                    <td>
+                        <button class="delete-btn rule-delete" data-rule-id="{{ rule.id }}" title="Delete rule">✕</button>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <div class="empty-state" id="empty-rules">No rules yet. Use the form below to add one.</div>
+        {% endif %}
+    </div>
+
+    <!-- Rule builder form -->
+    <div class="rule-builder">
+        <h3>Add Rule</h3>
+        <form id="rule-form">
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="rule-event">When event</label>
+                    <select id="rule-event" name="event" required>
+                        <option value="">— select event —</option>
+                        {% for ev in known_events %}
+                        <option value="{{ ev }}">{{ ev }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="rule-action">→ action</label>
+                    <select id="rule-action" name="action" required>
+                        <option value="">— select action —</option>
+                        {% for ac in known_actions %}
+                        <option value="{{ ac }}">{{ ac }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div id="rule-params-fields"></div>
+                <button type="submit" class="save-btn">Save Rule</button>
+            </div>
+        </form>
+    </div>
+
+    <!-- Rule history -->
+    {% if history %}
+    <h2>Rule History <small style="font-weight:400;font-size:0.8rem;color:var(--text-muted)">(last 50 fires)</small></h2>
+    <table class="history-table">
+        <thead>
+            <tr>
+                <th class="history-date">Date</th>
+                <th>Entry</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for entry in history %}
+            <tr>
+                <td class="history-date">{{ entry.date }}</td>
+                <td>{{ entry.line }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+    /* -------- Dynamic params fields -------- */
+    var ACTION_PARAMS = {
+        'notify':        [{ name: 'message', label: 'Message', placeholder: 'e.g. Mission finished!' }],
+        'create_mission':[{ name: 'text',    label: 'Mission text', placeholder: 'e.g. Follow-up task' }],
+        'pause':         [],
+        'resume':        [],
+        'auto_merge':    [],
+    };
+
+    var actionSel = document.getElementById('rule-action');
+    var paramsDiv = document.getElementById('rule-params-fields');
+
+    function renderParamFields(action) {
+        paramsDiv.innerHTML = '';
+        var fields = ACTION_PARAMS[action] || [];
+        fields.forEach(function (f) {
+            var grp = document.createElement('div');
+            grp.className = 'form-group';
+            var lbl = document.createElement('label');
+            lbl.textContent = f.label;
+            lbl.setAttribute('for', 'param-' + f.name);
+            var inp = document.createElement('input');
+            inp.type = 'text';
+            inp.id = 'param-' + f.name;
+            inp.name = 'param-' + f.name;
+            inp.placeholder = f.placeholder || '';
+            grp.appendChild(lbl);
+            grp.appendChild(inp);
+            paramsDiv.appendChild(grp);
+        });
+    }
+
+    if (actionSel) {
+        actionSel.addEventListener('change', function () {
+            renderParamFields(this.value);
+        });
+    }
+
+    /* -------- Form submit → POST /api/rules -------- */
+    var form = document.getElementById('rule-form');
+    if (form) {
+        form.addEventListener('submit', function (e) {
+            e.preventDefault();
+            var event_ = document.getElementById('rule-event').value;
+            var action_ = document.getElementById('rule-action').value;
+            if (!event_ || !action_) return;
+
+            var params = {};
+            var fields = ACTION_PARAMS[action_] || [];
+            fields.forEach(function (f) {
+                var el = document.getElementById('param-' + f.name);
+                if (el && el.value.trim()) params[f.name] = el.value.trim();
+            });
+
+            fetch('/api/rules', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ event: event_, action: action_, params: params }),
+            })
+            .then(function (r) {
+                if (!r.ok) return r.json().then(function (d) { alert(d.error || 'Error creating rule'); });
+                return r.json().then(function (rule) {
+                    addRuleRow(rule);
+                    form.reset();
+                    paramsDiv.innerHTML = '';
+                    var empty = document.getElementById('empty-rules');
+                    if (empty) empty.style.display = 'none';
+                });
+            })
+            .catch(function (err) { console.error(err); });
+        });
+    }
+
+    /* -------- Add rule row to table -------- */
+    function addRuleRow(rule) {
+        var tbody = document.getElementById('rules-tbody');
+        if (!tbody) {
+            // Create table if it doesn't exist yet
+            var container = document.getElementById('rules-container');
+            container.innerHTML =
+                '<table class="rules-table" id="rules-table">' +
+                '<thead><tr><th>Event</th><th>Action</th><th>Params</th><th>Enabled</th><th></th></tr></thead>' +
+                '<tbody id="rules-tbody"></tbody></table>';
+            tbody = document.getElementById('rules-tbody');
+        }
+        var paramsStr = Object.keys(rule.params || {}).length ? JSON.stringify(rule.params) : '—';
+        var tr = document.createElement('tr');
+        tr.className = 'rule-row';
+        tr.dataset.ruleId = rule.id;
+        tr.innerHTML =
+            '<td><span class="badge-event">' + rule.event + '</span></td>' +
+            '<td><span class="badge-action action-' + rule.action + '">' + rule.action + '</span></td>' +
+            '<td><span class="params-summary" title="' + escHtml(JSON.stringify(rule.params)) + '">' + escHtml(paramsStr) + '</span></td>' +
+            '<td><label class="toggle-switch"><input type="checkbox" class="rule-toggle" data-rule-id="' + rule.id + '" checked><span class="toggle-track"></span></label></td>' +
+            '<td><button class="delete-btn rule-delete" data-rule-id="' + rule.id + '" title="Delete rule">✕</button></td>';
+        tbody.appendChild(tr);
+        bindRowHandlers(tr);
+    }
+
+    function escHtml(s) {
+        return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    /* -------- Wire toggle buttons -------- */
+    function bindToggle(el) {
+        el.addEventListener('change', function () {
+            var id = this.dataset.ruleId;
+            var enabled = this.checked;
+            var row = document.querySelector('.rule-row[data-rule-id="' + id + '"]');
+            fetch('/api/rules/' + id, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled: enabled }),
+            })
+            .then(function (r) {
+                if (!r.ok) { el.checked = !enabled; return; }
+                if (row) {
+                    if (enabled) row.classList.remove('rule-disabled');
+                    else row.classList.add('rule-disabled');
+                }
+            })
+            .catch(function () { el.checked = !enabled; });
+        });
+    }
+
+    /* -------- Wire delete buttons -------- */
+    function bindDelete(el) {
+        el.addEventListener('click', function () {
+            var id = this.dataset.ruleId;
+            if (!confirm('Delete this rule?')) return;
+            fetch('/api/rules/' + id, { method: 'DELETE' })
+            .then(function (r) {
+                if (!r.ok) return;
+                var row = document.querySelector('.rule-row[data-rule-id="' + id + '"]');
+                if (row) row.remove();
+                var tbody = document.getElementById('rules-tbody');
+                if (tbody && tbody.children.length === 0) {
+                    var container = document.getElementById('rules-container');
+                    container.innerHTML = '<div class="empty-state" id="empty-rules">No rules yet. Use the form below to add one.</div>';
+                }
+            });
+        });
+    }
+
+    function bindRowHandlers(row) {
+        var toggle = row.querySelector('.rule-toggle');
+        if (toggle) bindToggle(toggle);
+        var del = row.querySelector('.rule-delete');
+        if (del) bindDelete(del);
+    }
+
+    /* Bind existing rows */
+    document.querySelectorAll('.rule-row').forEach(bindRowHandlers);
+})();
+</script>
+{% endblock %}

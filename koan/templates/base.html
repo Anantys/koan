@@ -21,6 +21,7 @@
         <a href="/progress" {% if request.path == '/progress' %}class="active"{% endif %}>Progress</a>
         <a href="/journal" {% if request.path == '/journal' %}class="active"{% endif %}>Journal</a>
         <a href="/agent" {% if request.path.startswith('/agent') %}class="active"{% endif %} data-shortcut="a">Agent</a>
+        <a href="/rules" {% if request.path == '/rules' %}class="active"{% endif %}>Rules</a>
         <button id="theme-toggle" title="Toggle theme">☀️</button>
         <select id="project-filter">
             <option value="">All projects</option>
@@ -43,6 +44,7 @@
             <div class="shortcut-row"><span>Progress</span><span class="shortcut-key">g</span></div>
             <div class="shortcut-row"><span>Journal</span><span class="shortcut-key">j</span></div>
             <div class="shortcut-row"><span>Agent</span><span class="shortcut-key">a</span></div>
+            <div class="shortcut-row"><span>Rules</span><span class="shortcut-key">r</span></div>
             <div class="shortcut-row"><span>Show shortcuts</span><span class="shortcut-key">?</span></div>
             <span class="shortcut-close">Press Esc or click outside to close</span>
         </div>

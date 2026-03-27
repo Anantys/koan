@@ -298,3 +298,11 @@ usage:
 # to be set in projects.yaml and the gh CLI to be authenticated.
 # Default: false (avoids GitHub API calls for users who haven't configured it).
 # attention_github_notifications: false
+
+# Automation rules — loop guard
+# Limits how many times a single automation rule can fire within a 60-second
+# window. Prevents runaway loops, e.g. a create_mission rule triggered by
+# post_mission that re-queues itself indefinitely.
+# The counter is in-memory and resets when the agent restarts.
+# automation_rules:
+#   max_fires_per_minute: 5   # Per-rule rate limit (default: 5, min: 1)
