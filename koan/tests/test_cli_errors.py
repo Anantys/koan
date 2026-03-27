@@ -84,6 +84,14 @@ class TestClassifyCliError:
         "HTTP 429 Too Many Requests",
         "usage limit reached",
         "retry-after: 3600",
+        # Credit/billing limit errors (4-hour credit window)
+        "Your credit balance is too low to access the Anthropic API.",
+        "your credit balance is empty",
+        "Error: out of credits",
+        "credits exhausted",
+        "insufficient credits to complete request",
+        "billing limit reached",
+        "usage cap exceeded",
     ])
     def test_quota_errors(self, stderr):
         result = classify_cli_error(1, stderr=stderr)

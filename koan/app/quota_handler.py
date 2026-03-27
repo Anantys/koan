@@ -31,6 +31,16 @@ _STRICT_QUOTA_PATTERNS = [
     # Claude-specific error messages
     r"out of extra usage",
     r"quota.*reached",
+    # Credit/billing limit messages from the Anthropic API and Claude Code CLI.
+    # These are specific enough to be safe in stdout (Claude's code output won't
+    # contain "credit balance is too low" or "billing period limit").
+    r"credit.*balance.*(?:too low|exhausted|zero|empty)",
+    r"your credit balance",
+    r"out of.*credits?",
+    r"credits?.*(?:exhausted|depleted|expired|insufficient)",
+    r"insufficient.*credits?",
+    r"billing.*(?:limit|period.*exceeded)",
+    r"usage.*cap.*(?:reached|exceeded|hit)",
 ]
 
 # Loose patterns: generic terms that may appear in Claude's response text

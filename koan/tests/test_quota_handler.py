@@ -105,6 +105,74 @@ Please try again later."""
         assert detect_quota_exhaustion("Using copilot provider for mission") is False
 
 
+class TestDetectQuotaExhaustionCreditMessages:
+    """Test detection of credit/billing limit messages (4-hour credit window)."""
+
+    def test_detects_credit_balance_too_low(self):
+        """Anthropic API error: credit balance too low."""
+        from app.quota_handler import detect_quota_exhaustion
+
+        assert detect_quota_exhaustion(
+            "Your credit balance is too low to access the Anthropic API. "
+            "Please go to Plans & Billing to upgrade or purchase credits."
+        ) is True
+
+    def test_detects_your_credit_balance(self):
+        from app.quota_handler import detect_quota_exhaustion
+
+        assert detect_quota_exhaustion("Your credit balance has been exhausted") is True
+        assert detect_quota_exhaustion("your credit balance is empty") is True
+
+    def test_detects_out_of_credits(self):
+        from app.quota_handler import detect_quota_exhaustion
+
+        assert detect_quota_exhaustion("Error: out of credits") is True
+        assert detect_quota_exhaustion("You are out of credit for this period") is True
+
+    def test_detects_credits_exhausted(self):
+        from app.quota_handler import detect_quota_exhaustion
+
+        assert detect_quota_exhaustion("credits exhausted") is True
+        assert detect_quota_exhaustion("Your credits have been depleted") is True
+        assert detect_quota_exhaustion("credit expired") is True
+
+    def test_detects_insufficient_credits(self):
+        from app.quota_handler import detect_quota_exhaustion
+
+        assert detect_quota_exhaustion("insufficient credits to complete request") is True
+
+    def test_detects_billing_limit(self):
+        from app.quota_handler import detect_quota_exhaustion
+
+        assert detect_quota_exhaustion("billing period limit exceeded") is True
+        assert detect_quota_exhaustion("billing limit reached") is True
+
+    def test_detects_usage_cap(self):
+        from app.quota_handler import detect_quota_exhaustion
+
+        assert detect_quota_exhaustion("usage cap reached") is True
+        assert detect_quota_exhaustion("usage cap exceeded for this account") is True
+        assert detect_quota_exhaustion("usage cap hit") is True
+
+    def test_no_false_positive_on_code_about_credits(self):
+        """Claude discussing credits/billing in code must not trigger quota detection."""
+        from app.quota_handler import detect_quota_exhaustion
+
+        assert detect_quota_exhaustion("// validate credit card number") is False
+        assert detect_quota_exhaustion("def check_billing_status():") is False
+
+    def test_credit_balance_in_api_error_json(self):
+        """Real-world API error JSON containing credit balance message."""
+        from app.quota_handler import detect_quota_exhaustion
+
+        error_json = (
+            '{"type":"error","error":{"type":"rate_limit_error","message":'
+            '"Your credit balance is too low to access the Anthropic API. '
+            'Please go to Plans & Billing to upgrade or purchase credits."}}'
+        )
+        assert detect_quota_exhaustion(error_json) is True
+
+
 class TestExtractResetInfo:
     """Test extract_reset_info function."""
 

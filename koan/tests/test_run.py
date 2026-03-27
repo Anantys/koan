@@ -5219,6 +5219,74 @@ class TestRunIterationPaths:
             mocks["run_claude_task"].assert_called_once()
             assert result is True
 
+    # --- Quota error: mission requeued instead of failed ---
+
+    def test_quota_error_requeues_mission_not_failed(self, tmp_path):
+        """When quota is hit during execution, mission must be requeued to Pending.
+
+        Regression: quota errors triggered _finalize_mission (fail) instead of
+        _requeue_mission_in_file, permanently losing the mission.
+        """
+        plan = self._make_plan("mission", mission_title="implement feature")
+        with self._patched_iteration(
+            tmp_path, plan,
+            run_claude_task=MagicMock(return_value=1),
+        ) as mocks:
+            with patch("app.cli_errors.classify_cli_error") as mock_classify:
+                from app.cli_errors import ErrorCategory
+                mock_classify.return_value = ErrorCategory.QUOTA
+                with patch("app.run._requeue_mission_in_file") as mock_requeue:
+                    with patch("app.quota_handler.handle_quota_exhaustion",
+                               return_value=("resets at 10am", "Auto-resume in ~5h")):
+                        with patch("app.run._compute_quota_reset_ts",
+                                   return_value=(int(time.time()) + 3600, "1h")):
+                            result = self._call(tmp_path)
+            # Mission must be requeued, NOT finalized (failed)
+            mock_requeue.assert_called_once()
+            mocks["_finalize_mission"].assert_not_called()
+            # Returns True — budget was consumed before quota hit
+            assert result is True
+
+    def test_quota_error_creates_pause_when_detection_fails(self, tmp_path):
+        """When quota is classified but pattern detection is inconclusive, create fallback pause."""
+        plan = self._make_plan("mission", mission_title="analyze codebase")
+        with self._patched_iteration(
+            tmp_path, plan,
+            run_claude_task=MagicMock(return_value=1),
+        ) as mocks:
+            with patch("app.cli_errors.classify_cli_error") as mock_classify:
+                from app.cli_errors import ErrorCategory
+                mock_classify.return_value = ErrorCategory.QUOTA
+                with patch("app.run._requeue_mission_in_file"):
+                    with patch("app.quota_handler.handle_quota_exhaustion", return_value=None):
+                        with patch("app.run._compute_quota_reset_ts",
+                                   return_value=(int(time.time()) + 3600, "1h")):
+                            with patch("app.pause_manager.create_pause") as mock_pause:
+                                result = self._call(tmp_path)
+            # Pause must be created even when pattern detection returns None
+            mock_pause.assert_called_once()
+            assert result is True
+
+    def test_quota_error_does_not_run_post_mission_pipeline(self, tmp_path):
+        """When quota is detected via classify_cli_error, skip the heavy post-mission pipeline."""
+        plan = self._make_plan("mission", mission_title="refactor utils")
+        with self._patched_iteration(
+            tmp_path, plan,
+            run_claude_task=MagicMock(return_value=1),
+        ) as mocks:
+            with patch("app.cli_errors.classify_cli_error") as mock_classify:
+                from app.cli_errors import ErrorCategory
+                mock_classify.return_value = ErrorCategory.QUOTA
+                with patch("app.run._requeue_mission_in_file"):
+                    with patch("app.quota_handler.handle_quota_exhaustion",
+                               return_value=("resets at 10am", "Auto-resume in ~5h")):
+                        with patch("app.run._compute_quota_reset_ts",
+                                   return_value=(int(time.time()) + 3600, "1h")):
+                            result = self._call(tmp_path)
+            # Post-mission pipeline must NOT run (we returned early)
+            mocks["run_post_mission"].assert_not_called()
+            assert result is True
+
     # --- Post-mission quota exhaustion ---
 
     def test_post_mission_quota_exhaustion_creates_pause(self, tmp_path):

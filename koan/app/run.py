@@ -1713,9 +1713,10 @@ def _run_iteration(
                 log("error", f"Failed to read CLI output: {e}, {e2}")
         _reset_terminal()
 
-        # --- Auth error detection (logged-out Claude) ---
-        # If Claude is logged out, requeue the mission instead of failing it
-        # and pause the agent until the human re-authenticates.
+        # --- Auth / Quota error detection (before finalizing mission) ---
+        # Both require requeueing the mission so it isn't permanently lost:
+        # - AUTH: Claude is logged out, needs human re-login
+        # - QUOTA: API quota exhausted, auto-resumes after reset
         if claude_exit != 0 and original_mission_title:
             from app.cli_errors import ErrorCategory, classify_cli_error
             try:
@@ -1738,6 +1739,33 @@ def _run_iteration(
                     "Use /resume after logging in."
                 ))
                 return True  # consumed API budget before auth expired
+            elif _auth_category == ErrorCategory.QUOTA:
+                log("quota", "API quota exhausted — requeueing mission to Pending")
+                _requeue_mission_in_file(instance, original_mission_title)
+                from app.quota_handler import handle_quota_exhaustion, QUOTA_CHECK_UNRELIABLE
+                quota_result = handle_quota_exhaustion(
+                    koan_root=koan_root,
+                    instance_dir=instance,
+                    project_name=project_name,
+                    run_count=run_num,
+                    stdout_file=stdout_file,
+                    stderr_file=stderr_file,
+                )
+                reset_display = ""
+                if quota_result and quota_result is not QUOTA_CHECK_UNRELIABLE:
+                    # handle_quota_exhaustion already created the pause with reset info
+                    reset_display = quota_result[0]
+                else:
+                    # Pattern analysis inconclusive — create fallback pause
+                    reset_ts, reset_display = _compute_quota_reset_ts(instance)
+                    from app.pause_manager import create_pause
+                    create_pause(koan_root, "quota", reset_ts, reset_display)
+                _notify(instance, (
+                    f"⏸️ API quota exhausted.{(' ' + reset_display) if reset_display else ''}\n"
+                    f"Mission '{original_mission_title[:60]}' moved back to Pending.\n"
+                    f"Use /resume after quota resets."
+                ))
+                return True  # consumed API budget before quota hit
 
         # Complete/fail mission in missions.md (safety net — idempotent if Claude already did it)
         # Done BEFORE post-mission pipeline so quota exhaustion can't skip it.
