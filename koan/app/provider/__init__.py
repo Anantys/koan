@@ -2,24 +2,27 @@
 CLI provider abstraction for Kōan.
 
 Allows switching between Claude Code CLI, GitHub Copilot CLI,
-or a local LLM server as the underlying AI agent binary. Each
-provider knows how to translate Kōan's generic command spec into
-provider-specific flags.
+OpenAI Codex CLI, or a local LLM server as the underlying AI agent
+binary. Each provider knows how to translate Kōan's generic command
+spec into provider-specific flags.
 
 Configuration:
     config.yaml:  cli_provider: "claude"   (default)
-    env var:      KOAN_CLI_PROVIDER=copilot (overrides config.yaml)
+    env var:      KOAN_CLI_PROVIDER=codex  (overrides config.yaml)
 
 Package structure:
-    provider/base.py    — CLIProvider base class + tool constants
-    provider/claude.py  — ClaudeProvider implementation
-    provider/copilot.py — CopilotProvider implementation
-    provider/local.py   — LocalLLMProvider implementation
-    provider/__init__.py — Registry, resolution, convenience functions
+    provider/base.py         — CLIProvider base class + tool constants
+    provider/claude.py       — ClaudeProvider implementation
+    provider/codex.py        — CodexProvider implementation
+    provider/copilot.py      — CopilotProvider implementation
+    provider/local.py        — LocalLLMProvider implementation
+    provider/ollama_launch.py — OllamaLaunchProvider (ollama launch claude)
+    provider/__init__.py     — Registry, resolution, convenience functions
 """
 
 import os
 import subprocess
+import sys
 from typing import List, Optional
 
 # Re-export base class and constants for convenience
@@ -31,8 +34,10 @@ from app.provider.base import (  # noqa: F401
 
 # Import concrete providers
 from app.provider.claude import ClaudeProvider  # noqa: F401
+from app.provider.codex import CodexProvider  # noqa: F401
 from app.provider.copilot import CopilotProvider  # noqa: F401
 from app.provider.local import LocalLLMProvider  # noqa: F401
+from app.provider.ollama_launch import OllamaLaunchProvider  # noqa: F401
 
 
 # ---------------------------------------------------------------------------
@@ -41,8 +46,10 @@ from app.provider.local import LocalLLMProvider  # noqa: F401
 
 _PROVIDERS = {
     "claude": ClaudeProvider,
+    "codex": CodexProvider,
     "copilot": CopilotProvider,
     "local": LocalLLMProvider,
+    "ollama-launch": OllamaLaunchProvider,
 }
 
 # Cached provider instance (reset with reset_provider() in tests)
@@ -77,8 +84,8 @@ def get_provider_name() -> str:
         config_val = str(config.get("cli_provider", "")).strip().lower()
         if config_val and config_val in _PROVIDERS:
             return config_val
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[provider] Config loading failed: {e}", file=sys.stderr)
 
     return "claude"
 
@@ -158,12 +165,25 @@ def build_full_command(
     output_format: str = "",
     max_turns: int = 0,
     mcp_configs: Optional[List[str]] = None,
+    plugin_dirs: Optional[List[str]] = None,
+    system_prompt: str = "",
 ) -> List[str]:
     """Build a complete CLI command for the configured provider.
 
     This is the high-level API: pass generic parameters, get back a
     provider-specific command list ready for subprocess.run().
+
+    Args:
+        system_prompt: Optional system prompt text. When the provider
+            supports it (e.g., Claude ``--append-system-prompt``), sent
+            as a dedicated system prompt for better prompt caching.
+            Otherwise prepended to the user prompt transparently.
+
+    Automatically reads ``skip_permissions`` from config.yaml so all
+    callers get the flag without needing changes.
     """
+    from app.config import get_skip_permissions
+
     return get_provider().build_command(
         prompt=prompt,
         allowed_tools=allowed_tools,
@@ -173,6 +193,9 @@ def build_full_command(
         output_format=output_format,
         max_turns=max_turns,
         mcp_configs=mcp_configs,
+        plugin_dirs=plugin_dirs,
+        skip_permissions=get_skip_permissions(),
+        system_prompt=system_prompt,
     )
 
 
@@ -204,9 +227,9 @@ def run_command(
         max_turns=max_turns,
     )
 
-    from app.cli_exec import run_cli
+    from app.cli_exec import run_cli_with_retry
 
-    result = run_cli(
+    result = run_cli_with_retry(
         cmd,
         capture_output=True, text=True, timeout=timeout,
         cwd=project_path,
@@ -217,4 +240,86 @@ def run_command(
             f"CLI invocation failed: {result.stderr[:300]}"
         )
 
-    return result.stdout.strip()
+    from app.claude_step import strip_cli_noise
+    return strip_cli_noise(result.stdout.strip())
+
+
+def run_command_streaming(
+    prompt: str,
+    project_path: str,
+    allowed_tools: List[str],
+    model_key: str = "chat",
+    max_turns: int = 10,
+    timeout: int = 300,
+) -> str:
+    """Build and run a CLI command, streaming output to stdout in real time.
+
+    Like :func:`run_command`, but uses Popen to tee CLI output to
+    ``sys.stdout`` line by line while also capturing the full text.
+    This enables the skill dispatch layer in run.py to pipe the output
+    into ``pending.md``, making it visible via ``/live``.
+
+    Raises:
+        RuntimeError: If the command exits with non-zero code.
+    """
+    from app.config import get_model_config
+
+    models = get_model_config()
+    cmd = build_full_command(
+        prompt=prompt,
+        allowed_tools=allowed_tools,
+        model=models.get(model_key, ""),
+        fallback=models.get("fallback", ""),
+        max_turns=max_turns,
+    )
+
+    from app.cli_exec import popen_cli
+
+    proc, cleanup = popen_cli(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=project_path,
+    )
+
+    lines = []
+    stderr_text = ""
+    try:
+        for line in proc.stdout:
+            stripped = line.rstrip("\n")
+            lines.append(stripped)
+            print(stripped, flush=True)
+        stderr_text = proc.stderr.read() if proc.stderr else ""
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+        raise RuntimeError(f"CLI invocation timed out after {timeout}s")
+    finally:
+        if proc.stdout:
+            proc.stdout.close()
+        if proc.stderr:
+            proc.stderr.close()
+        cleanup()
+
+    stdout_text = "\n".join(lines)
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"CLI invocation failed: {stderr_text[:300]}"
+        )
+
+    # Notify user when max turns ceiling was hit so they know how to raise it
+    import re
+    if re.search(r"Reached max turns", stdout_text, re.IGNORECASE):
+        print(
+            f"\n⚠️  Claude hit the max turns limit ({max_turns}). "
+            f"The mission may be incomplete.\n"
+            f"   To increase: set skill_max_turns in instance/config.yaml "
+            f"(current: {max_turns}).\n",
+            file=sys.stderr,
+            flush=True,
+        )
+
+    from app.claude_step import strip_cli_noise
+    return strip_cli_noise(stdout_text.strip())

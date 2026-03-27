@@ -36,7 +36,7 @@ class LocalLLMProvider(CLIProvider):
             from app.utils import load_config
             config = load_config()
             return config.get("local_llm", {})
-        except Exception:
+        except (OSError, ValueError, ImportError):
             return {}
 
     def _get_setting(self, env_key: str, config_key: str, default: str = "") -> str:

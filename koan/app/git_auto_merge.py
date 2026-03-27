@@ -118,7 +118,9 @@ class GitAutoMerger:
     def is_branch_pushed(self, branch: str) -> bool:
         """Check if branch exists on remote origin."""
         exit_code, stdout, _ = run_git(self.project_path, "ls-remote", "--heads", "origin", branch)
-        return exit_code == 0 and branch in stdout
+        # Match the full ref name to avoid substring false positives
+        # (e.g. "koan/fix" matching "koan/fix-typo")
+        return exit_code == 0 and f"refs/heads/{branch}" in stdout
 
     def perform_merge(self, branch: str, base_branch: str, strategy: str) -> Tuple[bool, str]:
         """Execute git merge with specified strategy.
@@ -152,6 +154,7 @@ class GitAutoMerger:
             commit_msg = build_merge_commit_message(branch, strategy, subjects)
             exit_code, _, stderr = run_git(self.project_path, "commit", "-m", commit_msg, env=author_env)
             if exit_code != 0:
+                run_git(self.project_path, "reset", "--hard")
                 return False, f"Failed to commit squash: {stderr}"
 
         elif strategy == "rebase":
@@ -177,6 +180,8 @@ class GitAutoMerger:
 
         exit_code, _, stderr = run_git(self.project_path, "push", "origin", base_branch)
         if exit_code != 0:
+            # Undo the local merge commit to prevent re-merging on next run
+            run_git(self.project_path, "reset", "--hard", f"origin/{base_branch}")
             return False, f"Failed to push {base_branch}: {stderr}"
 
         return True, ""
@@ -253,11 +258,26 @@ class GitAutoMerger:
 
         success, error = self.perform_merge(branch, base_branch, strategy)
 
+        from app.security_audit import GIT_OPERATION, log_event
+
         if not success:
             print(f"[git_auto_merge] Merge failed: {error}")
+            log_event(GIT_OPERATION, details={
+                "action": "auto_merge",
+                "branch": branch,
+                "target": base_branch,
+                "strategy": strategy,
+                "error": error,
+            }, result="failure")
             self.write_merge_failure_to_journal(branch, error)
             return 1
 
+        log_event(GIT_OPERATION, details={
+            "action": "auto_merge",
+            "branch": branch,
+            "target": base_branch,
+            "strategy": strategy,
+        })
         print(f"[git_auto_merge] Successfully merged {branch} into {base_branch} ({strategy})")
 
         # Always delete local branch after successful merge (stay on base_branch)
@@ -279,180 +299,57 @@ class GitAutoMerger:
 
 
 # ---------------------------------------------------------------------------
-# Module-level functions (backward compatibility)
+# Module-level functions — delegate to GitAutoMerger
+#
+# These exist for backward compatibility: callers and tests that import
+# or patch at module level (e.g., app.git_auto_merge.is_working_tree_clean)
+# continue to work. Each function creates a lightweight GitAutoMerger and
+# delegates, so there is exactly one implementation of each operation.
 # ---------------------------------------------------------------------------
 
 def is_working_tree_clean(project_path: str) -> bool:
     """Check if working tree has no uncommitted changes."""
-    exit_code, stdout, _ = run_git(project_path, "status", "--porcelain")
-    return exit_code == 0 and stdout == ""
+    return GitAutoMerger("", "", project_path).is_working_tree_clean()
 
 
 def is_branch_pushed(project_path: str, branch: str) -> bool:
     """Check if branch exists on remote origin."""
-    exit_code, stdout, _ = run_git(project_path, "ls-remote", "--heads", "origin", branch)
-    return exit_code == 0 and branch in stdout
+    return GitAutoMerger("", "", project_path).is_branch_pushed(branch)
 
 
 def perform_merge(project_path: str, branch: str, base_branch: str, strategy: str) -> Tuple[bool, str]:
     """Execute git merge with specified strategy."""
-    try:
-        return _perform_merge_inner(project_path, branch, base_branch, strategy)
-    finally:
-        run_git(project_path, "checkout", base_branch)
-
-
-def _perform_merge_inner(project_path: str, branch: str, base_branch: str, strategy: str) -> Tuple[bool, str]:
-    """Inner merge logic (called by perform_merge with branch safety)."""
-    subjects = get_branch_commit_messages(project_path, branch, base_branch)
-    author_env = get_author_env()
-
-    exit_code, _, stderr = run_git(project_path, "checkout", base_branch)
-    if exit_code != 0:
-        return False, f"Failed to checkout {base_branch}: {stderr}"
-
-    exit_code, _, stderr = run_git(project_path, "pull", "origin", base_branch)
-    if exit_code != 0:
-        return False, f"Failed to pull {base_branch}: {stderr}"
-
-    if strategy == "squash":
-        exit_code, _, stderr = run_git(project_path, "merge", "--squash", branch)
-        if exit_code != 0:
-            run_git(project_path, "reset", "--hard")
-            return False, f"Merge conflict during squash: {stderr}"
-
-        commit_msg = build_merge_commit_message(branch, strategy, subjects)
-        exit_code, _, stderr = run_git(project_path, "commit", "-m", commit_msg, env=author_env)
-        if exit_code != 0:
-            return False, f"Failed to commit squash: {stderr}"
-
-    elif strategy == "rebase":
-        exit_code, _, stderr = run_git(project_path, "rebase", base_branch, branch)
-        if exit_code != 0:
-            run_git(project_path, "rebase", "--abort")
-            return False, f"Merge conflict during rebase: {stderr}"
-
-        exit_code, _, stderr = run_git(project_path, "checkout", base_branch)
-        if exit_code != 0:
-            return False, f"Failed to checkout {base_branch} after rebase: {stderr}"
-
-        exit_code, _, stderr = run_git(project_path, "merge", "--ff-only", branch)
-        if exit_code != 0:
-            return False, f"Failed to fast-forward merge: {stderr}"
-
-    else:
-        commit_msg = build_merge_commit_message(branch, "merge", subjects)
-        exit_code, _, stderr = run_git(project_path, "merge", "--no-ff", branch, "-m", commit_msg, env=author_env)
-        if exit_code != 0:
-            run_git(project_path, "merge", "--abort")
-            return False, f"Merge conflict: {stderr}"
-
-    exit_code, _, stderr = run_git(project_path, "push", "origin", base_branch)
-    if exit_code != 0:
-        return False, f"Failed to push {base_branch}: {stderr}"
-
-    return True, ""
+    return GitAutoMerger("", "", project_path).perform_merge(branch, base_branch, strategy)
 
 
 def cleanup_local_branch(project_path: str, branch: str) -> bool:
-    """Delete branch locally only.
-
-    Uses -d first (safe delete, requires branch to be merged).
-    Falls back to -D if -d fails (force delete).
-    """
-    exit_code, _, _ = run_git(project_path, "branch", "-d", branch)
-    if exit_code != 0:
-        exit_code, _, _ = run_git(project_path, "branch", "-D", branch)
-        return exit_code == 0
-    return True
+    """Delete branch locally only."""
+    return GitAutoMerger("", "", project_path).cleanup_local_branch(branch)
 
 
 def cleanup_remote_branch(project_path: str, branch: str) -> bool:
     """Delete branch on remote origin."""
-    exit_code, _, _ = run_git(project_path, "push", "origin", "--delete", branch)
-    return exit_code == 0
+    return GitAutoMerger("", "", project_path).cleanup_remote_branch(branch)
 
 
 def cleanup_branch(project_path: str, branch: str) -> bool:
-    """Delete branch locally and on remote (backward compat wrapper)."""
-    local_ok = cleanup_local_branch(project_path, branch)
-    if not local_ok:
-        return False
-    return cleanup_remote_branch(project_path, branch)
+    """Delete branch locally and on remote."""
+    return GitAutoMerger("", "", project_path).cleanup_branch(branch)
 
 
 def write_merge_success_to_journal(instance_dir: str, project_name: str, branch: str, base_branch: str, strategy: str):
     """Write successful merge to today's journal."""
-    from app.journal import append_to_journal
-    timestamp = datetime.now().strftime("%H:%M")
-    entry = f"\n## Auto-Merge — {timestamp}\n\n✓ Merged `{branch}` into `{base_branch}` ({strategy})\n"
-    append_to_journal(Path(instance_dir), project_name, entry)
+    GitAutoMerger(instance_dir, project_name, "").write_merge_success_to_journal(branch, base_branch, strategy)
 
 
 def write_merge_failure_to_journal(instance_dir: str, project_name: str, branch: str, error: str):
     """Write failed merge to today's journal."""
-    from app.journal import append_to_journal
-    timestamp = datetime.now().strftime("%H:%M")
-    entry = f"\n## Auto-Merge Failed — {timestamp}\n\n✗ Failed to merge `{branch}`: {error}\nManual intervention required.\n"
-    append_to_journal(Path(instance_dir), project_name, entry)
+    GitAutoMerger(instance_dir, project_name, "").write_merge_failure_to_journal(branch, error)
 
 
 def auto_merge_branch(instance_dir: str, project_name: str, project_path: str, branch: str) -> int:
-    """Main entry point for auto-merge logic.
-
-    Orchestrates the complete auto-merge flow using module-level functions.
-    This preserves backward compatibility with tests that patch at module level.
-    """
-    config = load_config()
-    merge_config = get_auto_merge_config(config, project_name)
-
-    should_merge_flag, rule, base_branch = should_auto_merge(merge_config, branch)
-
-    if not should_merge_flag:
-        print(f"[git_auto_merge] Not configured for auto-merge: {branch}")
-        return 0
-
-    print(f"[git_auto_merge] Auto-merge enabled for {branch} → {base_branch}")
-
-    if not is_working_tree_clean(project_path):
-        error = "Working tree has uncommitted changes"
-        print(f"[git_auto_merge] Safety check failed: {error}")
-        write_merge_failure_to_journal(instance_dir, project_name, branch, error)
-        return 1
-
-    if not is_branch_pushed(project_path, branch):
-        error = "Branch not pushed to remote"
-        print(f"[git_auto_merge] Safety check failed: {error}")
-        write_merge_failure_to_journal(instance_dir, project_name, branch, error)
-        return 1
-
-    strategy = rule.get("strategy") or merge_config.get("strategy", "squash")
-
-    success, error = perform_merge(project_path, branch, base_branch, strategy)
-
-    if not success:
-        print(f"[git_auto_merge] Merge failed: {error}")
-        write_merge_failure_to_journal(instance_dir, project_name, branch, error)
-        return 1
-
-    print(f"[git_auto_merge] Successfully merged {branch} into {base_branch} ({strategy})")
-
-    # Always delete local branch after successful merge (stay on base_branch)
-    if cleanup_local_branch(project_path, branch):
-        print(f"[git_auto_merge] Deleted local branch {branch}")
-    else:
-        print(f"[git_auto_merge] Warning: Failed to delete local branch {branch}")
-
-    # Optionally delete remote branch if configured
-    if rule.get("delete_after_merge", False):
-        if cleanup_remote_branch(project_path, branch):
-            print(f"[git_auto_merge] Deleted remote branch {branch}")
-        else:
-            print(f"[git_auto_merge] Warning: Failed to delete remote branch {branch}")
-
-    write_merge_success_to_journal(instance_dir, project_name, branch, base_branch, strategy)
-
-    return 0
+    """Main entry point for auto-merge logic."""
+    return GitAutoMerger(instance_dir, project_name, project_path).auto_merge_branch(branch)
 
 
 # ---------------------------------------------------------------------------

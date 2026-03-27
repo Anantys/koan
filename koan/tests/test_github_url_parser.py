@@ -6,6 +6,8 @@ from app.github_url_parser import (
     parse_github_url,
     parse_issue_url,
     parse_pr_url,
+    search_issue_url,
+    search_pr_url,
 )
 
 
@@ -89,3 +91,55 @@ class TestParseGithubUrl:
     def test_invalid_raises(self):
         with pytest.raises(ValueError, match="Invalid GitHub URL"):
             parse_github_url("https://example.com/not-github")
+
+
+class TestSearchPrUrl:
+    def test_clean_url(self):
+        owner, repo, number = search_pr_url(
+            "https://github.com/sukria/koan/pull/42"
+        )
+        assert owner == "sukria"
+        assert repo == "koan"
+        assert number == "42"
+
+    def test_embedded_url(self):
+        owner, repo, number = search_pr_url(
+            "Check this: https://github.com/foo/bar/pull/77 please"
+        )
+        assert owner == "foo"
+        assert repo == "bar"
+        assert number == "77"
+
+    def test_no_match_raises(self):
+        with pytest.raises(ValueError, match="No PR URL found"):
+            search_pr_url("no url here")
+
+    def test_issue_url_not_matched(self):
+        with pytest.raises(ValueError):
+            search_pr_url("https://github.com/o/r/issues/1")
+
+
+class TestSearchIssueUrl:
+    def test_clean_url(self):
+        owner, repo, number = search_issue_url(
+            "https://github.com/acme/widget/issues/42"
+        )
+        assert owner == "acme"
+        assert repo == "widget"
+        assert number == "42"
+
+    def test_embedded_url(self):
+        owner, repo, number = search_issue_url(
+            "See https://github.com/org/repo/issues/99 for details"
+        )
+        assert owner == "org"
+        assert repo == "repo"
+        assert number == "99"
+
+    def test_no_match_raises(self):
+        with pytest.raises(ValueError, match="No issue URL found"):
+            search_issue_url("no url here")
+
+    def test_pr_url_not_matched(self):
+        with pytest.raises(ValueError):
+            search_issue_url("https://github.com/o/r/pull/1")

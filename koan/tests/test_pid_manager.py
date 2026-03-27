@@ -15,10 +15,13 @@ from app.pid_manager import (
     _read_pid,
     _read_runner_state,
     _is_process_alive,
+    _bootout_launchd_service,
     _detect_provider,
     _needs_ollama,
     _log_dir,
     _open_log_file,
+    _launch_python_process,
+    _wait_for_exit,
     acquire_pidfile,
     release_pidfile,
     acquire_pid,
@@ -30,11 +33,15 @@ from app.pid_manager import (
     start_ollama,
     start_all,
     start_stack,
+    start_dashboard,
     get_status_processes,
     format_status_all,
     _print_stack_results,
+    _is_dashboard_enabled,
     PROCESS_NAMES,
 )
+
+pytestmark = pytest.mark.slow
 
 
 # ---------------------------------------------------------------------------
@@ -102,6 +109,38 @@ class TestIsProcessAlive:
         # _is_process_alive should handle this gracefully
         result = _is_process_alive(0)
         assert isinstance(result, bool)
+
+    def test_zombie_detected_via_ps(self):
+        """Zombie processes (state=Z) should be reported as dead."""
+        ps_result = MagicMock(stdout="Z", returncode=0)
+        with patch("os.kill"):  # kill(pid, 0) succeeds (zombie exists)
+            with patch("builtins.open", side_effect=FileNotFoundError):  # no /proc
+                with patch("app.pid_manager.subprocess.run", return_value=ps_result):
+                    assert _is_process_alive(42) is False
+
+    def test_zombie_detected_via_proc(self):
+        """On Linux, zombie detected via /proc/PID/status."""
+        from io import StringIO
+        proc_content = StringIO("Name:\ttest\nState:\tZ (zombie)\nPid:\t42\n")
+        with patch("os.kill"):  # kill(pid, 0) succeeds
+            with patch("builtins.open", return_value=proc_content):
+                assert _is_process_alive(42) is False
+
+    def test_alive_process_not_zombie(self):
+        """Running process detected via ps should be reported as alive."""
+        ps_result = MagicMock(stdout="S", returncode=0)
+        with patch("os.kill"):  # kill(pid, 0) succeeds
+            with patch("builtins.open", side_effect=FileNotFoundError):  # no /proc
+                with patch("app.pid_manager.subprocess.run", return_value=ps_result):
+                    assert _is_process_alive(42) is True
+
+    def test_ps_failure_assumes_alive(self):
+        """If ps fails, assume process is alive (safe default)."""
+        with patch("os.kill"):  # kill(pid, 0) succeeds
+            with patch("builtins.open", side_effect=FileNotFoundError):
+                with patch("app.pid_manager.subprocess.run",
+                           side_effect=subprocess.SubprocessError("ps failed")):
+                    assert _is_process_alive(42) is True
 
 
 # ---------------------------------------------------------------------------
@@ -578,6 +617,60 @@ class TestStopProcesses:
         assert "awake" in PROCESS_NAMES
         assert "ollama" in PROCESS_NAMES
 
+    def test_bootouts_launchd_before_sigterm(self, tmp_path):
+        """stop_processes calls _bootout_launchd_service for each process."""
+        with patch("app.pid_manager._bootout_launchd_service") as mock_bootout:
+            mock_bootout.return_value = False
+            stop_processes(tmp_path)
+            # Should be called for each process name
+            assert mock_bootout.call_count == len(PROCESS_NAMES)
+            called_names = [c[0][0] for c in mock_bootout.call_args_list]
+            for name in PROCESS_NAMES:
+                assert name in called_names
+
+
+# ---------------------------------------------------------------------------
+# _bootout_launchd_service
+# ---------------------------------------------------------------------------
+
+
+class TestBootoutLaunchdService:
+    def test_returns_false_on_non_darwin(self):
+        """On non-Darwin platforms, returns False immediately."""
+        with patch("app.pid_manager.sys") as mock_sys:
+            mock_sys.platform = "linux"
+            assert _bootout_launchd_service("run") is False
+
+    def test_returns_false_when_service_not_loaded(self):
+        """Returns False when launchctl list fails (service not registered)."""
+        with patch("app.pid_manager.sys") as mock_sys, \
+             patch("app.pid_manager.subprocess.run") as mock_run:
+            mock_sys.platform = "darwin"
+            mock_run.return_value = MagicMock(returncode=113)
+            assert _bootout_launchd_service("run") is False
+            mock_run.assert_called_once()
+
+    def test_bootouts_loaded_service(self):
+        """Successfully boots out a loaded launchd service."""
+        with patch("app.pid_manager.sys") as mock_sys, \
+             patch("app.pid_manager.subprocess.run") as mock_run, \
+             patch("app.pid_manager.os.getuid", return_value=501):
+            mock_sys.platform = "darwin"
+            mock_run.return_value = MagicMock(returncode=0)
+            assert _bootout_launchd_service("awake") is True
+            assert mock_run.call_count == 2
+            # Second call should be bootout
+            bootout_call = mock_run.call_args_list[1]
+            assert "bootout" in bootout_call[0][0]
+            assert "gui/501/com.koan.awake" in bootout_call[0][0]
+
+    def test_handles_subprocess_error(self):
+        """Returns False on subprocess errors (e.g., launchctl not found)."""
+        with patch("app.pid_manager.sys") as mock_sys, \
+             patch("app.pid_manager.subprocess.run", side_effect=OSError("not found")):
+            mock_sys.platform = "darwin"
+            assert _bootout_launchd_service("run") is False
+
 
 # ---------------------------------------------------------------------------
 # _read_runner_state
@@ -610,16 +703,15 @@ class TestReadRunnerState:
         assert state["paused"] is True
 
     def test_reads_pause_reason(self, tmp_path):
-        (tmp_path / ".koan-pause").write_text("PAUSE")
-        (tmp_path / ".koan-pause-reason").write_text("quota\n1234567890")
+        (tmp_path / ".koan-pause").write_text("quota\n1234567890")
         state = _read_runner_state(tmp_path)
         assert state["pause_reason"] == "quota"
 
-    def test_pause_reason_without_pause_file(self, tmp_path):
-        """Pause reason file without .koan-pause should not set paused."""
-        (tmp_path / ".koan-pause-reason").write_text("quota")
+    def test_pause_without_reason_content(self, tmp_path):
+        """Empty .koan-pause should set paused but no reason."""
+        (tmp_path / ".koan-pause").write_text("")
         state = _read_runner_state(tmp_path)
-        assert state["paused"] is False
+        assert state["paused"] is True
         assert state["pause_reason"] == ""
 
     def test_strips_whitespace(self, tmp_path):
@@ -676,8 +768,7 @@ class TestFormatStatusAll:
     def test_runner_paused_quota(self, tmp_path):
         """When paused for quota, show pause reason."""
         (tmp_path / ".koan-pid-run").write_text(str(os.getpid()))
-        (tmp_path / ".koan-pause").write_text("PAUSE")
-        (tmp_path / ".koan-pause-reason").write_text("quota\n1234567890")
+        (tmp_path / ".koan-pause").write_text("quota\n1234567890\n")
 
         with patch("app.pid_manager._detect_provider", return_value="claude"):
             lines = format_status_all(tmp_path)
@@ -687,8 +778,7 @@ class TestFormatStatusAll:
 
     def test_runner_paused_max_runs(self, tmp_path):
         (tmp_path / ".koan-pid-run").write_text(str(os.getpid()))
-        (tmp_path / ".koan-pause").write_text("PAUSE")
-        (tmp_path / ".koan-pause-reason").write_text("max_runs\n1234567890")
+        (tmp_path / ".koan-pause").write_text("max_runs\n1234567890\n")
 
         with patch("app.pid_manager._detect_provider", return_value="claude"):
             lines = format_status_all(tmp_path)
@@ -698,8 +788,7 @@ class TestFormatStatusAll:
 
     def test_runner_paused_errors(self, tmp_path):
         (tmp_path / ".koan-pid-run").write_text(str(os.getpid()))
-        (tmp_path / ".koan-pause").write_text("PAUSE")
-        (tmp_path / ".koan-pause-reason").write_text("errors")
+        (tmp_path / ".koan-pause").write_text("errors")
 
         with patch("app.pid_manager._detect_provider", return_value="claude"):
             lines = format_status_all(tmp_path)
@@ -987,6 +1076,20 @@ class TestStartOllama:
 
         assert ok is False
         assert "exited immediately" in msg
+
+    def test_cleans_up_pid_file_when_process_exits_immediately(self, tmp_path):
+        """When ollama dies right after launch, the PID file must be removed."""
+        mock_proc = MagicMock()
+        mock_proc.pid = 54321
+
+        with patch("app.pid_manager.shutil.which", return_value="/usr/local/bin/ollama"), \
+             patch("app.pid_manager.subprocess.Popen", return_value=mock_proc), \
+             patch("app.pid_manager._is_process_alive", return_value=False):
+            ok, msg = start_ollama(tmp_path, verify_timeout=0.5)
+
+        assert ok is False
+        pidfile = tmp_path / ".koan-pid-ollama"
+        assert not pidfile.exists(), "Stale PID file should be removed after failed launch"
 
 
 # ---------------------------------------------------------------------------
@@ -1502,3 +1605,492 @@ class TestPrintStackResults:
         assert code == 0
         output = capsys.readouterr().out
         assert "make logs" in output
+
+
+# ---------------------------------------------------------------------------
+# _launch_python_process
+# ---------------------------------------------------------------------------
+
+
+class TestLaunchPythonProcess:
+    """Tests for _launch_python_process() — core process launcher."""
+
+    def test_returns_already_running_if_pidfile_locked(self, tmp_path):
+        """Should return early if check_pidfile() finds a running process."""
+        with patch("app.pid_manager.check_pidfile", return_value=1234):
+            ok, msg = _launch_python_process(tmp_path, "app/run.py", "run", 1.0)
+        assert not ok
+        assert "already running" in msg.lower()
+        assert "1234" in msg
+
+    def test_returns_already_running_for_awake(self, tmp_path):
+        with patch("app.pid_manager.check_pidfile", return_value=5678):
+            ok, msg = _launch_python_process(tmp_path, "app/awake.py", "awake", 1.0)
+        assert not ok
+        assert "Awake already running (PID 5678)" == msg
+
+    def test_builds_correct_environment(self, tmp_path):
+        """Verify KOAN_ROOT, PYTHONPATH, KOAN_FORCE_COLOR are set."""
+        captured_env = {}
+
+        def capture_popen(cmd, **kwargs):
+            captured_env.update(kwargs.get("env", {}))
+            return MagicMock()
+
+        with patch("app.pid_manager.check_pidfile", return_value=None), \
+             patch("app.pid_manager._open_log_file", return_value=MagicMock()), \
+             patch("subprocess.Popen", side_effect=capture_popen), \
+             patch("app.pid_manager.time") as mock_time:
+            mock_time.monotonic.side_effect = [0.0, 999.0]
+            _launch_python_process(tmp_path, "app/run.py", "run", 0.1)
+
+        assert captured_env["KOAN_ROOT"] == str(tmp_path)
+        assert captured_env["PYTHONPATH"] == str(tmp_path / "koan")
+        assert captured_env["KOAN_FORCE_COLOR"] == "1"
+
+    def test_uses_start_new_session(self, tmp_path):
+        """Process must be launched in its own session group."""
+        captured_kwargs = {}
+
+        def capture_popen(cmd, **kwargs):
+            captured_kwargs.update(kwargs)
+            return MagicMock()
+
+        with patch("app.pid_manager.check_pidfile", return_value=None), \
+             patch("app.pid_manager._open_log_file", return_value=MagicMock()), \
+             patch("subprocess.Popen", side_effect=capture_popen), \
+             patch("app.pid_manager.time") as mock_time:
+            mock_time.monotonic.side_effect = [0.0, 999.0]
+            _launch_python_process(tmp_path, "app/run.py", "run", 0.1)
+
+        assert captured_kwargs["start_new_session"] is True
+        assert captured_kwargs["stdin"] == subprocess.DEVNULL
+
+    def test_returns_success_when_pid_appears(self, tmp_path):
+        """PID file appearing within timeout -> success."""
+        call_count = [0]
+
+        def check_pid(*args):
+            call_count[0] += 1
+            if call_count[0] >= 3:
+                return 42
+            return None
+
+        with patch("app.pid_manager.check_pidfile", side_effect=check_pid), \
+             patch("app.pid_manager._open_log_file", return_value=MagicMock()), \
+             patch("subprocess.Popen", return_value=MagicMock()), \
+             patch("app.pid_manager.time") as mock_time:
+            # First call: check if already running (None)
+            # Verification loop: monotonic calls for deadline check
+            mock_time.monotonic.side_effect = [0.0, 0.1, 0.2, 0.3]
+            mock_time.sleep = MagicMock()
+            ok, msg = _launch_python_process(tmp_path, "app/run.py", "run", 5.0)
+
+        assert ok
+        assert "Agent loop started" in msg
+        assert "42" in msg
+
+    def test_bridge_label_for_awake(self, tmp_path):
+        """process_name='awake' should use 'Bridge' label."""
+        call_count = [0]
+
+        def check_pid(*args):
+            call_count[0] += 1
+            if call_count[0] >= 2:
+                return 99
+            return None
+
+        with patch("app.pid_manager.check_pidfile", side_effect=check_pid), \
+             patch("app.pid_manager._open_log_file", return_value=MagicMock()), \
+             patch("subprocess.Popen", return_value=MagicMock()), \
+             patch("app.pid_manager.time") as mock_time:
+            mock_time.monotonic.side_effect = [0.0, 0.1, 0.2]
+            mock_time.sleep = MagicMock()
+            ok, msg = _launch_python_process(tmp_path, "app/awake.py", "awake", 5.0)
+
+        assert ok
+        assert "Bridge started" in msg
+
+    def test_returns_failure_when_pid_never_appears(self, tmp_path):
+        """PID file never appears -> timeout failure."""
+        with patch("app.pid_manager.check_pidfile", return_value=None), \
+             patch("app.pid_manager._open_log_file", return_value=MagicMock()), \
+             patch("subprocess.Popen", return_value=MagicMock()), \
+             patch("app.pid_manager.time") as mock_time:
+            mock_time.monotonic.side_effect = [0.0, 999.0]
+            mock_time.sleep = MagicMock()
+            ok, msg = _launch_python_process(tmp_path, "app/run.py", "run", 1.0)
+
+        assert not ok
+        assert "PID not detected" in msg
+
+    def test_closes_log_on_popen_exception(self, tmp_path):
+        """Log file must be closed if Popen raises."""
+        mock_log = MagicMock()
+
+        with patch("app.pid_manager.check_pidfile", return_value=None), \
+             patch("app.pid_manager._open_log_file", return_value=mock_log), \
+             patch("subprocess.Popen", side_effect=OSError("spawn failed")):
+            ok, msg = _launch_python_process(tmp_path, "app/run.py", "run", 1.0)
+
+        assert not ok
+        assert "Failed to launch" in msg
+        assert "spawn failed" in msg
+        mock_log.close.assert_called_once()
+
+    def test_closes_log_on_success(self, tmp_path):
+        """Log file handle must be closed in the parent after Popen succeeds."""
+        mock_log = MagicMock()
+
+        with patch("app.pid_manager.check_pidfile", return_value=None), \
+             patch("app.pid_manager._open_log_file", return_value=mock_log), \
+             patch("subprocess.Popen", return_value=MagicMock()), \
+             patch("app.pid_manager.time") as mock_time:
+            mock_time.monotonic.side_effect = [0.0, 999.0]
+            mock_time.sleep = MagicMock()
+            _launch_python_process(tmp_path, "app/run.py", "run", 0.1)
+
+        mock_log.close.assert_called_once()
+
+    def test_uses_sys_executable(self, tmp_path):
+        """Should use sys.executable as the Python binary."""
+        captured_cmd = []
+
+        def capture_popen(cmd, **kwargs):
+            captured_cmd.extend(cmd)
+            return MagicMock()
+
+        with patch("app.pid_manager.check_pidfile", return_value=None), \
+             patch("app.pid_manager._open_log_file", return_value=MagicMock()), \
+             patch("subprocess.Popen", side_effect=capture_popen), \
+             patch("app.pid_manager.time") as mock_time:
+            mock_time.monotonic.side_effect = [0.0, 999.0]
+            _launch_python_process(tmp_path, "app/run.py", "run", 0.1)
+
+        assert captured_cmd[0] == sys.executable
+        assert captured_cmd[1] == "app/run.py"
+
+    def test_cwd_is_koan_dir(self, tmp_path):
+        """Working directory should be koan_root/koan."""
+        captured_kwargs = {}
+
+        def capture_popen(cmd, **kwargs):
+            captured_kwargs.update(kwargs)
+            return MagicMock()
+
+        with patch("app.pid_manager.check_pidfile", return_value=None), \
+             patch("app.pid_manager._open_log_file", return_value=MagicMock()), \
+             patch("subprocess.Popen", side_effect=capture_popen), \
+             patch("app.pid_manager.time") as mock_time:
+            mock_time.monotonic.side_effect = [0.0, 999.0]
+            _launch_python_process(tmp_path, "app/run.py", "run", 0.1)
+
+        assert captured_kwargs["cwd"] == str(tmp_path / "koan")
+
+    def test_stderr_merged_to_stdout(self, tmp_path):
+        """stderr should be merged into stdout (same log file)."""
+        captured_kwargs = {}
+
+        def capture_popen(cmd, **kwargs):
+            captured_kwargs.update(kwargs)
+            return MagicMock()
+
+        with patch("app.pid_manager.check_pidfile", return_value=None), \
+             patch("app.pid_manager._open_log_file", return_value=MagicMock()), \
+             patch("subprocess.Popen", side_effect=capture_popen), \
+             patch("app.pid_manager.time") as mock_time:
+            mock_time.monotonic.side_effect = [0.0, 999.0]
+            _launch_python_process(tmp_path, "app/run.py", "run", 0.1)
+
+        assert captured_kwargs["stderr"] == subprocess.STDOUT
+
+    def test_verification_polls_with_sleep(self, tmp_path):
+        """Verification loop should sleep between checks."""
+        call_count = [0]
+
+        def check_pid(*args):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return None  # Initial check: not running
+            if call_count[0] == 4:
+                return 77  # Found on 3rd poll
+            return None
+
+        with patch("app.pid_manager.check_pidfile", side_effect=check_pid), \
+             patch("app.pid_manager._open_log_file", return_value=MagicMock()), \
+             patch("subprocess.Popen", return_value=MagicMock()), \
+             patch("app.pid_manager.time") as mock_time:
+            mock_time.monotonic.side_effect = [0.0, 0.1, 0.4, 0.7, 1.0]
+            mock_time.sleep = MagicMock()
+            ok, msg = _launch_python_process(tmp_path, "app/run.py", "run", 5.0)
+
+        assert ok
+        # Sleep should have been called during polling
+        mock_time.sleep.assert_called_with(0.3)
+
+
+# ---------------------------------------------------------------------------
+# _wait_for_exit
+# ---------------------------------------------------------------------------
+
+
+class TestWaitForExit:
+    """Tests for _wait_for_exit() — graceful process termination waiter."""
+
+    def test_returns_true_when_child_reaped(self):
+        """waitpid successfully reaps a child -> True."""
+        with patch("os.waitpid", return_value=(42, 0)), \
+             patch("app.pid_manager.time") as mock_time:
+            mock_time.monotonic.side_effect = [0.0, 0.1]
+            result = _wait_for_exit(42, 5.0)
+        assert result is True
+
+    def test_returns_true_when_process_dead_via_kill_probe(self):
+        """Non-child process dies -> _is_process_alive returns False -> True."""
+        with patch("os.waitpid", side_effect=ChildProcessError("not our child")), \
+             patch("app.pid_manager._is_process_alive", return_value=False), \
+             patch("app.pid_manager.time") as mock_time:
+            mock_time.monotonic.side_effect = [0.0, 0.1]
+            result = _wait_for_exit(999, 5.0)
+        assert result is True
+
+    def test_returns_false_when_timeout_exceeded(self):
+        """Process still alive after timeout -> False."""
+        with patch("os.waitpid", side_effect=ChildProcessError()), \
+             patch("app.pid_manager._is_process_alive", return_value=True), \
+             patch("app.pid_manager.time") as mock_time:
+            # First monotonic: start, second: already past deadline
+            mock_time.monotonic.side_effect = [0.0, 0.1, 999.0]
+            mock_time.sleep = MagicMock()
+            result = _wait_for_exit(123, 1.0)
+        assert result is False
+
+    def test_polls_with_sleep_intervals(self):
+        """Should sleep 0.2s between polls."""
+        poll_count = [0]
+
+        def fake_waitpid(pid, flags):
+            poll_count[0] += 1
+            raise ChildProcessError()
+
+        with patch("os.waitpid", side_effect=fake_waitpid), \
+             patch("app.pid_manager._is_process_alive", return_value=True), \
+             patch("app.pid_manager.time") as mock_time:
+            mock_time.monotonic.side_effect = [0.0, 0.1, 0.3, 999.0]
+            mock_time.sleep = MagicMock()
+            _wait_for_exit(123, 1.0)
+
+        mock_time.sleep.assert_called_with(0.2)
+
+    def test_waitpid_zero_means_not_yet_exited(self):
+        """waitpid returning (0, 0) means child hasn't exited yet."""
+        call_count = [0]
+
+        def fake_waitpid(pid, flags):
+            call_count[0] += 1
+            if call_count[0] >= 3:
+                return (pid, 0)  # Reaped
+            return (0, 0)  # Not exited yet
+
+        with patch("os.waitpid", side_effect=fake_waitpid), \
+             patch("app.pid_manager._is_process_alive", return_value=True), \
+             patch("app.pid_manager.time") as mock_time:
+            mock_time.monotonic.side_effect = [0.0, 0.1, 0.3, 0.5, 0.7]
+            mock_time.sleep = MagicMock()
+            result = _wait_for_exit(42, 5.0)
+
+        assert result is True
+
+    def test_child_process_error_falls_through_to_kill_probe(self):
+        """ChildProcessError means not our child — verify kill probe is used."""
+        alive_checks = []
+
+        def track_alive(pid):
+            alive_checks.append(pid)
+            return False  # Process is dead
+
+        with patch("os.waitpid", side_effect=ChildProcessError()), \
+             patch("app.pid_manager._is_process_alive", side_effect=track_alive), \
+             patch("app.pid_manager.time") as mock_time:
+            mock_time.monotonic.side_effect = [0.0, 0.1]
+            result = _wait_for_exit(789, 5.0)
+
+        assert result is True
+        assert 789 in alive_checks
+
+    def test_final_alive_check_on_timeout(self):
+        """After loop exits, final _is_process_alive determines return value."""
+        check_count = [0]
+
+        def dynamic_alive(pid):
+            check_count[0] += 1
+            if check_count[0] <= 2:
+                return True  # Alive during loop
+            return False  # Dead on final check
+
+        with patch("os.waitpid", side_effect=ChildProcessError()), \
+             patch("app.pid_manager._is_process_alive", side_effect=dynamic_alive), \
+             patch("app.pid_manager.time") as mock_time:
+            mock_time.monotonic.side_effect = [0.0, 0.1, 0.3, 999.0]
+            mock_time.sleep = MagicMock()
+            result = _wait_for_exit(42, 1.0)
+
+        # Process died just as timeout expired — final check returns True
+        assert result is True
+
+    def test_zero_timeout_checks_once(self):
+        """With timeout=0, should still do at least a final alive check."""
+        with patch("os.waitpid", side_effect=ChildProcessError()), \
+             patch("app.pid_manager._is_process_alive", return_value=False), \
+             patch("app.pid_manager.time") as mock_time:
+            mock_time.monotonic.side_effect = [0.0, 999.0]
+            mock_time.sleep = MagicMock()
+            result = _wait_for_exit(42, 0)
+
+        assert result is True
+
+
+class TestStartRunnerClearsPause:
+    """Bug fix: /start must clear .koan-pause so runner doesn't enter pause mode."""
+
+    def test_clears_pause_file_on_start(self, tmp_path):
+        """start_runner removes .koan-pause so the agent starts fresh."""
+        pause_file = tmp_path / ".koan-pause"
+        pause_file.write_text("2026-02-24T14:00:00")
+
+        with patch("app.pid_manager.subprocess.Popen"), \
+             patch("app.pid_manager.check_pidfile", side_effect=[None] * 10):
+            start_runner(tmp_path, verify_timeout=0.5)
+
+        assert not pause_file.exists()
+
+    def test_clears_pause_with_reason_on_start(self, tmp_path):
+        """start_runner removes .koan-pause (which contains reason data)."""
+        pause_file = tmp_path / ".koan-pause"
+        pause_file.write_text("errors\n1234567890\n")
+
+        with patch("app.pid_manager.subprocess.Popen"), \
+             patch("app.pid_manager.check_pidfile", side_effect=[None] * 10):
+            start_runner(tmp_path, verify_timeout=0.5)
+
+        assert not pause_file.exists()
+
+    def test_clears_all_signals_on_start(self, tmp_path):
+        """start_runner clears stop and pause together."""
+        stop_file = tmp_path / ".koan-stop"
+        stop_file.write_text("STOP")
+        pause_file = tmp_path / ".koan-pause"
+        pause_file.write_text("manual\n1234567890\n")
+
+        with patch("app.pid_manager.subprocess.Popen"), \
+             patch("app.pid_manager.check_pidfile", side_effect=[None] * 10):
+            start_runner(tmp_path, verify_timeout=0.5)
+
+        assert not stop_file.exists()
+        assert not pause_file.exists()
+
+    def test_no_error_when_pause_files_absent(self, tmp_path):
+        """start_runner doesn't crash if pause files don't exist."""
+        with patch("app.pid_manager.subprocess.Popen"), \
+             patch("app.pid_manager.check_pidfile", side_effect=[None] * 10):
+            # Should not raise
+            start_runner(tmp_path, verify_timeout=0.5)
+
+
+# ---------------------------------------------------------------------------
+# Dashboard config integration
+# ---------------------------------------------------------------------------
+
+class TestDashboardConfig:
+    """Tests for dashboard.enabled config flag in pid_manager."""
+
+    def test_process_names_includes_dashboard(self):
+        """PROCESS_NAMES tuple includes dashboard."""
+        assert "dashboard" in PROCESS_NAMES
+
+    def test_is_dashboard_enabled_false_by_default(self):
+        """Dashboard is disabled when config has no dashboard section."""
+        with patch("app.config._load_config", return_value={}):
+            assert not _is_dashboard_enabled()
+
+    def test_is_dashboard_enabled_true(self):
+        """Dashboard is enabled when config says so."""
+        with patch("app.config._load_config", return_value={"dashboard": {"enabled": True}}):
+            assert _is_dashboard_enabled()
+
+    def test_get_status_processes_excludes_dashboard_by_default(self, tmp_path):
+        """status processes should NOT include dashboard when disabled."""
+        with patch("app.pid_manager._detect_provider", return_value="claude"), \
+             patch("app.pid_manager._is_dashboard_enabled", return_value=False):
+            procs = get_status_processes(tmp_path)
+            assert "dashboard" not in procs
+            assert "run" in procs
+            assert "awake" in procs
+
+    def test_get_status_processes_includes_dashboard_when_enabled(self, tmp_path):
+        """status processes should include dashboard when enabled."""
+        with patch("app.pid_manager._detect_provider", return_value="claude"), \
+             patch("app.pid_manager._is_dashboard_enabled", return_value=True):
+            procs = get_status_processes(tmp_path)
+            assert "dashboard" in procs
+
+    def test_start_all_skips_dashboard_when_disabled(self, tmp_path):
+        """start_all should not start dashboard when disabled."""
+        with patch("app.pid_manager._detect_provider", return_value="claude"), \
+             patch("app.pid_manager._is_dashboard_enabled", return_value=False), \
+             patch("app.pid_manager.start_awake", return_value=(True, "ok")), \
+             patch("app.pid_manager.start_runner", return_value=(True, "ok")), \
+             patch("app.pid_manager.start_dashboard") as mock_dash, \
+             patch("app.pid_manager._show_startup_banner"):
+            results = start_all(tmp_path)
+            mock_dash.assert_not_called()
+            assert "dashboard" not in results
+
+    def test_start_all_starts_dashboard_when_enabled(self, tmp_path):
+        """start_all should start dashboard when enabled."""
+        with patch("app.pid_manager._detect_provider", return_value="claude"), \
+             patch("app.pid_manager._is_dashboard_enabled", return_value=True), \
+             patch("app.pid_manager.start_awake", return_value=(True, "ok")), \
+             patch("app.pid_manager.start_runner", return_value=(True, "ok")), \
+             patch("app.pid_manager.start_dashboard", return_value=(True, "Dashboard started")) as mock_dash, \
+             patch("app.pid_manager._show_startup_banner"):
+            results = start_all(tmp_path)
+            mock_dash.assert_called_once_with(tmp_path)
+            assert "dashboard" in results
+            assert results["dashboard"] == (True, "Dashboard started")
+
+    def test_format_status_shows_dashboard_when_enabled(self, tmp_path):
+        """format_status_all should show dashboard line when enabled."""
+        with patch("app.pid_manager.get_status_processes",
+                   return_value=("run", "awake", "dashboard")), \
+             patch("app.pid_manager.check_pidfile", return_value=None):
+            lines = format_status_all(tmp_path)
+            joined = "\n".join(lines)
+            assert "dashboard: not running" in joined
+
+    def test_format_status_hides_dashboard_when_disabled(self, tmp_path):
+        """format_status_all should not show dashboard when disabled."""
+        with patch("app.pid_manager.get_status_processes",
+                   return_value=("run", "awake")), \
+             patch("app.pid_manager.check_pidfile", return_value=None):
+            lines = format_status_all(tmp_path)
+            joined = "\n".join(lines)
+            assert "dashboard" not in joined
+
+    def test_stop_processes_handles_dashboard(self, tmp_path):
+        """stop_processes iterates over dashboard in PROCESS_NAMES."""
+        # Dashboard not running — should get "not_running"
+        with patch("app.pid_manager._bootout_launchd_service"):
+            results = stop_processes(tmp_path, timeout=0.5)
+            assert "dashboard" in results
+            assert results["dashboard"] == "not_running"
+
+    def test_print_stack_results_includes_dashboard(self):
+        """_print_stack_results should print dashboard entry if present."""
+        results = {
+            "awake": (True, "Bridge started"),
+            "run": (True, "Agent loop started"),
+            "dashboard": (True, "Dashboard started"),
+        }
+        exit_code = _print_stack_results(results)
+        assert exit_code == 0

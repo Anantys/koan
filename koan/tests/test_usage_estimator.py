@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from app.usage_estimator import (
     _extract_tokens,
+    extract_tokens_detailed,
     _fresh_state,
     _load_state,
     _maybe_reset,
@@ -19,6 +20,7 @@ from app.usage_estimator import (
     cmd_refresh,
     cmd_reset_session,
     cmd_reset_time,
+    cmd_set_used,
     SESSION_DURATION_HOURS,
 )
 
@@ -77,6 +79,130 @@ class TestExtractTokens:
         assert _extract_tokens(tmp_path / "nonexistent.json") is None
 
 
+class TestExtractTokensDetailed:
+    def test_top_level_fields(self, claude_json):
+        result = extract_tokens_detailed(claude_json)
+        assert result["input_tokens"] == 1500
+        assert result["output_tokens"] == 500
+        assert result["model"] == "unknown"  # No model field in fixture
+
+    def test_nested_usage(self, claude_json_nested):
+        result = extract_tokens_detailed(claude_json_nested)
+        assert result["input_tokens"] == 3000
+        assert result["output_tokens"] == 1000
+
+    def test_with_model_field(self, tmp_path):
+        f = tmp_path / "with_model.json"
+        f.write_text(json.dumps({
+            "input_tokens": 100, "output_tokens": 50,
+            "model": "claude-sonnet-4-20250514",
+        }))
+        result = extract_tokens_detailed(f)
+        assert result["model"] == "claude-sonnet-4-20250514"
+        assert result["input_tokens"] == 100
+        assert result["output_tokens"] == 50
+
+    def test_no_tokens_returns_none(self, tmp_path):
+        f = tmp_path / "no_tokens.json"
+        f.write_text(json.dumps({"result": "hello"}))
+        assert extract_tokens_detailed(f) is None
+
+    def test_invalid_json_returns_none(self, tmp_path):
+        f = tmp_path / "bad.json"
+        f.write_text("not json")
+        assert extract_tokens_detailed(f) is None
+
+    def test_missing_file_returns_none(self, tmp_path):
+        assert extract_tokens_detailed(tmp_path / "nope.json") is None
+
+    def test_stats_nested_with_model(self, tmp_path):
+        f = tmp_path / "stats_model.json"
+        f.write_text(json.dumps({
+            "result": "done",
+            "model": "claude-opus-4-20250514",
+            "stats": {"input_tokens": 2000, "output_tokens": 500},
+        }))
+        result = extract_tokens_detailed(f)
+        assert result["model"] == "claude-opus-4-20250514"
+        assert result["input_tokens"] == 2000
+        assert result["output_tokens"] == 500
+
+    def test_backward_compat_with_extract_tokens(self, claude_json):
+        """_extract_tokens still returns int total."""
+        total = _extract_tokens(claude_json)
+        detailed = extract_tokens_detailed(claude_json)
+        assert total == detailed["input_tokens"] + detailed["output_tokens"]
+
+    def test_cache_fields_from_usage_object(self, tmp_path):
+        """Extract cache tokens from nested usage (Claude CLI format)."""
+        f = tmp_path / "cached.json"
+        f.write_text(json.dumps({
+            "result": "done",
+            "model": "claude-opus-4-6",
+            "total_cost_usd": 0.927,
+            "usage": {
+                "input_tokens": 24,
+                "cache_creation_input_tokens": 41777,
+                "cache_read_input_tokens": 1036218,
+                "output_tokens": 5916,
+            },
+        }))
+        result = extract_tokens_detailed(f)
+        assert result["input_tokens"] == 24
+        assert result["output_tokens"] == 5916
+        assert result["cache_creation_input_tokens"] == 41777
+        assert result["cache_read_input_tokens"] == 1036218
+        assert result["cost_usd"] == 0.927
+
+    def test_cache_fields_from_model_usage(self, tmp_path):
+        """Extract cache tokens from modelUsage (camelCase format)."""
+        f = tmp_path / "model_usage.json"
+        f.write_text(json.dumps({
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "model": "claude-sonnet-4-6",
+            "modelUsage": {
+                "claude-sonnet-4-6": {
+                    "inputTokens": 100,
+                    "outputTokens": 50,
+                    "cacheReadInputTokens": 5000,
+                    "cacheCreationInputTokens": 2000,
+                },
+            },
+        }))
+        result = extract_tokens_detailed(f)
+        assert result["cache_read_input_tokens"] == 5000
+        assert result["cache_creation_input_tokens"] == 2000
+
+    def test_no_cache_fields_defaults_to_zero(self, claude_json):
+        """Files without cache data should return 0 for cache fields."""
+        result = extract_tokens_detailed(claude_json)
+        assert result["cache_creation_input_tokens"] == 0
+        assert result["cache_read_input_tokens"] == 0
+        assert result["cost_usd"] == 0.0
+
+    def test_cost_usd_missing_defaults_zero(self, tmp_path):
+        """Missing total_cost_usd should default to 0.0."""
+        f = tmp_path / "no_cost.json"
+        f.write_text(json.dumps({
+            "input_tokens": 100,
+            "output_tokens": 50,
+        }))
+        result = extract_tokens_detailed(f)
+        assert result["cost_usd"] == 0.0
+
+    def test_cost_usd_non_numeric_defaults_zero(self, tmp_path):
+        """Non-numeric total_cost_usd should default to 0.0."""
+        f = tmp_path / "bad_cost.json"
+        f.write_text(json.dumps({
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "total_cost_usd": "not a number",
+        }))
+        result = extract_tokens_detailed(f)
+        assert result["cost_usd"] == 0.0
+
+
 class TestMaybeReset:
     def test_no_reset_within_session(self):
         state = _fresh_state()
@@ -131,6 +257,37 @@ class TestWriteUsageMd:
 
         content = usage_md.read_text()
         assert "100%" in content
+
+    def test_includes_cache_line_when_available(self, tmp_path, usage_md):
+        state = {
+            "session_start": datetime.now().isoformat(),
+            "session_tokens": 100000,
+            "weekly_start": datetime.now().isoformat(),
+            "weekly_tokens": 100000,
+            "runs": 3,
+        }
+        config = {"usage": {"session_token_limit": 500000, "weekly_token_limit": 5000000}}
+        with patch(
+            "app.usage_estimator._get_today_cache_line",
+            return_value="Cache: 45% hit rate (12.3k read / 8.1k created)",
+        ):
+            _write_usage_md(state, usage_md, config)
+        content = usage_md.read_text()
+        assert "Cache: 45% hit rate" in content
+
+    def test_no_cache_line_when_empty(self, tmp_path, usage_md):
+        state = {
+            "session_start": datetime.now().isoformat(),
+            "session_tokens": 100000,
+            "weekly_start": datetime.now().isoformat(),
+            "weekly_tokens": 100000,
+            "runs": 3,
+        }
+        config = {"usage": {"session_token_limit": 500000, "weekly_token_limit": 5000000}}
+        with patch("app.usage_estimator._get_today_cache_line", return_value=""):
+            _write_usage_md(state, usage_md, config)
+        content = usage_md.read_text()
+        assert "Cache" not in content
 
 
 class TestCmdUpdate:
@@ -596,3 +753,112 @@ class TestCmdResetSession:
             with pytest.raises(SystemExit) as exc_info:
                 main()
             assert exc_info.value.code == 1
+
+
+# ---------------------------------------------------------------------------
+# cmd_set_used — manual quota override
+# ---------------------------------------------------------------------------
+
+class TestCmdSetUsed:
+    """Test cmd_set_used for /quota <N> override."""
+
+    def test_sets_session_tokens_for_used(self, state_file, tmp_path):
+        """32% used → 160k tokens (with 500k limit)."""
+        usage_md = tmp_path / "usage.md"
+        # Seed a state with high tokens
+        state_file.write_text(json.dumps({
+            "session_start": datetime.now().isoformat(),
+            "session_tokens": 450_000,
+            "weekly_start": datetime.now().isoformat(),
+            "weekly_tokens": 2_000_000,
+            "runs": 10,
+        }))
+
+        with patch("app.usage_estimator.load_config", return_value={}):
+            cmd_set_used(32, state_file, usage_md)
+
+        state = json.loads(state_file.read_text())
+        # Default limit 500k, 32% used = 160k
+        assert state["session_tokens"] == 160_000
+
+    def test_resets_session_start(self, state_file, tmp_path):
+        """Session start is reset to now so the 5h window restarts."""
+        usage_md = tmp_path / "usage.md"
+        old_start = (datetime.now() - timedelta(hours=4)).isoformat()
+        state_file.write_text(json.dumps({
+            "session_start": old_start,
+            "session_tokens": 400_000,
+            "weekly_start": datetime.now().isoformat(),
+            "weekly_tokens": 1_000_000,
+            "runs": 8,
+        }))
+
+        with patch("app.usage_estimator.load_config", return_value={}):
+            cmd_set_used(50, state_file, usage_md)
+
+        state = json.loads(state_file.read_text())
+        new_start = datetime.fromisoformat(state["session_start"])
+        assert (datetime.now() - new_start).total_seconds() < 5
+
+    def test_writes_usage_md(self, state_file, tmp_path):
+        """usage.md is updated with the new percentage."""
+        usage_md = tmp_path / "usage.md"
+        state_file.write_text(json.dumps(_fresh_state()))
+
+        with patch("app.usage_estimator.load_config", return_value={}):
+            cmd_set_used(25, state_file, usage_md)
+
+        content = usage_md.read_text()
+        assert "25%" in content  # 25% used
+
+    def test_clamps_to_zero(self, state_file, tmp_path):
+        """Negative values are clamped to 0% used."""
+        usage_md = tmp_path / "usage.md"
+        state_file.write_text(json.dumps(_fresh_state()))
+
+        with patch("app.usage_estimator.load_config", return_value={}):
+            cmd_set_used(-10, state_file, usage_md)
+
+        state = json.loads(state_file.read_text())
+        assert state["session_tokens"] == 0  # 0% used
+
+    def test_clamps_to_hundred(self, state_file, tmp_path):
+        """Values above 100 are clamped to 100% used."""
+        usage_md = tmp_path / "usage.md"
+        state_file.write_text(json.dumps(_fresh_state()))
+
+        with patch("app.usage_estimator.load_config", return_value={}):
+            cmd_set_used(200, state_file, usage_md)
+
+        state = json.loads(state_file.read_text())
+        assert state["session_tokens"] == 500_000  # 100% used
+
+    def test_preserves_weekly_tokens(self, state_file, tmp_path):
+        """Override only affects session tokens, not weekly."""
+        usage_md = tmp_path / "usage.md"
+        state_file.write_text(json.dumps({
+            "session_start": datetime.now().isoformat(),
+            "session_tokens": 400_000,
+            "weekly_start": datetime.now().isoformat(),
+            "weekly_tokens": 3_000_000,
+            "runs": 5,
+        }))
+
+        with patch("app.usage_estimator.load_config", return_value={}):
+            cmd_set_used(50, state_file, usage_md)
+
+        state = json.loads(state_file.read_text())
+        assert state["weekly_tokens"] == 3_000_000
+
+    def test_respects_custom_limits(self, state_file, tmp_path):
+        """Custom session_token_limit from config is respected."""
+        usage_md = tmp_path / "usage.md"
+        state_file.write_text(json.dumps(_fresh_state()))
+        config = {"usage": {"session_token_limit": 1_000_000}}
+
+        with patch("app.usage_estimator.load_config", return_value=config):
+            cmd_set_used(30, state_file, usage_md)
+
+        state = json.loads(state_file.read_text())
+        # 30% of 1M = 300k
+        assert state["session_tokens"] == 300_000

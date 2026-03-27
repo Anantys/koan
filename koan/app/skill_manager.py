@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Dict, Optional, Tuple
 
 from app.git_utils import run_git as _run_git
+from app.utils import atomic_write
 
 
 @dataclass
@@ -65,7 +66,7 @@ def load_manifest(instance_dir: Path) -> Dict[str, SkillSource]:
 def save_manifest(instance_dir: Path, sources: Dict[str, SkillSource]) -> None:
     """Save the skills.yaml manifest."""
     path = _manifest_path(instance_dir)
-    path.write_text(_serialize_manifest(sources))
+    atomic_write(path, _serialize_manifest(sources))
 
 
 def _parse_manifest(content: str) -> Dict[str, SkillSource]:

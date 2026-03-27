@@ -157,14 +157,14 @@ class TestGetProjects:
     @patch("app.utils.get_known_projects")
     def test_returns_projects_from_yaml(self, mock_get, handler, ctx, tmp_path):
         mock_get.return_value = [("foo", str(tmp_path)), ("bar", "/nonexistent")]
-        projects = handler._get_projects(ctx)
+        projects = handler.get_projects()
         assert len(projects) == 1
         assert projects[0][0] == "foo"
 
     @patch("app.utils.get_known_projects", side_effect=Exception("no yaml"))
     def test_returns_empty_on_exception(self, mock_get, handler, ctx, monkeypatch):
         """When get_known_projects raises, returns empty list."""
-        projects = handler._get_projects(ctx)
+        projects = handler.get_projects()
         assert projects == []
 
 

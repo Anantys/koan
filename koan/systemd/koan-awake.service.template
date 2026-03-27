@@ -1,0 +1,23 @@
+[Unit]
+Description=Kōan Communication Bridge
+After=network.target
+PartOf=koan.service
+
+[Service]
+Type=simple
+User=__USER__
+Group=__GROUP__
+WorkingDirectory=__KOAN_ROOT__/koan
+EnvironmentFile=__KOAN_ROOT__/.env
+Environment=KOAN_ROOT=__KOAN_ROOT__
+Environment=PYTHONPATH=__KOAN_ROOT__/koan
+Environment=PATH=__PATH__
+Environment=SSH_AUTH_SOCK=__KOAN_ROOT__/.ssh-agent-sock
+ExecStart=__PYTHON__ app/awake.py
+Restart=on-failure
+RestartSec=10
+StandardOutput=append:__KOAN_ROOT__/logs/awake.log
+StandardError=append:__KOAN_ROOT__/logs/awake.log
+
+[Install]
+WantedBy=multi-user.target

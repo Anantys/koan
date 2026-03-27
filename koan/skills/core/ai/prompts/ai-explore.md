@@ -36,5 +36,27 @@ Rules:
 - Don't suggest things already in progress (check missions context above).
 - Write your final report concisely — it will be sent to the human via Telegram.
 
-Save:
-- Save all these ideas as suggestions to the `instance/missions.md` file at the end of the `Ideas` section
+External project constraints:
+- **CI matrix**: never remove existing entries from CI test matrices (Python versions, OS targets, etc.). You may add new entries. Existing targets are deliberate choices by the maintainer.
+- **Dependencies**: don't remove or downgrade existing dependencies without explicit justification.
+- **Conventions**: respect the project's existing code style, naming, and structure even if you'd do it differently.
+
+Output format:
+- At the END of your response, after your human-readable report, output each actionable idea
+  as a single line starting with `MISSION:` followed by a clear, self-contained description.
+  The description must be specific enough to be executed as a standalone task by a future agent
+  session without needing to re-read the codebase exploration.
+
+Example output:
+```
+MISSION: Fix the retry logic in fetch_data() which silently swallows ConnectionError exceptions
+MISSION: Add input validation for user email in the registration endpoint to prevent SQL injection
+MISSION: Extract duplicated date formatting code from 3 controllers into a shared utility
+```
+
+Rules for MISSION lines:
+- One line per idea, no multi-line descriptions
+- Be specific: mention file names, function names, or patterns you found
+- Just the description text — no bullet prefix (`- `), no `[project:name]` tag (added automatically)
+- Don't include effort estimates in the MISSION line (keep those in the report above)
+- Only output ideas you're confident are worth implementing

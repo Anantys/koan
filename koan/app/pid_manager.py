@@ -29,10 +29,19 @@ import time
 from pathlib import Path
 from typing import Optional, IO
 
+from app.signals import (
+    CYCLE_FILE,
+    PAUSE_FILE,
+    PROJECT_FILE,
+    STATUS_FILE,
+    STOP_FILE,
+    pid_file,
+)
+
 
 def _pidfile_path(koan_root: Path, process_name: str) -> Path:
     """Return the PID file path for a given process type."""
-    return koan_root / f".koan-pid-{process_name}"
+    return koan_root / pid_file(process_name)
 
 
 def _log_dir(koan_root: Path) -> Path:
@@ -49,10 +58,10 @@ def _open_log_file(koan_root: Path, process_name: str):
     backups (.log.1 → .log.2, etc.) and compressing old ones with gzip.
 
     Returns an open file handle suitable for subprocess stdout/stderr.
-    
-    IMPORTANT: Caller is responsible for closing the returned file handle.
-    The file handle should remain open for the lifetime of the subprocess
-    and be closed when the subprocess exits or is killed.
+
+    The caller should close the handle after passing it to Popen.
+    The child process inherits the file descriptor via fork, so
+    closing the parent's copy is safe and prevents fd leaks.
     """
     from app.log_rotation import rotate_log, get_log_config
     
@@ -63,7 +72,7 @@ def _open_log_file(koan_root: Path, process_name: str):
     try:
         from app.utils import load_config
         config = load_config()
-    except Exception:
+    except (ImportError, OSError, ValueError):
         pass  # Fall back to defaults
     
     cfg = get_log_config(config)
@@ -83,12 +92,42 @@ def _read_pid(pidfile: Path) -> Optional[int]:
 
 
 def _is_process_alive(pid: int) -> bool:
-    """Check if a process with the given PID is alive."""
+    """Check if a process with the given PID is alive (not a zombie).
+
+    ``os.kill(pid, 0)`` succeeds for zombie processes, which look alive
+    but are effectively dead.  When the caller is not the parent (common
+    with ``make stop``), zombies are not reapable via ``waitpid`` and
+    would cause ``_wait_for_exit`` to burn the full timeout.
+
+    Falls back to ``ps`` to detect zombie state on macOS/Linux.
+    """
     try:
         os.kill(pid, 0)
-        return True
     except (OSError, ProcessLookupError):
         return False
+
+    # os.kill(pid, 0) succeeded — but it could be a zombie.
+    # Try /proc first (Linux, fast), then ps (macOS/Linux, slower).
+    try:
+        with open(f"/proc/{pid}/status") as f:
+            for line in f:
+                if line.startswith("State:"):
+                    return "Z" not in line
+    except (FileNotFoundError, PermissionError, OSError):
+        pass  # macOS or /proc not available
+
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "state=", "-p", str(pid)],
+            capture_output=True, text=True, timeout=2,
+        )
+        state = result.stdout.strip()
+        if state and state[0] in ("Z", "z"):
+            return False
+    except (subprocess.SubprocessError, OSError):
+        pass
+
+    return True
 
 
 def acquire_pidfile(koan_root: Path, process_name: str) -> IO:
@@ -215,7 +254,7 @@ def check_pidfile(koan_root: Path, process_name: str) -> Optional[int]:
     return None
 
 
-PROCESS_NAMES = ("run", "awake", "ollama")
+PROCESS_NAMES = ("run", "awake", "ollama", "dashboard")
 
 # Process startup verification timeouts
 DEFAULT_VERIFY_TIMEOUT = 3.0
@@ -223,7 +262,8 @@ OLLAMA_VERIFY_TIMEOUT = 5.0
 
 
 def _launch_python_process(
-    koan_root: Path, script_name: str, process_name: str, verify_timeout: float
+    koan_root: Path, script_name: str, process_name: str, verify_timeout: float,
+    extra_env: dict = None,
 ) -> tuple:
     """Launch a Python process in the background and verify startup.
     
@@ -249,6 +289,7 @@ def _launch_python_process(
         "KOAN_ROOT": str(koan_root),
         "PYTHONPATH": str(koan_dir),
         "KOAN_FORCE_COLOR": "1",
+        **(extra_env or {}),
     }
 
     log_fh = _open_log_file(koan_root, process_name)
@@ -263,8 +304,9 @@ def _launch_python_process(
             start_new_session=True,
         )
     except Exception as e:
-        log_fh.close()
         return False, f"Failed to launch: {e}"
+    finally:
+        log_fh.close()
 
     # Wait briefly for process to acquire its PID file
     deadline = time.monotonic() + verify_timeout
@@ -278,19 +320,28 @@ def _launch_python_process(
     return False, "Launched but PID not detected — check logs"
 
 
-def start_runner(koan_root: Path, verify_timeout: float = DEFAULT_VERIFY_TIMEOUT) -> tuple:
+def start_runner(
+    koan_root: Path, verify_timeout: float = DEFAULT_VERIFY_TIMEOUT,
+    extra_env: dict = None,
+) -> tuple:
     """Start the agent loop (run.py) as a detached subprocess.
 
     Clears .koan-stop signal, launches run.py, and verifies startup
     via PID file.
 
+    Args:
+        extra_env: Additional environment variables passed to the subprocess
+                   (e.g. {"KOAN_SKIP_START_PAUSE": "1"} to bypass start_on_pause).
+
     Returns (success: bool, message: str).
     """
-    # Clear stop signal so run.py doesn't exit immediately
-    stop_file = koan_root / ".koan-stop"
-    stop_file.unlink(missing_ok=True)
+    # Clear stop, pause, and cycle signals so run.py starts fresh
+    for signal_file in (STOP_FILE, PAUSE_FILE, CYCLE_FILE):
+        (koan_root / signal_file).unlink(missing_ok=True)
 
-    return _launch_python_process(koan_root, "app/run.py", "run", verify_timeout)
+    return _launch_python_process(
+        koan_root, "app/run.py", "run", verify_timeout, extra_env=extra_env,
+    )
 
 
 def start_ollama(koan_root: Path, verify_timeout: float = OLLAMA_VERIFY_TIMEOUT) -> tuple:
@@ -319,8 +370,9 @@ def start_ollama(koan_root: Path, verify_timeout: float = OLLAMA_VERIFY_TIMEOUT)
             start_new_session=True,
         )
     except Exception as e:
-        log_fh.close()
         return False, f"Failed to launch ollama: {e}"
+    finally:
+        log_fh.close()
 
     # Write PID file — ollama serve is an external binary (no flock)
     acquire_pid(koan_root, "ollama", proc.pid)
@@ -332,6 +384,8 @@ def start_ollama(koan_root: Path, verify_timeout: float = OLLAMA_VERIFY_TIMEOUT)
             return True, f"ollama serve started (PID {proc.pid})"
         time.sleep(0.3)
 
+    # Clean up stale PID file — process is dead, don't leave phantom PIDs
+    release_pid(koan_root, "ollama")
     return False, "ollama launched but exited immediately — check ollama logs"
 
 
@@ -343,46 +397,69 @@ def start_awake(koan_root: Path, verify_timeout: float = DEFAULT_VERIFY_TIMEOUT)
     return _launch_python_process(koan_root, "app/awake.py", "awake", verify_timeout)
 
 
+def start_dashboard(koan_root: Path, verify_timeout: float = DEFAULT_VERIFY_TIMEOUT) -> tuple:
+    """Start the web dashboard (dashboard.py) as a detached subprocess.
+
+    Only launched when ``dashboard.enabled: true`` in config.yaml.
+    Returns (success: bool, message: str).
+    """
+    return _launch_python_process(koan_root, "app/dashboard.py", "dashboard", verify_timeout)
+
+
+def _is_dashboard_enabled() -> bool:
+    """Check if dashboard is enabled in config.yaml."""
+    try:
+        from app.config import is_dashboard_enabled
+        return is_dashboard_enabled()
+    except (ImportError, OSError, ValueError):
+        return False
+
+
 def get_status_processes(koan_root: Path) -> tuple:
     """Return the process names to display in status output.
 
     Only includes ollama when the CLI provider is local/ollama.
+    Only includes dashboard when dashboard.enabled is true in config.
     """
     provider = _detect_provider(koan_root)
-    if _needs_ollama(provider):
-        return PROCESS_NAMES
-    return tuple(n for n in PROCESS_NAMES if n != "ollama")
+    dashboard = _is_dashboard_enabled()
+    names = list(PROCESS_NAMES)
+    if not _needs_ollama(provider):
+        names.remove("ollama")
+    if not dashboard:
+        names.remove("dashboard")
+    return tuple(names)
 
 
 def _read_runner_state(koan_root: Path) -> dict:
     """Read the runner's current state from signal files.
 
-    Gathers information from .koan-status, .koan-pause, .koan-pause-reason,
-    and .koan-project to build a complete picture of the runner state.
+    Gathers information from .koan-status, .koan-pause, and .koan-project
+    to build a complete picture of the runner state.
 
     Returns a dict with keys: status, paused, pause_reason, project.
     All values are strings (empty string if unavailable).
     """
     state = {"status": "", "paused": False, "pause_reason": "", "project": ""}
 
-    status_file = koan_root / ".koan-status"
+    status_file = koan_root / STATUS_FILE
     if status_file.exists():
         try:
             state["status"] = status_file.read_text().strip()
         except OSError:
             pass
 
-    pause_file = koan_root / ".koan-pause"
+    pause_file = koan_root / PAUSE_FILE
     if pause_file.exists():
         state["paused"] = True
-        reason_file = koan_root / ".koan-pause-reason"
-        if reason_file.exists():
-            try:
-                state["pause_reason"] = reason_file.read_text().strip().split("\n")[0]
-            except OSError:
-                pass
+        try:
+            content = pause_file.read_text().strip()
+            if content:
+                state["pause_reason"] = content.split("\n")[0]
+        except OSError:
+            pass
 
-    project_file = koan_root / ".koan-project"
+    project_file = koan_root / PROJECT_FILE
     if project_file.exists():
         try:
             state["project"] = project_file.read_text().strip()
@@ -450,6 +527,14 @@ def format_status_all(koan_root: Path) -> list:
         else:
             lines.append("  ollama: not running")
 
+    # --- Dashboard (conditional) ---
+    if "dashboard" in process_names:
+        dash_pid = check_pidfile(koan_root, "dashboard")
+        if dash_pid:
+            lines.append(f"  dashboard: running (PID {dash_pid})")
+        else:
+            lines.append("  dashboard: not running")
+
     return lines
 
 
@@ -457,13 +542,14 @@ def _detect_provider(koan_root: Path) -> str:
     """Detect the configured CLI provider.
 
     Uses the provider package resolution (env var > config.yaml > default).
-    Returns provider name: "claude", "copilot", "local", or "ollama".
+    Returns provider name: "claude", "copilot", "local", "ollama",
+    or "ollama-launch".
     """
     try:
         # Lazy import to avoid circular deps and keep pid_manager lightweight
         from app.provider import get_provider_name
         return get_provider_name()
-    except Exception:
+    except (ImportError, OSError, ValueError):
         return "claude"
 
 
@@ -493,8 +579,11 @@ def start_all(koan_root: Path, provider: str = None) -> dict:
     """Start the full Kōan stack for the configured provider.
 
     Auto-detects the provider if not specified.
-    - claude/copilot: starts awake + run (2 processes)
+    - claude/copilot/ollama-launch: starts awake + run (2 processes)
     - local/ollama: starts ollama + awake + run (3 processes)
+
+    Note: ollama-launch does not need a separate ollama serve process
+    because ``ollama launch claude`` handles server lifecycle internally.
 
     Returns dict mapping component name to (success, message).
     """
@@ -520,6 +609,11 @@ def start_all(koan_root: Path, provider: str = None) -> dict:
     # 3. Start agent loop (run.py)
     ok, msg = start_runner(koan_root)
     results["run"] = (ok, msg)
+
+    # 4. Start dashboard if enabled
+    if _is_dashboard_enabled():
+        ok, msg = start_dashboard(koan_root)
+        results["dashboard"] = (ok, msg)
 
     return results
 
@@ -555,11 +649,35 @@ def _wait_for_exit(pid: int, timeout: float) -> bool:
     return not _is_process_alive(pid)
 
 
+def _bootout_launchd_service(name: str) -> bool:
+    """Try to bootout a launchd service. Returns True if service was found and booted out."""
+    if sys.platform != "darwin":
+        return False
+    uid = os.getuid()
+    service_label = f"com.koan.{name}"
+    try:
+        result = subprocess.run(
+            ["launchctl", "list", service_label],
+            capture_output=True, timeout=5,
+        )
+        if result.returncode != 0:
+            return False
+        subprocess.run(
+            ["launchctl", "bootout", f"gui/{uid}/{service_label}"],
+            capture_output=True, timeout=10,
+        )
+        return True
+    except (subprocess.SubprocessError, OSError):
+        return False
+
+
 def stop_processes(koan_root: Path, timeout: float = 5.0) -> dict:
     """Stop all running Kōan processes (run + awake + ollama).
 
-    Sends SIGTERM to each running process, waits up to timeout seconds
-    for termination. Creates .koan-stop signal file for graceful shutdown.
+    Detects and boots out launchd services first (prevents respawn),
+    then sends SIGTERM to each running process, waits up to timeout
+    seconds for termination. Creates .koan-stop signal file for
+    graceful shutdown.
 
     Returns dict mapping process name to result: "stopped", "not_running",
     or "force_killed".
@@ -567,8 +685,13 @@ def stop_processes(koan_root: Path, timeout: float = 5.0) -> dict:
     results = {}
 
     # Create .koan-stop signal file for graceful run loop shutdown
-    stop_file = koan_root / ".koan-stop"
-    stop_file.write_text("STOP")
+    from app.utils import atomic_write
+    stop_file = koan_root / STOP_FILE
+    atomic_write(stop_file, "STOP")
+
+    # Bootout any launchd-managed services first to prevent respawn
+    for name in PROCESS_NAMES:
+        _bootout_launchd_service(name)
 
     for name in PROCESS_NAMES:
         pid = check_pidfile(koan_root, name)
@@ -606,7 +729,7 @@ def stop_processes(koan_root: Path, timeout: float = 5.0) -> dict:
 def _print_stack_results(results: dict) -> int:
     """Print stack start results and return exit code (0=ok, 1=failure)."""
     any_failed = False
-    for name in ("ollama", "awake", "run"):
+    for name in ("ollama", "awake", "run", "dashboard"):
         if name not in results:
             continue
         ok, msg = results[name]
@@ -690,6 +813,10 @@ if __name__ == "__main__":
         sys.exit(2)
 
     proc_name = sys.argv[2]
+    if proc_name not in PROCESS_NAMES:
+        print(f"Invalid process name: {proc_name}. Must be one of: {', '.join(PROCESS_NAMES)}",
+              file=sys.stderr)
+        sys.exit(2)
     root = Path(sys.argv[3])
 
     if action == "acquire-pid":

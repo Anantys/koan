@@ -126,6 +126,21 @@ TOOL_DEFINITIONS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "skill",
+            "description": "Execute a user-installed skill by name.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill": {"type": "string", "description": "The skill name to invoke"},
+                    "args": {"type": "string", "description": "Optional arguments for the skill"},
+                },
+                "required": ["skill"],
+            },
+        },
+    },
 ]
 
 # Re-use the canonical tool name mapping from the provider package
@@ -198,8 +213,9 @@ def _tool_glob(arguments: Dict[str, Any], cwd: str) -> str:
     pattern = arguments["pattern"]
     matches = sorted(glob_module.glob(os.path.join(base, pattern), recursive=True))
     if len(matches) > 200:
+        total = len(matches)
         matches = matches[:200]
-        return "\n".join(matches) + f"\n... ({len(matches)}+ matches, truncated)"
+        return "\n".join(matches) + f"\n... ({total} matches, showing first 200)"
     return "\n".join(matches) if matches else "No matches found"
 
 
@@ -212,7 +228,10 @@ def _tool_grep(arguments: Dict[str, Any], cwd: str) -> str:
     cmd = ["grep", "-rn", "--include", file_glob, pattern, path] if file_glob else [
         "grep", "-rn", pattern, path
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    result = subprocess.run(
+        cmd, capture_output=True, text=True, timeout=30,
+        stdin=subprocess.DEVNULL,
+    )
     output = result.stdout
     if len(output) > 20000:
         output = output[:20000] + "\n... (truncated)"
@@ -223,7 +242,7 @@ def _tool_shell(arguments: Dict[str, Any], cwd: str) -> str:
     command = arguments["command"]
     result = subprocess.run(
         command, shell=True, capture_output=True, text=True,
-        timeout=120, cwd=cwd,
+        timeout=120, cwd=cwd, stdin=subprocess.DEVNULL,
     )
     output = result.stdout
     if result.stderr:
@@ -235,6 +254,44 @@ def _tool_shell(arguments: Dict[str, Any], cwd: str) -> str:
     return output
 
 
+def _tool_skill(arguments: Dict[str, Any], cwd: str) -> str:
+    skill_name = arguments["skill"]
+    args = arguments.get("args", "")
+
+    from app.skills import build_registry, execute_skill, SkillContext, SkillError
+
+    koan_root = Path(os.environ.get("KOAN_ROOT", ""))
+    instance_dir = koan_root / "instance"
+
+    # Build registry including project-local, instance, and user-installed skills
+    extra_dirs: list = []
+    project_skills = Path(cwd) / ".claude" / "skills"
+    if project_skills.is_dir():
+        extra_dirs.append(project_skills)
+    instance_skills = instance_dir / "skills"
+    if instance_skills.is_dir():
+        extra_dirs.append(instance_skills)
+    user_skills = Path.home() / ".claude" / "skills"
+    if user_skills.is_dir():
+        extra_dirs.append(user_skills)
+    registry = build_registry(extra_dirs=extra_dirs or None)
+
+    skill = registry.find(skill_name)
+    if skill is None:
+        return f"Error: skill '{skill_name}' not found"
+
+    ctx = SkillContext(
+        koan_root=koan_root,
+        instance_dir=instance_dir,
+        command_name=skill_name,
+        args=args,
+    )
+    result = execute_skill(skill, ctx)
+    if isinstance(result, SkillError):
+        return result.message
+    return result or f"Skill '{skill_name}' executed (no output)"
+
+
 _TOOL_HANDLERS = {
     "read_file": _tool_read_file,
     "write_file": _tool_write_file,
@@ -242,6 +299,7 @@ _TOOL_HANDLERS = {
     "glob": _tool_glob,
     "grep": _tool_grep,
     "shell": _tool_shell,
+    "skill": _tool_skill,
 }
 
 
@@ -318,7 +376,7 @@ def _default_system_prompt() -> str:
     try:
         from app.prompts import load_prompt
         return load_prompt("local-llm-agent")
-    except Exception:
+    except (ImportError, OSError, ValueError):
         # Fallback if running outside the koan package context
         return (
             "You are an AI coding assistant. You have access to tools for "
@@ -342,7 +400,7 @@ def _filter_tools(
     allowed_funcs = None
     disallowed_funcs = set()
 
-    if allowed:
+    if allowed is not None:
         allowed_funcs = {TOOL_NAME_MAP.get(t, t.lower()) for t in allowed}
     if disallowed:
         disallowed_funcs = {TOOL_NAME_MAP.get(t, t.lower()) for t in disallowed}
@@ -414,7 +472,14 @@ def run_agent(
         total_input_tokens += usage.get("prompt_tokens", 0)
         total_output_tokens += usage.get("completion_tokens", 0)
 
-        choice = response.get("choices", [{}])[0]
+        choices = response.get("choices") or []
+        if not choices:
+            return {
+                "result": "Error: API returned empty choices",
+                "input_tokens": total_input_tokens,
+                "output_tokens": total_output_tokens,
+            }
+        choice = choices[0]
         message = choice.get("message", {})
 
         # If the model returned tool calls, execute them

@@ -11,12 +11,21 @@ CLI:
     python3 -m skills.core.implement.implement_runner --project-path <path> --issue-url <url> --context "Phase 1 to 3"
 """
 
+import logging
 import re
 from pathlib import Path
 from typing import List, Optional, Tuple
 
 from app.github import fetch_issue_with_comments
-from app.github_url_parser import parse_issue_url
+from app.github_url_parser import parse_github_url, parse_issue_url
+from app.pr_submit import (
+    get_current_branch,
+    guess_project_name,
+    submit_draft_pr,
+)
+from app.prompts import load_prompt_or_skill
+
+logger = logging.getLogger(__name__)
 
 
 # Regex pattern matching plan structure markers
@@ -52,9 +61,9 @@ def run_implement(
         from app.notify import send_telegram
         notify_fn = send_telegram
 
-    # Parse issue URL
+    # Parse issue or PR URL (GitHub's issues API works for PRs too)
     try:
-        owner, repo, issue_number = parse_issue_url(issue_url)
+        owner, repo, _url_type, issue_number = parse_github_url(issue_url)
     except ValueError as e:
         return False, str(e)
 
@@ -89,6 +98,7 @@ def run_implement(
             plan=plan,
             context=context or "Implement the full plan.",
             skill_dir=skill_dir,
+            issue_number=str(issue_number),
         )
     except Exception as e:
         return False, f"Implementation failed: {str(e)[:300]}"
@@ -96,19 +106,60 @@ def run_implement(
     if not output:
         return False, "Claude returned empty output."
 
-    notify_fn(
-        f"\u2705 Implementation complete for issue #{issue_number}"
-        f"{context_label}"
-    )
-    return True, f"Implementation complete for #{issue_number}{context_label}"
+    # Post-implementation: submit draft PR
+    pr_url = None
+    try:
+        pr_url = _submit_implement_pr(
+            project_path=project_path,
+            owner=owner,
+            repo=repo,
+            issue_number=str(issue_number),
+            issue_title=title,
+            issue_url=issue_url,
+            skill_dir=skill_dir,
+        )
+    except Exception as e:
+        logger.warning("PR submission failed: %s", e)
+
+    # Build notification and summary
+    branch = get_current_branch(project_path)
+    if pr_url:
+        notify_fn(
+            f"\u2705 Implementation complete for issue #{issue_number}"
+            f"{context_label}\nDraft PR: {pr_url}"
+        )
+        summary = (
+            f"Implementation complete for #{issue_number}{context_label}"
+            f"\nDraft PR: {pr_url}"
+        )
+    elif branch not in ("main", "master"):
+        notify_fn(
+            f"\u2705 Implementation complete for issue #{issue_number}"
+            f"{context_label}\nBranch: {branch} (PR creation failed)"
+        )
+        summary = (
+            f"Implementation complete for #{issue_number}{context_label}"
+            f"\nBranch: {branch}"
+        )
+    else:
+        notify_fn(
+            f"\u26a0\ufe0f Implementation complete for issue #{issue_number}"
+            f"{context_label} \u2014 changes landed on {branch}, no PR created"
+        )
+        summary = (
+            f"Implementation complete for #{issue_number}{context_label}"
+            f" (on {branch}, no PR)"
+        )
+
+    return True, summary
 
 
 def _is_plan_content(text: str) -> bool:
     """Check if text contains plan structure markers.
-    
+
     Args:
         text: Text to check for plan markers.
-        
+
     Returns:
         True if text contains markdown headings indicating a plan structure.
     """
@@ -152,37 +203,57 @@ def _build_prompt(
     plan: str,
     context: str,
     skill_dir: Optional[Path] = None,
+    branch_prefix: str = "koan/",
+    issue_number: str = "",
 ) -> str:
-    """Build the implementation prompt from the issue and plan.
-    
-    Args:
-        issue_url: GitHub issue URL.
-        issue_title: Issue title.
-        plan: Extracted plan text.
-        context: Additional user context.
-        skill_dir: Path to skill directory for prompt loading.
-        
-    Returns:
-        Formatted prompt string.
-    """
-    if skill_dir is not None:
-        from app.prompts import load_skill_prompt
-        return load_skill_prompt(
-            skill_dir, "implement",
-            ISSUE_URL=issue_url,
-            ISSUE_TITLE=issue_title,
-            PLAN=plan,
-            CONTEXT=context,
-        )
-
-    from app.prompts import load_prompt
-    return load_prompt(
-        "implement",
+    """Build the implementation prompt from the issue and plan."""
+    template_vars = dict(
         ISSUE_URL=issue_url,
         ISSUE_TITLE=issue_title,
         PLAN=plan,
         CONTEXT=context,
+        BRANCH_PREFIX=branch_prefix,
+        ISSUE_NUMBER=issue_number,
     )
+
+    return load_prompt_or_skill(skill_dir, "implement", **template_vars)
+
+
+def _generate_pr_summary(
+    project_path: str,
+    issue_title: str,
+    issue_url: str,
+    commit_subjects: List[str],
+    skill_dir: Optional[Path] = None,
+) -> str:
+    """Generate a PR summary using the lightweight model.
+
+    Falls back to a bullet list of commit subjects if the model call
+    fails or times out.
+    """
+    commits_text = "\n".join(f"- {s}" for s in commit_subjects) or "(no commits)"
+    fallback = f"Implements {issue_url}\n\n{commits_text}"
+
+    try:
+        prompt = load_prompt_or_skill(
+            skill_dir, "pr_summary",
+            ISSUE_URL=issue_url,
+            ISSUE_TITLE=issue_title,
+            COMMIT_SUBJECTS=commits_text,
+        )
+
+        from app.cli_provider import run_command
+        output = run_command(
+            prompt, project_path,
+            allowed_tools=[],
+            model_key="lightweight",
+            max_turns=1,
+            timeout=300,
+        )
+        return output.strip() if output and output.strip() else fallback
+    except Exception as e:
+        logger.debug("PR summary generation failed: %s", e)
+        return fallback
 
 
 def _execute_implementation(
@@ -192,24 +263,73 @@ def _execute_implementation(
     plan: str,
     context: str,
     skill_dir: Optional[Path] = None,
+    issue_number: str = "",
 ) -> str:
-    """Execute the implementation via Claude CLI.
-    
-    Args:
-        project_path: Path to the project repository.
-        issue_url: GitHub issue URL.
-        issue_title: Issue title.
-        plan: Extracted plan text.
-        context: Additional user context.
-        skill_dir: Path to skill directory for prompt loading.
-        
-    Returns:
-        Claude CLI output.
-    """
-    prompt = _build_prompt(issue_url, issue_title, plan, context, skill_dir)
-    
-    from app.cli_provider import run_command
-    return run_command(prompt, project_path, max_turns=50, timeout=900)
+    """Execute the implementation via Claude CLI."""
+    from app.config import get_branch_prefix
+    branch_prefix = get_branch_prefix()
+
+    prompt = _build_prompt(
+        issue_url, issue_title, plan, context, skill_dir,
+        branch_prefix=branch_prefix,
+        issue_number=issue_number,
+    )
+
+    from app.cli_provider import CLAUDE_TOOLS, run_command_streaming
+    from app.config import get_skill_max_turns, get_skill_timeout
+    return run_command_streaming(
+        prompt, project_path,
+        allowed_tools=sorted(CLAUDE_TOOLS),
+        max_turns=get_skill_max_turns(), timeout=get_skill_timeout(),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Post-implementation: draft PR submission (delegates to app.pr_submit)
+# ---------------------------------------------------------------------------
+
+def _submit_implement_pr(
+    project_path: str,
+    owner: str,
+    repo: str,
+    issue_number: str,
+    issue_title: str,
+    issue_url: str,
+    skill_dir: Optional[Path] = None,
+) -> Optional[str]:
+    """Build implement-specific PR title/body and delegate to shared submit."""
+    from app.pr_submit import get_commit_subjects
+    from app.projects_config import resolve_base_branch
+
+    project_name = guess_project_name(project_path)
+    base_branch = resolve_base_branch(project_name, project_path)
+    commits = get_commit_subjects(project_path, base_branch=base_branch)
+
+    summary = _generate_pr_summary(
+        project_path, issue_title, issue_url, commits, skill_dir,
+    )
+
+    pr_title = f"Implement: {issue_title}"[:70]
+    pr_body = (
+        f"## Summary\n\n{summary}\n\n"
+        f"Closes {issue_url}\n\n"
+        f"---\n*Generated by Kōan /implement*"
+    )
+
+    try:
+        return submit_draft_pr(
+            project_path=project_path,
+            project_name=project_name,
+            owner=owner,
+            repo=repo,
+            issue_number=issue_number,
+            pr_title=pr_title,
+            pr_body=pr_body,
+            issue_url=issue_url,
+        )
+    except Exception as e:
+        logger.warning("PR submission failed: %s", e)
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -217,10 +337,7 @@ def _execute_implementation(
 # ---------------------------------------------------------------------------
 
 def main(argv=None):
-    """CLI entry point for implement_runner.
-
-    Returns exit code (0 = success, 1 = failure).
-    """
+    """CLI entry point for implement_runner."""
     import argparse
 
     parser = argparse.ArgumentParser(

@@ -61,7 +61,7 @@ Stay on the current branch. Your changes will be committed and pushed automatica
    - If the original implementation had issues noted by reviewers, fix them.
    - Do NOT blindly copy the original diff — the codebase has changed.
 
-4. **Write or update tests.** The feature should have test coverage.
+4. **Write or update tests.** The feature should have test coverage. Tests should validate behavior (inputs → outputs). Mocking dependencies is fine, but never inspect source code to verify code presence or absence.
 
 5. **Keep it focused.** Only implement what the original PR intended.
    No drive-by refactoring, no extra improvements beyond what was requested.

@@ -1,7 +1,9 @@
 """GitHub Copilot CLI provider implementation."""
 
 import shutil
-from typing import List, Optional
+import subprocess
+import sys
+from typing import List, Optional, Tuple
 
 from app.provider.base import CLIProvider, CLAUDE_TOOLS, TOOL_NAME_MAP
 
@@ -112,3 +114,38 @@ class CopilotProvider(CLIProvider):
         flags = ["--mcp-config"]
         flags.extend(configs)
         return flags
+
+    def check_quota_available(self, project_path: str, timeout: int = 15) -> Tuple[bool, str]:
+        """Check Copilot API quota via a minimal prompt probe.
+
+        Unlike Claude's ``claude usage`` (zero-cost), Copilot CLI has no
+        free usage endpoint.  We send a tiny prompt ("ok") which costs
+        negligible tokens but reliably surfaces rate-limit / subscription
+        errors before a full mission is attempted.
+        """
+        cmd = [self.binary()]
+        cmd.extend(self.build_prompt_args("ok"))
+
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=project_path,
+            )
+            combined = (result.stderr or "") + "\n" + (result.stdout or "")
+
+            from app.quota_handler import detect_quota_exhaustion
+
+            if detect_quota_exhaustion(combined):
+                return False, combined
+
+            # Non-zero exit with no detected pattern — could be auth failure
+            # or other transient issue.  Proceed optimistically.
+            return True, ""
+        except subprocess.TimeoutExpired:
+            return True, ""
+        except Exception as e:
+            print(f"[copilot] quota probe error: {e}", file=sys.stderr)
+            return True, ""

@@ -1,6 +1,7 @@
 ---
 name: focus
 scope: core
+group: config
 description: Focus mode — suppress reflection and free exploration, process missions only
 version: 1.0.0
 audience: bridge

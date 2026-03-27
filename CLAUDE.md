@@ -13,13 +13,14 @@ make setup          # Create venv, install dependencies
 make start          # Start full stack (auto-detects provider: awake+run or ollama+awake+run)
 make stop           # Stop all running processes (run + awake + ollama)
 make status         # Show running process status
-make logs           # Watch live output from all processes
+make logs           # Watch live output from all processes + agent progress
 make run            # Start main agent loop (foreground)
 make awake          # Start Telegram bridge (foreground)
 make ollama         # Start full Ollama stack (ollama serve + awake + run)
 make dashboard      # Start Flask web dashboard (port 5001)
 make test           # Run full test suite (pytest)
 make say m="..."    # Send test message as if from Telegram
+make rename-project old=X new=Y [apply=1]  # Rename a project everywhere (dry-run by default)
 make clean          # Remove venv
 ```
 
@@ -34,6 +35,7 @@ KOAN_ROOT=/tmp/test-koan .venv/bin/pytest koan/tests/test_missions.py -v
 - Never call Claude (subprocess) in tests. Mock `format_and_send` which invokes Claude CLI for message formatting.
 - With `runpy.run_module()` (CLI tests), patch both `app.<module>.format_and_send` **and** `app.notify.format_and_send` — `runpy` re-executes the module so the import-level binding escapes the first patch.
 - When `load_dotenv()` would reload env vars from `.env` (defeating `monkeypatch.delenv`), patch `app.notify.load_dotenv` too.
+- **Test behavior, not implementation.** Unless the project's own conventions say otherwise, tests should validate what code does (inputs → outputs, side effects, observable state), not how it does it. Mocking internal dependencies of the unit under test is fine, but tests must never read or inspect actual source code to verify whether specific code is present or absent — that couples tests to implementation text rather than behavior. Prefer asserting on return values, raised exceptions, file contents, or other observable outcomes.
 
 ## Architecture
 
@@ -59,7 +61,9 @@ Communication between processes happens through shared files in `instance/` with
 - **`contemplative_runner.py`** — Contemplative session runner (probability roll, prompt building, CLI invocation)
 - **`quota_handler.py`** — Quota exhaustion detection from CLI output; parses reset times, creates pause state, writes journal entries
 - **`prompt_builder.py`** — Agent prompt assembly for the agent loop
+- **`pr_review_learning.py`** — Extracts actionable lessons from human PR reviews using Claude CLI (lightweight model). Fetches review data from GitHub, sends raw comments to Claude for natural-language analysis, and persists new lessons to `memory/projects/{name}/learnings.md` (write-once, read-many). Uses content-hash caching to skip re-analysis when reviews haven't changed.
 - **`skill_dispatch.py`** — Direct skill execution from agent loop. Detects `/command` missions, parses project prefix and command, dispatches to skill-specific runners (plan, rebase, recreate, check, claudemd) bypassing the Claude agent
+- **`hooks.py`** — Hook system for extensible lifecycle events. Discovers `.py` modules from `instance/hooks/`, registers handlers by event name, fires them sequentially with per-handler error isolation. Events: `session_start`, `session_end`, `pre_mission`, `post_mission`.
 
 **Bridge (Telegram):**
 - **`awake.py`** — Main bridge loop, Telegram polling, outbox flushing
@@ -70,7 +74,7 @@ Communication between processes happens through shared files in `instance/` with
 
 **Process management:**
 - **`pid_manager.py`** — Exclusive PID file enforcement for run, awake, and ollama processes. Provides `start_all()` (unified stack launcher with provider auto-detection), `start_runner()`, `start_awake()`, `start_ollama()`, and `stop_processes()` (graceful SIGTERM with force-kill fallback)
-- **`pause_manager.py`** — Pause state management (`.koan-pause` / `.koan-pause-reason` files)
+- **`pause_manager.py`** — Pause state management (`.koan-pause` / `.koan-pause-reason` files). Supports time-bounded pauses with auto-resume (e.g., `/pause 2h`)
 - **`restart_manager.py`** — File-based restart signaling between bridge and run loop (`.koan-restart`)
 - **`focus_manager.py`** — Focus mode management (`.koan-focus` JSON); skips contemplative sessions when active
 
@@ -78,7 +82,8 @@ Communication between processes happens through shared files in `instance/` with
 - **`provider/base.py`** — `CLIProvider` base class + tool name constants
 - **`provider/claude.py`** — `ClaudeProvider` (Claude Code CLI)
 - **`provider/copilot.py`** — `CopilotProvider` (GitHub Copilot CLI) with tool name mapping
-- **`cli_provider.py`** — Re-export facade; `build_full_command()` used throughout
+- **`provider/__init__.py`** — Provider registry, resolution (env → config → default), cached singleton, and convenience functions (`run_command()`, `run_command_streaming()`, `build_full_command()`). Main entry point for the provider package.
+- **`cli_provider.py`** — Re-export facade (legacy); prefer importing from `provider` directly
 
 **Git & GitHub:**
 - **`git_sync.py`** / **`git_auto_merge.py`** — Branch tracking, sync awareness, configurable auto-merge
@@ -100,13 +105,15 @@ Communication between processes happens through shared files in `instance/` with
 - **`skill_manager.py`** — External skill package manager: install from Git repos, update, remove, track via `instance/skills.yaml`
 - **`claudemd_refresh.py`** — CLAUDE.md refresh pipeline: gathers git context, invokes Claude to update/create CLAUDE.md
 - **`update_manager.py`** — Kōan self-update: stash, checkout main, fetch/pull from upstream, report changes
+- **`auto_update.py`** — Automatic update checker: periodically fetches upstream, triggers pull + restart when new commits are available. Configurable via `auto_update` section in `config.yaml` (`enabled`, `check_interval`, `notify`)
+- **`rename_project.py`** — CLI tool to rename a project across `projects.yaml` and all `instance/` files (missions, memory dir, journal files, JSON references). Dry-run by default, `--apply` to execute. Invoked via `make rename-project old=X new=Y [apply=1]`.
 
 ### Skills system (`koan/skills/`)
 
 Extensible command plugin system. Each skill lives in `skills/<scope>/<skill-name>/` with a `SKILL.md` (YAML frontmatter defining commands, aliases, metadata) and an optional `handler.py`.
 
 - **`skills.py`** — Registry that discovers SKILL.md files, parses frontmatter (custom lite YAML parser, no PyYAML), maps commands/aliases to skills, and dispatches execution.
-- **Core skills** live in `koan/skills/core/` (cancel, chat, check, claudemd, focus, idea, implement, journal, language, list, live, magic, mission, plan, pr, priority, projects, quota, rebase, recreate, recurring, refactor, reflect, review, shutdown, sparring, start, status, update, verbose)
+- **Core skills** live in `koan/skills/core/` (audit, cancel, chat, check, claudemd, delete_project, focus, idea, implement, journal, language, list, live, magic, mission, plan, pr, priority, projects, quota, rebase, recreate, recurring, refactor, reflect, review, shutdown, sparring, start, status, update, verbose)
 - **Custom skills** loaded from `instance/skills/<scope>/` — each scope directory can be a cloned Git repo for team sharing.
 - **Handler pattern**: `def handle(ctx: SkillContext) -> Optional[str]` — return string for Telegram reply, empty string for "already handled", None for no message.
 - **`worker: true`** flag in SKILL.md marks blocking skills (Claude calls, API requests) that run in a background thread.
@@ -123,6 +130,7 @@ Extensible command plugin system. Each skill lives in `skills/<scope>/<skill-nam
 - `soul.md` — Agent personality definition
 - `memory/` — Global summary + per-project learnings/context
 - `journal/` — Daily logs organized as `YYYY-MM-DD/project.md`
+- `hooks/` — User-defined Python hook modules for lifecycle events (see `instance.example/hooks/README.md`)
 
 ## Conventions
 
@@ -134,3 +142,7 @@ Extensible command plugin system. Each skill lives in `skills/<scope>/<skill-nam
 - `system-prompt.md` defines the Claude agent's identity, priorities, and autonomous mode rules
 - **No inline prompts in Python code** — LLM prompts MUST be extracted to `.md` files. Skill-bound prompts go in `skills/<scope>/<name>/prompts/` and are loaded via `load_skill_prompt()`. Infrastructure prompts used by `koan/app/` modules stay in `koan/system-prompts/` and are loaded via `load_prompt()`.
 - **System prompts must be generic** — Never reference specific instance details like owner names in system prompts. Use generic terms like "your human" instead of personal names. Prompts are in English; instance-specific personality and language preferences come from `soul.md`.
+- **User manual maintenance** — When adding, removing, or modifying a core skill, update `docs/user-manual.md` accordingly: add the skill to the appropriate tier section and the quick-reference appendix. The manual must stay in sync with `koan/skills/core/`.
+- **Help group enforcement** — Every core skill MUST have a `group:` field in its SKILL.md frontmatter (one of: missions, code, pr, status, config, ideas, system). This ensures commands are discoverable via `/help`. If adding a new hardcoded core command (not skill-based), add it to `_CORE_COMMAND_HELP` in `command_handlers.py`. The test suite enforces this — `TestCoreSkillGroupEnforcement` will fail if a core skill is missing its group.
+- **No hyphens in skill names or aliases** — Skill command names, aliases, and directory names MUST use underscores (`_`), never hyphens (`-`). Hyphens break Telegram command parsing because Telegram treats the hyphen as a word boundary, cutting the command short. Example: use `dead_code` not `dead-code`, `scaffold_skill` not `scaffold-skill`.
+- **Documentation maintenance** — When adding or modifying a feature, update the corresponding section in `README.md` and/or the relevant `docs/*.md` file (e.g., `docs/user-manual.md`, `docs/skills.md`, `docs/auto-update.md`). If no documentation file exists for the feature, create one under `docs/`. Public-facing documentation must stay in sync with the codebase — undocumented features are invisible to users.

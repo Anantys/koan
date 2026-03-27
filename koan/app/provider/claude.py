@@ -1,6 +1,7 @@
 """Claude Code CLI provider implementation."""
 
-from typing import List, Optional
+import subprocess
+from typing import List, Optional, Tuple
 
 from app.provider.base import CLIProvider
 
@@ -12,6 +13,16 @@ class ClaudeProvider(CLIProvider):
 
     def binary(self) -> str:
         return "claude"
+
+    def build_permission_args(self, skip_permissions: bool = False) -> List[str]:
+        if skip_permissions:
+            return ["--dangerously-skip-permissions"]
+        return []
+
+    def build_system_prompt_args(self, system_prompt: str) -> List[str]:
+        if system_prompt:
+            return ["--append-system-prompt", system_prompt]
+        return []
 
     def build_prompt_args(self, prompt: str) -> List[str]:
         return ["-p", prompt]
@@ -32,7 +43,7 @@ class ClaudeProvider(CLIProvider):
         flags: List[str] = []
         if model:
             flags.extend(["--model", model])
-        if fallback:
+        if fallback and fallback != model:
             flags.extend(["--fallback-model", fallback])
         return flags
 
@@ -52,3 +63,38 @@ class ClaudeProvider(CLIProvider):
         flags = ["--mcp-config"]
         flags.extend(configs)
         return flags
+
+    def build_plugin_args(self, plugin_dirs: Optional[List[str]] = None) -> List[str]:
+        if not plugin_dirs:
+            return []
+        flags: List[str] = []
+        for d in plugin_dirs:
+            flags.extend(["--plugin-dir", d])
+        return flags
+
+    def check_quota_available(self, project_path: str, timeout: int = 15) -> Tuple[bool, str]:
+        """Check Claude API quota via ``claude usage`` (no tokens consumed).
+
+        Runs ``claude usage`` and checks the output for quota exhaustion
+        signals. Unlike a prompt-based probe, this costs zero tokens.
+        """
+        cmd = [self.binary(), "usage"]
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=project_path,
+            )
+            combined = (result.stderr or "") + "\n" + (result.stdout or "")
+            from app.quota_handler import detect_quota_exhaustion
+            if detect_quota_exhaustion(combined):
+                return False, combined
+            return True, ""
+        except subprocess.TimeoutExpired:
+            # Timeout — proceed optimistically
+            return True, ""
+        except (subprocess.SubprocessError, OSError, ImportError):
+            # Non-quota error — proceed optimistically
+            return True, ""

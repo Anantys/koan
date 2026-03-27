@@ -1,6 +1,7 @@
 ---
 name: list
 scope: core
+group: missions
 description: List current missions
 version: 1.0.0
 audience: bridge

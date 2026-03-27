@@ -15,6 +15,16 @@ def isolate_env(monkeypatch):
     # Prevent host CLI provider env vars from leaking into tests
     monkeypatch.delenv("CLI_PROVIDER", raising=False)
     monkeypatch.delenv("KOAN_CLI_PROVIDER", raising=False)
+    # Reset projects_merged module-level cache so parallel workers don't
+    # see stale project lists from a prior test's KOAN_ROOT.
+    try:
+        import app.projects_merged as pm
+        pm._cached_projects = None
+        pm._cached_root = None
+        pm._cached_yaml_mtime = None
+        pm._cached_workspace_mtime = None
+    except Exception:
+        pass
 
 
 @pytest.fixture

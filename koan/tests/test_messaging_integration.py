@@ -350,12 +350,13 @@ class TestProviderLifecycle:
         
         if provider == "telegram":
             from app.messaging.telegram import TelegramProvider
-            provider_instance = TelegramProvider()
+            with patch("app.utils.load_dotenv"):
+                provider_instance = TelegramProvider()
+                assert provider_instance.configure() is False
         else:
             from app.messaging.slack import SlackProvider
             provider_instance = SlackProvider()
-        
-        assert provider_instance.configure() is False
+            assert provider_instance.configure() is False
 
     def test_telegram_configure_succeeds_with_env(self, monkeypatch):
         set_provider_env_vars(monkeypatch, "telegram")

@@ -34,7 +34,7 @@ def handle(ctx):
 
     pr_url = url_match.group(0).split("#")[0]
 
-    from app.pr_review import parse_pr_url
+    from app.github_url_parser import parse_pr_url
     from app.utils import resolve_project_path
     from app.pr_review import run_pr_review
 

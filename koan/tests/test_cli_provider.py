@@ -19,6 +19,7 @@ from app.cli_provider import (
     build_output_flags,
     build_max_turns_flags,
     build_full_command,
+    run_command,
     CLAUDE_TOOLS,
     TOOL_NAME_MAP,
 )
@@ -111,6 +112,11 @@ class TestClaudeProvider:
         assert self.provider.build_model_args(model="haiku") == ["--model", "haiku"]
         assert self.provider.build_model_args(fallback="sonnet") == ["--fallback-model", "sonnet"]
 
+    def test_model_args_same_skips_fallback(self):
+        """When fallback equals model, skip --fallback-model to avoid CLI rejection."""
+        result = self.provider.build_model_args(model="sonnet", fallback="sonnet")
+        assert result == ["--model", "sonnet"]
+
     def test_output_args_json(self):
         assert self.provider.build_output_args("json") == ["--output-format", "json"]
 
@@ -163,6 +169,99 @@ class TestClaudeProvider:
         assert "--model" in result
         assert "--fallback-model" in result
         assert "--disallowedTools" in result
+
+    def test_build_permission_args_true(self):
+        assert self.provider.build_permission_args(True) == ["--dangerously-skip-permissions"]
+
+    def test_build_permission_args_false(self):
+        assert self.provider.build_permission_args(False) == []
+
+    def test_build_command_with_skip_permissions(self):
+        cmd = self.provider.build_command(prompt="hello", skip_permissions=True)
+        assert cmd[0] == "claude"
+        assert "--dangerously-skip-permissions" in cmd
+        assert cmd.index("--dangerously-skip-permissions") < cmd.index("-p")
+
+    def test_build_command_without_skip_permissions(self):
+        cmd = self.provider.build_command(prompt="hello", skip_permissions=False)
+        assert "--dangerously-skip-permissions" not in cmd
+
+
+# ---------------------------------------------------------------------------
+# System prompt support
+# ---------------------------------------------------------------------------
+
+class TestSystemPromptSupport:
+    """Tests for --append-system-prompt support across providers."""
+
+    def test_claude_build_system_prompt_args(self):
+        """ClaudeProvider returns --append-system-prompt flag."""
+        p = ClaudeProvider()
+        args = p.build_system_prompt_args("You are helpful.")
+        assert args == ["--append-system-prompt", "You are helpful."]
+
+    def test_claude_build_system_prompt_args_empty(self):
+        """Empty system prompt returns empty list."""
+        p = ClaudeProvider()
+        assert p.build_system_prompt_args("") == []
+
+    def test_copilot_build_system_prompt_args_empty(self):
+        """CopilotProvider returns empty (no native support)."""
+        with patch("shutil.which", return_value="/usr/bin/gh"):
+            p = CopilotProvider()
+        assert p.build_system_prompt_args("content") == []
+
+    def test_local_build_system_prompt_args_empty(self):
+        """LocalLLMProvider returns empty (no native support)."""
+        p = LocalLLMProvider()
+        assert p.build_system_prompt_args("content") == []
+
+    def test_claude_build_command_with_system_prompt(self):
+        """ClaudeProvider.build_command includes --append-system-prompt."""
+        p = ClaudeProvider()
+        cmd = p.build_command(
+            prompt="do something",
+            system_prompt="you are koan",
+        )
+        assert "--append-system-prompt" in cmd
+        idx = cmd.index("--append-system-prompt")
+        assert cmd[idx + 1] == "you are koan"
+        assert "-p" in cmd
+        p_idx = cmd.index("-p")
+        assert cmd[p_idx + 1] == "do something"
+
+    def test_copilot_build_command_prepends_system_prompt(self):
+        """Non-supporting providers prepend system prompt to user prompt."""
+        with patch("shutil.which", return_value="/usr/bin/gh"):
+            p = CopilotProvider()
+        cmd = p.build_command(
+            prompt="do something",
+            system_prompt="you are koan",
+        )
+        # System prompt should be prepended to user prompt
+        assert "--append-system-prompt" not in cmd
+        # Find the prompt value
+        for i, arg in enumerate(cmd):
+            if arg == "-m":  # copilot uses -m
+                assert "you are koan" in cmd[i + 1]
+                assert "do something" in cmd[i + 1]
+                break
+
+    @patch("app.config.get_skip_permissions", return_value=False)
+    @patch("app.provider.get_provider")
+    def test_build_full_command_passes_system_prompt(self, mock_get, mock_perm):
+        """build_full_command passes system_prompt to provider."""
+        mock_provider = MagicMock()
+        mock_provider.build_command.return_value = ["claude", "-p", "test"]
+        mock_get.return_value = mock_provider
+
+        build_full_command(
+            prompt="test",
+            system_prompt="stable content",
+        )
+        mock_provider.build_command.assert_called_once()
+        call_kwargs = mock_provider.build_command.call_args
+        assert call_kwargs.kwargs.get("system_prompt") == "stable content"
 
 
 # ---------------------------------------------------------------------------
@@ -255,7 +354,7 @@ class TestCopilotProvider:
         # Should allow the remaining tools: Read, Glob, Grep
         assert "--allow-tool" in result
         tool_names = [result[i + 1] for i in range(len(result)) if result[i] == "--allow-tool"]
-        assert set(tool_names) == {"read_file", "glob", "grep"}
+        assert set(tool_names) == {"read_file", "glob", "grep", "skill"}
 
     def test_model_args(self):
         p = self._make()
@@ -537,6 +636,24 @@ class TestConvenienceFunctions:
         assert "--json" not in cmd
         assert "--max-turns" not in cmd
 
+    @patch.dict("os.environ", {"KOAN_CLI_PROVIDER": "claude"})
+    @patch("app.config._load_config", return_value={"skip_permissions": True})
+    def test_build_full_command_skip_permissions_enabled(self, _mock_config):
+        cmd = build_full_command(prompt="hello")
+        assert "--dangerously-skip-permissions" in cmd
+
+    @patch.dict("os.environ", {"KOAN_CLI_PROVIDER": "claude"})
+    @patch("app.config._load_config", return_value={"skip_permissions": False})
+    def test_build_full_command_skip_permissions_disabled(self, _mock_config):
+        cmd = build_full_command(prompt="hello")
+        assert "--dangerously-skip-permissions" not in cmd
+
+    @patch.dict("os.environ", {"KOAN_CLI_PROVIDER": "claude"})
+    @patch("app.config._load_config", return_value={})
+    def test_build_full_command_skip_permissions_default(self, _mock_config):
+        cmd = build_full_command(prompt="hello")
+        assert "--dangerously-skip-permissions" not in cmd
+
 
 # ---------------------------------------------------------------------------
 # LocalLLMProvider
@@ -755,3 +872,354 @@ class TestLocalProviderResolution:
         assert "app.local_llm_runner" in cmd
         assert "--allowed-tools" in cmd
         assert "--output-format" in cmd
+
+
+# ---------------------------------------------------------------------------
+# ClaudeProvider.check_quota_available
+# ---------------------------------------------------------------------------
+
+class TestClaudeQuotaCheck:
+    """Tests for ClaudeProvider.check_quota_available()."""
+
+    def setup_method(self):
+        self.provider = ClaudeProvider()
+
+    @patch("app.provider.claude.subprocess.run")
+    @patch("app.quota_handler.detect_quota_exhaustion", return_value=False)
+    def test_quota_available(self, mock_detect, mock_run):
+        """Returns (True, '') when quota is available."""
+        mock_run.return_value = MagicMock(stderr="", stdout="Usage: 50%")
+        available, detail = self.provider.check_quota_available("/fake/path")
+        assert available is True
+        assert detail == ""
+        mock_run.assert_called_once()
+        mock_detect.assert_called_once()
+
+    @patch("app.provider.claude.subprocess.run")
+    @patch("app.quota_handler.detect_quota_exhaustion", return_value=True)
+    def test_quota_exhausted(self, mock_detect, mock_run):
+        """Returns (False, output) when quota is exhausted."""
+        mock_run.return_value = MagicMock(
+            stderr="Rate limit exceeded",
+            stdout="Quota exhausted"
+        )
+        available, detail = self.provider.check_quota_available("/fake/path")
+        assert available is False
+        assert "Quota exhausted" in detail
+
+    @patch("app.provider.claude.subprocess.run")
+    def test_timeout_returns_available(self, mock_run):
+        """Timeout is treated optimistically — proceed as if quota available."""
+        import subprocess
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd=["claude", "usage"], timeout=15)
+        available, detail = self.provider.check_quota_available("/fake/path")
+        assert available is True
+        assert detail == ""
+
+    @patch("app.provider.claude.subprocess.run")
+    def test_other_exception_returns_available(self, mock_run):
+        """Non-quota exceptions treated optimistically."""
+        mock_run.side_effect = OSError("binary not found")
+        available, detail = self.provider.check_quota_available("/fake/path")
+        assert available is True
+        assert detail == ""
+
+    @patch("app.provider.claude.subprocess.run")
+    @patch("app.quota_handler.detect_quota_exhaustion", return_value=False)
+    def test_custom_timeout(self, mock_detect, mock_run):
+        """Custom timeout is passed to subprocess.run."""
+        mock_run.return_value = MagicMock(stderr="", stdout="ok")
+        self.provider.check_quota_available("/fake/path", timeout=30)
+        call_kwargs = mock_run.call_args[1]
+        assert call_kwargs["timeout"] == 30
+
+    @patch("app.provider.claude.subprocess.run")
+    @patch("app.quota_handler.detect_quota_exhaustion", return_value=False)
+    def test_uses_project_path_as_cwd(self, mock_detect, mock_run):
+        """subprocess.run cwd is set to project_path."""
+        mock_run.return_value = MagicMock(stderr="", stdout="ok")
+        self.provider.check_quota_available("/my/project")
+        call_kwargs = mock_run.call_args[1]
+        assert call_kwargs["cwd"] == "/my/project"
+
+    @patch("app.provider.claude.subprocess.run")
+    @patch("app.quota_handler.detect_quota_exhaustion", return_value=False)
+    def test_combines_stderr_and_stdout(self, mock_detect, mock_run):
+        """Both stderr and stdout are combined for quota detection."""
+        mock_run.return_value = MagicMock(stderr="warning", stdout="usage data")
+        self.provider.check_quota_available("/fake/path")
+        combined = mock_detect.call_args[0][0]
+        assert "warning" in combined
+        assert "usage data" in combined
+
+
+# ---------------------------------------------------------------------------
+# Base CLIProvider defaults
+# ---------------------------------------------------------------------------
+
+class TestCLIProviderBase:
+    """Tests for CLIProvider base class behavior."""
+
+    def test_check_quota_available_default(self):
+        """Base implementation always returns available (no quota concept)."""
+        from app.provider.base import CLIProvider
+        provider = CLIProvider()
+        available, detail = provider.check_quota_available("/any/path")
+        assert available is True
+        assert detail == ""
+
+    def test_shell_command_default(self):
+        """shell_command() defaults to binary()."""
+        from app.provider.base import CLIProvider
+
+        class TestProvider(CLIProvider):
+            def binary(self):
+                return "test-bin"
+
+        assert TestProvider().shell_command() == "test-bin"
+
+    def test_is_available_returns_false_for_missing_binary(self):
+        """is_available() returns False when binary not found."""
+        from app.provider.base import CLIProvider
+
+        class TestProvider(CLIProvider):
+            def binary(self):
+                return "nonexistent-binary-xyz"
+
+        assert TestProvider().is_available() is False
+
+    def test_build_command_raises_not_implemented(self):
+        """Abstract methods raise NotImplementedError."""
+        from app.provider.base import CLIProvider
+        provider = CLIProvider()
+        with pytest.raises(NotImplementedError):
+            provider.build_prompt_args("hello")
+        with pytest.raises(NotImplementedError):
+            provider.build_tool_args()
+        with pytest.raises(NotImplementedError):
+            provider.build_model_args()
+        with pytest.raises(NotImplementedError):
+            provider.build_output_args()
+        with pytest.raises(NotImplementedError):
+            provider.build_max_turns_args()
+        with pytest.raises(NotImplementedError):
+            provider.build_mcp_args()
+
+    def test_build_extra_flags_delegates(self):
+        """build_extra_flags calls build_model_args + build_tool_args."""
+        from app.provider.base import CLIProvider
+
+        class TestProvider(CLIProvider):
+            def build_model_args(self, model="", fallback=""):
+                return ["--model", model] if model else []
+
+            def build_tool_args(self, allowed_tools=None, disallowed_tools=None):
+                return ["--no-bash"] if disallowed_tools else []
+
+        result = TestProvider().build_extra_flags(model="opus", disallowed_tools=["Bash"])
+        assert result == ["--model", "opus", "--no-bash"]
+
+
+# ---------------------------------------------------------------------------
+# run_command
+# ---------------------------------------------------------------------------
+
+class TestRunCommand:
+    """Tests for the run_command() high-level helper."""
+
+    def setup_method(self):
+        reset_provider()
+
+    def teardown_method(self):
+        reset_provider()
+
+    @patch.dict("os.environ", {"KOAN_CLI_PROVIDER": "claude"})
+    @patch("app.cli_exec.run_cli")
+    @patch("app.config.get_model_config", return_value={"chat": "sonnet", "fallback": "haiku"})
+    def test_success_returns_stripped_stdout(self, mock_models, mock_run):
+        """Successful command returns stripped stdout."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="  result text  \n")
+        result = run_command(
+            prompt="analyze this",
+            project_path="/fake/project",
+            allowed_tools=["Read", "Grep"],
+        )
+        assert result == "result text"
+
+    @patch.dict("os.environ", {"KOAN_CLI_PROVIDER": "claude"})
+    @patch("app.cli_exec.run_cli")
+    @patch("app.config.get_model_config", return_value={"chat": "sonnet", "fallback": "haiku"})
+    def test_failure_raises_runtime_error(self, mock_models, mock_run):
+        """Non-zero exit raises RuntimeError with stderr snippet."""
+        mock_run.return_value = MagicMock(returncode=1, stderr="some error message")
+        with pytest.raises(RuntimeError, match="CLI invocation failed"):
+            run_command(
+                prompt="analyze this",
+                project_path="/fake/project",
+                allowed_tools=["Read"],
+            )
+
+    @patch.dict("os.environ", {"KOAN_CLI_PROVIDER": "claude"})
+    @patch("app.cli_exec.run_cli")
+    @patch("app.config.get_model_config", return_value={"chat": "sonnet", "fallback": "haiku"})
+    def test_passes_model_from_config(self, mock_models, mock_run):
+        """Uses model from config based on model_key."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="ok")
+        run_command(
+            prompt="test",
+            project_path="/fake",
+            allowed_tools=["Read"],
+            model_key="chat",
+        )
+        cmd = mock_run.call_args[0][0]
+        assert "--model" in cmd
+        idx = cmd.index("--model")
+        assert cmd[idx + 1] == "sonnet"
+
+    @patch.dict("os.environ", {"KOAN_CLI_PROVIDER": "claude"})
+    @patch("app.cli_exec.run_cli")
+    @patch("app.config.get_model_config", return_value={"chat": "sonnet", "fallback": "haiku"})
+    def test_passes_max_turns(self, mock_models, mock_run):
+        """max_turns parameter is forwarded to build_full_command."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="ok")
+        run_command(
+            prompt="test",
+            project_path="/fake",
+            allowed_tools=["Read"],
+            max_turns=5,
+        )
+        cmd = mock_run.call_args[0][0]
+        assert "--max-turns" in cmd
+        idx = cmd.index("--max-turns")
+        assert cmd[idx + 1] == "5"
+
+    @patch.dict("os.environ", {"KOAN_CLI_PROVIDER": "claude"})
+    @patch("app.cli_exec.run_cli")
+    @patch("app.config.get_model_config", return_value={"chat": "sonnet", "fallback": "haiku"})
+    def test_passes_cwd_to_run_cli(self, mock_models, mock_run):
+        """project_path is passed as cwd to run_cli."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="ok")
+        run_command(
+            prompt="test",
+            project_path="/my/project",
+            allowed_tools=["Read"],
+        )
+        call_kwargs = mock_run.call_args[1]
+        assert call_kwargs["cwd"] == "/my/project"
+
+    @patch.dict("os.environ", {"KOAN_CLI_PROVIDER": "claude"})
+    @patch("app.cli_exec.run_cli")
+    @patch("app.config.get_model_config", return_value={"chat": "sonnet", "fallback": "haiku"})
+    def test_passes_timeout(self, mock_models, mock_run):
+        """Custom timeout is forwarded to run_cli."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="ok")
+        run_command(
+            prompt="test",
+            project_path="/fake",
+            allowed_tools=["Read"],
+            timeout=600,
+        )
+        call_kwargs = mock_run.call_args[1]
+        assert call_kwargs["timeout"] == 600
+
+    @patch.dict("os.environ", {"KOAN_CLI_PROVIDER": "claude"})
+    @patch("app.cli_exec.run_cli")
+    @patch("app.config.get_model_config", return_value={})
+    def test_missing_model_key_uses_empty(self, mock_models, mock_run):
+        """Missing model key results in empty model (no --model flag)."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="ok")
+        run_command(
+            prompt="test",
+            project_path="/fake",
+            allowed_tools=["Read"],
+            model_key="nonexistent",
+        )
+        cmd = mock_run.call_args[0][0]
+        assert "--model" not in cmd
+
+
+# ---------------------------------------------------------------------------
+# Plugin directory support (--plugin-dir)
+# ---------------------------------------------------------------------------
+
+class TestPluginDirSupport:
+    """Tests for --plugin-dir flag support across providers."""
+
+    def setup_method(self):
+        reset_provider()
+
+    def teardown_method(self):
+        reset_provider()
+
+    def test_claude_build_plugin_args_single(self):
+        provider = ClaudeProvider()
+        result = provider.build_plugin_args(["/tmp/plugins"])
+        assert result == ["--plugin-dir", "/tmp/plugins"]
+
+    def test_claude_build_plugin_args_multiple(self):
+        provider = ClaudeProvider()
+        result = provider.build_plugin_args(["/tmp/a", "/tmp/b"])
+        assert result == ["--plugin-dir", "/tmp/a", "--plugin-dir", "/tmp/b"]
+
+    def test_claude_build_plugin_args_none(self):
+        provider = ClaudeProvider()
+        assert provider.build_plugin_args(None) == []
+        assert provider.build_plugin_args([]) == []
+
+    def test_copilot_build_plugin_args_returns_empty(self):
+        """Copilot doesn't support --plugin-dir."""
+        provider = CopilotProvider()
+        assert provider.build_plugin_args(["/tmp/plugins"]) == []
+
+    def test_local_build_plugin_args_returns_empty(self):
+        """Local LLM doesn't support --plugin-dir."""
+        provider = LocalLLMProvider()
+        assert provider.build_plugin_args(["/tmp/plugins"]) == []
+
+    def test_claude_build_command_includes_plugin_dir(self):
+        provider = ClaudeProvider()
+        cmd = provider.build_command(
+            prompt="hello",
+            plugin_dirs=["/tmp/koan-plugins"],
+        )
+        assert "--plugin-dir" in cmd
+        idx = cmd.index("--plugin-dir")
+        assert cmd[idx + 1] == "/tmp/koan-plugins"
+
+    def test_claude_build_command_no_plugin_dir(self):
+        provider = ClaudeProvider()
+        cmd = provider.build_command(prompt="hello")
+        assert "--plugin-dir" not in cmd
+
+    @patch.dict("os.environ", {"KOAN_CLI_PROVIDER": "claude"})
+    def test_build_full_command_with_plugin_dirs(self):
+        cmd = build_full_command(
+            prompt="hello",
+            plugin_dirs=["/tmp/koan-plugins"],
+        )
+        assert "--plugin-dir" in cmd
+        idx = cmd.index("--plugin-dir")
+        assert cmd[idx + 1] == "/tmp/koan-plugins"
+
+    @patch.dict("os.environ", {"KOAN_CLI_PROVIDER": "claude"})
+    def test_build_full_command_without_plugin_dirs(self):
+        cmd = build_full_command(prompt="hello")
+        assert "--plugin-dir" not in cmd
+
+    @patch.dict("os.environ", {"KOAN_CLI_PROVIDER": "copilot"})
+    @patch("app.provider.copilot.shutil.which")
+    def test_build_full_command_copilot_ignores_plugin_dirs(self, mock_which):
+        """Copilot silently ignores plugin_dirs."""
+        mock_which.side_effect = lambda x: "/usr/local/bin/copilot" if x == "copilot" else None
+        cmd = build_full_command(
+            prompt="hello",
+            plugin_dirs=["/tmp/koan-plugins"],
+        )
+        assert "--plugin-dir" not in cmd
+
+    def test_base_provider_build_plugin_args_returns_empty(self):
+        """Base CLIProvider returns empty for plugin dirs."""
+        from app.provider.base import CLIProvider
+        provider = CLIProvider()
+        assert provider.build_plugin_args(["/tmp/plugins"]) == []
+        assert provider.build_plugin_args(None) == []

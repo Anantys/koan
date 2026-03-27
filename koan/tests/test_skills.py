@@ -11,6 +11,7 @@ from app.skills import (
     Skill,
     SkillCommand,
     SkillContext,
+    SkillError,
     SkillRegistry,
     VALID_AUDIENCES,
     _parse_bool_flag,
@@ -177,6 +178,30 @@ class TestParseSkillMd:
         assert skill.prompt_body == "This is the prompt body."
         assert skill.qualified_name == "koan.status"
 
+    def test_group_field_parsed(self, tmp_path):
+        skill_md = tmp_path / "SKILL.md"
+        skill_md.write_text(textwrap.dedent("""\
+            ---
+            name: mission
+            scope: core
+            group: missions
+            description: Create a mission
+            commands:
+              - name: mission
+                description: Create a mission
+            ---
+        """))
+        skill = parse_skill_md(skill_md)
+        assert skill is not None
+        assert skill.group == "missions"
+
+    def test_group_field_defaults_empty(self, tmp_path):
+        skill_md = tmp_path / "SKILL.md"
+        skill_md.write_text("---\nname: test\nscope: core\n---\nbody")
+        skill = parse_skill_md(skill_md)
+        assert skill is not None
+        assert skill.group == ""
+
     def test_no_frontmatter(self, tmp_path):
         skill_md = tmp_path / "SKILL.md"
         skill_md.write_text("Just some text without frontmatter")
@@ -260,6 +285,68 @@ class TestParseSkillMd:
         skill = parse_skill_md(skill_md)
         assert skill is not None
         assert skill.scope == "myproject"
+
+    def test_cli_skill_field_parsed(self, tmp_path):
+        """cli_skill field is parsed from frontmatter and stored on the Skill."""
+        skill_dir = tmp_path / "group" / "myskill"
+        skill_dir.mkdir(parents=True)
+        skill_md = skill_dir / "SKILL.md"
+        skill_md.write_text(textwrap.dedent("""\
+            ---
+            name: myskill
+            scope: group
+            description: Bridge to my-tool
+            audience: agent
+            cli_skill: my-tool
+            commands:
+              - name: myskill
+                description: Invoke /my-tool
+            ---
+        """))
+
+        skill = parse_skill_md(skill_md)
+        assert skill is not None
+        assert skill.cli_skill == "my-tool"
+        assert skill.audience == "agent"
+
+    def test_cli_skill_absent_defaults_none(self, tmp_path):
+        """Skills without cli_skill field have cli_skill=None."""
+        skill_dir = tmp_path / "core" / "status"
+        skill_dir.mkdir(parents=True)
+        skill_md = skill_dir / "SKILL.md"
+        skill_md.write_text(textwrap.dedent("""\
+            ---
+            name: status
+            scope: core
+            commands:
+              - name: status
+                description: Quick status
+            ---
+        """))
+
+        skill = parse_skill_md(skill_md)
+        assert skill is not None
+        assert skill.cli_skill is None
+
+    def test_cli_skill_empty_value_treated_as_none(self, tmp_path):
+        """An empty cli_skill value is treated as None (not set)."""
+        skill_dir = tmp_path / "group" / "empty"
+        skill_dir.mkdir(parents=True)
+        skill_md = skill_dir / "SKILL.md"
+        skill_md.write_text(textwrap.dedent("""\
+            ---
+            name: empty
+            scope: group
+            cli_skill:
+            commands:
+              - name: empty
+                description: Empty cli_skill
+            ---
+        """))
+
+        skill = parse_skill_md(skill_md)
+        assert skill is not None
+        assert skill.cli_skill is None
 
 
 # ---------------------------------------------------------------------------
@@ -353,6 +440,31 @@ class TestSkillRegistry:
         registry = SkillRegistry(self._make_skill_tree(tmp_path))
         assert registry.find_by_command("unknown") is None
 
+    def test_suggest_command_close_match(self, tmp_path):
+        registry = SkillRegistry(self._make_skill_tree(tmp_path))
+        # "statu" is close to "status"
+        assert registry.suggest_command("statu") == "status"
+
+    def test_suggest_command_no_match(self, tmp_path):
+        registry = SkillRegistry(self._make_skill_tree(tmp_path))
+        assert registry.suggest_command("xyzzy") is None
+
+    def test_suggest_command_with_extra_commands(self, tmp_path):
+        registry = SkillRegistry(self._make_skill_tree(tmp_path))
+        # "hel" is close to "help" (not in registry, but in extra_commands)
+        assert registry.suggest_command("hel", extra_commands=["help", "stop"]) == "help"
+
+    def test_suggest_command_prefers_registry_over_extra(self, tmp_path):
+        registry = SkillRegistry(self._make_skill_tree(tmp_path))
+        # "statu" matches "status" from registry
+        result = registry.suggest_command("statu", extra_commands=["stop"])
+        assert result == "status"
+
+    def test_suggest_command_matches_alias(self, tmp_path):
+        registry = SkillRegistry(self._make_skill_tree(tmp_path))
+        # "s" is too short for cutoff, but "deplo" should match "deploy"
+        assert registry.suggest_command("deplo") == "deploy"
+
     def test_list_all(self, tmp_path):
         registry = SkillRegistry(self._make_skill_tree(tmp_path))
         skills = registry.list_all()
@@ -382,6 +494,93 @@ class TestSkillRegistry:
         skill = registry.get_by_qualified_name("koan.verbose")
         assert skill is not None
         assert skill.name == "verbose"
+
+    def test_list_by_group(self, tmp_path):
+        """Skills with group field are found by list_by_group."""
+        # Create core-scoped skills with groups
+        missions_dir = tmp_path / "core" / "mission"
+        missions_dir.mkdir(parents=True)
+        (missions_dir / "SKILL.md").write_text(textwrap.dedent("""\
+            ---
+            name: mission
+            scope: core
+            group: missions
+            description: Create a mission
+            commands:
+              - name: mission
+                description: Create a mission
+            ---
+        """))
+        cancel_dir = tmp_path / "core" / "cancel"
+        cancel_dir.mkdir(parents=True)
+        (cancel_dir / "SKILL.md").write_text(textwrap.dedent("""\
+            ---
+            name: cancel
+            scope: core
+            group: missions
+            description: Cancel a mission
+            commands:
+              - name: cancel
+                description: Cancel a mission
+            ---
+        """))
+        review_dir = tmp_path / "core" / "review"
+        review_dir.mkdir(parents=True)
+        (review_dir / "SKILL.md").write_text(textwrap.dedent("""\
+            ---
+            name: review
+            scope: core
+            group: code
+            description: Review code
+            commands:
+              - name: review
+                description: Review code
+            ---
+        """))
+        registry = SkillRegistry(tmp_path)
+        missions = registry.list_by_group("missions")
+        assert len(missions) == 2
+        names = {s.name for s in missions}
+        assert names == {"mission", "cancel"}
+
+        code = registry.list_by_group("code")
+        assert len(code) == 1
+        assert code[0].name == "review"
+
+    def test_groups(self, tmp_path):
+        """groups() returns sorted distinct group names from core skills."""
+        for name, group in [("a", "code"), ("b", "missions"), ("c", "code")]:
+            d = tmp_path / "core" / name
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(textwrap.dedent(f"""\
+                ---
+                name: {name}
+                scope: core
+                group: {group}
+                commands:
+                  - name: {name}
+                    description: test
+                ---
+            """))
+        registry = SkillRegistry(tmp_path)
+        assert registry.groups() == ["code", "missions"]
+
+    def test_list_by_group_excludes_non_core(self, tmp_path):
+        """list_by_group only returns core-scoped skills."""
+        d = tmp_path / "custom" / "deploy"
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text(textwrap.dedent("""\
+            ---
+            name: deploy
+            scope: custom
+            group: missions
+            commands:
+              - name: deploy
+                description: Deploy
+            ---
+        """))
+        registry = SkillRegistry(tmp_path)
+        assert registry.list_by_group("missions") == []
 
 
 # ---------------------------------------------------------------------------
@@ -443,7 +642,10 @@ class TestExecuteSkill:
 
         ctx = SkillContext(koan_root=tmp_path, instance_dir=tmp_path)
         result = execute_skill(skill, ctx)
-        assert "boom" in result
+        assert isinstance(result, SkillError)
+        assert result.skill_name == "koan.broken"
+        assert isinstance(result.exception, ValueError)
+        assert "boom" in result.message
 
     def test_no_handler_no_prompt(self, tmp_path):
         skill = Skill(name="empty", scope="koan")
@@ -759,6 +961,14 @@ class TestGitHubFields:
         assert skill is not None
         assert skill.github_enabled is True
 
+    def test_plan_skill_github_enabled(self):
+        """Plan core skill should have github_enabled=true."""
+        registry = build_registry()
+        skill = registry.get("core", "plan")
+        assert skill is not None
+        assert skill.github_enabled is True
+        assert skill.github_context_aware is True
+
 
 # ---------------------------------------------------------------------------
 # Audience field
@@ -1057,6 +1267,101 @@ class TestResolveScopedCommand:
         registry = self._make_registry(tmp_path)
         assert registry.resolve_scoped_command("status") is None
 
+    def test_resolve_by_command_name_when_skill_name_differs(self, tmp_path):
+        """Scoped lookup should work by command name, not just skill name.
+
+        When a custom skill has name 'refactor' but a command named 'wp_refactor',
+        /wp.wp_refactor should still resolve via command name fallback.
+        """
+        # Create a custom skill where command name ≠ skill name
+        custom_dir = tmp_path / "wp" / "refactor"
+        custom_dir.mkdir(parents=True)
+        (custom_dir / "SKILL.md").write_text(textwrap.dedent("""\
+            ---
+            name: refactor
+            scope: wp
+            description: WP refactoring
+            commands:
+              - name: wp_refactor
+                description: Refactor WP code
+            ---
+        """))
+        registry = SkillRegistry(tmp_path)
+        # /wp.wp_refactor should find the skill via command name
+        result = registry.resolve_scoped_command("wp.wp_refactor")
+        assert result is not None
+        skill, cmd, args = result
+        assert skill.name == "refactor"
+        assert skill.scope == "wp"
+        assert cmd == "wp_refactor"
+
+    def test_resolve_by_command_alias_in_scope(self, tmp_path):
+        """Scoped lookup should also match command aliases within a scope."""
+        custom_dir = tmp_path / "wp" / "checker"
+        custom_dir.mkdir(parents=True)
+        (custom_dir / "SKILL.md").write_text(textwrap.dedent("""\
+            ---
+            name: checker
+            scope: wp
+            description: WP checker
+            commands:
+              - name: check
+                description: Run checks
+                aliases: [chk, verify]
+            ---
+        """))
+        registry = SkillRegistry(tmp_path)
+        # /wp.chk should resolve via alias
+        result = registry.resolve_scoped_command("wp.chk")
+        assert result is not None
+        skill, cmd, args = result
+        assert skill.name == "checker"
+        assert cmd == "chk"
+
+    def test_resolve_by_command_name_with_args(self, tmp_path):
+        """Command name fallback should preserve args."""
+        custom_dir = tmp_path / "wp" / "refactor"
+        custom_dir.mkdir(parents=True)
+        (custom_dir / "SKILL.md").write_text(textwrap.dedent("""\
+            ---
+            name: refactor
+            scope: wp
+            description: WP refactoring
+            commands:
+              - name: wp_refactor
+                description: Refactor WP code
+            ---
+        """))
+        registry = SkillRegistry(tmp_path)
+        result = registry.resolve_scoped_command("wp.wp_refactor some args here")
+        assert result is not None
+        skill, cmd, args = result
+        assert skill.name == "refactor"
+        assert cmd == "wp_refactor"
+        assert args == "some args here"
+
+    def test_skill_name_lookup_still_preferred(self, tmp_path):
+        """Skill name match should be preferred over command name match."""
+        # Skill with name matching the segment directly
+        s1_dir = tmp_path / "wp" / "deploy"
+        s1_dir.mkdir(parents=True)
+        (s1_dir / "SKILL.md").write_text(textwrap.dedent("""\
+            ---
+            name: deploy
+            scope: wp
+            description: Deploy tool
+            commands:
+              - name: deploy
+                description: Deploy
+            ---
+        """))
+        registry = SkillRegistry(tmp_path)
+        # /wp.deploy should resolve via skill name (preferred path)
+        result = registry.resolve_scoped_command("wp.deploy")
+        assert result is not None
+        skill, cmd, args = result
+        assert skill.name == "deploy"
+
 
 # ---------------------------------------------------------------------------
 # PR skill handler
@@ -1211,3 +1516,353 @@ class TestChatSkillHandler:
         )
         result = mod.handle(ctx)
         assert "not available" in result
+
+
+# ---------------------------------------------------------------------------
+# Enforcement: every core skill must declare a help group
+# ---------------------------------------------------------------------------
+
+class TestCoreSkillGroupEnforcement:
+    """Ensure all core skills have a 'group:' field so they appear in /help."""
+
+    def test_all_core_skills_have_group(self):
+        """Every SKILL.md under koan/skills/core/ must declare a non-empty group."""
+        skills_dir = get_default_skills_dir()
+        core_dir = skills_dir / "core"
+        assert core_dir.is_dir(), f"Core skills dir not found: {core_dir}"
+
+        missing = []
+        for skill_md in sorted(core_dir.rglob("SKILL.md")):
+            skill = parse_skill_md(skill_md)
+            if skill is None:
+                continue
+            if not skill.group:
+                missing.append(str(skill_md.relative_to(core_dir)))
+
+        assert not missing, (
+            f"Core skills missing 'group:' field (they won't appear in /help): "
+            f"{', '.join(missing)}"
+        )
+
+    def test_core_skill_groups_are_known(self):
+        """Every group used by core skills must exist in _GROUP_META."""
+        from app.command_handlers import _GROUP_META
+
+        skills_dir = get_default_skills_dir()
+        core_dir = skills_dir / "core"
+        unknown = []
+        for skill_md in sorted(core_dir.rglob("SKILL.md")):
+            skill = parse_skill_md(skill_md)
+            if skill is None or not skill.group:
+                continue
+            if skill.group not in _GROUP_META:
+                unknown.append(f"{skill.name} → {skill.group}")
+
+        assert not unknown, (
+            f"Core skills use unknown help groups (add to _GROUP_META): "
+            f"{', '.join(unknown)}"
+        )
+
+    def test_registry_warns_on_missing_group(self, caplog):
+        """Registry logs a warning when registering a core skill without group."""
+        skill = Skill(name="orphan", scope="core", group="")
+        registry = SkillRegistry()
+
+        with caplog.at_level("WARNING", logger="app.skills"):
+            registry._register(skill)
+
+        assert registry.get("core", "orphan") is not None
+        assert "no 'group:'" in caplog.text
+
+
+class TestHyphenValidation:
+    """Ensure skills with hyphens in command names or aliases are rejected."""
+
+    def test_command_name_with_hyphen_skipped(self, caplog):
+        """A command whose name contains a hyphen is skipped, but the skill is still registered."""
+        skill = Skill(
+            name="bad_skill", scope="custom",
+            commands=[
+                SkillCommand(name="bad-cmd", description="nope"),
+                SkillCommand(name="good_cmd", description="ok"),
+            ],
+        )
+        registry = SkillRegistry()
+
+        with caplog.at_level("ERROR", logger="app.skills"):
+            registry._register(skill)
+
+        # The skill itself is registered
+        assert registry.get("custom", "bad_skill") is not None
+        # The bad command is not in the command map
+        assert registry.find_by_command("bad-cmd") is None
+        # The good command IS registered
+        assert registry.find_by_command("good_cmd") is not None
+        assert "contains a hyphen" in caplog.text
+        assert "bad-cmd" in caplog.text
+
+    def test_command_name_with_hyphen_only_command(self, caplog):
+        """A skill whose only command has a hyphen is registered but has no commands mapped."""
+        skill = Skill(
+            name="bad_skill_only", scope="custom",
+            commands=[SkillCommand(name="bad-cmd", description="nope")],
+        )
+        registry = SkillRegistry()
+
+        with caplog.at_level("ERROR", logger="app.skills"):
+            registry._register(skill)
+
+        # Skill registered, but no commands accessible
+        assert registry.get("custom", "bad_skill_only") is not None
+        assert registry.find_by_command("bad-cmd") is None
+
+    def test_alias_with_hyphen_skipped(self, caplog):
+        """An alias containing a hyphen is skipped, but the command and skill remain."""
+        skill = Skill(
+            name="bad_skill2", scope="custom",
+            commands=[SkillCommand(name="good_cmd", aliases=["bad-alias", "good_alias"])],
+        )
+        registry = SkillRegistry()
+
+        with caplog.at_level("ERROR", logger="app.skills"):
+            registry._register(skill)
+
+        # Skill and command are registered
+        assert registry.get("custom", "bad_skill2") is not None
+        assert registry.find_by_command("good_cmd") is not None
+        # Good alias works, bad alias doesn't
+        assert registry.find_by_command("good_alias") is not None
+        assert registry.find_by_command("bad-alias") is None
+        assert "contain a hyphen" in caplog.text
+        assert "bad-alias" in caplog.text
+
+    def test_underscore_names_accepted(self):
+        """Skills with underscores in names register normally."""
+        skill = Skill(
+            name="good_skill", scope="custom", group="test",
+            commands=[SkillCommand(name="good_cmd", aliases=["gc"])],
+        )
+        registry = SkillRegistry()
+        registry._register(skill)
+
+        assert registry.get("custom", "good_skill") is not None
+        assert registry.find_by_command("good_cmd") is not None
+        assert registry.find_by_command("gc") is not None
+
+    def test_no_existing_core_skills_have_hyphens(self):
+        """Verify no shipped core skills use hyphens (enforces convention)."""
+        skills_dir = get_default_skills_dir()
+        core_dir = skills_dir / "core"
+        assert core_dir.is_dir()
+
+        violations = []
+        for skill_md in sorted(core_dir.rglob("SKILL.md")):
+            skill = parse_skill_md(skill_md)
+            if skill is None:
+                continue
+            for cmd in skill.commands:
+                if "-" in cmd.name:
+                    violations.append(f"{skill.name}: command '{cmd.name}'")
+                for alias in cmd.aliases:
+                    if "-" in alias:
+                        violations.append(f"{skill.name}: alias '{alias}'")
+
+        assert not violations, (
+            f"Core skills with hyphens in commands/aliases: {', '.join(violations)}"
+        )
+
+
+class TestAliasCollisionDetection:
+    """Verify that SkillRegistry warns when two skills register the same command/alias."""
+
+    def test_command_collision_warns(self, tmp_path, caplog):
+        """Two skills with the same command name should log a warning."""
+        skill_a = tmp_path / "core" / "skill_a"
+        skill_a.mkdir(parents=True)
+        (skill_a / "SKILL.md").write_text(textwrap.dedent("""\
+            ---
+            name: skill_a
+            scope: core
+            description: First skill
+            group: status
+            commands:
+              - name: deploy
+                description: Deploy A
+            ---
+        """))
+
+        skill_b = tmp_path / "core" / "skill_b"
+        skill_b.mkdir(parents=True)
+        (skill_b / "SKILL.md").write_text(textwrap.dedent("""\
+            ---
+            name: skill_b
+            scope: core
+            description: Second skill
+            group: status
+            commands:
+              - name: deploy
+                description: Deploy B
+            ---
+        """))
+
+        with caplog.at_level("WARNING"):
+            registry = SkillRegistry(tmp_path)
+
+        assert "collides" in caplog.text
+        assert "deploy" in caplog.text
+        assert "core.skill_a" in caplog.text
+        assert "core.skill_b" in caplog.text
+
+        # The later skill wins (overwrites)
+        found = registry.find_by_command("deploy")
+        assert found is not None
+        assert found.name == "skill_b"
+
+    def test_alias_collision_warns(self, tmp_path, caplog):
+        """Two skills with overlapping aliases should log a warning."""
+        skill_a = tmp_path / "core" / "skill_a"
+        skill_a.mkdir(parents=True)
+        (skill_a / "SKILL.md").write_text(textwrap.dedent("""\
+            ---
+            name: skill_a
+            scope: core
+            description: First skill
+            group: status
+            commands:
+              - name: alpha
+                description: Alpha cmd
+                aliases: [a]
+            ---
+        """))
+
+        skill_b = tmp_path / "core" / "skill_b"
+        skill_b.mkdir(parents=True)
+        (skill_b / "SKILL.md").write_text(textwrap.dedent("""\
+            ---
+            name: skill_b
+            scope: core
+            description: Second skill
+            group: status
+            commands:
+              - name: beta
+                description: Beta cmd
+                aliases: [a]
+            ---
+        """))
+
+        with caplog.at_level("WARNING"):
+            SkillRegistry(tmp_path)
+
+        assert "collides" in caplog.text
+        assert "alias" in caplog.text
+        assert "'a'" in caplog.text
+
+    def test_alias_collides_with_command_warns(self, tmp_path, caplog):
+        """An alias that matches another skill's command name should warn."""
+        skill_a = tmp_path / "core" / "skill_a"
+        skill_a.mkdir(parents=True)
+        (skill_a / "SKILL.md").write_text(textwrap.dedent("""\
+            ---
+            name: skill_a
+            scope: core
+            description: First skill
+            group: status
+            commands:
+              - name: deploy
+                description: Deploy
+            ---
+        """))
+
+        skill_b = tmp_path / "core" / "skill_b"
+        skill_b.mkdir(parents=True)
+        (skill_b / "SKILL.md").write_text(textwrap.dedent("""\
+            ---
+            name: skill_b
+            scope: core
+            description: Second skill
+            group: status
+            commands:
+              - name: ship
+                description: Ship it
+                aliases: [deploy]
+            ---
+        """))
+
+        with caplog.at_level("WARNING"):
+            SkillRegistry(tmp_path)
+
+        assert "collides" in caplog.text
+        assert "deploy" in caplog.text
+
+    def test_same_skill_multiple_commands_no_warning(self, tmp_path, caplog):
+        """A skill registering its own commands should never trigger a collision."""
+        skill_a = tmp_path / "core" / "skill_a"
+        skill_a.mkdir(parents=True)
+        (skill_a / "SKILL.md").write_text(textwrap.dedent("""\
+            ---
+            name: skill_a
+            scope: core
+            description: Multi-command skill
+            group: status
+            commands:
+              - name: start
+                description: Start
+              - name: stop
+                description: Stop
+            ---
+        """))
+
+        with caplog.at_level("WARNING"):
+            SkillRegistry(tmp_path)
+
+        assert "collides" not in caplog.text
+
+    def test_no_collision_across_different_commands(self, tmp_path, caplog):
+        """Skills with distinct commands should not warn."""
+        skill_a = tmp_path / "core" / "skill_a"
+        skill_a.mkdir(parents=True)
+        (skill_a / "SKILL.md").write_text(textwrap.dedent("""\
+            ---
+            name: skill_a
+            scope: core
+            description: First
+            group: status
+            commands:
+              - name: alpha
+                description: Alpha
+            ---
+        """))
+
+        skill_b = tmp_path / "core" / "skill_b"
+        skill_b.mkdir(parents=True)
+        (skill_b / "SKILL.md").write_text(textwrap.dedent("""\
+            ---
+            name: skill_b
+            scope: core
+            description: Second
+            group: status
+            commands:
+              - name: beta
+                description: Beta
+            ---
+        """))
+
+        with caplog.at_level("WARNING"):
+            SkillRegistry(tmp_path)
+
+        assert "collides" not in caplog.text
+
+    def test_no_collision_on_real_core_skills(self, caplog):
+        """Verify no alias/command collisions exist in shipped core skills."""
+        from app.skills import get_default_skills_dir
+
+        with caplog.at_level("WARNING", logger="app.skills"):
+            SkillRegistry(get_default_skills_dir())
+
+        collisions = [
+            rec.message for rec in caplog.records if "collides" in rec.message
+        ]
+        assert not collisions, (
+            f"Core skills have command/alias collisions:\n"
+            + "\n".join(collisions)
+        )

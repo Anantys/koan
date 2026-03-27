@@ -17,6 +17,8 @@ from app.schedule_manager import (
     get_current_schedule,
     get_schedule_config,
     parse_time_ranges,
+    is_scheduled_active,
+    should_relax_pr_limit,
     should_suppress_exploration,
 )
 
@@ -261,6 +263,25 @@ class TestAdjustContemplativeChance:
         assert adjust_contemplative_chance(0, state) == 0
 
 
+# === Tests: should_relax_pr_limit ===
+
+
+class TestShouldRelaxPrLimit:
+    """Tests for should_relax_pr_limit()."""
+
+    def test_deep_hours_relaxes(self):
+        state = ScheduleState(in_deep_hours=True, in_work_hours=False)
+        assert should_relax_pr_limit(state) is True
+
+    def test_work_hours_does_not_relax(self):
+        state = ScheduleState(in_deep_hours=False, in_work_hours=True)
+        assert should_relax_pr_limit(state) is False
+
+    def test_normal_does_not_relax(self):
+        state = ScheduleState(in_deep_hours=False, in_work_hours=False)
+        assert should_relax_pr_limit(state) is False
+
+
 # === Tests: should_suppress_exploration ===
 
 
@@ -405,3 +426,28 @@ class TestScheduleState:
     def test_mode_normal(self):
         state = ScheduleState(in_deep_hours=False, in_work_hours=False)
         assert state.mode == "normal"
+
+
+# === Tests: is_scheduled_active ===
+
+
+class TestIsScheduledActive:
+    """Tests for is_scheduled_active()."""
+
+    def test_active_in_deep_hours(self):
+        state = ScheduleState(in_deep_hours=True, in_work_hours=False)
+        assert is_scheduled_active(state) is True
+
+    def test_active_in_work_hours(self):
+        state = ScheduleState(in_deep_hours=False, in_work_hours=True)
+        assert is_scheduled_active(state) is True
+
+    def test_inactive_in_normal_hours(self):
+        state = ScheduleState(in_deep_hours=False, in_work_hours=False)
+        assert is_scheduled_active(state) is False
+
+    def test_auto_fetches_schedule(self):
+        """When no schedule is passed, it fetches the current one."""
+        state = ScheduleState(in_deep_hours=True, in_work_hours=False)
+        with patch("app.schedule_manager.get_current_schedule", return_value=state):
+            assert is_scheduled_active() is True

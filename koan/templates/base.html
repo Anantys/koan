@@ -4,225 +4,49 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}Kōan{% endblock %}</title>
-    <style>
-        :root {
-            --bg: #0d1117;
-            --surface: #161b22;
-            --border: #30363d;
-            --text: #c9d1d9;
-            --text-muted: #8b949e;
-            --accent: #58a6ff;
-            --green: #3fb950;
-            --orange: #d29922;
-            --red: #f85149;
-            --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-            --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
-        }
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: var(--font);
-            background: var(--bg);
-            color: var(--text);
-            line-height: 1.5;
-        }
-        nav {
-            background: var(--surface);
-            border-bottom: 1px solid var(--border);
-            padding: 0.75rem 1.5rem;
-            display: flex;
-            align-items: center;
-            gap: 2rem;
-        }
-        nav .logo {
-            font-size: 1.2rem;
-            font-weight: 600;
-            color: var(--accent);
-            text-decoration: none;
-        }
-        nav a {
-            color: var(--text-muted);
-            text-decoration: none;
-            font-size: 0.9rem;
-        }
-        nav a:hover, nav a.active { color: var(--text); }
-        main {
-            max-width: 960px;
-            margin: 2rem auto;
-            padding: 0 1.5rem;
-        }
-        h1 { font-size: 1.5rem; margin-bottom: 1.5rem; }
-        h2 { font-size: 1.1rem; margin-bottom: 1rem; color: var(--text-muted); }
-        .card {
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: 6px;
-            padding: 1rem 1.25rem;
-            margin-bottom: 1rem;
-        }
-        .grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 1rem;
-            margin-bottom: 2rem;
-        }
-        .stat-value {
-            font-size: 2rem;
-            font-weight: 700;
-            font-family: var(--mono);
-        }
-        .stat-label {
-            font-size: 0.8rem;
-            color: var(--text-muted);
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-        }
-        .badge {
-            display: inline-block;
-            padding: 0.15rem 0.5rem;
-            border-radius: 12px;
-            font-size: 0.75rem;
-            font-weight: 600;
-        }
-        .badge-green { background: rgba(63, 185, 80, 0.15); color: var(--green); }
-        .badge-orange { background: rgba(210, 153, 34, 0.15); color: var(--orange); }
-        .badge-red { background: rgba(248, 81, 73, 0.15); color: var(--red); }
-        .badge-blue { background: rgba(88, 166, 255, 0.15); color: var(--accent); }
-        .badge-muted { background: rgba(139, 148, 158, 0.15); color: var(--text-muted); }
-        .mission-item {
-            padding: 0.5rem 0;
-            border-bottom: 1px solid var(--border);
-            font-family: var(--mono);
-            font-size: 0.85rem;
-        }
-        .mission-item:last-child { border-bottom: none; }
-        input[type="text"], textarea {
-            width: 100%;
-            padding: 0.5rem 0.75rem;
-            background: var(--bg);
-            border: 1px solid var(--border);
-            border-radius: 4px;
-            color: var(--text);
-            font-family: var(--font);
-            font-size: 0.9rem;
-        }
-        input[type="text"]:focus, textarea:focus {
-            outline: none;
-            border-color: var(--accent);
-        }
-        button, .btn {
-            padding: 0.4rem 1rem;
-            background: var(--accent);
-            color: #fff;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 0.85rem;
-            font-weight: 500;
-        }
-        button:hover, .btn:hover { opacity: 0.9; }
-        .btn-secondary {
-            background: var(--surface);
-            border: 1px solid var(--border);
-            color: var(--text);
-        }
-        .form-row {
-            display: flex;
-            gap: 0.5rem;
-            align-items: center;
-            margin-top: 0.75rem;
-        }
-        .form-row input[type="text"] { flex: 1; }
-        pre {
-            font-family: var(--mono);
-            font-size: 0.82rem;
-            white-space: pre-wrap;
-            word-break: break-word;
-            color: var(--text-muted);
-            line-height: 1.6;
-        }
-        .journal-date {
-            font-size: 0.9rem;
-            font-weight: 600;
-            color: var(--accent);
-            margin-bottom: 0.5rem;
-        }
-        .journal-project {
-            font-size: 0.75rem;
-            color: var(--text-muted);
-            text-transform: uppercase;
-            margin-bottom: 0.25rem;
-        }
-        .chat-container {
-            display: flex;
-            flex-direction: column;
-            height: calc(100vh - 200px);
-        }
-        .chat-messages {
-            flex: 1;
-            overflow-y: auto;
-            padding: 1rem 0;
-        }
-        .chat-msg {
-            margin-bottom: 1rem;
-            padding: 0.75rem 1rem;
-            border-radius: 8px;
-            max-width: 80%;
-        }
-        .chat-msg.human {
-            background: rgba(88, 166, 255, 0.1);
-            border: 1px solid rgba(88, 166, 255, 0.2);
-            margin-left: auto;
-        }
-        .chat-msg.koan {
-            background: var(--surface);
-            border: 1px solid var(--border);
-        }
-        .chat-msg .sender {
-            font-size: 0.7rem;
-            color: var(--text-muted);
-            margin-bottom: 0.25rem;
-            text-transform: uppercase;
-        }
-        .chat-input {
-            display: flex;
-            gap: 0.5rem;
-            padding: 1rem 0;
-            border-top: 1px solid var(--border);
-        }
-        .chat-input textarea {
-            flex: 1;
-            resize: none;
-            height: 60px;
-        }
-        .chat-input .actions {
-            display: flex;
-            flex-direction: column;
-            gap: 0.25rem;
-        }
-        .loading { opacity: 0.5; }
-        .spinner {
-            display: inline-block;
-            width: 16px;
-            height: 16px;
-            border: 2px solid var(--border);
-            border-top-color: var(--accent);
-            border-radius: 50%;
-            animation: spin 0.6s linear infinite;
-        }
-        @keyframes spin { to { transform: rotate(360deg); } }
-    </style>
+    <!-- Apply saved theme before paint to avoid flash -->
+    <script>try{var t=localStorage.getItem('koan_theme');if(t==='light')document.documentElement.dataset.theme='light';}catch(e){}</script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
+    <link id="favicon" rel="icon" href="{{ url_for('static', filename='favicon/default.svg') }}" type="image/svg+xml" data-base="{{ url_for('static', filename='favicon/') }}">
 </head>
 <body>
     <nav>
         <a href="/" class="logo">Kōan</a>
-        <a href="/" {% if request.path == '/' %}class="active"{% endif %}>Dashboard</a>
+        <a href="/" {% if request.path == '/' %}class="active"{% endif %} id="nav-dashboard">Dashboard<span id="nav-attention-badge" class="nav-attention-badge" style="display:none;"></span></a>
         <a href="/missions" {% if request.path == '/missions' %}class="active"{% endif %}>Missions</a>
         <a href="/chat" {% if request.path == '/chat' %}class="active"{% endif %}>Chat</a>
+        <a href="/usage" {% if request.path == '/usage' %}class="active"{% endif %}>Usage</a>
+        <a href="/prs" {% if request.path == '/prs' %}class="active"{% endif %}>PRs</a>
+        <a href="/plans" {% if request.path == '/plans' %}class="active"{% endif %}>Plans</a>
         <a href="/progress" {% if request.path == '/progress' %}class="active"{% endif %}>Progress</a>
         <a href="/journal" {% if request.path == '/journal' %}class="active"{% endif %}>Journal</a>
+        <button id="theme-toggle" title="Toggle theme">☀️</button>
+        <select id="project-filter">
+            <option value="">All projects</option>
+        </select>
     </nav>
     <main>
         {% block content %}{% endblock %}
     </main>
+
+    <!-- Keyboard shortcuts overlay -->
+    <div id="shortcuts-help" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">
+        <div id="shortcuts-help-box">
+            <h3>Keyboard shortcuts</h3>
+            <div class="shortcut-row"><span>Dashboard</span><span class="shortcut-key">d</span></div>
+            <div class="shortcut-row"><span>Missions</span><span class="shortcut-key">m</span></div>
+            <div class="shortcut-row"><span>Chat</span><span class="shortcut-key">c</span></div>
+            <div class="shortcut-row"><span>Usage</span><span class="shortcut-key">u</span></div>
+            <div class="shortcut-row"><span>PRs</span><span class="shortcut-key">p</span></div>
+            <div class="shortcut-row"><span>Plans</span><span class="shortcut-key">l</span></div>
+            <div class="shortcut-row"><span>Progress</span><span class="shortcut-key">g</span></div>
+            <div class="shortcut-row"><span>Journal</span><span class="shortcut-key">j</span></div>
+            <div class="shortcut-row"><span>Show shortcuts</span><span class="shortcut-key">?</span></div>
+            <span class="shortcut-close">Press Esc or click outside to close</span>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+    {% block scripts %}{% endblock %}
 </body>
 </html>

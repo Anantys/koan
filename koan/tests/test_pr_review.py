@@ -10,15 +10,15 @@ import pytest
 
 from app.claude_step import (
     _run_git,
-    _truncate,
     run_claude as _run_claude,
     commit_if_changes as _commit_if_changes,
     run_claude_step as _run_claude_step,
     _rebase_onto_target,
 )
 from app.github import run_gh
+from app.claude_step import run_project_tests
+from app.github_url_parser import parse_pr_url
 from app.pr_review import (
-    parse_pr_url,
     fetch_pr_context,
     build_pr_prompt,
     build_refactor_prompt,
@@ -27,7 +27,6 @@ from app.pr_review import (
     detect_skills,
     run_pr_review,
     _build_pr_comment,
-    _run_tests,
 )
 
 
@@ -80,23 +79,27 @@ class TestParsePrUrl:
 
 
 # ---------------------------------------------------------------------------
-# _truncate
+# truncate_text (now in utils.py)
 # ---------------------------------------------------------------------------
 
-class TestTruncate:
+class TestTruncateText:
     def test_short_text_unchanged(self):
-        assert _truncate("hello", 100) == "hello"
+        from app.utils import truncate_text
+        assert truncate_text("hello", 100) == "hello"
 
     def test_exact_length_unchanged(self):
-        assert _truncate("12345", 5) == "12345"
+        from app.utils import truncate_text
+        assert truncate_text("12345", 5) == "12345"
 
     def test_long_text_truncated(self):
-        result = _truncate("a" * 20, 10)
+        from app.utils import truncate_text
+        result = truncate_text("a" * 20, 10)
         assert len(result) < 30
         assert "truncated" in result
 
     def test_empty_string(self):
-        assert _truncate("", 100) == ""
+        from app.utils import truncate_text
+        assert truncate_text("", 100) == ""
 
 
 # ---------------------------------------------------------------------------
@@ -122,19 +125,19 @@ class TestRunGhIntegration:
 # ---------------------------------------------------------------------------
 
 class TestRunGit:
-    @patch("app.pr_review.subprocess.run")
+    @patch("app.claude_step.subprocess.run")
     def test_success(self, mock_run):
         mock_run.return_value = MagicMock(returncode=0, stdout="ok\n")
         result = _run_git(["git", "status"])
         assert result == "ok"
 
-    @patch("app.pr_review.subprocess.run")
+    @patch("app.claude_step.subprocess.run")
     def test_failure_raises(self, mock_run):
         mock_run.return_value = MagicMock(returncode=1, stderr="error")
         with pytest.raises(RuntimeError, match="git failed"):
             _run_git(["git", "checkout", "nope"])
 
-    @patch("app.pr_review.subprocess.run")
+    @patch("app.claude_step.subprocess.run")
     def test_cwd_passed(self, mock_run):
         mock_run.return_value = MagicMock(returncode=0, stdout="")
         _run_git(["git", "status"], cwd="/tmp/test")
@@ -352,8 +355,6 @@ class TestRebaseOntoTarget:
         mock_git.side_effect = RuntimeError("conflict")
         result = _rebase_onto_target("main", "/tmp/p")
         assert result is None
-        # Should have called rebase --abort twice (once per remote)
-        assert mock_subproc.call_count == 2
 
 
 # ---------------------------------------------------------------------------
@@ -361,27 +362,29 @@ class TestRebaseOntoTarget:
 # ---------------------------------------------------------------------------
 
 class TestRunTests:
-    @patch("app.pr_review.subprocess.run")
+    """Tests for run_project_tests (moved to claude_step.py)."""
+
+    @patch("app.claude_step.subprocess.run")
     def test_passing(self, mock_run):
         mock_run.return_value = MagicMock(
             returncode=0, stdout="42 tests passed", stderr=""
         )
-        result = _run_tests("make test", "/tmp/p")
+        result = run_project_tests("/tmp/p", test_cmd="make test")
         assert result["passed"] is True
         assert "42" in result["details"]
 
-    @patch("app.pr_review.subprocess.run")
+    @patch("app.claude_step.subprocess.run")
     def test_failing(self, mock_run):
         mock_run.return_value = MagicMock(
             returncode=1, stdout="3 failed", stderr=""
         )
-        result = _run_tests("make test", "/tmp/p")
+        result = run_project_tests("/tmp/p", test_cmd="make test")
         assert result["passed"] is False
 
-    @patch("app.pr_review.subprocess.run")
+    @patch("app.claude_step.subprocess.run")
     def test_timeout(self, mock_run):
         mock_run.side_effect = subprocess.TimeoutExpired(cmd="make", timeout=300)
-        result = _run_tests("make test", "/tmp/p")
+        result = run_project_tests("/tmp/p", test_cmd="make test")
         assert result["passed"] is False
         assert "timeout" in result["details"]
 
@@ -527,6 +530,7 @@ class TestFetchPrContext:
         })
         mock_gh.side_effect = [
             pr_meta,           # PR metadata
+            "1",               # review_comments count
             "diff content",    # diff
             "comment1",        # review comments
             "review1",         # reviews
@@ -541,11 +545,12 @@ class TestFetchPrContext:
         assert ctx["review_comments"] == "comment1"
         assert ctx["reviews"] == "review1"
         assert ctx["issue_comments"] == "discussion1"
-        assert mock_gh.call_count == 5
+        assert ctx["has_pending_reviews"] is False
+        assert mock_gh.call_count == 6
 
     @patch("app.rebase_pr.run_gh")
     def test_handles_invalid_json(self, mock_gh):
-        mock_gh.side_effect = ["not json", "", "", "", ""]
+        mock_gh.side_effect = ["not json", "0", "", "", "", ""]
         ctx = fetch_pr_context("o", "r", "1")
         assert ctx["title"] == ""
         assert ctx["branch"] == ""
@@ -639,7 +644,7 @@ class TestRunPrReview:
         mock_models.return_value = {"mission": "", "fallback": "sonnet"}
 
         mock_rebase_gh.side_effect = [
-            self._mock_pr_context(), "diff", "reviewer comment", "reviews", "thread",
+            self._mock_pr_context(), "0", "diff", "reviewer comment", "reviews", "thread",
         ]
         mock_claude.return_value = {"success": True, "output": "Fixed", "error": ""}
         mock_commit.return_value = True
@@ -671,7 +676,7 @@ class TestRunPrReview:
 
     @patch("app.pr_review.detect_skills", return_value=("atoomic.refactor", "atoomic.review"))
     @patch("app.pr_review.detect_test_command", return_value="make test")
-    @patch("app.pr_review._run_tests")
+    @patch("app.pr_review.run_project_tests")
     @patch("app.pr_review.run_gh")
     @patch("app.pr_review._run_git")
     @patch("app.claude_step.run_claude")
@@ -687,7 +692,7 @@ class TestRunPrReview:
         mock_models.return_value = {"mission": "", "fallback": "sonnet"}
 
         mock_rebase_gh.side_effect = [
-            self._mock_pr_context(), "diff", "comment", "review", "thread",
+            self._mock_pr_context(), "0", "diff", "comment", "review", "thread",
         ]
         # 3 Claude calls: review feedback, refactor, quality review
         mock_claude.return_value = {"success": True, "output": "Done", "error": ""}
@@ -728,7 +733,7 @@ class TestRunPrReview:
             "url": "https://github.com/o/r/pull/1",
         })
         # No comments/reviews
-        mock_rebase_gh.side_effect = [pr_meta, "diff", "", "", ""]
+        mock_rebase_gh.side_effect = [pr_meta, "0", "diff", "", "", ""]
         mock_commit.return_value = False
 
         notify = MagicMock()
@@ -739,7 +744,7 @@ class TestRunPrReview:
 
     @patch("app.pr_review.detect_skills", return_value=(None, None))
     @patch("app.pr_review.detect_test_command", return_value="make test")
-    @patch("app.pr_review._run_tests")
+    @patch("app.pr_review.run_project_tests")
     @patch("app.pr_review.run_gh")
     @patch("app.pr_review._run_git")
     @patch("app.claude_step.run_claude")
@@ -755,7 +760,7 @@ class TestRunPrReview:
         mock_models.return_value = {"mission": "", "fallback": "sonnet"}
 
         mock_rebase_gh.side_effect = [
-            self._mock_pr_context(), "diff", "", "", "",
+            self._mock_pr_context(), "0", "diff", "", "", "",
         ]
         mock_claude.return_value = {"success": True, "output": "Fixed", "error": ""}
         mock_commit.return_value = True

@@ -86,22 +86,64 @@ def queue_github_mission(ctx, command: str, url: str, project_name: str, context
     insert_pending_mission(missions_path, mission_entry)
 
 
-def format_project_not_found_error(repo: str) -> str:
+def format_project_not_found_error(repo: str, owner: Optional[str] = None) -> str:
     """Format a consistent error message when project cannot be resolved.
 
     Args:
         repo: Repository name that couldn't be matched
+        owner: Optional repository owner for more precise diagnostics
 
     Returns:
-        Formatted error message
+        Formatted error message with actionable suggestions
     """
     from app.utils import get_known_projects
 
+    target = f"{owner}/{repo}" if owner else repo
     known = ", ".join(n for n, _ in get_known_projects()) or "none"
-    return (
-        f"\u274c Could not find local project matching repo '{repo}'.\n"
-        f"Known projects: {known}"
-    )
+    lines = [
+        f"\u274c Could not find local project for '{target}'.",
+        f"Known projects: {known}",
+    ]
+
+    # Suggest closest match: find projects whose github_url has the same repo name
+    if owner:
+        suggestions = _find_repo_name_matches(repo)
+        if suggestions:
+            formatted = ", ".join(suggestions)
+            lines.append(
+                f"Possible match: {formatted} (same repo, different owner)."
+            )
+
+    lines.append(f"Tip: /add_project https://github.com/{target} to register it.")
+    return "\n".join(lines)
+
+
+def _find_repo_name_matches(repo: str) -> list:
+    """Find projects whose github_url has the same repo name (different owner).
+
+    Returns a list of "owner/repo" strings from matching projects.
+    """
+    repo_lower = repo.lower()
+    matches = []
+    try:
+        from app.projects_config import load_projects_config
+        from app.utils import KOAN_ROOT
+
+        config = load_projects_config(str(KOAN_ROOT))
+        if not config:
+            return matches
+        for _name, project in config.get("projects", {}).items():
+            if not isinstance(project, dict):
+                continue
+            gh_url = project.get("github_url", "")
+            if gh_url and "/" in gh_url:
+                url_repo = gh_url.rsplit("/", 1)[1]
+                if url_repo.lower() == repo_lower and gh_url not in matches:
+                    matches.append(gh_url)
+    except (OSError, ValueError, ImportError) as e:
+        import sys
+        print(f"[github_skill_helpers] repo name match failed: {e}", file=sys.stderr)
+    return matches
 
 
 def format_success_message(url_type: str, number: str, owner: str, repo: str, context: Optional[str] = None) -> str:
@@ -178,7 +220,7 @@ def handle_github_skill(
     # Resolve project
     project_path, project_name = resolve_project_for_repo(repo, owner=owner)
     if not project_path:
-        return format_project_not_found_error(repo)
+        return format_project_not_found_error(repo, owner=owner)
     
     # Queue mission
     queue_github_mission(ctx, command, url, project_name, context)

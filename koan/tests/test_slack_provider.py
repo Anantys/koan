@@ -79,7 +79,9 @@ class TestSendMessage:
 
     def test_long_message_chunked(self, provider):
         provider._web_client.chat_postMessage.return_value = {"ok": True}
-        assert provider.send_message("x" * 8500) is True
+        # Bypass rate-limit sleeps (1s between chunks) to keep test fast
+        with patch("app.messaging.slack.time.sleep"):
+            assert provider.send_message("x" * 8500) is True
         assert provider._web_client.chat_postMessage.call_count == 3
 
     def test_api_error(self, provider):

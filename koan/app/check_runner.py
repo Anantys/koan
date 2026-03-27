@@ -12,18 +12,10 @@ CLI:
 """
 
 import json
-import re
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Tuple
 
-# PR URL: https://github.com/owner/repo/pull/123
-_PR_URL_RE = re.compile(
-    r"https?://github\.com/(?P<owner>[^/]+)/(?P<repo>[^/]+)/pull/(?P<number>\d+)"
-)
-# Issue URL: https://github.com/owner/repo/issues/123
-_ISSUE_URL_RE = re.compile(
-    r"https?://github\.com/(?P<owner>[^/]+)/(?P<repo>[^/]+)/issues/(?P<number>\d+)"
-)
+from app.github_url_parser import search_pr_url, search_issue_url
 
 
 def run_check(
@@ -43,17 +35,21 @@ def run_check(
 
     instance_path = Path(instance_dir)
 
-    pr_match = _PR_URL_RE.search(url)
-    if pr_match:
+    try:
+        owner, repo, pr_number = search_pr_url(url)
         return _handle_pr(
-            pr_match, instance_path, koan_root, notify_fn,
+            owner, repo, pr_number, instance_path, koan_root, notify_fn,
         )
+    except ValueError:
+        pass
 
-    issue_match = _ISSUE_URL_RE.search(url)
-    if issue_match:
+    try:
+        owner, repo, issue_number = search_issue_url(url)
         return _handle_issue(
-            issue_match, instance_path, koan_root, notify_fn,
+            owner, repo, issue_number, instance_path, koan_root, notify_fn,
         )
+    except ValueError:
+        pass
 
     return False, f"No valid GitHub PR or issue URL found in: {url}"
 
@@ -108,13 +104,10 @@ def _has_no_reviews(pr_data):
     return not decision
 
 
-def _handle_pr(match, instance_dir, koan_root, notify_fn):
+def _handle_pr(owner, repo, pr_number, instance_dir, koan_root, notify_fn):
     """Check a pull request and decide on action."""
     from app.check_tracker import has_changed, mark_checked
 
-    owner = match.group("owner")
-    repo = match.group("repo")
-    pr_number = match.group("number")
     url = _canonical_url(owner, repo, "pull", pr_number)
 
     notify_fn(f"\U0001f50d Checking PR #{pr_number} ({owner}/{repo})...")
@@ -226,13 +219,10 @@ def _queue_pr_review(owner, repo, pr_number, missions_path):
 # Issue handling
 # ---------------------------------------------------------------------------
 
-def _handle_issue(match, instance_dir, koan_root, notify_fn):
+def _handle_issue(owner, repo, issue_number, instance_dir, koan_root, notify_fn):
     """Check an issue and trigger /plan if updated."""
     from app.check_tracker import has_changed, mark_checked
 
-    owner = match.group("owner")
-    repo = match.group("repo")
-    issue_number = match.group("number")
     url = _canonical_url(owner, repo, "issues", issue_number)
 
     notify_fn(f"\U0001f50d Checking issue #{issue_number} ({owner}/{repo})...")

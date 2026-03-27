@@ -1,6 +1,7 @@
 ---
 name: sparring
 scope: core
+group: ideas
 description: Start a strategic sparring session
 version: 1.0.0
 audience: bridge

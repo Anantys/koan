@@ -4,6 +4,8 @@ import random
 from pathlib import Path
 from typing import List, Tuple
 
+from app.project_explorer import get_projects
+
 
 def handle(ctx):
     """Handle /ai command -- queue an AI exploration mission.
@@ -15,7 +17,7 @@ def handle(ctx):
     CLI runner (app.ai_runner), gathers git context, and suggests
     creative improvements.
     """
-    projects = _get_projects(ctx)
+    projects = get_projects()
     if not projects:
         return "No projects configured."
 
@@ -34,16 +36,6 @@ def handle(ctx):
     insert_pending_mission(missions_path, mission_entry)
 
     return f"AI exploration queued for {name}"
-
-
-def _get_projects(ctx) -> List[Tuple[str, str]]:
-    """Get list of (name, path) for project exploration."""
-    from app.utils import get_known_projects
-
-    try:
-        return [(n, p) for n, p in get_known_projects() if Path(p).is_dir()]
-    except Exception:
-        return []
 
 
 def _resolve_project(

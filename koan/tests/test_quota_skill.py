@@ -159,8 +159,7 @@ class TestQuotaHandler:
 
         ctx = _make_ctx(tmp_path)
         _write_usage_state(ctx.instance_dir)
-        (tmp_path / ".koan-pause").write_text("1234567890")
-        (tmp_path / ".koan-pause-reason").write_text("quota")
+        (tmp_path / ".koan-pause").write_text("quota\n1234567890\n")
         result = handle(ctx)
         assert "paused" in result
         assert "quota" in result
@@ -491,15 +490,13 @@ class TestFormatAgentState:
 
     def test_paused_with_quota_reason(self, tmp_path):
         from skills.core.quota.handler import _format_agent_state
-        (tmp_path / ".koan-pause").write_text("123")
-        (tmp_path / ".koan-pause-reason").write_text("quota")
+        (tmp_path / ".koan-pause").write_text("quota\n1234567890\n")
         result = _format_agent_state(tmp_path)
         assert "quota exhausted" in result
 
     def test_paused_with_max_runs_reason(self, tmp_path):
         from skills.core.quota.handler import _format_agent_state
-        (tmp_path / ".koan-pause").write_text("123")
-        (tmp_path / ".koan-pause-reason").write_text("max_runs")
+        (tmp_path / ".koan-pause").write_text("max_runs\n1234567890\n")
         result = _format_agent_state(tmp_path)
         assert "max runs" in result
 
@@ -556,12 +553,28 @@ class TestQuotaCommandRouting:
         assert "Agent" in output
 
     @patch("app.command_handlers.send_telegram")
-    def test_quota_appears_in_help(self, mock_send, tmp_path):
+    @patch("skills.core.quota.handler.STATS_CACHE_PATH", Path("/nonexistent"))
+    @patch("skills.core.quota.handler._load_config", return_value={})
+    def test_quota_with_args_routes_via_skill(self, mock_config, mock_send, tmp_path):
+        """``/quota 32`` routes through the skill and applies override."""
         from app.command_handlers import handle_command
 
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir(exist_ok=True)
+
         with patch("app.command_handlers.KOAN_ROOT", tmp_path), \
-             patch("app.command_handlers.INSTANCE_DIR", tmp_path):
-            handle_command("/help")
+             patch("app.command_handlers.INSTANCE_DIR", instance_dir):
+            handle_command("/quota 32")
+        mock_send.assert_called_once()
+        output = mock_send.call_args[0][0]
+        assert "32%" in output
+        assert "override" in output.lower()
+
+    @patch("app.command_handlers.send_telegram")
+    def test_quota_appears_in_help(self, mock_send, tmp_path):
+        from app.command_handlers import _handle_help_detail
+
+        _handle_help_detail("status")
         mock_send.assert_called_once()
         help_text = mock_send.call_args[0][0]
         assert "/quota" in help_text
@@ -614,3 +627,233 @@ class TestQuotaEdgeCases:
         # 500k / 1M = 50%
         assert "50%" in result
         assert "1.0M" in result
+
+
+# ---------------------------------------------------------------------------
+# _format_cost_breakdown
+# ---------------------------------------------------------------------------
+
+class TestFormatCostBreakdown:
+    """Test per-project/model cost breakdown in quota output."""
+
+    def test_no_data_returns_none(self, tmp_path):
+        from skills.core.quota.handler import _format_cost_breakdown
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        result = _format_cost_breakdown(instance_dir)
+        assert result is None
+
+    def test_shows_project_breakdown(self, tmp_path):
+        from skills.core.quota.handler import _format_cost_breakdown
+        from app.cost_tracker import record_usage
+
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        record_usage(instance_dir, "koan", "sonnet", 10000, 5000, "implement", "fix")
+        record_usage(instance_dir, "other", "opus", 20000, 8000, "deep", "refactor")
+
+        result = _format_cost_breakdown(instance_dir)
+        assert result is not None
+        assert "Usage (7 days)" in result
+        assert "By project:" in result
+        assert "koan" in result
+        assert "other" in result
+
+    def test_shows_model_breakdown(self, tmp_path):
+        from skills.core.quota.handler import _format_cost_breakdown
+        from app.cost_tracker import record_usage
+
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        record_usage(instance_dir, "p", "claude-sonnet-4-20250514", 10000, 5000)
+        record_usage(instance_dir, "p", "claude-opus-4-20250514", 20000, 8000)
+
+        result = _format_cost_breakdown(instance_dir)
+        assert "By model:" in result
+        assert "Opus" in result
+        assert "Sonnet" in result
+
+    def test_limits_projects_to_top_3(self, tmp_path):
+        from skills.core.quota.handler import _format_cost_breakdown
+        from app.cost_tracker import record_usage
+
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        for i in range(5):
+            record_usage(instance_dir, f"proj-{i}", "sonnet", 1000 * (i + 1), 500)
+
+        result = _format_cost_breakdown(instance_dir)
+        # Should show top 3 projects by tokens
+        assert "proj-4" in result  # highest
+        assert "proj-3" in result
+        assert "proj-2" in result
+        assert "proj-0" not in result  # lowest, excluded
+
+    def test_limits_models_to_top_2(self, tmp_path):
+        from skills.core.quota.handler import _format_cost_breakdown
+        from app.cost_tracker import record_usage
+
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        record_usage(instance_dir, "p", "claude-opus-4", 30000, 10000)
+        record_usage(instance_dir, "p", "claude-sonnet-4", 20000, 5000)
+        record_usage(instance_dir, "p", "claude-haiku-4", 1000, 200)
+
+        result = _format_cost_breakdown(instance_dir)
+        assert "Opus" in result
+        assert "Sonnet" in result
+        # Haiku may or may not appear — top 2 only
+
+    def test_shows_run_counts(self, tmp_path):
+        from skills.core.quota.handler import _format_cost_breakdown
+        from app.cost_tracker import record_usage
+
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        record_usage(instance_dir, "koan", "sonnet", 1000, 500)
+        record_usage(instance_dir, "koan", "sonnet", 2000, 800)
+
+        result = _format_cost_breakdown(instance_dir)
+        assert "2 runs" in result
+
+    def test_integration_with_handle(self, tmp_path):
+        """Cost breakdown appears in full /quota output when data exists."""
+        from skills.core.quota.handler import handle
+        from app.cost_tracker import record_usage
+
+        ctx = _make_ctx(tmp_path)
+        _write_usage_state(ctx.instance_dir)
+        record_usage(ctx.instance_dir, "koan", "sonnet", 10000, 5000)
+
+        with patch("skills.core.quota.handler.STATS_CACHE_PATH", Path("/nonexistent")), \
+             patch("skills.core.quota.handler._load_config", return_value={}):
+            result = handle(ctx)
+        assert "Session quota" in result
+        assert "Usage (7 days)" in result
+        assert "koan" in result
+
+
+# ---------------------------------------------------------------------------
+# Quota override (/quota <N>)
+# ---------------------------------------------------------------------------
+
+class TestQuotaOverride:
+    """Test the /quota <N> override feature."""
+
+    def test_override_sets_used_percentage(self, tmp_path):
+        """``/quota 32`` sets internal usage to 32% used."""
+        from skills.core.quota.handler import handle
+
+        ctx = _make_ctx(tmp_path, args="32")
+        _write_usage_state(ctx.instance_dir, session_tokens=400_000)
+
+        result = handle(ctx)
+        assert "32% used" in result
+        assert "68% remaining" in result
+        assert "override" in result.lower()
+
+        # Verify usage_state.json was updated
+        state = json.loads((ctx.instance_dir / "usage_state.json").read_text())
+        # With default 500k limit, 32% used = 160k tokens
+        assert state["session_tokens"] == 160_000
+
+    def test_override_updates_usage_md(self, tmp_path):
+        """Override rewrites usage.md to reflect the new percentage."""
+        from skills.core.quota.handler import handle
+
+        ctx = _make_ctx(tmp_path, args="50")
+        _write_usage_state(ctx.instance_dir)
+
+        handle(ctx)
+
+        usage_md = ctx.instance_dir / "usage.md"
+        assert usage_md.exists()
+        content = usage_md.read_text()
+        assert "50%" in content
+
+    def test_override_clears_quota_pause(self, tmp_path):
+        """Override clears .koan-pause when paused for quota."""
+        from skills.core.quota.handler import handle
+
+        ctx = _make_ctx(tmp_path, args="60")
+        _write_usage_state(ctx.instance_dir)
+        (tmp_path / ".koan-pause").write_text("quota\n1234567890\nresets 10am\n")
+
+        result = handle(ctx)
+        assert "pause cleared" in result.lower()
+        assert not (tmp_path / ".koan-pause").exists()
+
+    def test_override_does_not_clear_manual_pause(self, tmp_path):
+        """Override doesn't clear .koan-pause when paused manually."""
+        from skills.core.quota.handler import handle
+
+        ctx = _make_ctx(tmp_path, args="60")
+        _write_usage_state(ctx.instance_dir)
+        (tmp_path / ".koan-pause").write_text("manual\n1234567890\n\n")
+
+        result = handle(ctx)
+        assert "pause cleared" not in result.lower()
+        assert (tmp_path / ".koan-pause").exists()
+
+    def test_override_invalid_input(self, tmp_path):
+        """Non-numeric argument returns usage help."""
+        from skills.core.quota.handler import handle
+
+        ctx = _make_ctx(tmp_path, args="abc")
+        result = handle(ctx)
+        assert "usage:" in result.lower() or "example" in result.lower()
+
+    def test_override_out_of_range(self, tmp_path):
+        """Values outside 0-100 are rejected."""
+        from skills.core.quota.handler import handle
+
+        ctx = _make_ctx(tmp_path, args="150")
+        result = handle(ctx)
+        assert "between 0 and 100" in result
+
+    def test_override_zero_used(self, tmp_path):
+        """``/quota 0`` sets 0% used (100% remaining)."""
+        from skills.core.quota.handler import handle
+
+        ctx = _make_ctx(tmp_path, args="0")
+        _write_usage_state(ctx.instance_dir)
+        result = handle(ctx)
+        assert "0% used" in result
+        assert "100% remaining" in result
+
+    def test_override_hundred_used(self, tmp_path):
+        """``/quota 100`` sets 100% used (0% remaining)."""
+        from skills.core.quota.handler import handle
+
+        ctx = _make_ctx(tmp_path, args="100")
+        _write_usage_state(ctx.instance_dir)
+        result = handle(ctx)
+        assert "100% used" in result
+        assert "0% remaining" in result
+
+    def test_override_resets_session_start(self, tmp_path):
+        """Override resets the session start time so the 5h window restarts."""
+        from skills.core.quota.handler import handle
+
+        ctx = _make_ctx(tmp_path, args="80")
+        old_start = (datetime.now() - timedelta(hours=4)).isoformat()
+        _write_usage_state(ctx.instance_dir, session_start=old_start)
+
+        handle(ctx)
+        state = json.loads((ctx.instance_dir / "usage_state.json").read_text())
+        new_start = datetime.fromisoformat(state["session_start"])
+        # Session start should be very recent (within last 5 seconds)
+        assert (datetime.now() - new_start).total_seconds() < 5
+
+    def test_display_mode_still_works_with_no_args(self, tmp_path):
+        """No args still shows the display output (no regression)."""
+        from skills.core.quota.handler import handle
+
+        ctx = _make_ctx(tmp_path, args="")
+        _write_usage_state(ctx.instance_dir)
+
+        with patch("skills.core.quota.handler.STATS_CACHE_PATH", Path("/nonexistent")), \
+             patch("skills.core.quota.handler._load_config", return_value={}):
+            result = handle(ctx)
+        assert "Session quota" in result
+        assert "Agent" in result

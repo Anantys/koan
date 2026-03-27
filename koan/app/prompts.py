@@ -5,6 +5,7 @@ Loads prompt templates from koan/system-prompts/ and substitutes placeholders.
 
 import subprocess
 from pathlib import Path
+from typing import Optional
 
 PROMPT_DIR = Path(__file__).parent.parent / "system-prompts"
 
@@ -101,8 +102,34 @@ def load_skill_prompt(skill_dir: Path, name: str, **kwargs: str) -> str:
         The prompt string with placeholders replaced.
     """
     skill_prompt = skill_dir / "prompts" / f"{name}.md"
-    if skill_prompt.exists():
-        template = skill_prompt.read_text()
-    else:
+    try:
+        template = _read_prompt_with_git_fallback(skill_prompt)
+    except FileNotFoundError:
+        # Skill prompt not found even via git — fall back to system-prompts/
         template = _read_prompt_with_git_fallback(get_prompt_path(name))
     return _substitute(template, kwargs)
+
+
+def load_prompt_or_skill(
+    skill_dir: Optional[Path], name: str, **kwargs: str
+) -> str:
+    """Load a prompt, preferring the skill directory when available.
+
+    Consolidates the repeated pattern::
+
+        if skill_dir is not None:
+            prompt = load_skill_prompt(skill_dir, name, **kw)
+        else:
+            prompt = load_prompt(name, **kw)
+
+    Args:
+        skill_dir: Path to the skill directory, or None for system prompts.
+        name: Prompt file name without .md extension.
+        **kwargs: Placeholder values to substitute.
+
+    Returns:
+        The prompt string with placeholders replaced.
+    """
+    if skill_dir is not None:
+        return load_skill_prompt(skill_dir, name, **kwargs)
+    return load_prompt(name, **kwargs)

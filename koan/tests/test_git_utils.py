@@ -5,7 +5,13 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from app.git_utils import run_git, run_git_strict
+from app.git_utils import (
+    get_commit_subjects,
+    get_current_branch,
+    ordered_remotes,
+    run_git,
+    run_git_strict,
+)
 
 
 class TestRunGit:
@@ -155,3 +161,97 @@ class TestRunGitStrict:
             run_git_strict("push")
         # Error message should truncate stderr to 200 chars
         assert len(str(exc_info.value)) < 300
+
+
+class TestGetCurrentBranch:
+    """Tests for get_current_branch() — branch name detection."""
+
+    @patch("app.git_utils.run_git_strict", return_value="feature/xyz")
+    def test_returns_branch(self, mock):
+        assert get_current_branch(cwd="/repo") == "feature/xyz"
+        mock.assert_called_once_with(
+            "rev-parse", "--abbrev-ref", "HEAD", cwd="/repo",
+        )
+
+    @patch("app.git_utils.run_git_strict", return_value="main")
+    def test_no_cwd(self, mock):
+        assert get_current_branch() == "main"
+        mock.assert_called_once_with(
+            "rev-parse", "--abbrev-ref", "HEAD", cwd=None,
+        )
+
+    @patch("app.git_utils.run_git_strict", side_effect=RuntimeError("not a repo"))
+    def test_runtime_error_returns_default(self, mock):
+        assert get_current_branch(cwd="/bad") == "main"
+
+    @patch("app.git_utils.run_git_strict", side_effect=OSError("no git"))
+    def test_os_error_returns_default(self, mock):
+        assert get_current_branch(cwd="/bad") == "main"
+
+    @patch("app.git_utils.run_git_strict", side_effect=subprocess.SubprocessError())
+    def test_subprocess_error_returns_default(self, mock):
+        assert get_current_branch(cwd="/bad") == "main"
+
+    @patch("app.git_utils.run_git_strict", side_effect=RuntimeError("err"))
+    def test_custom_default(self, mock):
+        assert get_current_branch(default="develop") == "develop"
+
+
+class TestGetCommitSubjects:
+    """Tests for get_commit_subjects() — commit subject extraction."""
+
+    @patch("app.git_utils.run_git", return_value=(0, "fix: A\nfeat: B", ""))
+    def test_returns_subjects(self, mock):
+        result = get_commit_subjects(cwd="/repo")
+        assert result == ["fix: A", "feat: B"]
+        mock.assert_called_once_with(
+            "log", "main..HEAD", "--format=%s", cwd="/repo",
+        )
+
+    @patch("app.git_utils.run_git", return_value=(0, "fix: A\nfeat: B", ""))
+    def test_custom_base_branch(self, mock):
+        get_commit_subjects(cwd="/repo", base_branch="develop")
+        mock.assert_called_once_with(
+            "log", "develop..HEAD", "--format=%s", cwd="/repo",
+        )
+
+    @patch("app.git_utils.run_git", return_value=(0, "fix: A\nfeat: B", ""))
+    def test_custom_branch(self, mock):
+        get_commit_subjects(cwd="/repo", branch="koan/fix")
+        mock.assert_called_once_with(
+            "log", "main..koan/fix", "--format=%s", cwd="/repo",
+        )
+
+    @patch("app.git_utils.run_git", return_value=(0, "", ""))
+    def test_empty_output(self, mock):
+        assert get_commit_subjects(cwd="/repo") == []
+
+    @patch("app.git_utils.run_git", return_value=(0, "\n \n\n", ""))
+    def test_blank_lines_filtered(self, mock):
+        assert get_commit_subjects(cwd="/repo") == []
+
+    @patch("app.git_utils.run_git", return_value=(1, "", "fatal: not a repo"))
+    def test_error_returns_empty(self, mock):
+        assert get_commit_subjects(cwd="/repo") == []
+
+
+class TestOrderedRemotes:
+    """Tests for ordered_remotes() — remote priority ordering."""
+
+    def test_no_preferred(self):
+        assert ordered_remotes() == ["origin", "upstream"]
+
+    def test_no_preferred_explicit_none(self):
+        assert ordered_remotes(None) == ["origin", "upstream"]
+
+    def test_preferred_origin(self):
+        assert ordered_remotes("origin") == ["origin", "upstream"]
+
+    def test_preferred_upstream(self):
+        assert ordered_remotes("upstream") == ["upstream", "origin"]
+
+    def test_preferred_custom(self):
+        assert ordered_remotes("fork") == ["fork", "origin", "upstream"]
+
+    def test_preferred_empty_string(self):
+        assert ordered_remotes("") == ["origin", "upstream"]

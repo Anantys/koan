@@ -120,6 +120,46 @@ def _extract_session_digest(content: str) -> List[str]:
     return digests
 
 
+def _balanced_select(
+    sessions: List[Tuple[str, str, str]],
+    max_sessions: int,
+    min_per_project: int = 2,
+) -> List[Tuple[str, str, str]]:
+    """Select sessions preserving per-project representation.
+
+    Algorithm:
+    1. Reserve the last ``min_per_project`` sessions for each project.
+    2. If reserved count exceeds budget, fall back to 1 per project.
+    3. Fill remaining budget with the most recent unreserved sessions.
+    4. Return selected sessions in their original order.
+    """
+    by_project: Dict[str, List[int]] = defaultdict(list)
+    for idx, (_date, _text, project) in enumerate(sessions):
+        by_project[project].append(idx)
+
+    # Phase 1: reserve last min_per_project per project
+    kept_set = set()
+    for indices in by_project.values():
+        kept_set.update(indices[-min_per_project:])
+
+    # Phase 2: if over budget, reduce to 1 per project
+    if len(kept_set) > max_sessions:
+        kept_set = set()
+        for indices in by_project.values():
+            kept_set.add(indices[-1])
+
+    # Phase 3: fill remaining budget with most recent unreserved sessions
+    remaining = max_sessions - len(kept_set)
+    if remaining > 0:
+        candidates = [i for i in range(len(sessions)) if i not in kept_set]
+        for idx in candidates[-remaining:]:
+            kept_set.add(idx)
+
+    # Return in original order, capped at max_sessions
+    selected = sorted(kept_set)[-max_sessions:]
+    return [sessions[i] for i in selected]
+
+
 def _rebuild_sessions(title: str, sessions: List[Tuple[str, str, ...]]) -> str:
     """Rebuild summary content from a title and list of session tuples."""
     output_lines = []
@@ -141,6 +181,46 @@ def _rebuild_sessions(title: str, sessions: List[Tuple[str, str, ...]]) -> str:
         output_lines.append("")
 
     return "\n".join(output_lines).rstrip() + "\n"
+
+
+_SNAPSHOT_SECTION_PREFIXES = (
+    "## Summary",
+    "## Global / ",
+    "## Projects / ",
+    "## Soul",
+    "## Shared Journal",
+)
+
+
+def _is_snapshot_header(line: str) -> bool:
+    """Check if a line is a snapshot section header (not a date header inside content)."""
+    return any(line.startswith(p) for p in _SNAPSHOT_SECTION_PREFIXES)
+
+
+def _parse_snapshot_sections(content: str) -> Dict[str, str]:
+    """Parse a SNAPSHOT.md file into {section_name: section_content} dict.
+
+    Only recognized snapshot section headers (Summary, Global/*, Projects/*,
+    Soul, Shared Journal) are treated as boundaries. Date headers like
+    ``## 2026-03-01`` inside the Summary section are preserved as content.
+    """
+    sections: Dict[str, str] = {}
+    current_name = ""
+    current_lines: List[str] = []
+
+    for line in content.splitlines():
+        if _is_snapshot_header(line):
+            if current_name and current_lines:
+                sections[current_name] = "\n".join(current_lines).strip() + "\n"
+            current_name = line[3:].strip()
+            current_lines = []
+        elif current_name:
+            current_lines.append(line)
+
+    if current_name and current_lines:
+        sections[current_name] = "\n".join(current_lines).strip() + "\n"
+
+    return sections
 
 
 def _extract_title(content: str) -> str:
@@ -194,8 +274,17 @@ class MemoryManager:
 
         return _rebuild_sessions(title, filtered)
 
-    def compact_summary(self, max_sessions: int = 10) -> int:
-        """Keep only the last N sessions in summary.md. Returns removed count."""
+    def compact_summary(self, max_sessions: int = 10, min_per_project: int = 2) -> int:
+        """Keep only the last N sessions in summary.md, preserving per-project balance.
+
+        Without balancing, a burst of work on one project (e.g. 15 consecutive
+        rebases) would evict ALL context for every other project.  This method
+        guarantees each project retains at least ``min_per_project`` sessions
+        (or 1, if the total budget is tight), then fills remaining slots with
+        the most recent sessions overall.
+
+        Returns the number of sessions removed.
+        """
         if not self.summary_path.exists():
             return 0
 
@@ -206,7 +295,7 @@ class MemoryManager:
             return 0
 
         title = _extract_title(content)
-        kept = sessions[-max_sessions:]
+        kept = _balanced_select(sessions, max_sessions, min_per_project)
         removed = len(sessions) - len(kept)
 
         atomic_write(self.summary_path, _rebuild_sessions(title, kept))
@@ -218,7 +307,12 @@ class MemoryManager:
         if not learnings_path.exists():
             return 0
 
-        content = learnings_path.read_text()
+        try:
+            content = learnings_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as e:
+            print(f"[memory_manager] Error reading {learnings_path}: {e}", file=sys.stderr)
+            return 0
+
         lines = content.splitlines()
 
         seen = set()
@@ -269,6 +363,9 @@ class MemoryManager:
         archive_lines = 0
 
         monthly: Dict[Tuple[str, str], List[str]] = defaultdict(list)
+        # Collect paths to delete AFTER archives are safely written
+        to_delete_dirs: List[Tuple[Path, bool]] = []  # (path, is_old)
+        to_delete_files: List[Tuple[Path, bool]] = []
 
         for entry in sorted(self.journal_dir.iterdir()):
             name = entry.name
@@ -287,7 +384,11 @@ class MemoryManager:
             if entry.is_dir():
                 for md_file in sorted(entry.glob("*.md")):
                     project = md_file.stem
-                    content = md_file.read_text()
+                    try:
+                        content = md_file.read_text(encoding="utf-8")
+                    except (OSError, UnicodeDecodeError) as e:
+                        print(f"[memory_manager] Error reading {md_file}: {e}", file=sys.stderr)
+                        continue
                     digests = _extract_session_digest(content)
                     if digests:
                         monthly[(month_key, project)].extend(
@@ -295,15 +396,15 @@ class MemoryManager:
                         )
                         archive_lines += len(digests)
 
-                if entry_date < delete_cutoff:
-                    shutil.rmtree(entry)
-                    deleted_days += 1
-                else:
-                    shutil.rmtree(entry)
-                    archived_days += 1
+                is_old = entry_date < delete_cutoff
+                to_delete_dirs.append((entry, is_old))
 
             elif entry.is_file() and entry.suffix == ".md":
-                content = entry.read_text()
+                try:
+                    content = entry.read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError) as e:
+                    print(f"[memory_manager] Error reading {entry}: {e}", file=sys.stderr)
+                    continue
                 digests = _extract_session_digest(content)
                 if digests:
                     monthly[(month_key, "legacy")].extend(
@@ -311,13 +412,10 @@ class MemoryManager:
                     )
                     archive_lines += len(digests)
 
-                if entry_date < delete_cutoff:
-                    entry.unlink()
-                    deleted_days += 1
-                else:
-                    entry.unlink()
-                    archived_days += 1
+                is_old = entry_date < delete_cutoff
+                to_delete_files.append((entry, is_old))
 
+        # Write archives BEFORE deleting source files
         archives_dir = self.journal_dir / "archives"
         for (month, project), lines in monthly.items():
             month_dir = archives_dir / month
@@ -330,10 +428,35 @@ class MemoryManager:
 
             new_lines = [l for l in lines if l not in existing]
             if new_lines:
-                with open(archive_file, "a", encoding="utf-8") as f:
-                    if not existing:
-                        f.write(f"# Journal archive — {project} — {month}\n\n")
-                    f.write("\n".join(new_lines) + "\n")
+                if existing:
+                    existing_content = archive_file.read_text(encoding="utf-8")
+                    full_content = existing_content.rstrip("\n") + "\n" + "\n".join(new_lines) + "\n"
+                else:
+                    full_content = f"# Journal archive — {project} — {month}\n\n" + "\n".join(new_lines) + "\n"
+                atomic_write(archive_file, full_content)
+
+        # Now safe to delete source files
+        for path, is_old in to_delete_dirs:
+            try:
+                shutil.rmtree(path)
+            except OSError as e:
+                print(f"[memory_manager] Error deleting {path}: {e}", file=sys.stderr)
+                continue
+            if is_old:
+                deleted_days += 1
+            else:
+                archived_days += 1
+
+        for path, is_old in to_delete_files:
+            try:
+                path.unlink()
+            except OSError as e:
+                print(f"[memory_manager] Error deleting {path}: {e}", file=sys.stderr)
+                continue
+            if is_old:
+                deleted_days += 1
+            else:
+                archived_days += 1
 
         return {
             "archived_days": archived_days,
@@ -351,7 +474,12 @@ class MemoryManager:
         if not learnings_path.exists():
             return 0
 
-        content = learnings_path.read_text()
+        try:
+            content = learnings_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as e:
+            print(f"[memory_manager] Error reading {learnings_path}: {e}", file=sys.stderr)
+            return 0
+
         lines = content.splitlines()
 
         headers = []
@@ -370,9 +498,187 @@ class MemoryManager:
         removed = len(content_lines) - max_lines
         kept = content_lines[-max_lines:]
 
-        result = headers + [f"\n_(oldest {removed} entries archived)_\n"] + kept
+        result = headers + ["", f"_(oldest {removed} entries archived)_", ""] + kept
         atomic_write(learnings_path, "\n".join(result) + "\n")
         return removed
+
+    def export_snapshot(self) -> Path:
+        """Export critical memory state to memory/SNAPSHOT.md.
+
+        Assembles a portable snapshot from:
+        - memory/summary.md (last 20 sessions)
+        - memory/global/* files
+        - memory/projects/*/learnings.md (per project, capped at 200 lines)
+        - soul.md (from instance root)
+        - shared-journal.md (last 50 lines)
+
+        Returns the path to the written snapshot file.
+        """
+        sections = []
+
+        # Metadata header
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        project_names = []
+        if self.projects_dir.exists() and self.projects_dir.is_dir():
+            project_names = sorted(
+                d.name for d in self.projects_dir.iterdir()
+                if d.is_dir() and d.name != "_template"
+            )
+        sections.append(f"# Kōan Memory Snapshot\n")
+        sections.append(f"Exported: {now}")
+        sections.append(f"Projects: {', '.join(project_names) if project_names else 'none'}")
+        sections.append("")
+
+        # Summary (last 20 sessions)
+        sections.append("## Summary\n")
+        if self.summary_path.exists():
+            content = self.summary_path.read_text(encoding="utf-8")
+            all_sessions = parse_summary_sessions(content)
+            title = _extract_title(content)
+            kept = all_sessions[-20:] if len(all_sessions) > 20 else all_sessions
+            sections.append(_rebuild_sessions(title, kept).strip())
+        sections.append("")
+
+        # Global memory files
+        global_dir = self.memory_dir / "global"
+        global_files = [
+            "personality-evolution.md", "emotional-memory.md", "genesis.md",
+            "strategy.md", "human-preferences.md", "draft-bot.md",
+        ]
+        for filename in global_files:
+            filepath = global_dir / filename
+            if filepath.exists():
+                try:
+                    content = filepath.read_text(encoding="utf-8").strip()
+                    if content:
+                        stem = filepath.stem
+                        sections.append(f"## Global / {stem}\n")
+                        sections.append(content)
+                        sections.append("")
+                except (OSError, UnicodeDecodeError):
+                    pass
+
+        # Per-project learnings
+        for project_name in project_names:
+            learnings_path = self._learnings_path(project_name)
+            if learnings_path.exists():
+                try:
+                    lines = learnings_path.read_text(encoding="utf-8").splitlines()
+                    # Cap at 200 lines
+                    if len(lines) > 200:
+                        lines = lines[:5] + ["", "_(truncated to last 200 lines)_", ""] + lines[-200:]
+                    content = "\n".join(lines).strip()
+                    if content:
+                        sections.append(f"## Projects / {project_name} / learnings\n")
+                        sections.append(content)
+                        sections.append("")
+                except (OSError, UnicodeDecodeError):
+                    pass
+
+        # Soul
+        soul_path = self.instance_dir / "soul.md"
+        if soul_path.exists():
+            try:
+                content = soul_path.read_text(encoding="utf-8").strip()
+                if content:
+                    sections.append("## Soul\n")
+                    sections.append(content)
+                    sections.append("")
+            except (OSError, UnicodeDecodeError):
+                pass
+
+        # Shared journal (last 50 lines)
+        journal_path = self.instance_dir / "shared-journal.md"
+        if journal_path.exists():
+            try:
+                lines = journal_path.read_text(encoding="utf-8").splitlines()
+                kept_lines = lines[-50:] if len(lines) > 50 else lines
+                content = "\n".join(kept_lines).strip()
+                if content:
+                    sections.append("## Shared Journal\n")
+                    sections.append(content)
+                    sections.append("")
+            except (OSError, UnicodeDecodeError):
+                pass
+
+        snapshot_content = "\n".join(sections).rstrip() + "\n"
+        snapshot_path = self.memory_dir / "SNAPSHOT.md"
+        self.memory_dir.mkdir(parents=True, exist_ok=True)
+        atomic_write(snapshot_path, snapshot_content)
+        return snapshot_path
+
+    def hydrate_from_snapshot(self) -> Dict[str, bool]:
+        """Rebuild memory files from SNAPSHOT.md.
+
+        Looks for SNAPSHOT.md in memory/ first, then instance root as fallback.
+        Parses structured sections and recreates missing files. Never overwrites
+        existing files.
+
+        Returns dict mapping restored file paths (relative) to True, or empty
+        if no snapshot found.
+        """
+        snapshot_path = self.memory_dir / "SNAPSHOT.md"
+        if not snapshot_path.exists():
+            # Fallback: check instance root
+            snapshot_path = self.instance_dir / "SNAPSHOT.md"
+        if not snapshot_path.exists():
+            return {}
+
+        try:
+            content = snapshot_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as e:
+            print(f"[memory_manager] Error reading snapshot: {e}", file=sys.stderr)
+            return {}
+
+        sections = _parse_snapshot_sections(content)
+        restored = {}
+
+        # Restore summary
+        if "Summary" in sections:
+            if not self.summary_path.exists():
+                self.memory_dir.mkdir(parents=True, exist_ok=True)
+                atomic_write(self.summary_path, sections["Summary"])
+                restored["memory/summary.md"] = True
+
+        # Restore global files
+        global_dir = self.memory_dir / "global"
+        for key, text in sections.items():
+            if key.startswith("Global / "):
+                stem = key[len("Global / "):]
+                filepath = global_dir / f"{stem}.md"
+                if not filepath.exists():
+                    global_dir.mkdir(parents=True, exist_ok=True)
+                    atomic_write(filepath, text)
+                    restored[f"memory/global/{stem}.md"] = True
+
+        # Restore per-project learnings
+        for key, text in sections.items():
+            if key.startswith("Projects / ") and key.endswith(" / learnings"):
+                project_name = key[len("Projects / "):-len(" / learnings")]
+                learnings_path = self._learnings_path(project_name)
+                if not learnings_path.exists():
+                    learnings_path.parent.mkdir(parents=True, exist_ok=True)
+                    atomic_write(learnings_path, text)
+                    restored[f"memory/projects/{project_name}/learnings.md"] = True
+
+        # Restore soul.md
+        if "Soul" in sections:
+            soul_path = self.instance_dir / "soul.md"
+            if not soul_path.exists():
+                atomic_write(soul_path, sections["Soul"])
+                restored["soul.md"] = True
+
+        # Restore shared journal
+        if "Shared Journal" in sections:
+            journal_path = self.instance_dir / "shared-journal.md"
+            if not journal_path.exists():
+                atomic_write(journal_path, sections["Shared Journal"])
+                restored["shared-journal.md"] = True
+
+        for path in sorted(restored.keys()):
+            print(f"[memory_manager] Hydrated: {path}")
+
+        return restored
 
     def run_cleanup(
         self,
@@ -385,7 +691,7 @@ class MemoryManager:
         stats = {}
         stats["summary_compacted"] = self.compact_summary(max_sessions)
 
-        if self.projects_dir.exists():
+        if self.projects_dir.exists() and self.projects_dir.is_dir():
             for project_dir in self.projects_dir.iterdir():
                 if project_dir.is_dir():
                     name = project_dir.name
@@ -399,6 +705,13 @@ class MemoryManager:
         journal_stats = self.archive_journals(archive_after_days, delete_after_days)
         stats.update(journal_stats)
 
+        # Export snapshot after cleanup (reflects clean state)
+        try:
+            snapshot_path = self.export_snapshot()
+            stats["snapshot_exported"] = snapshot_path.stat().st_size
+        except Exception as e:
+            print(f"[memory_manager] Snapshot export failed: {e}", file=sys.stderr)
+
         return stats
 
 
@@ -411,9 +724,9 @@ def scoped_summary(instance_dir: str, project_name: str) -> str:
     return MemoryManager(instance_dir).scoped_summary(project_name)
 
 
-def compact_summary(instance_dir: str, max_sessions: int = 10) -> int:
+def compact_summary(instance_dir: str, max_sessions: int = 10, min_per_project: int = 2) -> int:
     """Keep only the last N sessions in summary.md. Returns removed count."""
-    return MemoryManager(instance_dir).compact_summary(max_sessions)
+    return MemoryManager(instance_dir).compact_summary(max_sessions, min_per_project)
 
 
 def cleanup_learnings(instance_dir: str, project_name: str) -> int:
@@ -460,7 +773,8 @@ if __name__ == "__main__":
         )
         print(
             "Commands: scoped-summary <project>, compact [max], "
-            "cleanup-learnings <project>, archive-journals [days], cleanup",
+            "cleanup-learnings <project>, archive-journals [days], cleanup, "
+            "snapshot, hydrate",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -498,6 +812,20 @@ if __name__ == "__main__":
         stats = mgr.run_cleanup(max_s)
         for k, v in stats.items():
             print(f"  {k}: {v}")
+
+    elif command == "snapshot":
+        path = mgr.export_snapshot()
+        size = path.stat().st_size
+        print(f"Snapshot exported to {path} ({size} bytes)")
+
+    elif command == "hydrate":
+        restored = mgr.hydrate_from_snapshot()
+        if restored:
+            for p in sorted(restored.keys()):
+                print(f"  Restored: {p}")
+            print(f"Hydrated {len(restored)} file(s)")
+        else:
+            print("No snapshot found or nothing to restore")
 
     else:
         print(f"Unknown command: {command}", file=sys.stderr)

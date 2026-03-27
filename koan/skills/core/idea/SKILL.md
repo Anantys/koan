@@ -1,6 +1,7 @@
 ---
 name: idea
 scope: core
+group: ideas
 description: Manage the ideas backlog
 version: 1.0.0
 audience: bridge

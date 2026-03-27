@@ -10,8 +10,12 @@ from app.projects_config import (
     get_project_config,
     get_project_auto_merge,
     get_project_cli_provider,
+    get_project_exploration,
+    get_project_max_open_prs,
     get_project_models,
+    get_project_submit_to_repository,
     get_project_tools,
+    resolve_base_branch,
     validate_project_paths,
     _validate_config,
 )
@@ -87,15 +91,20 @@ projects:
         with pytest.raises(ValueError, match="must be a YAML mapping"):
             load_projects_config(koan_root)
 
-    def test_raises_when_projects_missing(self, koan_root):
+    def test_missing_projects_section_is_valid(self, koan_root):
+        """projects: section is optional — defaults-only yaml is valid."""
         _write_yaml(koan_root, "defaults:\n  enabled: true\n")
-        with pytest.raises(ValueError, match="'projects' section is required"):
-            load_projects_config(koan_root)
+        config = load_projects_config(koan_root)
+        assert config is not None
+        assert "defaults" in config
+        assert config.get("projects") is None
 
-    def test_raises_when_projects_empty(self, koan_root):
+    def test_empty_projects_is_valid(self, koan_root):
+        """Empty projects: dict is valid — workspace will provide projects."""
         _write_yaml(koan_root, "projects: {}")
-        with pytest.raises(ValueError, match="at least one project"):
-            load_projects_config(koan_root)
+        config = load_projects_config(koan_root)
+        assert config is not None
+        assert config["projects"] == {}
 
     def test_raises_when_projects_not_a_dict(self, koan_root):
         _write_yaml(koan_root, "projects:\n  - item1\n  - item2")
@@ -427,6 +436,160 @@ class TestGetProjectAutoMerge:
 
 
 # ---------------------------------------------------------------------------
+# get_project_exploration
+# ---------------------------------------------------------------------------
+
+
+class TestGetProjectExploration:
+    """Tests for get_project_exploration() — per-project exploration flag."""
+
+    def test_defaults_to_true_when_key_missing(self):
+        config = {"projects": {"app": {"path": "/app"}}}
+        assert get_project_exploration(config, "app") is True
+
+    def test_explicit_false_returns_false(self):
+        config = {"projects": {"app": {"path": "/app", "exploration": False}}}
+        assert get_project_exploration(config, "app") is False
+
+    def test_explicit_true_returns_true(self):
+        config = {"projects": {"app": {"path": "/app", "exploration": True}}}
+        assert get_project_exploration(config, "app") is True
+
+    def test_defaults_section_override(self):
+        config = {
+            "defaults": {"exploration": False},
+            "projects": {"app": {"path": "/app"}},
+        }
+        assert get_project_exploration(config, "app") is False
+
+    def test_project_overrides_defaults(self):
+        config = {
+            "defaults": {"exploration": False},
+            "projects": {"app": {"path": "/app", "exploration": True}},
+        }
+        assert get_project_exploration(config, "app") is True
+
+    def test_string_false_coerced(self):
+        config = {"projects": {"app": {"path": "/app", "exploration": "false"}}}
+        assert get_project_exploration(config, "app") is False
+
+    def test_string_no_coerced(self):
+        config = {"projects": {"app": {"path": "/app", "exploration": "no"}}}
+        assert get_project_exploration(config, "app") is False
+
+    def test_string_zero_coerced(self):
+        config = {"projects": {"app": {"path": "/app", "exploration": "0"}}}
+        assert get_project_exploration(config, "app") is False
+
+    def test_string_true_coerced(self):
+        config = {"projects": {"app": {"path": "/app", "exploration": "true"}}}
+        assert get_project_exploration(config, "app") is True
+
+    def test_int_zero_returns_false(self):
+        config = {"projects": {"app": {"path": "/app", "exploration": 0}}}
+        assert get_project_exploration(config, "app") is False
+
+    def test_int_one_returns_true(self):
+        config = {"projects": {"app": {"path": "/app", "exploration": 1}}}
+        assert get_project_exploration(config, "app") is True
+
+    def test_unknown_project_returns_default_true(self):
+        config = {"projects": {"app": {"path": "/app"}}}
+        assert get_project_exploration(config, "unknown") is True
+
+    def test_unknown_project_inherits_defaults_false(self):
+        config = {
+            "defaults": {"exploration": False},
+            "projects": {"app": {"path": "/app"}},
+        }
+        assert get_project_exploration(config, "unknown") is False
+
+    def test_none_project_config_returns_default(self):
+        config = {
+            "defaults": {"exploration": True},
+            "projects": {"app": None},
+        }
+        assert get_project_exploration(config, "app") is True
+
+
+# ---------------------------------------------------------------------------
+# get_project_max_open_prs
+# ---------------------------------------------------------------------------
+
+
+class TestGetProjectMaxOpenPrs:
+    """Tests for get_project_max_open_prs() — per-project PR limit."""
+
+    def test_defaults_to_zero_when_key_missing(self):
+        config = {"projects": {"app": {"path": "/app"}}}
+        assert get_project_max_open_prs(config, "app") == 0
+
+    def test_explicit_zero_returns_zero(self):
+        config = {"projects": {"app": {"path": "/app", "max_open_prs": 0}}}
+        assert get_project_max_open_prs(config, "app") == 0
+
+    def test_positive_int_returns_value(self):
+        config = {"projects": {"app": {"path": "/app", "max_open_prs": 10}}}
+        assert get_project_max_open_prs(config, "app") == 10
+
+    def test_string_int_coerced(self):
+        config = {"projects": {"app": {"path": "/app", "max_open_prs": "5"}}}
+        assert get_project_max_open_prs(config, "app") == 5
+
+    def test_negative_returns_zero(self):
+        config = {"projects": {"app": {"path": "/app", "max_open_prs": -1}}}
+        assert get_project_max_open_prs(config, "app") == 0
+
+    def test_none_returns_zero(self):
+        config = {"projects": {"app": {"path": "/app", "max_open_prs": None}}}
+        assert get_project_max_open_prs(config, "app") == 0
+
+    def test_invalid_string_returns_zero(self):
+        config = {"projects": {"app": {"path": "/app", "max_open_prs": "abc"}}}
+        assert get_project_max_open_prs(config, "app") == 0
+
+    def test_float_coerced_to_int(self):
+        config = {"projects": {"app": {"path": "/app", "max_open_prs": 3.7}}}
+        assert get_project_max_open_prs(config, "app") == 3
+
+    def test_empty_string_returns_zero(self):
+        config = {"projects": {"app": {"path": "/app", "max_open_prs": ""}}}
+        assert get_project_max_open_prs(config, "app") == 0
+
+    def test_defaults_section_applies(self):
+        config = {
+            "defaults": {"max_open_prs": 10},
+            "projects": {"app": {"path": "/app"}},
+        }
+        assert get_project_max_open_prs(config, "app") == 10
+
+    def test_project_overrides_defaults(self):
+        config = {
+            "defaults": {"max_open_prs": 10},
+            "projects": {"app": {"path": "/app", "max_open_prs": 3}},
+        }
+        assert get_project_max_open_prs(config, "app") == 3
+
+    def test_unknown_project_returns_default_zero(self):
+        config = {"projects": {"app": {"path": "/app"}}}
+        assert get_project_max_open_prs(config, "unknown") == 0
+
+    def test_unknown_project_inherits_defaults(self):
+        config = {
+            "defaults": {"max_open_prs": 5},
+            "projects": {"app": {"path": "/app"}},
+        }
+        assert get_project_max_open_prs(config, "unknown") == 5
+
+    def test_none_project_config_returns_default(self):
+        config = {
+            "defaults": {"max_open_prs": 8},
+            "projects": {"app": None},
+        }
+        assert get_project_max_open_prs(config, "app") == 8
+
+
+# ---------------------------------------------------------------------------
 # Integration: load + get
 # ---------------------------------------------------------------------------
 
@@ -566,17 +729,18 @@ projects:
         assert len(result) == 1
         assert result[0] == ("fallback", "/fallback")
 
-    def test_falls_back_on_schema_error(self, tmp_path, monkeypatch):
+    def test_defaults_only_yaml_returns_no_projects(self, tmp_path, monkeypatch):
+        """projects.yaml with only defaults: and no projects: is valid; returns [] projects."""
         from app import utils
         monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
         monkeypatch.setenv("KOAN_PROJECTS", "fallback:/fallback")
 
-        # Valid YAML but missing 'projects' section
+        # Valid YAML with only defaults: — no longer a schema error
         (tmp_path / "projects.yaml").write_text("defaults:\n  enabled: true\n")
         from app.utils import get_known_projects
         result = get_known_projects()
-        assert len(result) == 1
-        assert result[0] == ("fallback", "/fallback")
+        # No projects configured — empty list (no fallback to KOAN_PROJECTS)
+        assert result == []
 
     def test_legacy_project_path_no_longer_supported(self, tmp_path, monkeypatch):
         """KOAN_PROJECT_PATH is no longer a fallback — returns empty list."""
@@ -941,14 +1105,14 @@ projects:
 
         with patch("app.config._load_config", return_value={}):
             result = get_mission_tools("app")
-        assert result == "Read,Glob,Grep,Edit,Write,Bash"
+        assert result == "Read,Glob,Grep,Edit,Write,Bash,Skill"
 
     def test_empty_project_name_uses_global(self):
         from app.config import get_mission_tools
 
         with patch("app.config._load_config", return_value={}):
             result = get_mission_tools("")
-        assert result == "Read,Glob,Grep,Edit,Write,Bash"
+        assert result == "Read,Glob,Grep,Edit,Write,Bash,Skill"
 
     def test_defaults_section_tools_inherited(self, tmp_path, monkeypatch):
         monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
@@ -998,3 +1162,279 @@ projects:
         with patch("app.config._load_config", return_value={"models": {"mission": "opus"}}):
             result = get_claude_flags_for_role("mission", project_name="nonexistent")
         assert "opus" in result
+
+
+# ---------------------------------------------------------------------------
+# resolve_base_branch
+# ---------------------------------------------------------------------------
+
+
+class TestResolveBaseBranch:
+    """Tests for resolve_base_branch() — resolves base branch from projects.yaml."""
+
+    def test_returns_main_by_default(self, monkeypatch):
+        """No KOAN_ROOT set — returns 'main'."""
+        monkeypatch.delenv("KOAN_ROOT", raising=False)
+        assert resolve_base_branch("app") == "main"
+
+    def test_returns_main_when_no_projects_yaml(self, tmp_path, monkeypatch):
+        """KOAN_ROOT set but no projects.yaml — returns 'main'."""
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        assert resolve_base_branch("app") == "main"
+
+    def test_returns_configured_base_branch(self, tmp_path, monkeypatch):
+        """projects.yaml has base_branch configured — returns it."""
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        (tmp_path / "projects.yaml").write_text("""
+projects:
+  backend:
+    path: /tmp/backend
+    git_auto_merge:
+      base_branch: staging
+""")
+        assert resolve_base_branch("backend") == "staging"
+
+    def test_inherits_default_base_branch(self, tmp_path, monkeypatch):
+        """defaults.git_auto_merge.base_branch inherited when project doesn't override."""
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        (tmp_path / "projects.yaml").write_text("""
+defaults:
+  git_auto_merge:
+    base_branch: develop
+projects:
+  app:
+    path: /tmp/app
+""")
+        assert resolve_base_branch("app") == "develop"
+
+    def test_project_overrides_default_base_branch(self, tmp_path, monkeypatch):
+        """Project-level base_branch overrides defaults."""
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        (tmp_path / "projects.yaml").write_text("""
+defaults:
+  git_auto_merge:
+    base_branch: develop
+projects:
+  app:
+    path: /tmp/app
+    git_auto_merge:
+      base_branch: release
+""")
+        assert resolve_base_branch("app") == "release"
+
+    def test_unknown_project_returns_default(self, tmp_path, monkeypatch):
+        """Unknown project inherits defaults — returns 'main' if no default set."""
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        (tmp_path / "projects.yaml").write_text("""
+projects:
+  app:
+    path: /tmp/app
+""")
+        assert resolve_base_branch("nonexistent") == "main"
+
+    def test_unknown_project_inherits_default_branch(self, tmp_path, monkeypatch):
+        """Unknown project inherits defaults.git_auto_merge.base_branch."""
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        (tmp_path / "projects.yaml").write_text("""
+defaults:
+  git_auto_merge:
+    base_branch: develop
+projects:
+  app:
+    path: /tmp/app
+""")
+        assert resolve_base_branch("nonexistent") == "develop"
+
+    def test_empty_koan_root_returns_main(self, monkeypatch):
+        """KOAN_ROOT set to empty string — returns 'main'."""
+        monkeypatch.setenv("KOAN_ROOT", "")
+        assert resolve_base_branch("app") == "main"
+
+    def test_invalid_yaml_returns_main(self, tmp_path, monkeypatch):
+        """Broken projects.yaml — returns 'main' gracefully."""
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        (tmp_path / "projects.yaml").write_text("not: [valid yaml")
+        assert resolve_base_branch("app") == "main"
+
+    def test_no_auto_merge_section_returns_main(self, tmp_path, monkeypatch):
+        """Project exists but has no git_auto_merge config."""
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        (tmp_path / "projects.yaml").write_text("""
+projects:
+  app:
+    path: /tmp/app
+    cli_provider: claude
+""")
+        assert resolve_base_branch("app") == "main"
+
+    def test_auto_detection_with_project_path(self, tmp_path, monkeypatch):
+        """When project_path is provided and no explicit config, auto-detect from remote."""
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        (tmp_path / "projects.yaml").write_text("""
+defaults:
+  git_auto_merge:
+    base_branch: main
+projects:
+  myrepo:
+    path: /tmp/myrepo
+""")
+        # Mock auto-detection to return "master"
+        monkeypatch.setattr(
+            "app.git_prep.detect_remote_default_branch",
+            lambda remote, path: "master",
+        )
+        monkeypatch.setattr(
+            "app.git_prep.get_upstream_remote",
+            lambda path, name, root: "origin",
+        )
+        assert resolve_base_branch("myrepo", "/tmp/myrepo") == "master"
+
+    def test_auto_detection_skipped_without_project_path(self, tmp_path, monkeypatch):
+        """Without project_path, auto-detection is skipped — falls back to config."""
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        (tmp_path / "projects.yaml").write_text("""
+defaults:
+  git_auto_merge:
+    base_branch: main
+projects:
+  myrepo:
+    path: /tmp/myrepo
+""")
+        # Even if detect would return "master", without project_path it's not called
+        assert resolve_base_branch("myrepo") == "main"
+
+    def test_explicit_project_config_overrides_detection(self, tmp_path, monkeypatch):
+        """Explicit project-level base_branch trumps auto-detection."""
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        (tmp_path / "projects.yaml").write_text("""
+projects:
+  myrepo:
+    path: /tmp/myrepo
+    git_auto_merge:
+      base_branch: develop
+""")
+        # detect_remote_default_branch should NOT be called
+        def fail_detect(*a, **kw):
+            raise AssertionError("Should not be called")
+        monkeypatch.setattr(
+            "app.git_prep.detect_remote_default_branch", fail_detect,
+        )
+        assert resolve_base_branch("myrepo", "/tmp/myrepo") == "develop"
+
+
+# ---------------------------------------------------------------------------
+# get_project_submit_to_repository (additional tests in test_projects_config)
+# ---------------------------------------------------------------------------
+
+
+class TestGetProjectSubmitToRepository:
+    """Tests for get_project_submit_to_repository() — fork submission config."""
+
+    def test_returns_empty_when_not_configured(self):
+        config = {"projects": {"app": {"path": "/app"}}}
+        assert get_project_submit_to_repository(config, "app") == {}
+
+    def test_returns_repo_and_remote(self):
+        config = {
+            "projects": {
+                "app": {
+                    "path": "/app",
+                    "submit_to_repository": {
+                        "repo": "upstream/app",
+                        "remote": "upstream",
+                    },
+                }
+            }
+        }
+        result = get_project_submit_to_repository(config, "app")
+        assert result == {"repo": "upstream/app", "remote": "upstream"}
+
+    def test_returns_repo_only(self):
+        config = {
+            "projects": {
+                "app": {
+                    "path": "/app",
+                    "submit_to_repository": {"repo": "upstream/app"},
+                }
+            }
+        }
+        result = get_project_submit_to_repository(config, "app")
+        assert result == {"repo": "upstream/app"}
+
+    def test_returns_remote_only(self):
+        config = {
+            "projects": {
+                "app": {
+                    "path": "/app",
+                    "submit_to_repository": {"remote": "upstream"},
+                }
+            }
+        }
+        result = get_project_submit_to_repository(config, "app")
+        assert result == {"remote": "upstream"}
+
+    def test_inherits_from_defaults(self):
+        config = {
+            "defaults": {
+                "submit_to_repository": {"repo": "default/repo", "remote": "upstream"},
+            },
+            "projects": {"app": {"path": "/app"}},
+        }
+        result = get_project_submit_to_repository(config, "app")
+        assert result == {"repo": "default/repo", "remote": "upstream"}
+
+    def test_project_overrides_defaults(self):
+        config = {
+            "defaults": {
+                "submit_to_repository": {"repo": "default/repo", "remote": "upstream"},
+            },
+            "projects": {
+                "app": {
+                    "path": "/app",
+                    "submit_to_repository": {"repo": "custom/repo", "remote": "origin"},
+                }
+            },
+        }
+        result = get_project_submit_to_repository(config, "app")
+        assert result == {"repo": "custom/repo", "remote": "origin"}
+
+    def test_invalid_type_returns_empty(self):
+        config = {
+            "projects": {
+                "app": {
+                    "path": "/app",
+                    "submit_to_repository": "invalid",
+                }
+            }
+        }
+        assert get_project_submit_to_repository(config, "app") == {}
+
+    def test_unknown_project_returns_default(self):
+        config = {
+            "defaults": {"submit_to_repository": {"repo": "up/stream"}},
+            "projects": {"app": {"path": "/app"}},
+        }
+        result = get_project_submit_to_repository(config, "unknown")
+        assert result == {"repo": "up/stream"}
+
+    def test_empty_values_excluded(self):
+        config = {
+            "projects": {
+                "app": {
+                    "path": "/app",
+                    "submit_to_repository": {"repo": "", "remote": "upstream"},
+                }
+            }
+        }
+        result = get_project_submit_to_repository(config, "app")
+        # Empty repo should not appear in result
+        assert "repo" not in result
+        assert result == {"remote": "upstream"}
+
+    def test_none_project_config_returns_default(self):
+        config = {
+            "defaults": {"submit_to_repository": {"repo": "up/stream"}},
+            "projects": {"app": None},
+        }
+        result = get_project_submit_to_repository(config, "app")
+        assert result == {"repo": "up/stream"}

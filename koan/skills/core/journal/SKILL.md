@@ -1,6 +1,7 @@
 ---
 name: journal
 scope: core
+group: status
 description: View journal entries
 version: 1.0.0
 audience: bridge

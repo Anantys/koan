@@ -25,18 +25,18 @@ from app.restart_manager import (
 
 class TestRequestRestart:
     def test_creates_restart_file(self, tmp_path):
-        request_restart(tmp_path)
+        request_restart(str(tmp_path))
         assert (tmp_path / RESTART_FILE).exists()
 
     def test_restart_file_contains_timestamp(self, tmp_path):
-        request_restart(tmp_path)
+        request_restart(str(tmp_path))
         content = (tmp_path / RESTART_FILE).read_text()
         assert "restart requested at" in content
 
     def test_overwrites_existing_file(self, tmp_path):
         restart_file = tmp_path / RESTART_FILE
         restart_file.write_text("old content")
-        request_restart(tmp_path)
+        request_restart(str(tmp_path))
         content = restart_file.read_text()
         assert "restart requested at" in content
         assert "old content" not in content
@@ -45,10 +45,10 @@ class TestRequestRestart:
 class TestCheckRestart:
     def test_returns_true_when_file_exists(self, tmp_path):
         (tmp_path / RESTART_FILE).write_text("restart")
-        assert check_restart(tmp_path) is True
+        assert check_restart(str(tmp_path)) is True
 
     def test_returns_false_when_no_file(self, tmp_path):
-        assert check_restart(tmp_path) is False
+        assert check_restart(str(tmp_path)) is False
 
     def test_since_ignores_old_file(self, tmp_path):
         """File touched before `since` is treated as stale."""
@@ -56,13 +56,13 @@ class TestCheckRestart:
         # Set mtime in the past
         past = time.time() - 10
         os.utime(tmp_path / RESTART_FILE, (past, past))
-        assert check_restart(tmp_path, since=time.time()) is False
+        assert check_restart(str(tmp_path), since=time.time()) is False
 
     def test_since_detects_fresh_file(self, tmp_path):
         """File touched after `since` is detected."""
         since = time.time() - 10
         (tmp_path / RESTART_FILE).write_text("restart")
-        assert check_restart(tmp_path, since=since) is True
+        assert check_restart(str(tmp_path), since=since) is True
 
     def test_since_zero_means_no_filter(self, tmp_path):
         """Default since=0 behaves like the old check (any file triggers)."""
@@ -70,18 +70,18 @@ class TestCheckRestart:
         # Set mtime far in the past
         past = time.time() - 1000
         os.utime(tmp_path / RESTART_FILE, (past, past))
-        assert check_restart(tmp_path, since=0) is True
+        assert check_restart(str(tmp_path), since=0) is True
 
 
 class TestClearRestart:
     def test_removes_restart_file(self, tmp_path):
         (tmp_path / RESTART_FILE).write_text("restart")
-        clear_restart(tmp_path)
+        clear_restart(str(tmp_path))
         assert not (tmp_path / RESTART_FILE).exists()
 
     def test_no_error_when_file_missing(self, tmp_path):
         # Should not raise
-        clear_restart(tmp_path)
+        clear_restart(str(tmp_path))
 
 
 class TestReexecBridge:
@@ -112,60 +112,8 @@ class TestRestartExitCode:
 # ---------------------------------------------------------------------------
 
 
-class TestRestartAsUpdateAlias:
-    """/restart is an alias for /update — both pull + restart."""
-
-    def test_restart_alias_pulls_and_restarts(self, tmp_path):
-        """Invoking handler with command_name='restart' runs update logic."""
-        from skills.core.update.handler import handle
-        from app.skills import SkillContext
-        from app.update_manager import UpdateResult
-        from unittest.mock import MagicMock
-
-        ctx = SkillContext(
-            koan_root=tmp_path,
-            instance_dir=tmp_path / "instance",
-            command_name="restart",
-            args="",
-            send_message=MagicMock(),
-            handle_chat=MagicMock(),
-        )
-        with patch("app.update_manager.pull_upstream") as mock_pull, \
-             patch("app.restart_manager.request_restart") as mock_request, \
-             patch("app.pause_manager.remove_pause"):
-            mock_pull.return_value = UpdateResult(
-                success=True, old_commit="aaa", new_commit="bbb",
-                commits_pulled=1,
-            )
-            result = handle(ctx)
-
-        mock_pull.assert_called_once_with(tmp_path)
-        mock_request.assert_called_once_with(tmp_path)
-        assert "Restarting" in result
-
-    def test_restart_alias_no_changes(self, tmp_path):
-        """When already up to date, /restart reports no changes."""
-        from skills.core.update.handler import handle
-        from app.skills import SkillContext
-        from app.update_manager import UpdateResult
-        from unittest.mock import MagicMock
-
-        ctx = SkillContext(
-            koan_root=tmp_path,
-            instance_dir=tmp_path / "instance",
-            command_name="restart",
-            args="",
-            send_message=MagicMock(),
-            handle_chat=MagicMock(),
-        )
-        with patch("app.update_manager.pull_upstream") as mock_pull:
-            mock_pull.return_value = UpdateResult(
-                success=True, old_commit="abc", new_commit="abc",
-                commits_pulled=0,
-            )
-            result = handle(ctx)
-
-        assert "up to date" in result
+class TestRestartAsStandaloneSkill:
+    """/restart is a standalone skill that requests restart without pulling code."""
 
     @patch("app.command_handlers._dispatch_skill")
     def test_command_routes_restart_to_skill(self, mock_dispatch):
@@ -175,29 +123,31 @@ class TestRestartAsUpdateAlias:
 
     @patch("app.command_handlers.send_telegram")
     def test_handle_command_restart_end_to_end(self, mock_send, tmp_path):
-        """End-to-end: handle_command('/restart') → skill dispatch → handler.
+        """End-to-end: handle_command('/restart') → restart skill → handler.
 
-        This test does NOT mock _dispatch_skill — it verifies the full path
-        from command routing through skill execution.
+        /restart is now a standalone skill that requests a restart without
+        pulling code. This test verifies the full path from command routing
+        through the restart skill execution.
         """
-        from unittest.mock import MagicMock
         import app.command_handlers as ch
         from app.bridge_state import _reset_registry
-        from app.update_manager import UpdateResult
 
         _reset_registry()
-        with patch.object(ch, "KOAN_ROOT", tmp_path), \
-             patch.object(ch, "INSTANCE_DIR", tmp_path / "instance"), \
-             patch("app.update_manager.pull_upstream") as mock_pull:
-            mock_pull.return_value = UpdateResult(
-                success=True, old_commit="abc", new_commit="abc",
-                commits_pulled=0,
-            )
-            ch.handle_command("/restart")
+        # restart is a worker skill — set up a synchronous worker callback
+        old_cb = ch._run_in_worker_cb
+        ch._run_in_worker_cb = lambda fn: fn()
+        try:
+            with patch.object(ch, "KOAN_ROOT", tmp_path), \
+                 patch.object(ch, "INSTANCE_DIR", tmp_path / "instance"), \
+                 patch("app.restart_manager.request_restart") as mock_restart:
+                ch.handle_command("/restart")
 
-        assert mock_send.called
-        assert "up to date" in mock_send.call_args[0][0]
-        _reset_registry()
+            assert mock_send.called
+            assert "Restart requested" in mock_send.call_args[0][0]
+            mock_restart.assert_called_once()
+        finally:
+            ch._run_in_worker_cb = old_cb
+            _reset_registry()
 
     @patch("app.command_handlers.handle_resume")
     def test_restart_does_not_call_resume(self, mock_resume):
@@ -230,20 +180,20 @@ class TestRestartLoopPrevention:
         os.utime(restart_file, (past, past))
 
         startup_time = time.time()
-        assert check_restart(tmp_path, since=startup_time) is False
+        assert check_restart(str(tmp_path), since=startup_time) is False
 
     def test_fresh_file_triggers_restart(self, tmp_path):
         """A new .koan-restart file (after startup) triggers restart."""
         startup_time = time.time() - 10
-        request_restart(tmp_path)
-        assert check_restart(tmp_path, since=startup_time) is True
+        request_restart(str(tmp_path))
+        assert check_restart(str(tmp_path), since=startup_time) is True
 
 
-class TestHelpListsRestartAsAlias:
-    """Verify /restart appears in help as an alias of /update."""
+class TestRestartIsStandaloneSkill:
+    """Verify /restart is a standalone skill, not an alias of /update."""
 
     @patch("app.command_handlers.send_telegram")
-    def test_help_shows_restart_as_update_alias(self, mock_send):
+    def test_help_shows_restart_not_as_resume_alias(self, mock_send):
         from app.command_handlers import _handle_help
         _handle_help()
         help_text = mock_send.call_args[0][0]
@@ -252,16 +202,15 @@ class TestHelpListsRestartAsAlias:
             if "/resume" in line and "alias" in line:
                 assert "/restart" not in line
 
-    def test_restart_in_update_skill_aliases(self):
-        """The skill registry should list /restart as an alias of /update."""
+    def test_restart_is_separate_skill(self):
+        """The skill registry should list /restart as its own skill."""
         from app.skills import build_registry
         registry = build_registry()
         skill = registry.find_by_command("restart")
         assert skill is not None
-        assert skill.name == "update"
-        # restart is an alias, not a separate command
-        assert len(skill.commands) == 1
-        assert "restart" in skill.commands[0].aliases
+        assert skill.name == "restart"
+        # /update is now hardcoded, not a skill
+        assert registry.find_by_command("update") is None
 
 
 class TestMainLoopRestartDetection:
@@ -299,7 +248,7 @@ class TestMainLoopRestartDetection:
         source = inspect.getsource(main)
         while_idx = source.index("while True:")
         # check_restart should appear after the while loop starts
-        check_idx = source.index("check_restart(KOAN_ROOT", while_idx)
+        check_idx = source.index("check_restart(str(KOAN_ROOT)", while_idx)
         assert check_idx > while_idx
 
     def test_main_clears_stale_file_after_first_poll(self):
@@ -309,7 +258,7 @@ class TestMainLoopRestartDetection:
         source = inspect.getsource(main)
         while_idx = source.index("while True:")
         # clear_restart should appear inside the loop (after first poll)
-        clear_idx = source.index("clear_restart(KOAN_ROOT)", while_idx)
+        clear_idx = source.index("clear_restart(str(KOAN_ROOT))", while_idx)
         assert clear_idx > while_idx
         # And it should be guarded by first_poll
         assert "first_poll" in source

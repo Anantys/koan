@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 
 from app.cli_provider import build_full_command
-from app.utils import atomic_write
+from app.utils import append_to_outbox, atomic_write
 
 
 def should_reflect(instance_dir: Path, interval: int = 10) -> bool:
@@ -150,7 +150,10 @@ def save_reflection(instance_dir: Path, observations: str):
 
     timestamp = datetime.now().strftime("%Y-%m-%d")
 
-    new_content = personality_file.read_text() if personality_file.exists() else ""
+    try:
+        new_content = personality_file.read_text()
+    except OSError:
+        new_content = ""
     new_content += f"\n\n## Reflection — {timestamp}\n\n{observations}\n"
 
     atomic_write(personality_file, new_content)
@@ -168,9 +171,11 @@ def notify_outbox(instance_dir: Path, observations: str):
 
 {observations}
 
-(Periodic self-reflection, see personality-evolution.md)"""
+(Periodic self-reflection, see personality-evolution.md)
+"""
 
-    atomic_write(outbox_file, message)
+    from app.notify import NotificationPriority
+    append_to_outbox(outbox_file, message, NotificationPriority.INFO)
 
 
 def main():

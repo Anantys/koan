@@ -42,7 +42,8 @@ def _load_project_overrides(project_name: str) -> dict:
         if project_name not in projects_config.get("projects", {}):
             return {}
         return get_project_config(projects_config, project_name)
-    except Exception:
+    except Exception as e:
+        print(f"[config] Error loading project overrides for {project_name}: {e}", file=sys.stderr)
         return {}
 
 
@@ -67,7 +68,11 @@ def _get_tools_for_role(role: str, default: List[str], project_name: str = "") -
 
     config = _load_config()
     tools = config.get("tools", {}).get(role, default)
-    return ",".join(tools)
+    if isinstance(tools, str):
+        return tools
+    if isinstance(tools, list):
+        return ",".join(tools)
+    return ",".join(default)
 
 
 def get_chat_tools(project_name: str = "") -> str:
@@ -93,7 +98,7 @@ def get_mission_tools(project_name: str = "") -> str:
 
     Missions run with full tool access including Bash for code execution.
 
-    Config key: tools.mission (default: Read, Glob, Grep, Edit, Write, Bash)
+    Config key: tools.mission (default: Read, Glob, Grep, Edit, Write, Bash, Skill)
     Per-project override: projects.yaml tools.mission
 
     Args:
@@ -102,7 +107,25 @@ def get_mission_tools(project_name: str = "") -> str:
     Returns:
         Comma-separated tool names.
     """
-    return _get_tools_for_role("mission", ["Read", "Glob", "Grep", "Edit", "Write", "Bash"], project_name)
+    return _get_tools_for_role("mission", ["Read", "Glob", "Grep", "Edit", "Write", "Bash", "Skill"], project_name)
+
+
+def get_contemplative_tools(project_name: str = "") -> str:
+    """Get comma-separated list of tools for contemplative sessions.
+
+    Contemplative sessions use a restricted set (read + write, no Bash)
+    for reflection and memory updates.
+
+    Config key: tools.contemplative (default: Read, Write, Glob, Grep)
+    Per-project override: projects.yaml tools.contemplative
+
+    Args:
+        project_name: Optional project name for per-project overrides.
+
+    Returns:
+        Comma-separated tool names.
+    """
+    return _get_tools_for_role("contemplative", ["Read", "Write", "Glob", "Grep"], project_name)
 
 
 # Backward compatibility alias
@@ -155,6 +178,14 @@ def get_model_config(project_name: str = "") -> dict:
     return result
 
 
+def _safe_int(value, default: int) -> int:
+    """Safely convert a config value to int, returning default on failure."""
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return default
+
+
 def get_start_on_pause() -> bool:
     """Check if start_on_pause is enabled in config.yaml.
 
@@ -162,6 +193,29 @@ def get_start_on_pause() -> bool:
     """
     config = _load_config()
     return bool(config.get("start_on_pause", False))
+
+
+def get_auto_pause() -> bool:
+    """Check if auto-pause is enabled in config.yaml.
+
+    When True (default), Kōan auto-pauses after max_runs or idle timeout.
+    When False, only quota exhaustion and consecutive errors trigger pause.
+    """
+    config = _load_config()
+    value = config.get("auto_pause")
+    if value is None:
+        return True
+    return bool(value)
+
+
+def get_skip_permissions() -> bool:
+    """Check if skip_permissions is enabled in config.yaml.
+
+    When True, ``--dangerously-skip-permissions`` is added to Claude CLI
+    invocations — required for MCP tools to work in autonomous mode.
+    """
+    config = _load_config()
+    return bool(config.get("skip_permissions", False))
 
 
 def get_debug_enabled() -> bool:
@@ -173,6 +227,43 @@ def get_debug_enabled() -> bool:
     return bool(config.get("debug", False))
 
 
+def is_dashboard_enabled() -> bool:
+    """Check if dashboard is enabled for managed startup.
+
+    When True, ``make start`` / ``make stop`` / ``make restart`` also
+    manage the dashboard process alongside run and awake.
+    """
+    config = _load_config()
+    dashboard_cfg = config.get("dashboard", {})
+    if isinstance(dashboard_cfg, dict):
+        return bool(dashboard_cfg.get("enabled", False))
+    return False
+
+
+def get_dashboard_port() -> int:
+    """Return the configured dashboard port (default: 5001)."""
+    config = _load_config()
+    dashboard_cfg = config.get("dashboard", {})
+    if isinstance(dashboard_cfg, dict):
+        return int(dashboard_cfg.get("port", 5001))
+    return 5001
+
+
+def get_cli_output_journal() -> bool:
+    """Check if CLI output journal streaming is enabled.
+
+    When True, mission and contemplative CLI output is streamed to the
+    project's daily journal file in real-time for ``tail -f`` visibility.
+
+    Config key: cli_output_journal (default: True — opt-out to disable).
+    """
+    config = _load_config()
+    value = config.get("cli_output_journal")
+    if value is None:
+        return True
+    return bool(value)
+
+
 def get_max_runs() -> int:
     """Get maximum runs per day from config.yaml.
 
@@ -180,7 +271,7 @@ def get_max_runs() -> int:
     Returns default of 20 if not configured.
     """
     config = _load_config()
-    return int(config.get("max_runs_per_day", 20))
+    return _safe_int(config.get("max_runs_per_day", 20), 20)
 
 
 def get_interval_seconds() -> int:
@@ -190,7 +281,25 @@ def get_interval_seconds() -> int:
     Returns default of 300 (5 minutes) if not configured.
     """
     config = _load_config()
-    return int(config.get("interval_seconds", 300))
+    return _safe_int(config.get("interval_seconds", 300), 300)
+
+
+def get_same_project_stickiness_percent() -> int:
+    """Get same-project stickiness chance (0-100) for cache reuse.
+
+    When > 0, autonomous exploration may intentionally stay on the same
+    project as the previous run with this probability. This helps keep
+    prompt prefixes cache-hot across consecutive runs on the same project.
+
+    Config key: prompt_caching.same_project_stickiness_percent
+    Default: 0 (disabled, preserves legacy anti-repeat behavior)
+    """
+    config = _load_config()
+    prompt_cfg = config.get("prompt_caching", {})
+    if not isinstance(prompt_cfg, dict):
+        return 0
+    value = _safe_int(prompt_cfg.get("same_project_stickiness_percent", 0), 0)
+    return max(0, min(100, value))
 
 
 def get_fast_reply_model() -> str:
@@ -228,6 +337,93 @@ def get_branch_prefix() -> str:
     return f"{prefix}/"
 
 
+def get_skill_timeout() -> int:
+    """Get timeout in seconds for skill execution (fix, implement, recreate).
+
+    Controls how long Claude CLI calls are allowed to run before being
+    killed.  This applies to the heavy-lifting skills that invoke Claude
+    with full tool access.
+
+    Config key: skill_timeout (default: 3600 — 60 minutes).
+
+    Returns:
+        Timeout in seconds.
+    """
+    config = _load_config()
+    return _safe_int(config.get("skill_timeout", 3600), 3600)
+
+
+def get_mission_timeout() -> int:
+    """Get timeout in seconds for regular mission execution.
+
+    Controls the watchdog timer for Claude CLI missions dispatched from
+    the main agent loop. Prevents runaway sessions that block the queue.
+
+    Config key: mission_timeout (default: 3600 — 60 minutes).
+    Set to 0 to disable the timeout (not recommended).
+
+    Returns:
+        Timeout in seconds.
+    """
+    config = _load_config()
+    return _safe_int(config.get("mission_timeout", 3600), 3600)
+
+
+def get_skill_max_turns() -> int:
+    """Get max turns for skill execution (fix, implement, incident).
+
+    Controls the maximum number of agentic turns Claude CLI is allowed
+    to take during heavy-lifting skill invocations. Higher values allow
+    complex implementations to complete without hitting the ceiling.
+
+    Config key: skill_max_turns (default: 200).
+
+    Returns:
+        Maximum number of turns.
+    """
+    config = _load_config()
+    return _safe_int(config.get("skill_max_turns", 200), 200)
+
+
+def get_post_mission_timeout() -> int:
+    """Get timeout in seconds for the post-mission pipeline.
+
+    Controls the overall deadline for post-mission steps: verification,
+    reflection, PR review learning, and auto-merge.  Without this ceiling,
+    accumulated steps can block the agent loop for too long.
+
+    Config key: post_mission_timeout (default: 300 — 5 minutes).
+
+    Returns:
+        Timeout in seconds.
+    """
+    config = _load_config()
+    return _safe_int(config.get("post_mission_timeout", 300), 300)
+
+
+def get_plan_review_config() -> dict:
+    """Get plan review loop configuration from config.yaml.
+
+    Controls whether a lightweight subagent reviews generated plans before
+    they are posted to GitHub, and how many re-generation rounds are allowed.
+
+    Config key: plan_review (default: enabled=True, max_rounds=3)
+
+    Returns:
+        Dict with keys:
+          - enabled (bool): Whether the review loop runs (default: True)
+          - max_rounds (int): Maximum re-generation rounds (default: 3)
+    """
+    config = _load_config()
+    plan_review = config.get("plan_review", {})
+    if not isinstance(plan_review, dict):
+        plan_review = {}
+    return {
+        "enabled": bool(plan_review.get("enabled", True)),
+        "max_rounds": _safe_int(plan_review.get("max_rounds", 3), 3),
+    }
+
+
 def get_contemplative_chance() -> int:
     """Get probability (0-100) of triggering contemplative mode on autonomous runs.
 
@@ -239,7 +435,8 @@ def get_contemplative_chance() -> int:
         Integer percentage (0-100). Default: 10 (one in ten autonomous runs).
     """
     config = _load_config()
-    return int(config.get("contemplative_chance", 10))
+    value = _safe_int(config.get("contemplative_chance", 10), 10)
+    return max(0, min(100, value))
 
 
 def build_claude_flags(
@@ -318,7 +515,7 @@ def get_cli_binary_for_shell() -> str:
 def get_cli_provider_name() -> str:
     """Get the configured CLI provider name for display.
 
-    Returns "claude" or "copilot".
+    Returns "claude", "codex", "copilot", "local", or "ollama-launch".
     """
     from app.cli_provider import get_provider_name
     return get_provider_name()
@@ -384,4 +581,45 @@ def get_auto_merge_config(config: dict, project_name: str) -> dict:
         "base_branch": global_cfg.get("base_branch", "main"),
         "strategy": global_cfg.get("strategy", "squash"),
         "rules": global_cfg.get("rules", []),
+    }
+
+
+def get_prompt_guard_config() -> dict:
+    """Get prompt guard configuration.
+
+    Returns:
+        Dict with keys: enabled (bool), block_mode (bool).
+        Defaults: enabled=True, block_mode=False (warn only).
+    """
+    config = _load_config()
+    guard_cfg = config.get("prompt_guard", {})
+    return {
+        "enabled": guard_cfg.get("enabled", True),
+        "block_mode": guard_cfg.get("block_mode", False),
+    }
+
+
+def get_review_concurrency_config() -> dict:
+    """Get review concurrency configuration from config.yaml.
+
+    Controls parallelism for GitHub API calls during PR reviews. The LLM
+    call (Claude CLI) is always sequential — only GitHub data-fetching is
+    parallelised.
+
+    Config key: review_concurrency
+      - enabled (bool): Enable parallel GitHub API fetches (default: True)
+      - github_workers (int): Max concurrent GitHub API calls (default: 4)
+
+    Returns:
+        Dict with keys:
+          - enabled (bool): Whether parallel fetching is active.
+          - github_workers (int): ThreadPoolExecutor max_workers for gh calls.
+    """
+    config = _load_config()
+    review_cfg = config.get("review_concurrency", {})
+    if not isinstance(review_cfg, dict):
+        review_cfg = {}
+    return {
+        "enabled": bool(review_cfg.get("enabled", True)),
+        "github_workers": _safe_int(review_cfg.get("github_workers", 4), 4),
     }

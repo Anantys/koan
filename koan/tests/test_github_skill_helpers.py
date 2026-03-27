@@ -209,6 +209,24 @@ class TestFormatProjectNotFoundError:
         msg = format_project_not_found_error("something")
         assert "none" in msg
 
+    @patch("app.utils.get_known_projects", return_value=[("koan", "/p/k")])
+    def test_with_owner_shows_full_slug(self, mock_projects):
+        msg = format_project_not_found_error("koan", owner="sukria")
+        assert "sukria/koan" in msg
+        assert "❌" in msg
+
+    @patch("app.utils.get_known_projects", return_value=[("web", "/p/w")])
+    def test_suggests_add_project(self, mock_projects):
+        msg = format_project_not_found_error("repo", owner="org")
+        assert "/add_project" in msg
+        assert "org/repo" in msg
+
+    @patch("app.utils.get_known_projects", return_value=[])
+    def test_without_owner_uses_repo_only(self, mock_projects):
+        msg = format_project_not_found_error("myrepo")
+        assert "myrepo" in msg
+        assert "/" not in msg.split("\n")[0]  # No slash in target when no owner
+
 
 # ---------------------------------------------------------------------------
 # format_success_message
@@ -340,6 +358,8 @@ class TestHandleGithubSkill:
             result = handle_github_skill(ctx, "review", "pr-or-issue", self._parse_3tuple, "Review queued")
         assert "❌" in result
         assert "Could not find local project" in result
+        assert "sukria/koan" in result  # owner/repo from parse function
+        assert "/add_project" in result  # actionable suggestion
 
     @patch("app.utils.insert_pending_mission")
     @patch("app.utils.project_name_for_path", return_value="koan")
@@ -394,12 +414,22 @@ class TestHandleGithubSkill:
         assert entry.startswith("- [project:myproject]")
         assert "/rebase https://github.com/o/r/pull/1" in entry
 
-    def test_url_type_filtering(self, tmp_path):
-        """PR URL rejected when url_type is 'issue'."""
-        ctx = self._make_ctx(tmp_path, args="https://github.com/o/r/pull/1")
-        result = handle_github_skill(ctx, "implement", "issue", self._parse_3tuple, "Queued")
+    def test_url_type_filtering_rejects_wrong_type(self, tmp_path):
+        """Issue URL rejected when url_type is 'pr'."""
+        ctx = self._make_ctx(tmp_path, args="https://github.com/o/r/issues/1")
+        result = handle_github_skill(ctx, "rebase", "pr", self._parse_3tuple, "Queued")
         assert "❌" in result
         assert "No valid GitHub URL" in result
+
+    @patch("app.utils.insert_pending_mission")
+    @patch("app.utils.project_name_for_path", return_value="koan")
+    @patch("app.utils.resolve_project_path", return_value="/path/to/koan")
+    def test_implement_accepts_pr_url(self, mock_path, mock_name, mock_insert, tmp_path):
+        """PR URLs are valid for implement — GitHub issues API works for PRs."""
+        ctx = self._make_ctx(tmp_path, args="https://github.com/sukria/koan/pull/61")
+        result = handle_github_skill(ctx, "implement", "pr-or-issue", self._parse_3tuple, "Implementation queued")
+        assert "Implementation queued" in result
+        mock_insert.assert_called_once()
 
     @patch("app.utils.insert_pending_mission")
     @patch("app.utils.project_name_for_path", return_value="koan")

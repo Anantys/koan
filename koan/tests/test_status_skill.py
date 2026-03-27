@@ -2,7 +2,18 @@
 
 from unittest.mock import patch, MagicMock
 
+import pytest
+
 from app.skills import SkillContext
+from app.response_cache import _format_cache
+
+
+@pytest.fixture(autouse=True)
+def _clear_cache_for_status():
+    """Reset format cache between tests."""
+    _format_cache.clear()
+    yield
+    _format_cache.clear()
 
 
 def _make_ctx(command_name, instance_dir, koan_root=None):
@@ -80,8 +91,7 @@ class TestHandleStatus:
         """Pause with quota reason shows specific message."""
         instance = tmp_path / "instance"
         instance.mkdir()
-        (tmp_path / ".koan-pause").touch()
-        (tmp_path / ".koan-pause-reason").write_text("quota\n2026-02-07T12:00:00\nResets at 12:00")
+        (tmp_path / ".koan-pause").write_text("quota\n1234567890\nResets at 12:00")
         from skills.core.status.handler import _handle_status
         ctx = _make_ctx("status", instance, tmp_path)
         result = _handle_status(ctx)
@@ -91,8 +101,7 @@ class TestHandleStatus:
         """Pause with max_runs reason shows specific message."""
         instance = tmp_path / "instance"
         instance.mkdir()
-        (tmp_path / ".koan-pause").touch()
-        (tmp_path / ".koan-pause-reason").write_text("max_runs\n2026-02-07T12:00:00\n")
+        (tmp_path / ".koan-pause").write_text("max_runs\n1234567890\n")
         from skills.core.status.handler import _handle_status
         ctx = _make_ctx("status", instance, tmp_path)
         result = _handle_status(ctx)
@@ -683,3 +692,146 @@ class TestHandleStatusOllama:
             result = _handle_status(ctx)
 
         assert "Ollama: running (PID 7777)" in result
+
+
+# ---------------------------------------------------------------------------
+# Cache stats in /status
+# ---------------------------------------------------------------------------
+
+class TestHandleStatusCache:
+    """Test cache stats display in /status output."""
+
+    def test_cache_stats_shown_when_used(self, tmp_path):
+        """When cache has hits/misses, /status shows the stats."""
+        instance = tmp_path / "instance"
+        instance.mkdir()
+        from skills.core.status.handler import _handle_status
+
+        # Simulate some cache activity
+        _format_cache.put("k1", "v1")
+        _format_cache.get("k1")  # hit
+        _format_cache.get("k1")  # hit
+        _format_cache.get("miss")  # miss
+
+        ctx = _make_ctx("status", instance, tmp_path)
+        result = _handle_status(ctx)
+        assert "Cache: 2 hits / 1 misses" in result
+
+    def test_cache_stats_hidden_when_unused(self, tmp_path):
+        """When cache is empty (no activity), no cache line shown."""
+        instance = tmp_path / "instance"
+        instance.mkdir()
+        from skills.core.status.handler import _handle_status
+
+        ctx = _make_ctx("status", instance, tmp_path)
+        result = _handle_status(ctx)
+        assert "Cache" not in result
+
+
+# ---------------------------------------------------------------------------
+# Usage staleness check
+# ---------------------------------------------------------------------------
+
+class TestCheckUsageStaleness:
+    """Test _check_usage_staleness() health check."""
+
+    def test_no_usage_file(self, tmp_path):
+        """Missing usage.md warns about 75% default."""
+        from skills.core.status.handler import _check_usage_staleness
+        result = _check_usage_staleness(tmp_path)
+        assert "no data" in result
+        assert "75%" in result
+
+    def test_fresh_usage_file(self, tmp_path):
+        """Recently updated usage.md shows minutes."""
+        usage = tmp_path / "usage.md"
+        usage.write_text("Session (5hr) : 25% (reset in 3h)")
+        from skills.core.status.handler import _check_usage_staleness
+        result = _check_usage_staleness(tmp_path)
+        assert "m old" in result
+        assert "⚠️" not in result
+
+    def test_stale_usage_file(self, tmp_path):
+        """usage.md older than 6h triggers warning with fallback note."""
+        import os
+        usage = tmp_path / "usage.md"
+        usage.write_text("Session (5hr) : 25% (reset in 3h)")
+        # Set mtime to 8 hours ago
+        old_time = __import__("time").time() - 8 * 3600
+        os.utime(usage, (old_time, old_time))
+        from skills.core.status.handler import _check_usage_staleness
+        result = _check_usage_staleness(tmp_path)
+        assert "⚠️" in result
+        assert "stale" in result
+        assert "75% fallback" in result
+
+    def test_moderately_old_usage_file(self, tmp_path):
+        """usage.md between 1h and 6h shows hours without warning."""
+        import os
+        usage = tmp_path / "usage.md"
+        usage.write_text("Session (5hr) : 25% (reset in 3h)")
+        old_time = __import__("time").time() - 3 * 3600
+        os.utime(usage, (old_time, old_time))
+        from skills.core.status.handler import _check_usage_staleness
+        result = _check_usage_staleness(tmp_path)
+        assert "h old" in result
+        assert "⚠️" not in result
+
+
+# ---------------------------------------------------------------------------
+# GitHub notification queue depth check
+# ---------------------------------------------------------------------------
+
+class TestCheckGithubNotifications:
+    """Test _check_github_notifications() health check."""
+
+    def test_zero_notifications(self):
+        """Empty notification list shows 0 unread."""
+        from skills.core.status.handler import _check_github_notifications
+        with patch("app.github.api", return_value="[]"):
+            result = _check_github_notifications()
+        assert result == "📬 GitHub: 0 unread"
+
+    def test_some_notifications(self):
+        """Small number of notifications shows count."""
+        import json
+        from skills.core.status.handler import _check_github_notifications
+        fake = json.dumps([{"id": str(i)} for i in range(5)])
+        with patch("app.github.api", return_value=fake):
+            result = _check_github_notifications()
+        assert result == "📬 GitHub: 5 unread"
+
+    def test_many_notifications_no_warning(self):
+        """20+ unread notifications shows mailbox icon, not warning."""
+        import json
+        from skills.core.status.handler import _check_github_notifications
+        fake = json.dumps([{"id": str(i)} for i in range(25)])
+        with patch("app.github.api", return_value=fake):
+            result = _check_github_notifications()
+        assert "📬" in result
+        assert "⚠️" not in result
+        assert "25 unread" in result
+
+    def test_overflow_notifications(self):
+        """100+ unread shows overflow indicator with mailbox icon."""
+        import json
+        from skills.core.status.handler import _check_github_notifications
+        fake = json.dumps([{"id": str(i)} for i in range(100)])
+        with patch("app.github.api", return_value=fake):
+            result = _check_github_notifications()
+        assert "📬" in result
+        assert "100+" in result
+
+    def test_api_failure_returns_none(self):
+        """API errors produce None (item is silently omitted)."""
+        from skills.core.status.handler import _check_github_notifications
+        with patch("app.github.api", side_effect=RuntimeError("auth failed")):
+            result = _check_github_notifications()
+        assert result is None
+
+    def test_empty_response(self):
+        """Empty string response = 0 unread."""
+        from skills.core.status.handler import _check_github_notifications
+        with patch("app.github.api", return_value=""):
+            result = _check_github_notifications()
+        assert "0 unread" in result

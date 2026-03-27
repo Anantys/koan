@@ -27,10 +27,18 @@ SKILL.md format:
 """
 
 import importlib.util
+import logging
 import re
+from collections import namedtuple
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+
+# Returned by _execute_handler() on unhandled exceptions so callers can
+# distinguish handler crashes from intentional error responses.
+SkillError = namedtuple("SkillError", ["skill_name", "exception", "message"])
+
+_log = logging.getLogger(__name__)
 
 # Valid audience values for skills.
 # - "bridge": Telegram-only (process control, quick checks)
@@ -67,6 +75,8 @@ class Skill:
     audience: str = DEFAULT_AUDIENCE
     github_enabled: bool = False
     github_context_aware: bool = False
+    cli_skill: Optional[str] = None
+    group: str = ""
 
     @property
     def qualified_name(self) -> str:
@@ -226,6 +236,12 @@ def parse_skill_md(path: Path) -> Optional[Skill]:
     if audience not in VALID_AUDIENCES:
         audience = DEFAULT_AUDIENCE
 
+    # Parse cli_skill (optional provider slash command name)
+    cli_skill = meta.get("cli_skill") or None
+
+    # Parse group (for /help grouping)
+    group = meta.get("group", "")
+
     return Skill(
         name=meta["name"],
         scope=meta.get("scope", skill_dir.parent.name),
@@ -239,6 +255,8 @@ def parse_skill_md(path: Path) -> Optional[Skill]:
         audience=audience,
         github_enabled=github_enabled,
         github_context_aware=github_context_aware,
+        cli_skill=cli_skill,
+        group=group,
     )
 
 
@@ -270,13 +288,66 @@ class SkillRegistry:
     def _register(self, skill: Skill) -> None:
         """Register a skill and build command lookup."""
         key = skill.qualified_name
+
+        # Reject individual commands/aliases whose names contain hyphens.
+        # Hyphens break Telegram command parsing (treated as word boundary).
+        # See CLAUDE.md "No hyphens in skill names or aliases".
+        # Only the offending command/alias is skipped — the rest of the skill
+        # is still registered.
+        valid_commands: List[SkillCommand] = []
+        for cmd in skill.commands:
+            if "-" in cmd.name:
+                _log.error(
+                    "Skill %s: command '%s' contains a hyphen — "
+                    "skipping this command. Use underscores instead.",
+                    key, cmd.name,
+                )
+                continue
+            # Filter out hyphenated aliases, keep the rest
+            bad_aliases = [a for a in cmd.aliases if "-" in a]
+            if bad_aliases:
+                _log.error(
+                    "Skill %s: alias(es) %s contain a hyphen — "
+                    "skipping these aliases. Use underscores instead.",
+                    key, ", ".join(repr(a) for a in bad_aliases),
+                )
+            clean_aliases = [a for a in cmd.aliases if "-" not in a]
+            valid_commands.append(SkillCommand(
+                name=cmd.name,
+                description=cmd.description,
+                aliases=clean_aliases,
+                usage=cmd.usage,
+            ))
+
         self._skills[key] = skill
 
-        # Map each command name and alias to this skill
-        for cmd in skill.commands:
+        # Warn if a core skill has no help group — every command must be
+        # discoverable via /help.  See CLAUDE.md "User manual maintenance".
+        if skill.scope == "core" and not skill.group:
+            _log.warning(
+                "Core skill %s has no 'group:' in SKILL.md — "
+                "it won't appear in /help. Add a group field.",
+                key,
+            )
+
+        # Map each valid command name and alias to this skill
+        for cmd in valid_commands:
+            self._check_collision(cmd.name, skill, is_alias=False)
             self._command_map[cmd.name] = skill
             for alias in cmd.aliases:
+                self._check_collision(alias, skill, is_alias=True)
                 self._command_map[alias] = skill
+
+    def _check_collision(self, name: str, skill: Skill, *, is_alias: bool) -> None:
+        """Log a warning if *name* is already registered by a different skill."""
+        existing = self._command_map.get(name)
+        if existing is not None and existing.qualified_name != skill.qualified_name:
+            kind = "alias" if is_alias else "command"
+            _log.warning(
+                "Skill %s: %s '%s' collides with skill %s — "
+                "the earlier registration will be overwritten.",
+                skill.qualified_name, kind, name, existing.qualified_name,
+            )
 
     def get(self, scope: str, name: str) -> Optional[Skill]:
         return self._skills.get(f"{scope}.{name}")
@@ -288,6 +359,25 @@ class SkillRegistry:
         """Find a skill that handles the given command name."""
         return self._command_map.get(command_name)
 
+    def suggest_command(self, command_name: str, extra_commands: Optional[List[str]] = None) -> Optional[str]:
+        """Suggest the closest matching command name for a typo.
+
+        Args:
+            command_name: The mistyped command name (without /).
+            extra_commands: Additional command names to consider (e.g. hardcoded core commands).
+
+        Returns:
+            The closest command name, or None if no close match found.
+        """
+        import difflib
+
+        candidates = list(self._command_map.keys())
+        if extra_commands:
+            candidates.extend(extra_commands)
+
+        matches = difflib.get_close_matches(command_name, candidates, n=1, cutoff=0.6)
+        return matches[0] if matches else None
+
     def list_all(self) -> List[Skill]:
         return list(self._skills.values())
 
@@ -298,6 +388,18 @@ class SkillRegistry:
         """Return skills matching any of the given audience types."""
         return [s for s in self._skills.values() if s.audience in audiences]
 
+    def list_by_group(self, group: str) -> List[Skill]:
+        """Return core skills belonging to the given help group."""
+        return [s for s in self._skills.values()
+                if s.scope == "core" and s.group == group]
+
+    def groups(self) -> List[str]:
+        """Return sorted list of distinct help groups from core skills."""
+        return sorted(set(
+            s.group for s in self._skills.values()
+            if s.scope == "core" and s.group
+        ))
+
     def scopes(self) -> List[str]:
         return sorted(set(s.scope for s in self._skills.values()))
 
@@ -306,6 +408,11 @@ class SkillRegistry:
 
     def resolve_scoped_command(self, text: str) -> Optional[Tuple["Skill", str, str]]:
         """Resolve a scoped command like 'anantys.review' or 'core.status.ping'.
+
+        Tries two lookup strategies:
+        1. By skill name: scope.skill_name (e.g., wp.refactor → skill "wp.refactor")
+        2. By command name: scope.command_name (e.g., wp.wp-refactor → skill in
+           scope "wp" that has a command named "wp-refactor")
 
         Returns:
             (skill, command_name, args) tuple, or None if no match.
@@ -323,11 +430,20 @@ class SkillRegistry:
         skill_name = segments[1]
         subcommand = segments[2] if len(segments) > 2 else skill_name
 
+        # Strategy 1: look up by skill name (scope.skill_name)
         skill = self.get(scope, skill_name)
-        if skill is None:
-            return None
+        if skill is not None:
+            return skill, subcommand, args
 
-        return skill, subcommand, args
+        # Strategy 2: look up by command name or alias within the scope
+        # This handles the case where /skill listing shows /{scope}.{cmd.name}
+        # but the command name differs from the skill name.
+        for s in self.list_by_scope(scope):
+            for cmd in s.commands:
+                if cmd.name == skill_name or skill_name in cmd.aliases:
+                    return s, skill_name, args
+
+        return None
 
     def __contains__(self, qualified_name: str) -> bool:
         return qualified_name in self._skills
@@ -349,14 +465,14 @@ class SkillContext:
     handle_chat: Optional[Callable[[str], Any]] = None
 
 
-def execute_skill(skill: Skill, ctx: SkillContext) -> Optional[str]:
+def execute_skill(skill: Skill, ctx: SkillContext) -> Optional[Union[str, SkillError]]:
     """Execute a skill and return the response text.
 
     Handler-based skills: imports handler.py and calls handle(ctx).
     Prompt-based skills: returns the prompt body (caller sends to Claude).
 
     Returns:
-        Response text, or None if execution failed.
+        Response text, SkillError on handler crash, or None if no handler.
     """
     if skill.has_handler():
         return _execute_handler(skill, ctx)
@@ -365,7 +481,7 @@ def execute_skill(skill: Skill, ctx: SkillContext) -> Optional[str]:
     return None
 
 
-def _execute_handler(skill: Skill, ctx: SkillContext) -> Optional[str]:
+def _execute_handler(skill: Skill, ctx: SkillContext) -> Optional[Union[str, SkillError]]:
     """Load and execute a Python handler."""
     handler_path = skill.handler_path
     if handler_path is None:
@@ -387,7 +503,12 @@ def _execute_handler(skill: Skill, ctx: SkillContext) -> Optional[str]:
 
         return handle_fn(ctx)
     except Exception as e:
-        return f"Skill error ({skill.qualified_name}): {e}"
+        _log.error("Skill handler %s failed: %s", skill.qualified_name, e, exc_info=True)
+        return SkillError(
+            skill_name=skill.qualified_name,
+            exception=e,
+            message=f"Skill error ({skill.qualified_name}): {e}",
+        )
 
 
 def _execute_prompt(skill: Skill, ctx: SkillContext) -> Optional[str]:

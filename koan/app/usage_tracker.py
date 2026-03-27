@@ -8,13 +8,14 @@ and decides which autonomous mode to use (review/implement/deep/wait).
 Keeps 10% safety margin to avoid quota exhaustion.
 
 Usage:
-    usage_tracker.py <usage.md> <run_count> <projects>
+    usage_tracker.py <usage.md> <run_count>
 
 Output:
-    mode:available%:reason:project_idx
-    Example: implement:45:Normal budget:1
+    mode:available%:reason
+    Example: implement:45:Normal budget
 """
 
+import logging
 import os
 import re
 import sys
@@ -26,12 +27,19 @@ from typing import Tuple
 STALENESS_THRESHOLD_SECONDS = 6 * 3600  # 6 hours
 STALE_SAFETY_MARGIN = 15.0  # vs normal 10%
 
+# When usage.md exists but is malformed, assume this usage % to avoid
+# accidentally running in unlimited/DEEP mode on bad data.
+MALFORMED_DEFAULT_PCT = 75.0
+
+logger = logging.getLogger(__name__)
+
 
 class UsageTracker:
     """Track Claude usage and decide autonomous mode based on remaining budget."""
 
     def __init__(self, usage_file: Path, runs_completed: int = 0,
-                 budget_mode: str = "full"):
+                 budget_mode: str = "full",
+                 warn_pct: int = 70, stop_pct: int = 85):
         """Initialize tracker by parsing usage.md file.
 
         Args:
@@ -44,6 +52,10 @@ class UsageTracker:
                     the real Claude API quota.
                 "disabled": no internal budget gating — only real API quota
                     exhaustion errors (from quota_handler.py) will pause.
+            warn_pct: Usage percentage at which to enter conservative mode
+                (default 70 → review when <30% remaining).
+            stop_pct: Usage percentage at which to pause entirely
+                (default 85 → wait when <15% remaining).
 
         Raises:
             ValueError: If usage file cannot be parsed
@@ -55,6 +67,8 @@ class UsageTracker:
         self.runs_this_session = runs_completed
         self.safety_margin = 10.0  # Keep 10% buffer
         self.budget_mode = budget_mode
+        self.warn_pct = warn_pct
+        self.stop_pct = stop_pct
 
         if usage_file.exists():
             self._parse_usage_file(usage_file)
@@ -94,6 +108,18 @@ class UsageTracker:
         if weekly_match:
             self.weekly_pct = float(weekly_match.group(1))
             self.weekly_reset = weekly_match.group(2).strip()
+
+        # If file has content but neither regex matched, the format is
+        # malformed.  Default to conservative usage to avoid accidentally
+        # granting unlimited/DEEP mode on bad data.
+        if content.strip() and not session_match and not weekly_match:
+            logger.warning(
+                "usage.md exists but could not parse session or weekly "
+                "percentages — defaulting to %s%% used",
+                MALFORMED_DEFAULT_PCT,
+            )
+            self.session_pct = MALFORMED_DEFAULT_PCT
+            self.weekly_pct = MALFORMED_DEFAULT_PCT
 
     def remaining_budget(self) -> Tuple[float, float]:
         """Calculate remaining budget after safety margin.
@@ -156,11 +182,17 @@ class UsageTracker:
     def decide_mode(self) -> str:
         """Decide autonomous mode based on remaining budget.
 
-        Budget thresholds:
-        - < 5%: wait (too close to limit)
-        - < 15%: review (low-cost only)
+        Budget thresholds (derived from config):
+        - < (100 - stop_pct)%: wait (too close to limit)
+        - < (100 - warn_pct)%: review (low-cost only)
         - < 40%: implement (medium-cost)
         - >= 40%: deep (high-cost allowed)
+
+        With defaults (warn_pct=70, stop_pct=85):
+        - < 15%: wait
+        - < 30%: review
+        - < 40%: implement
+        - >= 40%: deep
 
         Returns:
             One of: "wait", "review", "implement", "deep"
@@ -168,46 +200,17 @@ class UsageTracker:
         session_rem, weekly_rem = self.remaining_budget()
         available = min(session_rem, weekly_rem)
 
-        if available < 5:
+        stop_remaining = 100 - self.stop_pct  # default: 15
+        warn_remaining = 100 - self.warn_pct  # default: 30
+
+        if available < stop_remaining:
             return "wait"
-        elif available < 15:
+        elif available < warn_remaining:
             return "review"
         elif available < 40:
             return "implement"
         else:
             return "deep"
-
-    def select_project(self, projects_str: str, mode: str, run_num: int) -> int:
-        """Select project index based on mode and project characteristics.
-
-        Args:
-            projects_str: Semicolon-separated "name:path" pairs (e.g., "koan:/path;anantys:/path2")
-            mode: Current autonomous mode (review/implement/deep)
-            run_num: Current run number (1-based, for round-robin fallback)
-
-        Returns:
-            Project index (0-based)
-        """
-        if not projects_str:
-            return 0
-
-        # Parse project list
-        projects = [p.strip() for p in projects_str.split(';') if p.strip()]
-        if not projects:
-            return 0
-
-        num_projects = len(projects)
-
-        # Mode-based heuristics
-        if mode == "review":
-            # Prefer first project (often simplest/primary)
-            return 0
-        elif mode == "deep":
-            # Prefer first project (primary/most important)
-            return 0
-        else:  # implement or wait
-            # Round-robin for balanced coverage
-            return (run_num - 1) % num_projects
 
     def get_decision_reason(self, mode: str) -> str:
         """Generate human-readable reason for mode decision.
@@ -230,21 +233,40 @@ class UsageTracker:
         else:  # deep
             return f"Ample budget ({available:.0f}% remaining) - full capability"
 
-    def format_output(self, mode: str, project_idx: int) -> str:
+    def format_output(self, mode: str) -> str:
         """Format decision output for bash consumption.
 
         Args:
             mode: Decided autonomous mode
-            project_idx: Selected project index
 
         Returns:
-            Colon-separated string: "mode:available%:reason:project_idx"
+            Colon-separated string: "mode:available%:reason"
         """
         session_rem, weekly_rem = self.remaining_budget()
         available = min(session_rem, weekly_rem)
         reason = self.get_decision_reason(mode)
 
-        return f"{mode}:{available:.0f}:{reason}:{project_idx}"
+        return f"{mode}:{available:.0f}:{reason}"
+
+
+def _get_budget_thresholds() -> tuple:
+    """Read budget thresholds from config.yaml → budget.warn_at_percent / stop_at_percent.
+
+    Returns:
+        (warn_at_percent, stop_at_percent) with defaults (70, 85).
+    """
+    try:
+        from app.utils import load_config
+        config = load_config()
+        budget = config.get("budget", {})
+        warn = int(budget.get("warn_at_percent", 70))
+        stop = int(budget.get("stop_at_percent", 85))
+        # Sanity bounds
+        warn = max(0, min(100, warn))
+        stop = max(0, min(100, stop))
+        return warn, stop
+    except (ImportError, OSError, ValueError, TypeError):
+        return 70, 85
 
 
 def _get_budget_mode() -> str:
@@ -258,7 +280,7 @@ def _get_budget_mode() -> str:
         mode = config.get("usage", {}).get("budget_mode", "session_only")
         if mode in ("full", "session_only", "disabled"):
             return mode
-    except Exception:
+    except (ImportError, OSError, ValueError):
         pass
     return "session_only"
 
@@ -266,25 +288,25 @@ def _get_budget_mode() -> str:
 def main():
     """CLI entry point for usage_tracker.py"""
     if len(sys.argv) < 3:
-        print("Usage: usage_tracker.py <usage.md> <run_count> [projects]", file=sys.stderr)
+        print("Usage: usage_tracker.py <usage.md> <run_count>", file=sys.stderr)
         sys.exit(1)
 
     usage_file = Path(sys.argv[1])
     run_count = int(sys.argv[2])
-    projects = sys.argv[3] if len(sys.argv) > 3 else ""
 
     budget_mode = _get_budget_mode()
+    warn_pct, stop_pct = _get_budget_thresholds()
 
     try:
-        tracker = UsageTracker(usage_file, run_count, budget_mode=budget_mode)
+        tracker = UsageTracker(usage_file, run_count, budget_mode=budget_mode,
+                               warn_pct=warn_pct, stop_pct=stop_pct)
         mode = tracker.decide_mode()
-        project_idx = tracker.select_project(projects, mode, run_count + 1)  # +1 because next run
-        output = tracker.format_output(mode, project_idx)
+        output = tracker.format_output(mode)
         print(output)
     except Exception as e:
         # Fallback to safe defaults on error
         print(f"[usage_tracker] Error: {e}", file=sys.stderr)
-        print("review:50:Fallback mode:0")
+        print("review:50:Fallback mode")
         sys.exit(0)  # Don't break run loop on tracker errors
 
 

@@ -1,6 +1,7 @@
 ---
 name: language
 scope: core
+group: config
 description: Set or reset reply language preference
 version: 1.1.0
 audience: bridge

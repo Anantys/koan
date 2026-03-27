@@ -1,0 +1,295 @@
+{% extends "base.html" %}
+{% block title %}Koan — Pull Requests{% endblock %}
+{% block content %}
+<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.5rem;">
+    <h1 style="margin-bottom:0;">Pull Requests</h1>
+    <div style="display:flex;align-items:center;gap:0.75rem;">
+        <label style="font-size:0.8rem;color:var(--text-muted);display:flex;align-items:center;gap:0.4rem;">
+            <input type="checkbox" id="author-toggle" checked style="accent-color:var(--accent);">
+            Koan-authored only
+        </label>
+        <button id="refresh-btn" class="btn-secondary" style="font-size:0.8rem;padding:0.3rem 0.75rem;">
+            Refresh
+        </button>
+    </div>
+</div>
+
+<div class="grid" id="pr-stats">
+    <div class="card">
+        <div class="stat-label">Open PRs</div>
+        <div class="stat-value" id="stat-total">-</div>
+    </div>
+    <div class="card">
+        <div class="stat-label">CI Passing</div>
+        <div class="stat-value" id="stat-ci-pass" style="color:var(--green);">-</div>
+    </div>
+    <div class="card">
+        <div class="stat-label">Needs Review</div>
+        <div class="stat-value" id="stat-review" style="color:var(--orange);">-</div>
+    </div>
+    <div class="card">
+        <div class="stat-label">Approved</div>
+        <div class="stat-value" id="stat-approved" style="color:var(--green);">-</div>
+    </div>
+</div>
+
+<div id="pr-error" class="card" style="display:none;border-color:var(--red);color:var(--red);"></div>
+<div id="pr-stale" class="card" style="display:none;border-color:var(--orange);color:var(--orange);font-size:0.85rem;">
+    Showing cached data — some projects failed to refresh.
+</div>
+
+<div class="card" id="pr-list-card">
+    <div id="pr-loading" style="text-align:center;padding:2rem;color:var(--text-muted);">
+        <span class="spinner"></span> Loading PRs...
+    </div>
+    <div id="pr-empty" style="display:none;text-align:center;padding:2rem;color:var(--text-muted);">
+        No open PRs found.
+    </div>
+    <div class="table-wrap">
+    <table id="pr-table" style="width:100%;border-collapse:collapse;font-size:0.85rem;display:none;">
+        <thead>
+            <tr style="color:var(--text-muted);text-align:left;">
+                <th style="padding:0.5rem 0;">Project</th>
+                <th style="padding:0.5rem 0;">PR</th>
+                <th style="padding:0.5rem 0;" class="hide-mobile">Branch</th>
+                <th style="padding:0.5rem 0;" class="hide-mobile">Age</th>
+                <th style="padding:0.5rem 0;">Status</th>
+                <th style="padding:0.5rem 0;">CI</th>
+                <th style="padding:0.5rem 0;">Review</th>
+                <th style="padding:0.5rem 0;"></th>
+            </tr>
+        </thead>
+        <tbody id="pr-tbody"></tbody>
+    </table>
+    </div>
+</div>
+
+<!-- Expandable CI checks detail (shown below a row on click) -->
+<div id="checks-detail" class="card" style="display:none;margin-top:-1rem;margin-bottom:1rem;font-size:0.82rem;">
+    <div id="checks-loading" style="color:var(--text-muted);"><span class="spinner"></span> Loading checks...</div>
+    <div id="checks-content"></div>
+</div>
+
+<script>
+function timeAgo(dateStr) {
+    var d = new Date(dateStr);
+    var now = new Date();
+    var diff = Math.floor((now - d) / 1000);
+    if (diff < 60) return diff + 's';
+    if (diff < 3600) return Math.floor(diff / 60) + 'm';
+    if (diff < 86400) return Math.floor(diff / 3600) + 'h';
+    return Math.floor(diff / 86400) + 'd';
+}
+
+function ciSummary(rollup) {
+    if (!rollup || !rollup.length) return { badge: 'muted', label: 'none' };
+    var pass = 0, fail = 0, pending = 0;
+    for (var i = 0; i < rollup.length; i++) {
+        var s = (rollup[i].conclusion || rollup[i].state || '').toUpperCase();
+        if (s === 'SUCCESS' || s === 'NEUTRAL' || s === 'SKIPPED') pass++;
+        else if (s === 'FAILURE' || s === 'ERROR' || s === 'CANCELLED' || s === 'TIMED_OUT' || s === 'ACTION_REQUIRED') fail++;
+        else pending++;
+    }
+    if (fail > 0) return { badge: 'red', label: fail + ' failed' };
+    if (pending > 0) return { badge: 'orange', label: pending + ' pending' };
+    return { badge: 'green', label: 'passing' };
+}
+
+function reviewBadge(decision) {
+    if (!decision || decision === 'REVIEW_REQUIRED') return { badge: 'orange', label: 'pending' };
+    if (decision === 'APPROVED') return { badge: 'green', label: 'approved' };
+    if (decision === 'CHANGES_REQUESTED') return { badge: 'red', label: 'changes' };
+    return { badge: 'muted', label: decision.toLowerCase() };
+}
+
+function escapeHtml(str) {
+    var div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML.replace(/'/g, '&#39;');
+}
+
+var expandedPr = null;
+
+function loadPRs() {
+    var params = new URLSearchParams(window.location.search);
+    var project = params.get('project') || '';
+    var authorOnly = document.getElementById('author-toggle').checked;
+    var url = '/api/prs?author_only=' + authorOnly;
+    if (project) url += '&project=' + encodeURIComponent(project);
+
+    document.getElementById('pr-loading').style.display = '';
+    document.getElementById('pr-empty').style.display = 'none';
+    document.getElementById('pr-table').style.display = 'none';
+    document.getElementById('pr-error').style.display = 'none';
+    document.getElementById('pr-stale').style.display = 'none';
+    document.getElementById('checks-detail').style.display = 'none';
+    expandedPr = null;
+
+    fetch(url)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            document.getElementById('pr-loading').style.display = 'none';
+
+            if (data.error) {
+                document.getElementById('pr-error').textContent = data.error;
+                document.getElementById('pr-error').style.display = '';
+                updateStats(0, 0, 0, 0);
+                return;
+            }
+
+            if (data.stale) {
+                document.getElementById('pr-stale').style.display = '';
+            }
+
+            var prs = data.prs || [];
+            if (prs.length === 0) {
+                document.getElementById('pr-empty').style.display = '';
+                updateStats(0, 0, 0, 0);
+                return;
+            }
+
+            document.getElementById('pr-table').style.display = '';
+            var tbody = document.getElementById('pr-tbody');
+            tbody.innerHTML = '';
+
+            var ciPassCount = 0, reviewPendingCount = 0, approvedCount = 0;
+
+            for (var i = 0; i < prs.length; i++) {
+                var pr = prs[i];
+                var ci = ciSummary(pr.statusCheckRollup);
+                var rv = reviewBadge(pr.reviewDecision);
+                var statusLabel = pr.isDraft ? 'draft' : 'open';
+                var statusBadge = pr.isDraft ? 'muted' : 'blue';
+
+                if (ci.badge === 'green') ciPassCount++;
+                if (rv.badge === 'orange') reviewPendingCount++;
+                if (rv.badge === 'green') approvedCount++;
+
+                var author = (pr.author && pr.author.login) ? pr.author.login : '';
+                var title = escapeHtml(pr.title || '');
+                var branch = escapeHtml(pr.headRefName || '');
+
+                var mergeBtn = '';
+                if (rv.label === 'approved' && ci.label === 'passing' && !pr.isDraft) {
+                    mergeBtn = '<button class="btn" style="font-size:0.7rem;padding:0.2rem 0.5rem;" ' +
+                        'onclick="mergePR(\'' + escapeHtml(pr.project) + '\',' + pr.number + ',this);event.stopPropagation();">Merge</button>';
+                }
+
+                var row = '<tr class="pr-row" data-project="' + escapeHtml(pr.project) + '" data-number="' + pr.number + '" ' +
+                    'style="border-top:1px solid var(--border);cursor:pointer;" onclick="toggleChecks(\'' + escapeHtml(pr.project) + '\',' + pr.number + ',this)">' +
+                    '<td style="padding:0.5rem 0;"><span class="badge badge-blue">' + escapeHtml(pr.project) + '</span></td>' +
+                    '<td style="padding:0.5rem 0;"><a href="' + escapeHtml(pr.url || '') + '" target="_blank" ' +
+                        'style="color:var(--accent);text-decoration:none;" onclick="event.stopPropagation();">' +
+                        '#' + pr.number + '</a> ' + title + '</td>' +
+                    '<td style="padding:0.5rem 0;font-family:var(--mono);font-size:0.8rem;color:var(--text-muted);" class="hide-mobile">' + branch + '</td>' +
+                    '<td style="padding:0.5rem 0;font-family:var(--mono);font-size:0.8rem;color:var(--text-muted);" class="hide-mobile">' + timeAgo(pr.createdAt) + '</td>' +
+                    '<td style="padding:0.5rem 0;"><span class="badge badge-' + statusBadge + '">' + statusLabel + '</span></td>' +
+                    '<td style="padding:0.5rem 0;"><span class="badge badge-' + ci.badge + '">' + ci.label + '</span></td>' +
+                    '<td style="padding:0.5rem 0;"><span class="badge badge-' + rv.badge + '">' + rv.label + '</span></td>' +
+                    '<td style="padding:0.5rem 0;">' + mergeBtn + '</td>' +
+                    '</tr>';
+                tbody.innerHTML += row;
+            }
+
+            updateStats(prs.length, ciPassCount, reviewPendingCount, approvedCount);
+        })
+        .catch(function() {
+            document.getElementById('pr-loading').style.display = 'none';
+            document.getElementById('pr-error').textContent = 'Failed to fetch PR data.';
+            document.getElementById('pr-error').style.display = '';
+        });
+}
+
+function updateStats(total, ciPass, review, approved) {
+    document.getElementById('stat-total').textContent = total;
+    document.getElementById('stat-ci-pass').textContent = ciPass;
+    document.getElementById('stat-review').textContent = review;
+    document.getElementById('stat-approved').textContent = approved;
+}
+
+function toggleChecks(project, number, rowEl) {
+    var detail = document.getElementById('checks-detail');
+    var key = project + '/' + number;
+
+    if (expandedPr === key) {
+        detail.style.display = 'none';
+        expandedPr = null;
+        return;
+    }
+
+    expandedPr = key;
+    detail.style.display = '';
+    document.getElementById('checks-loading').style.display = '';
+    document.getElementById('checks-content').innerHTML = '';
+
+    // Position the detail card after the clicked row
+    var card = document.getElementById('pr-list-card');
+    card.parentNode.insertBefore(detail, card.nextSibling);
+
+    fetch('/api/prs/' + encodeURIComponent(project) + '/' + number + '/checks')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            document.getElementById('checks-loading').style.display = 'none';
+            var checks = data.checks || [];
+            if (checks.length === 0) {
+                document.getElementById('checks-content').innerHTML =
+                    '<div style="color:var(--text-muted);">No CI checks configured.</div>';
+                return;
+            }
+            var html = '<div style="font-weight:600;margin-bottom:0.5rem;">CI Checks for #' + number + '</div>';
+            html += '<table style="width:100%;border-collapse:collapse;">';
+            for (var i = 0; i < checks.length; i++) {
+                var c = checks[i];
+                var conclusion = (c.conclusion || c.state || 'pending').toLowerCase();
+                var badge = 'muted';
+                if (conclusion === 'success' || conclusion === 'neutral' || conclusion === 'skipped') badge = 'green';
+                else if (conclusion === 'failure' || conclusion === 'error' || conclusion === 'cancelled') badge = 'red';
+                else if (conclusion === 'pending' || conclusion === 'queued' || conclusion === 'in_progress') badge = 'orange';
+                html += '<tr style="border-top:1px solid var(--border);">' +
+                    '<td style="padding:0.3rem 0;">' + escapeHtml(c.name || '') + '</td>' +
+                    '<td style="padding:0.3rem 0;text-align:right;"><span class="badge badge-' + badge + '">' + escapeHtml(conclusion) + '</span></td>' +
+                    '</tr>';
+            }
+            html += '</table>';
+            document.getElementById('checks-content').innerHTML = html;
+        })
+        .catch(function() {
+            document.getElementById('checks-loading').style.display = 'none';
+            document.getElementById('checks-content').innerHTML =
+                '<div style="color:var(--red);">Failed to load checks.</div>';
+        });
+}
+
+function mergePR(project, number, btn) {
+    if (!confirm('Merge PR #' + number + ' in ' + project + '?')) return;
+    btn.disabled = true;
+    btn.textContent = '...';
+    fetch('/api/prs/' + encodeURIComponent(project) + '/' + number + '/merge', { method: 'POST' })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.ok) {
+                btn.textContent = 'Merged';
+                btn.style.background = 'var(--green)';
+                setTimeout(loadPRs, 1000);
+            } else {
+                alert('Merge failed: ' + (data.error || 'Unknown error'));
+                btn.disabled = false;
+                btn.textContent = 'Merge';
+            }
+        })
+        .catch(function() {
+            alert('Merge request failed.');
+            btn.disabled = false;
+            btn.textContent = 'Merge';
+        });
+}
+
+// Event listeners
+document.getElementById('refresh-btn').addEventListener('click', loadPRs);
+document.getElementById('author-toggle').addEventListener('change', loadPRs);
+
+// Initial load + auto-refresh every 5 minutes
+loadPRs();
+setInterval(loadPRs, 300000);
+</script>
+{% endblock %}

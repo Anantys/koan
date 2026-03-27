@@ -61,8 +61,8 @@ def _resolve_default_project_path() -> str:
         projects = get_known_projects()
         if projects:
             return projects[0][1]
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[bridge_state] Default project resolution failed: {e}", file=sys.stderr)
     return ""
 
 
@@ -81,23 +81,53 @@ summary_path = INSTANCE_DIR / "memory" / "summary.md"
 if summary_path.exists():
     SUMMARY = summary_path.read_text()
 
-# Skills registry — loaded once at import time
+# Skills registry — cached with mtime-based invalidation.
+# Rebuilds automatically when skill directories change on disk
+# (e.g., after code deployment adds a new core skill).
 _skill_registry: Optional[SkillRegistry] = None
+_skill_registry_mtime: float = 0.0
+
+
+def _skills_dir_mtime() -> float:
+    """Get the max mtime of core and instance skills directories.
+
+    When a new skill directory is added or removed, the parent directory's
+    mtime changes.  This single stat() call detects structural changes
+    without scanning individual SKILL.md files.
+    """
+    best = 0.0
+    # Core skills directory (inside the koan package)
+    core_dir = Path(__file__).resolve().parent.parent / "skills" / "core"
+    try:
+        best = max(best, core_dir.stat().st_mtime)
+    except OSError:
+        pass
+    # Instance skills directory (user-installed skills)
+    instance_skills = INSTANCE_DIR / "skills"
+    if instance_skills.is_dir():
+        try:
+            best = max(best, instance_skills.stat().st_mtime)
+        except OSError:
+            pass
+    return best
 
 
 def _get_registry() -> SkillRegistry:
-    """Get or initialize the skill registry (lazy singleton)."""
-    global _skill_registry
-    if _skill_registry is None:
+    """Get the skill registry, rebuilding if skills directories changed."""
+    global _skill_registry, _skill_registry_mtime
+    current_mtime = _skills_dir_mtime()
+    if _skill_registry is None or current_mtime > _skill_registry_mtime:
         extra_dirs = []
         instance_skills = INSTANCE_DIR / "skills"
         if instance_skills.is_dir():
             extra_dirs.append(instance_skills)
         _skill_registry = build_registry(extra_dirs)
+        _skill_registry_mtime = current_mtime
     return _skill_registry
 
 
 def _reset_registry():
-    """Reset the registry (for testing)."""
-    global _skill_registry
+    """Reset the registry (for testing and after /skill install/update/remove)."""
+    global _skill_registry, _skill_registry_mtime
     _skill_registry = None
+    _skill_registry_mtime = 0.0

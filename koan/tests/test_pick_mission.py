@@ -1,68 +1,12 @@
-"""Tests for pick_mission.py — intelligent mission picker."""
+"""Tests for pick_mission.py — FIFO mission picker."""
 
-import json
 import sys
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 
-from app.pick_mission import parse_picker_output, build_prompt, pick_mission, fallback_extract, call_claude
-
-
-class TestParsePickerOutput:
-    def test_mission_line(self):
-        project, title = parse_picker_output("mission:koan:fixer les warnings dans les tests")
-        assert project == "koan"
-        assert title == "fixer les warnings dans les tests"
-
-    def test_mission_with_backticks(self):
-        project, title = parse_picker_output("`mission:anantys:implement dashboard`")
-        assert project == "anantys"
-        assert title == "implement dashboard"
-
-    def test_autonomous(self):
-        project, title = parse_picker_output("autonomous")
-        assert project is None
-        assert title is None
-
-    def test_multiline_picks_first_valid(self):
-        raw = "Let me think...\nmission:koan:fix tests\nsome other text"
-        project, title = parse_picker_output(raw)
-        assert project == "koan"
-        assert title == "fix tests"
-
-    def test_empty_string(self):
-        project, title = parse_picker_output("")
-        assert project is None
-        assert title is None
-
-    def test_garbage_input(self):
-        project, title = parse_picker_output("this is not a valid response at all")
-        assert project is None
-        assert title is None
-
-    def test_mission_with_colon_in_title(self):
-        project, title = parse_picker_output("mission:koan:fix: the bug in module X")
-        assert project == "koan"
-        assert title == "fix: the bug in module X"
-
-
-class TestBuildPrompt:
-    def test_placeholders_replaced(self):
-        prompt = build_prompt(
-            missions_content="## Pending\n- task 1",
-            projects_str="koan:/path;anantys:/path2",
-            run_num="3",
-            max_runs="20",
-            autonomous_mode="implement",
-            last_project="koan",
-        )
-        assert "koan:/path;anantys:/path2" in prompt
-        assert "{PROJECTS}" not in prompt
-        assert "{RUN_NUM}" not in prompt
-        assert "{LAST_PROJECT}" not in prompt
-        assert "## Pending" in prompt
+from app.pick_mission import pick_mission, fallback_extract
 
 
 class TestFallbackExtract:
@@ -106,20 +50,32 @@ class TestFallbackExtract:
         project, title = fallback_extract(missions, "koan:/path")
         assert project is None
 
+    def test_empty_projects_str_defaults_to_default(self, tmp_path):
+        """When projects_str is empty, untagged missions get project='default'."""
+        missions = tmp_path / "missions.md"
+        missions.write_text("# Missions\n\n## Pending\n\n- fix tests\n\n## In Progress\n\n## Done\n")
+        project, title = fallback_extract(missions, "")
+        assert project == "default"
+        assert title == "fix tests"
+
 
 class TestPickMission:
-    """Integration tests — mock the Claude subprocess call."""
+    """Tests for FIFO mission picking behavior."""
 
-    def _mock_claude_success(self, mission_line):
-        """Create a mock subprocess.run that returns a Claude JSON response."""
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = json.dumps({"result": mission_line})
-        return mock_result
+    def test_picks_first_pending_mission(self, tmp_path):
+        missions = tmp_path / "missions.md"
+        missions.write_text(
+            "# Missions\n\n## Pending\n\n"
+            "- [project:koan] fix tests\n"
+            "- [project:anantys] implement dashboard\n\n"
+            "## In Progress\n\n## Done\n"
+        )
+        result = pick_mission(str(tmp_path), "koan:/p1;anantys:/p2", "2", "implement", "koan")
+        # Must pick first item (koan:fix tests), NOT rotate to anantys
+        assert result == "koan:fix tests"
 
-    @patch("app.pick_mission.call_claude")
-    def test_picks_mission_from_claude(self, mock_claude, tmp_path):
-        """With 3+ missions and 2+ projects, Claude picker is called."""
+    def test_fifo_with_multiple_projects(self, tmp_path):
+        """FIFO order is respected even when last_project matches first mission."""
         missions = tmp_path / "missions.md"
         missions.write_text(
             "# Missions\n\n## Pending\n\n"
@@ -128,145 +84,53 @@ class TestPickMission:
             "- [project:anantys] implement dashboard\n\n"
             "## In Progress\n\n## Done\n"
         )
-        mock_claude.return_value = "mission:anantys:implement dashboard"
-
+        # Even though last_project is koan, we still pick the first koan mission
         result = pick_mission(str(tmp_path), "koan:/p1;anantys:/p2", "2", "implement", "koan")
-        assert result == "anantys:implement dashboard"
+        assert result == "koan:fix tests"
 
-    @patch("app.pick_mission.call_claude")
-    def test_autonomous_when_no_missions(self, mock_claude, tmp_path):
+    def test_empty_when_no_missions(self, tmp_path):
         missions = tmp_path / "missions.md"
         missions.write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n")
-
         result = pick_mission(str(tmp_path), "koan:/p1", "1", "implement")
-        # count_pending returns 0, so we never call Claude
         assert result == ""
-        mock_claude.assert_not_called()
 
-    @patch("app.pick_mission.call_claude")
-    def test_fallback_on_claude_failure(self, mock_claude, tmp_path):
+    def test_missing_missions_file(self, tmp_path):
+        result = pick_mission(str(tmp_path), "koan:/p1", "1", "implement")
+        assert result == ""
+
+    def test_fifo_respects_queue_order_across_projects(self, tmp_path):
+        """When project A's mission is queued before project B's, A goes first."""
         missions = tmp_path / "missions.md"
         missions.write_text(
-            "# Missions\n\n## Pending\n\n- [project:koan] fix tests\n\n## In Progress\n\n## Done\n"
+            "# Missions\n\n## Pending\n\n"
+            "- [project:grep] implement issue #36\n"
+            "- [project:koan] investigate ordering bug\n"
+            "- [project:grep] implement issue #33\n\n"
+            "## In Progress\n\n## Done\n"
         )
-        mock_claude.return_value = ""  # Claude failed
+        result = pick_mission(str(tmp_path), "koan:/p1;grep:/p2", "5", "deep", "grep")
+        # Must pick grep issue #36 (first in queue), even though last_project was grep
+        assert result == "grep:implement issue #36"
 
-        result = pick_mission(str(tmp_path), "koan:/p1", "1", "implement")
-        assert result == "koan:fix tests"
-
-    @patch("app.pick_mission.call_claude")
-    def test_missing_missions_file(self, mock_claude, tmp_path):
-        result = pick_mission(str(tmp_path), "koan:/p1", "1", "implement")
-        assert result == ""
-        mock_claude.assert_not_called()
-
-    @patch("app.pick_mission.call_claude")
-    def test_smart_picker_skips_claude_single_mission(self, mock_claude, tmp_path):
-        """When there's only 1-2 pending missions, use fast fallback."""
+    def test_single_mission(self, tmp_path):
         missions = tmp_path / "missions.md"
         missions.write_text(
             "# Missions\n\n## Pending\n\n- [project:koan] fix tests\n\n## In Progress\n\n## Done\n"
         )
         result = pick_mission(str(tmp_path), "koan:/p1;anantys:/p2", "1", "implement")
         assert result == "koan:fix tests"
-        mock_claude.assert_not_called()
 
-    @patch("app.pick_mission.call_claude")
-    def test_smart_picker_skips_claude_single_project(self, mock_claude, tmp_path):
-        """When there's only 1 project, use fast fallback even with many missions."""
+    def test_strips_timestamps_from_title(self, tmp_path):
+        """Queued timestamps should be included in the extracted title."""
         missions = tmp_path / "missions.md"
         missions.write_text(
             "# Missions\n\n## Pending\n\n"
-            "- fix tests\n- add feature\n- refactor module\n\n"
+            "- [project:koan] fix tests ⏳(2026-03-11T21:00)\n\n"
             "## In Progress\n\n## Done\n"
         )
         result = pick_mission(str(tmp_path), "koan:/p1", "1", "implement")
-        assert result == "koan:fix tests"
-        mock_claude.assert_not_called()
-
-    @patch("app.pick_mission.call_claude")
-    def test_smart_picker_calls_claude_complex_case(self, mock_claude, tmp_path):
-        """When 3+ missions AND 2+ projects, Claude picker is used."""
-        missions = tmp_path / "missions.md"
-        missions.write_text(
-            "# Missions\n\n## Pending\n\n"
-            "- [project:koan] fix tests\n"
-            "- [project:anantys] add feature\n"
-            "- [project:koan] refactor module\n\n"
-            "## In Progress\n\n## Done\n"
-        )
-        mock_claude.return_value = "mission:anantys:add feature"
-        result = pick_mission(str(tmp_path), "koan:/p1;anantys:/p2", "1", "implement")
-        assert result == "anantys:add feature"
-        mock_claude.assert_called_once()
-
-
-class TestCallClaude:
-    @patch("app.pick_mission.get_model_config", return_value={"lightweight": "haiku"})
-    @patch("app.pick_mission.build_full_command", return_value=["claude", "-p", "test", "--model", "haiku"])
-    @patch("app.pick_mission.subprocess.run")
-    def test_successful_json_result(self, mock_run, mock_flags, mock_models):
-        mock_run.return_value = MagicMock(
-            returncode=0,
-            stdout=json.dumps({"result": "mission:koan:fix tests"}),
-        )
-        result = call_claude("test prompt")
-        assert result == "mission:koan:fix tests"
-
-    @patch("app.pick_mission.get_model_config", return_value={"lightweight": "haiku"})
-    @patch("app.pick_mission.build_full_command", return_value=["claude", "-p", "test"])
-    @patch("app.pick_mission.subprocess.run")
-    def test_nonzero_exit_code(self, mock_run, mock_flags, mock_models):
-        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="error")
-        result = call_claude("test prompt")
-        assert result == ""
-
-    @patch("app.pick_mission.get_model_config", return_value={"lightweight": "haiku"})
-    @patch("app.pick_mission.build_full_command", return_value=["claude", "-p", "test"])
-    @patch("app.pick_mission.subprocess.run")
-    def test_nonzero_exit_code_logs_stderr(self, mock_run, mock_flags, mock_models, capsys):
-        """Verify that Claude errors are logged to stderr (M4 security finding)."""
-        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="Rate limit exceeded")
-        call_claude("test prompt")
-        captured = capsys.readouterr()
-        assert "[pick_mission] Claude error" in captured.err
-        assert "Rate limit exceeded" in captured.err
-
-    @patch("app.pick_mission.get_model_config", return_value={"lightweight": "haiku"})
-    @patch("app.pick_mission.build_full_command", return_value=["claude", "-p", "test"])
-    @patch("app.pick_mission.subprocess.run")
-    def test_json_with_content_field(self, mock_run, mock_flags, mock_models):
-        mock_run.return_value = MagicMock(
-            returncode=0,
-            stdout=json.dumps({"content": "mission:koan:audit"}),
-        )
-        result = call_claude("test prompt")
-        assert result == "mission:koan:audit"
-
-    @patch("app.pick_mission.get_model_config", return_value={"lightweight": "haiku"})
-    @patch("app.pick_mission.build_full_command", return_value=["claude", "-p", "test"])
-    @patch("app.pick_mission.subprocess.run")
-    def test_non_json_output(self, mock_run, mock_flags, mock_models):
-        mock_run.return_value = MagicMock(
-            returncode=0,
-            stdout="mission:koan:fix tests",
-        )
-        result = call_claude("test prompt")
-        assert result == "mission:koan:fix tests"
-
-
-class TestParsePickerOutputEdgeCases:
-    def test_mission_with_empty_project(self):
-        project, title = parse_picker_output("mission::fix tests")
-        assert project is None
-
-    def test_mission_with_empty_title(self):
-        project, title = parse_picker_output("mission:koan:")
-        assert project is None
-
-    def test_mission_only_two_parts(self):
-        project, title = parse_picker_output("mission:koan")
-        assert project is None
+        assert result.startswith("koan:")
+        assert "fix tests" in result
 
 
 class TestPickMissionCLI:

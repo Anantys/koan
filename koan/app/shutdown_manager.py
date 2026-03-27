@@ -14,15 +14,15 @@ prevents a leftover shutdown file from killing a freshly started instance.
 
 import os
 import time
+from pathlib import Path
 
-SHUTDOWN_FILE = ".koan-shutdown"
+from app.signals import SHUTDOWN_FILE
 
 
 def request_shutdown(koan_root: str) -> None:
     """Create the shutdown signal file with the current timestamp."""
-    path = os.path.join(koan_root, SHUTDOWN_FILE)
-    with open(path, "w") as f:
-        f.write(str(int(time.time())))
+    from app.utils import atomic_write
+    atomic_write(Path(koan_root, SHUTDOWN_FILE), str(int(time.time())))
 
 
 def is_shutdown_requested(koan_root: str, process_start_time: float) -> bool:

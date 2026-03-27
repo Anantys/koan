@@ -315,6 +315,26 @@ class TestCleanMissionDisplay:
 # Integration: command routing via awake.py
 # ---------------------------------------------------------------------------
 
+class TestCancelAliasRegistry:
+    """Test that /remove and /clear aliases resolve to the cancel skill."""
+
+    def test_remove_alias_resolves_to_cancel(self):
+        from app.skills import build_registry
+
+        registry = build_registry()
+        skill = registry.find_by_command("remove")
+        assert skill is not None
+        assert skill.name == "cancel"
+
+    def test_clear_alias_resolves_to_cancel(self):
+        from app.skills import build_registry
+
+        registry = build_registry()
+        skill = registry.find_by_command("clear")
+        assert skill is not None
+        assert skill.name == "cancel"
+
+
 class TestCancelCommandRouting:
     """Test that /cancel routes to the cancel skill via awake."""
 
@@ -369,13 +389,79 @@ class TestCancelCommandRouting:
         assert "dark mode" in output
 
     @patch("app.command_handlers.send_telegram")
-    def test_cancel_appears_in_help(self, mock_send, tmp_path):
-        """Verify /cancel is included in /help output via skill discovery."""
+    def test_remove_alias_routes_to_cancel(self, mock_send, tmp_path):
         from app.command_handlers import handle_command
 
+        missions_file = tmp_path / "missions.md"
+        missions_file.write_text(
+            "# Missions\n\n## Pending\n\n- task A\n- task B\n\n## In Progress\n\n## Done\n"
+        )
         with patch("app.command_handlers.KOAN_ROOT", tmp_path), \
-             patch("app.command_handlers.INSTANCE_DIR", tmp_path):
-            handle_command("/help")
+             patch("app.command_handlers.INSTANCE_DIR", tmp_path), \
+             patch("app.command_handlers.MISSIONS_FILE", missions_file):
+            handle_command("/remove")
+        mock_send.assert_called_once()
+        output = mock_send.call_args[0][0]
+        assert "1." in output
+        assert "task A" in output
+
+    @patch("app.command_handlers.send_telegram")
+    def test_remove_alias_cancels_by_number(self, mock_send, tmp_path):
+        from app.command_handlers import handle_command
+
+        missions_file = tmp_path / "missions.md"
+        missions_file.write_text(
+            "# Missions\n\n## Pending\n\n- task A\n- task B\n\n## In Progress\n\n## Done\n"
+        )
+        with patch("app.command_handlers.KOAN_ROOT", tmp_path), \
+             patch("app.command_handlers.INSTANCE_DIR", tmp_path), \
+             patch("app.command_handlers.MISSIONS_FILE", missions_file):
+            handle_command("/remove 1")
+        mock_send.assert_called_once()
+        output = mock_send.call_args[0][0]
+        assert "task A" in output
+        assert "cancelled" in output.lower()
+
+    @patch("app.command_handlers.send_telegram")
+    def test_clear_alias_routes_to_cancel(self, mock_send, tmp_path):
+        from app.command_handlers import handle_command
+
+        missions_file = tmp_path / "missions.md"
+        missions_file.write_text(
+            "# Missions\n\n## Pending\n\n- task X\n\n## In Progress\n\n## Done\n"
+        )
+        with patch("app.command_handlers.KOAN_ROOT", tmp_path), \
+             patch("app.command_handlers.INSTANCE_DIR", tmp_path), \
+             patch("app.command_handlers.MISSIONS_FILE", missions_file):
+            handle_command("/clear")
+        mock_send.assert_called_once()
+        output = mock_send.call_args[0][0]
+        assert "1." in output
+        assert "task X" in output
+
+    @patch("app.command_handlers.send_telegram")
+    def test_clear_alias_cancels_by_keyword(self, mock_send, tmp_path):
+        from app.command_handlers import handle_command
+
+        missions_file = tmp_path / "missions.md"
+        missions_file.write_text(
+            "# Missions\n\n## Pending\n\n- fix auth\n- add dark mode\n\n## In Progress\n\n## Done\n"
+        )
+        with patch("app.command_handlers.KOAN_ROOT", tmp_path), \
+             patch("app.command_handlers.INSTANCE_DIR", tmp_path), \
+             patch("app.command_handlers.MISSIONS_FILE", missions_file):
+            handle_command("/clear auth")
+        mock_send.assert_called_once()
+        output = mock_send.call_args[0][0]
+        assert "auth" in output.lower()
+        assert "cancelled" in output.lower()
+
+    @patch("app.command_handlers.send_telegram")
+    def test_cancel_appears_in_help(self, mock_send, tmp_path):
+        """Verify /cancel is included in /help missions group output."""
+        from app.command_handlers import _handle_help_detail
+
+        _handle_help_detail("missions")
         mock_send.assert_called_once()
         help_text = mock_send.call_args[0][0]
         assert "/cancel" in help_text

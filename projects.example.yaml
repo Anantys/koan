@@ -32,7 +32,7 @@ defaults:
     base_branch: "main"
     strategy: "squash"
 
-  # CLI provider — which AI CLI to use ("claude", "copilot", "local")
+  # CLI provider — which AI CLI to use ("claude", "codex", "copilot", "local")
   # Per-project overrides allow different providers for different repos.
   # Can also be set globally in config.yaml or via KOAN_CLI_PROVIDER env var.
   # cli_provider: "claude"
@@ -50,6 +50,38 @@ defaults:
   # tools:
   #   mission: ["Read", "Glob", "Grep", "Edit", "Write", "Bash"]
   #   chat: ["Read", "Glob", "Grep"]
+
+  # Exploration — controls autonomous work on this project.
+  #
+  # When enabled, the agent may autonomously:
+  #   - Pick this project for free-form exploration (code audits, improvements)
+  #   - Run contemplative/reflective sessions on the project
+  #   - Create branches and PRs proactively (within max_open_prs limit)
+  #
+  # When disabled (false), the agent ONLY works on this project when an
+  # explicit mission is queued (via /mission, /fix, /rebase, etc.).
+  # Explicit missions always execute regardless of this flag.
+  #
+  # Set at defaults level to control the global policy, then override
+  # per-project. Common patterns:
+  #   - defaults: true + vendor-lib: false → explore everything except vendor
+  #   - defaults: false + myapp: true → only explore opted-in projects
+  #
+  # Also affected by:
+  #   - max_open_prs: exploration pauses when the PR limit is reached
+  #   - schedule.work_hours (in config.yaml): suppresses all exploration
+  #     during work hours, similar to /focus mode
+  #
+  # Default: true
+  # exploration: true
+
+  # Max open PRs — limit how many open PRs the agent can have per repo
+  # before autonomous exploration is paused for this project.
+  # Explicit missions are never affected by this limit.
+  # Uses GITHUB_USER or `gh` login to identify the agent's PRs.
+  # Set to 0 or omit for unlimited.
+  # Default: 0 (unlimited)
+  max_open_prs: 10
 
 projects:
   # Example: your main project (minimal config — inherits all defaults)
@@ -86,11 +118,24 @@ projects:
   #   tools:
   #     mission: ["Read", "Glob", "Grep", "Edit", "Write"]  # No Bash
 
-  # Example: a read-only repo (audit/review only)
+  # Example: a read-only repo (audit/review only, no autonomous exploration)
   # vendor-lib:
   #   path: "/Users/yourname/workspace/vendor-lib"
+  #   exploration: false                   # Only work on explicit missions
   #   tools:
   #     mission: ["Read", "Glob", "Grep"]  # Read-only — no modifications
+
+  # Example: opt-in exploration (when defaults.exploration is false)
+  # Use this pattern when you want tight control: disable globally,
+  # then explicitly enable exploration on trusted projects.
+  # my-main-app:
+  #   path: "/Users/yourname/workspace/my-main-app"
+  #   exploration: true                    # Override global false default
+
+  # Example: a project with a lower PR limit (overrides default of 10)
+  # oss-lib:
+  #   path: "/Users/yourname/workspace/oss-lib"
+  #   max_open_prs: 3                        # Keep max 3 open PRs for this repo
 
   # Example: a project using GitHub Copilot instead of Claude
   # copilot-project:
@@ -102,3 +147,12 @@ projects:
   #   path: "/Users/yourname/workspace/restricted-repo"
   #   github:
   #     authorized_users: ["alice", "bob"]  # Override global list for this project
+
+  # Example: a fork where PRs should be submitted to the parent repo
+  # Fork-aware routing: auto-detected via `gh repo view --json parent`,
+  # but you can override with this explicit config.
+  # my-fork:
+  #   path: "/Users/yourname/workspace/my-fork"
+  #   submit_to_repository:
+  #     repo: "upstream-owner/upstream-repo"  # Target repo for PR creation
+  #     remote: "upstream"                    # Git remote name (optional)

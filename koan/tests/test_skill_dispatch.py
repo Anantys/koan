@@ -8,6 +8,9 @@ from app.skill_dispatch import (
     parse_skill_mission,
     build_skill_command,
     dispatch_skill_mission,
+    strip_passthrough_command,
+    expand_combo_skill,
+    validate_skill_args,
 )
 
 
@@ -157,6 +160,50 @@ class TestBuildSkillCommand:
         assert "--issue-url" in cmd
         assert url in cmd
 
+    def test_plan_with_issue_url_and_context(self):
+        args = "https://github.com/sukria/koan/issues/42 Focus on phase 2"
+        cmd = self._build("plan", args)
+        assert cmd is not None
+        assert "--issue-url" in cmd
+        assert "https://github.com/sukria/koan/issues/42" in cmd
+        assert "--context" in cmd
+        ctx_idx = cmd.index("--context")
+        assert cmd[ctx_idx + 1] == "Focus on phase 2"
+
+    def test_plan_with_issue_url_no_context(self):
+        """Issue URL with no trailing text should not include --context."""
+        url = "https://github.com/sukria/koan/issues/42"
+        cmd = self._build("plan", url)
+        assert "--context" not in cmd
+
+    def test_plan_with_pr_url(self):
+        """PR URLs should be handled as --issue-url, not --idea."""
+        url = "https://github.com/metacpan/metacpan-grep-front-end/pull/75"
+        cmd = self._build("plan", url)
+        assert cmd is not None
+        assert "--issue-url" in cmd
+        assert url in cmd
+        assert "--idea" not in cmd
+
+    def test_plan_with_pr_url_and_fragment(self):
+        """PR URL with #issuecomment fragment should match."""
+        url = "https://github.com/owner/repo/pull/75#issuecomment-123"
+        cmd = self._build("plan", url)
+        assert cmd is not None
+        assert "--issue-url" in cmd
+        # Fragment is included in the URL passed to plan_runner
+        assert "https://github.com/owner/repo/pull/75" in " ".join(cmd)
+
+    def test_plan_with_pr_url_and_context(self):
+        """PR URL with trailing context should pass --context."""
+        args = "https://github.com/owner/repo/pull/75 focus on security"
+        cmd = self._build("plan", args)
+        assert cmd is not None
+        assert "--issue-url" in cmd
+        assert "--context" in cmd
+        ctx_idx = cmd.index("--context")
+        assert cmd[ctx_idx + 1] == "focus on security"
+
     def test_rebase(self):
         url = "https://github.com/sukria/koan/pull/42"
         cmd = self._build("rebase", url)
@@ -255,6 +302,15 @@ class TestBuildSkillCommand:
         assert "--context" in cmd
         assert "Phase 1 to 3" in cmd
 
+    def test_implement_with_pr_url(self):
+        """PR URLs accepted — GitHub issues API works for PRs."""
+        url = "https://github.com/sukria/koan/pull/61"
+        cmd = self._build("implement", url)
+        assert cmd is not None
+        assert "skills.core.implement.implement_runner" in cmd
+        assert "--issue-url" in cmd
+        assert url in cmd
+
     def test_implement_no_url(self):
         cmd = self._build("implement", "just some text")
         assert cmd is None
@@ -264,11 +320,38 @@ class TestBuildSkillCommand:
         cmd = self._build("implement", url)
         assert "--context" not in cmd
 
+    def test_fix_with_issue_url(self):
+        url = "https://github.com/Anantys/investmindr/issues/42"
+        cmd = self._build("fix", url)
+        assert cmd is not None
+        assert "skills.core.fix.fix_runner" in cmd
+        assert "--issue-url" in cmd
+        assert url in cmd
+        assert "--project-path" in cmd
+
+    def test_fix_with_context(self):
+        url = "https://github.com/Anantys/investmindr/issues/42"
+        cmd = self._build("fix", f"{url} backend only")
+        assert cmd is not None
+        assert "--issue-url" in cmd
+        assert url in cmd
+        assert "--context" in cmd
+        assert "backend only" in cmd
+
+    def test_fix_no_url(self):
+        cmd = self._build("fix", "just fix the login bug")
+        assert cmd is None
+
+    def test_fix_url_only_no_context(self):
+        url = "https://github.com/Anantys/investmindr/issues/99"
+        cmd = self._build("fix", url)
+        assert "--context" not in cmd
+
     def test_python_path(self):
-        """Commands should use the venv python."""
+        """Commands should use sys.executable (works in venv and Docker)."""
+        import sys
         cmd = self._build("plan", "test idea")
-        python_path = os.path.join(self.KOAN_ROOT, ".venv", "bin", "python3")
-        assert cmd[0] == python_path
+        assert cmd[0] == sys.executable
 
 
 # ---------------------------------------------------------------------------
@@ -354,6 +437,147 @@ class TestDispatchSkillMission:
 
 
 # ---------------------------------------------------------------------------
+# translate_cli_skill_mission
+# ---------------------------------------------------------------------------
+
+import textwrap
+from pathlib import Path
+
+
+def _make_cli_skill(tmp_path: Path, scope: str, name: str, cli_skill_value: str) -> Path:
+    """Create a minimal SKILL.md with cli_skill set and return the skills root dir."""
+    skill_dir = tmp_path / "skills" / scope / name
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(textwrap.dedent(f"""\
+        ---
+        name: {name}
+        scope: {scope}
+        description: Bridge to {cli_skill_value}
+        audience: agent
+        cli_skill: {cli_skill_value}
+        commands:
+          - name: {name}
+            description: Invoke /{cli_skill_value}
+        ---
+    """))
+    return tmp_path / "skills"
+
+
+class TestTranslateCliSkillMission:
+    """Tests for translate_cli_skill_mission()."""
+
+    def _translate(self, mission_text, skills_root=None, instance_dir=None, tmp_path=None):
+        import app.skill_dispatch as _sd_mod
+        from app.skill_dispatch import translate_cli_skill_mission
+
+        koan_root = tmp_path or Path("/tmp/koan")
+        inst = instance_dir or (tmp_path / "instance" if tmp_path else Path("/tmp/koan/instance"))
+
+        # Clear registry cache so each test builds a fresh registry.
+        _sd_mod._cached_registry = None
+        _sd_mod._cached_extra_dirs = None
+
+        if skills_root:
+            # Patch build_registry to load from our tmp skills dir
+            import app.skills as _skills_mod
+            orig = _skills_mod.get_default_skills_dir
+            _skills_mod.get_default_skills_dir = lambda: skills_root
+            try:
+                return translate_cli_skill_mission(mission_text, koan_root, inst)
+            finally:
+                _sd_mod._cached_registry = None
+                _skills_mod.get_default_skills_dir = orig
+
+        return translate_cli_skill_mission(mission_text, koan_root, inst)
+
+    def test_translates_scoped_cli_skill(self, tmp_path):
+        """A scoped /group.myskill mission with cli_skill set is translated."""
+        skills_root = _make_cli_skill(tmp_path, "group", "myskill", "my-tool")
+        result = self._translate(
+            "[project:foo] /group.myskill do something",
+            skills_root=skills_root,
+            tmp_path=tmp_path,
+        )
+        assert result == "/my-tool do something"
+
+    def test_translates_no_project_prefix(self, tmp_path):
+        """Works without [project:X] prefix."""
+        skills_root = _make_cli_skill(tmp_path, "ops", "deploy", "deploy-tool")
+        result = self._translate(
+            "/ops.deploy staging",
+            skills_root=skills_root,
+            tmp_path=tmp_path,
+        )
+        assert result == "/deploy-tool staging"
+
+    def test_no_args_still_translates(self, tmp_path):
+        """Skills with no args produce just the slash command."""
+        skills_root = _make_cli_skill(tmp_path, "grp", "check", "run-check")
+        result = self._translate(
+            "/grp.check",
+            skills_root=skills_root,
+            tmp_path=tmp_path,
+        )
+        assert result == "/run-check"
+
+    def test_returns_none_for_regular_mission(self, tmp_path):
+        """A non-slash mission returns None."""
+        result = self._translate("Fix the login bug", tmp_path=tmp_path)
+        assert result is None
+
+    def test_returns_none_for_unscoped_command(self, tmp_path):
+        """Unscoped commands (/plan) are not handled by translate_cli_skill_mission."""
+        result = self._translate("/plan Add dark mode", tmp_path=tmp_path)
+        assert result is None
+
+    def test_returns_none_for_core_scope(self, tmp_path):
+        """Core scope is reserved for _SKILL_RUNNERS — not translated."""
+        skills_root = _make_cli_skill(tmp_path, "core", "plan", "some-tool")
+        result = self._translate(
+            "/core.plan Add dark mode",
+            skills_root=skills_root,
+            tmp_path=tmp_path,
+        )
+        assert result is None
+
+    def test_returns_none_when_skill_not_found(self, tmp_path):
+        """Returns None if the skill doesn't exist in the registry."""
+        result = self._translate("/unknown.skill do something", tmp_path=tmp_path)
+        assert result is None
+
+    def test_returns_none_when_no_cli_skill_field(self, tmp_path):
+        """Returns None if the skill exists but has no cli_skill field."""
+        skill_dir = tmp_path / "skills" / "grp" / "normal"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(textwrap.dedent("""\
+            ---
+            name: normal
+            scope: grp
+            audience: bridge
+            commands:
+              - name: normal
+                description: Normal skill
+            ---
+        """))
+        skills_root = tmp_path / "skills"
+
+        import app.skills as _skills_mod
+        orig = _skills_mod.get_default_skills_dir
+        _skills_mod.get_default_skills_dir = lambda: skills_root
+        try:
+            from app.skill_dispatch import translate_cli_skill_mission
+            result = translate_cli_skill_mission(
+                "/grp.normal do something",
+                tmp_path,
+                tmp_path / "instance",
+            )
+        finally:
+            _skills_mod.get_default_skills_dir = orig
+
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
 # Handler integration tests — verify handlers produce clean format
 # ---------------------------------------------------------------------------
 
@@ -404,7 +628,7 @@ class TestHandlerCleanFormat:
             lambda repo, owner=None: "/workspace/koan",
         )
         monkeypatch.setattr(
-            "app.pr_review.parse_pr_url",
+            "app.github_url_parser.parse_pr_url",
             lambda url: ("sukria", "koan", "42"),
         )
 
@@ -494,7 +718,7 @@ class TestHandlerCleanFormat:
             lambda repo, owner=None: "/workspace/koan",
         )
         monkeypatch.setattr(
-            "app.pr_review.parse_pr_url",
+            "app.github_url_parser.parse_pr_url",
             lambda url: ("sukria", "koan", "42"),
         )
 
@@ -690,52 +914,153 @@ class TestDispatchSkillMissionWithPrefix:
 
 
 # ---------------------------------------------------------------------------
-# _is_known_project
+# is_known_project (now in utils.py)
 # ---------------------------------------------------------------------------
 
 class TestIsKnownProject:
     def test_known_project(self, monkeypatch):
-        from app.skill_dispatch import _is_known_project
+        from app.utils import is_known_project
         monkeypatch.setattr(
             "app.utils.get_known_projects",
             lambda: [("koan", "/workspace/koan"), ("Clone", "/workspace/Clone")],
         )
-        assert _is_known_project("koan") is True
-        assert _is_known_project("Clone") is True
+        assert is_known_project("koan") is True
+        assert is_known_project("Clone") is True
 
     def test_case_insensitive(self, monkeypatch):
-        from app.skill_dispatch import _is_known_project
+        from app.utils import is_known_project
         monkeypatch.setattr(
             "app.utils.get_known_projects",
             lambda: [("Clone", "/workspace/Clone")],
         )
-        assert _is_known_project("clone") is True
-        assert _is_known_project("CLONE") is True
+        assert is_known_project("clone") is True
+        assert is_known_project("CLONE") is True
 
     def test_unknown_project(self, monkeypatch):
-        from app.skill_dispatch import _is_known_project
+        from app.utils import is_known_project
         monkeypatch.setattr(
             "app.utils.get_known_projects",
             lambda: [("koan", "/workspace/koan")],
         )
-        assert _is_known_project("unknown") is False
+        assert is_known_project("unknown") is False
 
     def test_common_english_words_rejected(self, monkeypatch):
-        from app.skill_dispatch import _is_known_project
+        from app.utils import is_known_project
         monkeypatch.setattr(
             "app.utils.get_known_projects",
             lambda: [("koan", "/workspace/koan")],
         )
         for word in ("the", "fix", "add", "when", "let", "we"):
-            assert _is_known_project(word) is False
+            assert is_known_project(word) is False
 
     def test_error_returns_false(self, monkeypatch):
-        from app.skill_dispatch import _is_known_project
+        from app.utils import is_known_project
         monkeypatch.setattr(
             "app.utils.get_known_projects",
             lambda: (_ for _ in ()).throw(RuntimeError("config error")),
         )
-        assert _is_known_project("koan") is False
+        assert is_known_project("koan") is False
+
+
+# ---------------------------------------------------------------------------
+# validate_skill_args
+# ---------------------------------------------------------------------------
+
+class TestValidateSkillArgs:
+    """Tests for validate_skill_args() — argument validation with user-facing messages."""
+
+    def test_rebase_valid_url(self):
+        assert validate_skill_args("rebase", "https://github.com/sukria/koan/pull/42") is None
+
+    def test_rebase_no_url(self):
+        err = validate_skill_args("rebase", "just some text")
+        assert err is not None
+        assert "/rebase requires a PR URL" in err
+
+    def test_rebase_empty_args(self):
+        err = validate_skill_args("rebase", "")
+        assert err is not None
+        assert "/rebase requires a PR URL" in err
+
+    def test_recreate_valid_url(self):
+        assert validate_skill_args("recreate", "https://github.com/sukria/koan/pull/100") is None
+
+    def test_recreate_no_url(self):
+        err = validate_skill_args("recreate", "no url here")
+        assert err is not None
+        assert "/recreate requires a PR URL" in err
+
+    def test_implement_valid_issue_url(self):
+        assert validate_skill_args("implement", "https://github.com/sukria/koan/issues/42") is None
+
+    def test_implement_no_url(self):
+        err = validate_skill_args("implement", "fix the login bug")
+        assert err is not None
+        assert "/implement requires a GitHub issue or PR URL" in err
+
+    def test_implement_pr_url_accepted(self):
+        """PR URLs are valid for /implement — GitHub issues API works for PRs."""
+        assert validate_skill_args("implement", "https://github.com/sukria/koan/pull/42") is None
+
+    def test_check_valid_pr_url(self):
+        assert validate_skill_args("check", "https://github.com/sukria/koan/pull/42") is None
+
+    def test_check_valid_issue_url(self):
+        assert validate_skill_args("check", "https://github.com/sukria/koan/issues/42") is None
+
+    def test_check_no_url(self):
+        err = validate_skill_args("check", "no url here")
+        assert err is not None
+        assert "/check requires a GitHub URL" in err
+
+    def test_plan_always_valid(self):
+        """Plan accepts free text — no arg validation error."""
+        assert validate_skill_args("plan", "Add dark mode") is None
+        assert validate_skill_args("plan", "") is None
+
+    def test_ai_always_valid(self):
+        """AI has no arg requirements."""
+        assert validate_skill_args("ai", "") is None
+        assert validate_skill_args("ai", "koan") is None
+
+    def test_claudemd_always_valid(self):
+        assert validate_skill_args("claudemd", "koan") is None
+
+    def test_unknown_command_returns_none(self):
+        """Unknown commands return None — caller handles that case."""
+        assert validate_skill_args("nonexistent", "whatever") is None
+
+    def test_rebase_url_with_surrounding_text(self):
+        """URL embedded in text should still validate."""
+        assert validate_skill_args(
+            "rebase",
+            "please rebase https://github.com/sukria/koan/pull/42 thanks",
+        ) is None
+
+    def test_implement_url_with_context(self):
+        """Issue URL with trailing context should validate."""
+        assert validate_skill_args(
+            "implement",
+            "https://github.com/sukria/koan/issues/42 Phase 1 to 3",
+        ) is None
+
+    def test_fix_valid_issue_url(self):
+        assert validate_skill_args("fix", "https://github.com/Anantys/investmindr/issues/42") is None
+
+    def test_fix_no_url(self):
+        err = validate_skill_args("fix", "fix the login bug")
+        assert err is not None
+        assert "/fix requires a GitHub issue or PR URL" in err
+
+    def test_fix_pr_url_accepted(self):
+        """PR URLs are valid for /fix — same as /implement."""
+        assert validate_skill_args("fix", "https://github.com/sukria/koan/pull/42") is None
+
+    def test_fix_url_with_context(self):
+        assert validate_skill_args(
+            "fix",
+            "https://github.com/Anantys/investmindr/issues/42 backend only",
+        ) is None
 
 
 # ---------------------------------------------------------------------------
@@ -782,3 +1107,325 @@ class TestSkillMissionFallthroughGuard:
         assert cmd is None
         # In run.py, this case now fails the mission instead of
         # falling through to Claude agent
+
+    def test_known_command_bad_args_gives_specific_error(self):
+        """A known command with bad args should give a specific error, not 'unknown'."""
+        mission = "/rebase just some text without a URL"
+        assert is_skill_mission(mission) is True
+        cmd = dispatch_skill_mission(
+            mission_text=mission,
+            project_name="koan",
+            project_path="/workspace/koan",
+            koan_root="/koan",
+            instance_dir="/koan/instance",
+        )
+        assert cmd is None
+        # validate_skill_args distinguishes this from unknown commands
+        _, cmd_name, cmd_args = parse_skill_mission(mission)
+        assert cmd_name == "rebase"
+        err = validate_skill_args(cmd_name, cmd_args)
+        assert err is not None
+        assert "PR URL" in err
+
+    def test_unknown_command_no_specific_error(self):
+        """A truly unknown command has no arg-level error."""
+        mission = "/nonexistent do things"
+        _, cmd_name, cmd_args = parse_skill_mission(mission)
+        assert cmd_name == "nonexistent"
+        err = validate_skill_args(cmd_name, cmd_args)
+        assert err is None  # No specific error — it's just unknown
+
+
+# ---------------------------------------------------------------------------
+# Thread-safety of _cached_registry / _cached_extra_dirs
+# ---------------------------------------------------------------------------
+
+class TestRegistryCacheThreadSafety:
+    """Verify that concurrent calls to translate_cli_skill_mission don't race."""
+
+    def test_concurrent_translate_calls(self, tmp_path, monkeypatch):
+        """Multiple threads calling translate_cli_skill_mission should not
+        cause double-builds or corrupt the cache."""
+        import threading
+        from pathlib import Path
+        from unittest.mock import MagicMock
+        import app.skill_dispatch as sd
+
+        # Reset cache state
+        monkeypatch.setattr(sd, "_cached_registry", None)
+        monkeypatch.setattr(sd, "_cached_extra_dirs", None)
+
+        build_count = {"n": 0}
+        build_lock = threading.Lock()
+        fake_registry = MagicMock()
+        fake_registry.get.return_value = None  # no skill found
+
+        def slow_build_registry(extra_dirs):
+            with build_lock:
+                build_count["n"] += 1
+            # Simulate work to widen the race window
+            import time
+            time.sleep(0.01)
+            return fake_registry
+
+        monkeypatch.setattr("app.skills.build_registry", slow_build_registry)
+
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        (instance_dir / "skills").mkdir()
+
+        errors = []
+
+        def worker():
+            try:
+                sd.translate_cli_skill_mission(
+                    "/custom.myskill do stuff",
+                    koan_root=tmp_path,
+                    instance_dir=instance_dir,
+                )
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, f"Threads raised exceptions: {errors}"
+        # With the lock, build_registry should be called exactly once
+        assert build_count["n"] == 1, (
+            f"build_registry called {build_count['n']} times, expected 1"
+        )
+
+
+# ---------------------------------------------------------------------------
+# strip_passthrough_command — GitHub #994
+# ---------------------------------------------------------------------------
+
+class TestStripPassthroughCommand:
+    """Passthrough commands are /commands that should be sent to Claude
+    as regular missions, not dispatched to a skill runner."""
+
+    def test_gh_request_with_url_and_text(self):
+        result = strip_passthrough_command(
+            "/gh_request https://github.com/owner/repo/pull/25 can you review this?"
+        )
+        assert result == "https://github.com/owner/repo/pull/25 can you review this?"
+
+    def test_gh_request_with_text_only(self):
+        result = strip_passthrough_command("/gh_request please fix the login bug")
+        assert result == "please fix the login bug"
+
+    def test_gh_request_no_args(self):
+        """When /gh_request has no args, return None (not a meaningful mission)."""
+        result = strip_passthrough_command("/gh_request")
+        assert result is None
+
+    def test_gh_request_with_project_tag(self):
+        result = strip_passthrough_command(
+            "[project:koan] /gh_request can you review this?"
+        )
+        assert result == "can you review this?"
+
+    def test_regular_skill_not_passthrough(self):
+        result = strip_passthrough_command("/plan Add dark mode")
+        assert result is None
+
+    def test_rebase_not_passthrough(self):
+        result = strip_passthrough_command(
+            "/rebase https://github.com/owner/repo/pull/42"
+        )
+        assert result is None
+
+    def test_regular_mission_not_passthrough(self):
+        result = strip_passthrough_command("Fix the login bug")
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# expand_combo_skill
+# ---------------------------------------------------------------------------
+
+class TestExpandComboSkill:
+    """Combo skills expand into multiple sub-missions in the queue."""
+
+    def test_rr_expands_to_review_and_rebase(self, tmp_path):
+        """The /rr combo skill should insert /review and /rebase missions."""
+        missions_md = tmp_path / "missions.md"
+        missions_md.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+
+        result = expand_combo_skill(
+            "[project:koan] /rr https://github.com/owner/repo/pull/42",
+            str(tmp_path),
+        )
+
+        assert result is True
+        content = missions_md.read_text()
+        assert "/review https://github.com/owner/repo/pull/42" in content
+        assert "/rebase https://github.com/owner/repo/pull/42" in content
+        # Both should have project tag
+        assert "[project:koan] /review" in content
+        assert "[project:koan] /rebase" in content
+
+    def test_reviewrebase_alias_works(self, tmp_path):
+        """The primary command /reviewrebase should also expand."""
+        missions_md = tmp_path / "missions.md"
+        missions_md.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+
+        result = expand_combo_skill(
+            "[project:koan] /reviewrebase https://github.com/owner/repo/pull/42",
+            str(tmp_path),
+        )
+
+        assert result is True
+        content = missions_md.read_text()
+        assert "/review" in content
+        assert "/rebase" in content
+
+    def test_review_order_preserved(self, tmp_path):
+        """/review should come before /rebase in the pending section."""
+        missions_md = tmp_path / "missions.md"
+        missions_md.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+
+        expand_combo_skill(
+            "[project:koan] /rr https://github.com/owner/repo/pull/42",
+            str(tmp_path),
+        )
+
+        content = missions_md.read_text()
+        review_pos = content.index("/review")
+        rebase_pos = content.index("/rebase")
+        assert review_pos < rebase_pos, "/review should come before /rebase"
+
+    def test_non_combo_returns_false(self, tmp_path):
+        """Regular skills should not be expanded."""
+        missions_md = tmp_path / "missions.md"
+        missions_md.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+
+        result = expand_combo_skill("/rebase https://github.com/owner/repo/pull/42", str(tmp_path))
+        assert result is False
+
+    def test_regular_mission_returns_false(self, tmp_path):
+        """Non-skill missions should not be expanded."""
+        result = expand_combo_skill("Fix the login bug", str(tmp_path))
+        assert result is False
+
+    def test_no_project_tag(self, tmp_path):
+        """/rr without project tag should still expand (no tag in sub-missions)."""
+        missions_md = tmp_path / "missions.md"
+        missions_md.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+
+        result = expand_combo_skill(
+            "/rr https://github.com/owner/repo/pull/42",
+            str(tmp_path),
+        )
+
+        assert result is True
+        content = missions_md.read_text()
+        assert "/review https://github.com/owner/repo/pull/42" in content
+        assert "[project:" not in content
+
+
+# ---------------------------------------------------------------------------
+# Auto-discovery fallback
+# ---------------------------------------------------------------------------
+
+class TestAutoDiscovery:
+    """Tests for convention-based runner module auto-discovery."""
+
+    KOAN_ROOT = "/home/user/koan"
+    INSTANCE = "/home/user/koan/instance"
+    PROJECT = "myproject"
+    PROJECT_PATH = "/home/user/workspace/myproject"
+
+    def _build(self, command, args=""):
+        return build_skill_command(
+            command=command,
+            args=args,
+            project_name=self.PROJECT,
+            project_path=self.PROJECT_PATH,
+            koan_root=self.KOAN_ROOT,
+            instance_dir=self.INSTANCE,
+        )
+
+    def test_audit_discoverable(self):
+        """audit_runner.py exists in skills/core/audit/ — should be found."""
+        from app.skill_dispatch import _discover_runner_module
+        result = _discover_runner_module("audit")
+        assert result == "skills.core.audit.audit_runner"
+
+    def test_nonexistent_skill_returns_none(self):
+        """A command with no runner module returns None."""
+        from app.skill_dispatch import _discover_runner_module
+        result = _discover_runner_module("nonexistent_skill_xyz")
+        assert result is None
+
+    def test_fallback_builds_command_for_known_runner(self):
+        """When _SKILL_RUNNERS lacks an entry but runner exists, fallback works."""
+        import app.skill_dispatch as sd
+
+        # Temporarily remove "audit" from _SKILL_RUNNERS to simulate stale cache
+        original = sd._SKILL_RUNNERS.copy()
+        original_builders = None
+        try:
+            del sd._SKILL_RUNNERS["audit"]
+            cmd = self._build("audit")
+            assert cmd is not None
+            assert "skills.core.audit.audit_runner" in " ".join(cmd)
+            assert "--project-path" in cmd
+            assert "--project-name" in cmd
+            assert "--instance-dir" in cmd
+        finally:
+            sd._SKILL_RUNNERS.update(original)
+
+
+# ---------------------------------------------------------------------------
+# Timestamp stripping in dispatch
+# ---------------------------------------------------------------------------
+
+class TestTimestampStripping:
+    """Lifecycle timestamps should not leak into skill runner args."""
+
+    def test_dispatch_strips_queued_timestamp(self):
+        """⏳ timestamps should not appear in dispatched command args."""
+        cmd = dispatch_skill_mission(
+            "[project:koan] /audit ⏳(2026-03-26T20:21)",
+            "koan", "/tmp/project", "/tmp/koan", "/tmp/instance",
+        )
+        assert cmd is not None
+        # The timestamp should not appear in any argument
+        for arg in cmd:
+            assert "⏳" not in arg
+
+    def test_dispatch_strips_started_timestamp(self):
+        """▶ timestamps should not appear in dispatched command args."""
+        cmd = dispatch_skill_mission(
+            "/plan Add dark mode ▶(2026-03-26T20:30)",
+            "koan", "/tmp/project", "/tmp/koan", "/tmp/instance",
+        )
+        assert cmd is not None
+        for arg in cmd:
+            assert "▶" not in arg
+
+    def test_dispatch_strips_github_marker(self):
+        """📬 GitHub origin marker should not appear in dispatched command args."""
+        url = "https://github.com/owner/repo/pull/42"
+        cmd = dispatch_skill_mission(
+            f"[project:koan] /rebase {url} 📬",
+            "koan", "/tmp/project", "/tmp/koan", "/tmp/instance",
+        )
+        assert cmd is not None
+        for arg in cmd:
+            assert "📬" not in arg
+
+    def test_dispatch_preserves_real_args(self):
+        """Real arguments survive timestamp stripping."""
+        cmd = dispatch_skill_mission(
+            "[project:koan] /plan Add dark mode ⏳(2026-03-26T20:21)",
+            "koan", "/tmp/project", "/tmp/koan", "/tmp/instance",
+        )
+        assert cmd is not None
+        assert "--idea" in cmd
+        idea_idx = cmd.index("--idea")
+        assert cmd[idea_idx + 1] == "Add dark mode"

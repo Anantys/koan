@@ -1,9 +1,10 @@
 """Tests for usage_tracker.py — Usage parsing and autonomous mode decisions."""
 
+import logging
 import pytest
 from pathlib import Path
 from unittest.mock import patch
-from app.usage_tracker import UsageTracker, _get_budget_mode
+from app.usage_tracker import UsageTracker, _get_budget_mode, MALFORMED_DEFAULT_PCT
 
 
 @pytest.fixture
@@ -84,9 +85,10 @@ class TestUsageParsing:
         assert tracker.weekly_pct == 25.0
 
     def test_parse_empty_file(self, usage_file_empty):
-        """Gracefully handle empty usage.md."""
+        """Empty file has no content to parse — stays at 0.0 (no false conservative)."""
         tracker = UsageTracker(usage_file_empty)
 
+        # Empty string after strip() → not malformed, just empty
         assert tracker.session_pct == 0.0
         assert tracker.weekly_pct == 0.0
         assert tracker.session_reset == "unknown"
@@ -98,6 +100,52 @@ class TestUsageParsing:
 
         assert tracker.session_pct == 0.0
         assert tracker.weekly_pct == 0.0
+
+    def test_parse_malformed_defaults_to_conservative(self, tmp_path):
+        """Malformed usage.md defaults to conservative usage, not 0%."""
+        usage = tmp_path / "usage.md"
+        usage.write_text("This is not valid usage data\nRandom text here")
+        tracker = UsageTracker(usage)
+
+        assert tracker.session_pct == MALFORMED_DEFAULT_PCT
+        assert tracker.weekly_pct == MALFORMED_DEFAULT_PCT
+
+    def test_parse_malformed_logs_warning(self, tmp_path, caplog):
+        """Malformed usage.md logs a warning."""
+        usage = tmp_path / "usage.md"
+        usage.write_text("garbage data")
+        with caplog.at_level(logging.WARNING, logger="app.usage_tracker"):
+            UsageTracker(usage)
+
+        assert any("could not parse" in r.message for r in caplog.records)
+
+    def test_parse_malformed_does_not_get_deep_mode(self, tmp_path):
+        """Malformed usage.md must NOT result in deep mode (the actual bug)."""
+        usage = tmp_path / "usage.md"
+        usage.write_text("Broken format: session 50 weekly 70")
+        tracker = UsageTracker(usage)
+        mode = tracker.decide_mode()
+
+        # 75% used → 15% remaining after safety → should be review or wait, NOT deep
+        assert mode != "deep"
+
+    def test_partial_parse_session_only(self, tmp_path):
+        """If only session line parses, weekly stays 0 — no malformed default."""
+        usage = tmp_path / "usage.md"
+        usage.write_text("Session (5hr) : 40% (reset in 2h)\nWeekly line is broken")
+        tracker = UsageTracker(usage)
+
+        assert tracker.session_pct == 40.0
+        assert tracker.weekly_pct == 0.0  # partial parse, not malformed
+
+    def test_partial_parse_weekly_only(self, tmp_path):
+        """If only weekly line parses, session stays 0 — no malformed default."""
+        usage = tmp_path / "usage.md"
+        usage.write_text("Session line broken\nWeekly (7 day) : 50% (Resets in 3d)")
+        tracker = UsageTracker(usage)
+
+        assert tracker.session_pct == 0.0
+        assert tracker.weekly_pct == 50.0
 
 
 class TestRemainingBudget:
@@ -191,89 +239,44 @@ class TestModeDecisions:
         assert mode == "implement"
 
     def test_decide_review_mode_low_budget(self, tmp_path):
-        """Review mode when low budget (5-15%)."""
+        """Review mode when low budget (15-30% remaining with default thresholds)."""
         usage = tmp_path / "usage.md"
         usage.write_text("""
-Session (5hr) : 78% (reset in 1h)
-Weekly (7 day) : 80% (Resets in 1d)
+Session (5hr) : 65% (reset in 1h)
+Weekly (7 day) : 70% (Resets in 1d)
 """)
         tracker = UsageTracker(usage)
         mode = tracker.decide_mode()
 
-        # Session: 12% remaining, Weekly: 10% remaining → min = 10%
+        # Session: 25% remaining, Weekly: 20% remaining → min = 20%
+        # With defaults (warn=70, stop=85): 15 < 20 < 30 → review
         assert mode == "review"
 
     def test_decide_wait_mode_exhausted(self, usage_file_high):
-        """Wait mode when budget exhausted (< 5%)."""
+        """Wait mode when budget exhausted (< 15% remaining with default thresholds)."""
         tracker = UsageTracker(usage_file_high)
         mode = tracker.decide_mode()
 
         # Session: 5% remaining, Weekly: 8% remaining → min = 5%
-        # Threshold is < 5, so at exactly 5% we still get "review"
-        # Let's check with slightly higher usage
-        assert mode in ("wait", "review")  # Edge case at 5%
-
-
-class TestProjectSelection:
-    """Test smart project selection based on mode."""
-
-    def test_select_project_review_mode(self, usage_file_standard):
-        """Review mode prefers first (simplest) project."""
-        tracker = UsageTracker(usage_file_standard)
-        projects = "koan:/path/koan;anantys:/path/anantys;complex:/path/complex"
-
-        idx = tracker.select_project(projects, "review", run_num=1)
-        assert idx == 0  # First project
-
-        idx = tracker.select_project(projects, "review", run_num=5)
-        assert idx == 0  # Always first in review mode
-
-    def test_select_project_deep_mode(self, usage_file_low):
-        """Deep mode prefers primary (first) project."""
-        tracker = UsageTracker(usage_file_low)
-        projects = "koan:/path/koan;anantys:/path/anantys"
-
-        idx = tracker.select_project(projects, "deep", run_num=1)
-        assert idx == 0  # Primary project
-
-    def test_select_project_implement_mode_round_robin(self, usage_file_standard):
-        """Implement mode uses round-robin."""
-        tracker = UsageTracker(usage_file_standard)
-        projects = "p1:/path1;p2:/path2;p3:/path3"
-
-        # Run 1: (1-1) % 3 = 0
-        assert tracker.select_project(projects, "implement", run_num=1) == 0
-        # Run 2: (2-1) % 3 = 1
-        assert tracker.select_project(projects, "implement", run_num=2) == 1
-        # Run 3: (3-1) % 3 = 2
-        assert tracker.select_project(projects, "implement", run_num=3) == 2
-        # Run 4: (4-1) % 3 = 0 (cycles back)
-        assert tracker.select_project(projects, "implement", run_num=4) == 0
-
-    def test_select_project_empty_string(self, usage_file_standard):
-        """Handle empty projects string."""
-        tracker = UsageTracker(usage_file_standard)
-        idx = tracker.select_project("", "implement", run_num=1)
-        assert idx == 0  # Fallback to first
+        # With defaults (stop=85): 5 < 15 → wait
+        assert mode == "wait"
 
 
 class TestOutputFormatting:
     """Test CLI output formatting."""
 
     def test_format_output_structure(self, usage_file_standard):
-        """Output format: mode:available%:reason:project_idx."""
+        """Output format: mode:available%:reason."""
         tracker = UsageTracker(usage_file_standard)
         mode = "implement"
-        project_idx = 1
 
-        output = tracker.format_output(mode, project_idx)
+        output = tracker.format_output(mode)
         parts = output.split(':')
 
-        assert len(parts) == 4
+        assert len(parts) == 3
         assert parts[0] == "implement"
         assert parts[1] == "30"  # min(65 session, 30 weekly)
         assert "30%" in parts[2] or "budget" in parts[2].lower()
-        assert parts[3] == "1"
 
     def test_get_decision_reason(self, usage_file_low):
         """Reason strings are descriptive."""
@@ -418,11 +421,11 @@ class TestBudgetMode:
 
         # Full mode: available = 0
         full = UsageTracker(usage, budget_mode="full")
-        assert "0" in full.format_output(full.decide_mode(), 0)
+        assert "0" in full.format_output(full.decide_mode())
 
         # Session-only: available = 70
         session = UsageTracker(usage, budget_mode="session_only")
-        output = session.format_output(session.decide_mode(), 0)
+        output = session.format_output(session.decide_mode())
         assert "70" in output
 
     def test_session_only_can_afford_run(self, tmp_path):
@@ -465,5 +468,5 @@ class TestGetBudgetMode:
 
     def test_config_load_error_falls_back(self):
         """Config load failure falls back to session_only."""
-        with patch("app.utils.load_config", side_effect=Exception("nope")):
+        with patch("app.utils.load_config", side_effect=OSError("nope")):
             assert _get_budget_mode() == "session_only"

@@ -55,11 +55,15 @@ def build_contemplative_command(
     )
 
     from app.cli_provider import build_full_command
+    from app.config import get_contemplative_tools
+
+    tools_str = get_contemplative_tools(project_name=project_name)
+    allowed_tools = [t.strip() for t in tools_str.split(",") if t.strip()]
 
     cmd = build_full_command(
         prompt=prompt,
-        allowed_tools=["Read", "Write", "Glob", "Grep"],
-        max_turns=5,
+        allowed_tools=allowed_tools,
+        max_turns=10,
     )
     if extra_flags:
         cmd.extend(extra_flags)

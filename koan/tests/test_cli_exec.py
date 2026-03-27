@@ -8,11 +8,40 @@ import pytest
 
 from app.cli_exec import (
     STDIN_PLACEHOLDER,
+    _uses_stdin_passing,
     prepare_prompt_file,
     run_cli,
     popen_cli,
     _cleanup_prompt_file,
 )
+
+
+# ---------------------------------------------------------------------------
+# _uses_stdin_passing
+# ---------------------------------------------------------------------------
+
+class TestUsesStdinPassing:
+    """Tests for _uses_stdin_passing() provider detection."""
+
+    @patch("app.provider.get_provider_name", return_value="claude")
+    def test_claude_provider_uses_stdin(self, _mock):
+        assert _uses_stdin_passing() is True
+
+    @patch("app.provider.get_provider_name", return_value="copilot")
+    def test_copilot_provider_skips_stdin(self, _mock):
+        assert _uses_stdin_passing() is False
+
+    @patch("app.provider.get_provider_name", return_value="local")
+    def test_local_provider_uses_stdin(self, _mock):
+        assert _uses_stdin_passing() is True
+
+    @patch("app.provider.get_provider_name", side_effect=ImportError("no provider"))
+    def test_import_error_defaults_to_true(self, _mock):
+        assert _uses_stdin_passing() is True
+
+    @patch("app.provider.get_provider_name", side_effect=RuntimeError("broken"))
+    def test_runtime_error_defaults_to_true(self, _mock):
+        assert _uses_stdin_passing() is True
 
 
 # ---------------------------------------------------------------------------
@@ -94,6 +123,14 @@ class TestPreparePromptFile:
                 assert f.read() == "my prompt"
         finally:
             _cleanup_prompt_file(path)
+
+    @patch("app.provider.get_provider_name", return_value="copilot")
+    def test_copilot_provider_skips_stdin_passing(self, _mock):
+        """Copilot provider should skip @stdin mechanism entirely."""
+        cmd = ["copilot", "-p", "my prompt", "--allow-all-tools"]
+        new_cmd, path = prepare_prompt_file(cmd)
+        assert new_cmd is cmd
+        assert path is None
 
 
 # ---------------------------------------------------------------------------
@@ -178,6 +215,42 @@ class TestRunCli:
         call_args = mock_run.call_args
         assert call_args[1]["stdin"] != subprocess.DEVNULL
 
+    @patch("app.provider.get_provider_name", return_value="copilot")
+    @patch("app.cli_exec.subprocess.run")
+    def test_copilot_keeps_prompt_in_args(self, mock_run, _mock_provider):
+        """Copilot provider: prompt stays in -p, stdin is DEVNULL."""
+        mock_run.return_value = subprocess.CompletedProcess([], 0, "ok", "")
+        cmd = ["copilot", "-p", "my prompt", "--model", "opus"]
+
+        run_cli(cmd, capture_output=True, text=True)
+
+        actual_cmd = mock_run.call_args[0][0]
+        assert actual_cmd == ["copilot", "-p", "my prompt", "--model", "opus"]
+        assert mock_run.call_args[1]["stdin"] == subprocess.DEVNULL
+
+    @patch("app.cli_exec.subprocess.run")
+    def test_default_timeout_applied_when_missing(self, mock_run):
+        """run_cli applies DEFAULT_TIMEOUT when caller omits timeout=."""
+        from app.cli_exec import DEFAULT_TIMEOUT
+        mock_run.return_value = subprocess.CompletedProcess([], 0, "ok", "")
+        cmd = ["git", "status"]
+
+        run_cli(cmd, capture_output=True, text=True)
+
+        call_args = mock_run.call_args
+        assert call_args[1]["timeout"] == DEFAULT_TIMEOUT
+
+    @patch("app.cli_exec.subprocess.run")
+    def test_explicit_timeout_not_overridden(self, mock_run):
+        """run_cli respects an explicit timeout from the caller."""
+        mock_run.return_value = subprocess.CompletedProcess([], 0, "ok", "")
+        cmd = ["git", "status"]
+
+        run_cli(cmd, capture_output=True, text=True, timeout=42)
+
+        call_args = mock_run.call_args
+        assert call_args[1]["timeout"] == 42
+
 
 # ---------------------------------------------------------------------------
 # popen_cli
@@ -225,4 +298,18 @@ class TestPopenCli:
         call_args = mock_popen.call_args
         stdin_arg = call_args[1]["stdin"]
         assert hasattr(stdin_arg, "read")  # it's a file object
+        cleanup()
+
+    @patch("app.provider.get_provider_name", return_value="copilot")
+    @patch("app.cli_exec.subprocess.Popen")
+    def test_copilot_keeps_prompt_in_args(self, mock_popen, _mock_provider):
+        """Copilot provider: popen keeps prompt in -p, stdin is DEVNULL."""
+        mock_popen.return_value = MagicMock()
+        cmd = ["copilot", "-p", "my prompt"]
+
+        proc, cleanup = popen_cli(cmd)
+
+        actual_cmd = mock_popen.call_args[0][0]
+        assert actual_cmd == ["copilot", "-p", "my prompt"]
+        assert mock_popen.call_args[1]["stdin"] == subprocess.DEVNULL
         cleanup()

@@ -242,6 +242,29 @@ class TestWriteToJournal:
         content = (tmp_path / "shared-journal.md").read_text()
         assert "### Kōan —" in content
 
+    def test_handles_journal_file_deleted_between_check_and_read(self, tmp_path):
+        """Survives TOCTOU: journal file removed between exists() and read_text()."""
+        # Just create directory, no journal file — should not crash
+        write_to_journal(tmp_path, "First entry.")
+        content = (tmp_path / "shared-journal.md").read_text()
+        assert "First entry." in content
+
+    def test_handles_unreadable_journal_gracefully(self, tmp_path, monkeypatch):
+        """When journal read raises OSError, treats as empty and writes fresh."""
+        journal = tmp_path / "shared-journal.md"
+        journal.write_text("old content")
+        # Make read_text raise OSError
+        original_read = Path.read_text
+
+        def bad_read(self, *args, **kwargs):
+            if self.name == "shared-journal.md":
+                raise OSError("Permission denied")
+            return original_read(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", bad_read)
+        # Should not crash — falls back to empty content
+        write_to_journal(tmp_path, "New reflection.")
+
 
 # --- TestRunReflection ---
 

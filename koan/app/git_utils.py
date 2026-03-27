@@ -10,7 +10,7 @@ Replaces 5 separate run_git() implementations with two unified functions:
 
 import os
 import subprocess
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 
 def run_git(
@@ -80,3 +80,56 @@ def run_git_strict(
         cmd_str = " ".join(["git"] + list(args))
         raise RuntimeError(f"git failed: {cmd_str} — {result.stderr[:200]}")
     return result.stdout.strip()
+
+
+def get_current_branch(cwd: str = None, default: str = "main") -> str:
+    """Return the current git branch name.
+
+    Args:
+        cwd: Working directory for the git command.
+        default: Value to return when branch detection fails.
+
+    Returns:
+        Branch name, or *default* on any error.
+    """
+    try:
+        return run_git_strict("rev-parse", "--abbrev-ref", "HEAD", cwd=cwd)
+    except (RuntimeError, OSError, subprocess.SubprocessError):
+        return default
+
+
+def get_commit_subjects(
+    cwd: str,
+    base_branch: str = "main",
+    branch: str = "HEAD",
+) -> List[str]:
+    """Return commit subject lines between *base_branch* and *branch*.
+
+    Args:
+        cwd: Working directory for the git command.
+        base_branch: The base ref (e.g. ``"main"``).
+        branch: The tip ref (default ``"HEAD"``).
+
+    Returns:
+        List of subject strings, empty list on failure.
+    """
+    rc, stdout, _ = run_git(
+        "log", f"{base_branch}..{branch}", "--format=%s", cwd=cwd,
+    )
+    if rc != 0:
+        return []
+    return [s for s in stdout.splitlines() if s.strip()]
+
+
+def ordered_remotes(preferred: Optional[str] = None) -> List[str]:
+    """Return remote names to try, with *preferred* first if given.
+
+    Always includes both ``origin`` and ``upstream`` (de-duplicated).
+    """
+    remotes: list[str] = []
+    if preferred:
+        remotes.append(preferred)
+    for r in ("origin", "upstream"):
+        if r not in remotes:
+            remotes.append(r)
+    return remotes

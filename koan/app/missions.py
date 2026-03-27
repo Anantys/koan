@@ -60,6 +60,19 @@ def stamp_started(entry: str) -> str:
     return f"{entry} {_STARTED_MARKER}({_now_iso()})"
 
 
+def sanitize_mission_text(text: str) -> str:
+    """Sanitize user-submitted mission text for safe embedding in missions.md.
+
+    Collapses newlines and carriage returns into spaces and strips leading/trailing
+    whitespace so a multi-line Telegram message becomes a single markdown list item.
+    """
+    # Replace \r\n, \r, \n with a single space
+    text = re.sub(r"\r\n|\r|\n", " ", text)
+    # Collapse multiple consecutive spaces into one
+    text = re.sub(r"  +", " ", text)
+    return text.strip()
+
+
 def _parse_ts(pattern: re.Pattern, text: str, fmt: str = _TS_FORMAT) -> Optional[datetime]:
     """Parse a single timestamp from *text* using *pattern*, or return None."""
     match = pattern.search(text)
@@ -153,11 +166,22 @@ def strip_timestamps(text: str) -> str:
     return text.rstrip()
 
 
+def _normalize_now_flag(text: str) -> str:
+    """Normalize Unicode dash variants of --now to ASCII --now.
+
+    Mobile keyboards often auto-correct -- to em dash (\u2014) or en dash (\u2013),
+    so "\u2014now" and "\u2013now" should be treated as "--now".
+    """
+    return text.replace("\u2014now", "--now").replace("\u2013now", "--now")
+
+
 def extract_now_flag(text: str) -> Tuple[bool, str]:
     """Check for --now flag in the first 5 words of mission text.
 
     Returns (is_urgent, cleaned_text) where cleaned_text has --now removed.
+    Accepts Unicode dash variants (\u2014now, \u2013now) as synonyms for --now.
     """
+    text = _normalize_now_flag(text)
     words = text.split()
     first_five = words[:5]
     if "--now" in first_five:
@@ -259,6 +283,9 @@ def insert_mission(content: str, entry: str, *, urgent: bool = False) -> str:
     """
     if not content:
         content = DEFAULT_SKELETON
+
+    # Sanitize newlines in the entry to keep it on one line
+    entry = re.sub(r"\r\n|\r|\n", " ", entry)
 
     # Add queued timestamp if not already present
     if _QUEUED_MARKER not in entry:
@@ -364,6 +391,11 @@ def extract_next_pending(content: str, project_name: str = "") -> str:
             i += 1
             continue
 
+        # Skip strikethrough (completed) items still lingering in Pending
+        if re.match(r"^- ~~.+~~", stripped):
+            i += 1
+            continue
+
         if project_name:
             # 1. Check inline tag first (takes priority)
             tag_match = re.search(r"\[projec?t:([a-zA-Z0-9_-]+)\]", line)
@@ -416,6 +448,14 @@ def extract_next_pending(content: str, project_name: str = "") -> str:
         return "\n".join(block_lines)
 
     return ""
+
+
+def extract_tdd_tag(line: str) -> bool:
+    """Check if a mission line or block contains the [tdd] tag.
+
+    Returns True if [tdd] is found (case-insensitive), False otherwise.
+    """
+    return bool(re.search(r'\[tdd\]', line, re.IGNORECASE))
 
 
 def extract_project_tag(line: str) -> str:
@@ -655,9 +695,15 @@ def promote_all_ideas(content: str) -> Tuple[str, List[str]]:
 
 
 def list_pending(content: str) -> List[str]:
-    """Return all pending mission lines."""
+    """Return all pending mission lines.
+
+    Filters out strikethrough (completed) items that may linger in Pending.
+    """
     sections = parse_sections(content)
-    return sections["pending"]
+    return [
+        item for item in sections["pending"]
+        if not re.match(r"^- ~~.+~~", item.strip())
+    ]
 
 
 def _find_item_extent(lines: List[str], item_start: int, section_end: int) -> int:
@@ -889,6 +935,12 @@ def start_mission(content: str, mission_text: str) -> str:
     if result is None:
         return content
 
+    from app.security_audit import MISSION_START, log_event
+    log_event(MISSION_START, details={
+        "mission": mission_text,
+        "project": extract_project_tag(mission_text),
+    })
+
     updated = result[0]
     removed = result[1].strip()
     # Keep the original line text (with project tag, queued timestamp etc)
@@ -922,6 +974,8 @@ def complete_mission(content: str, mission_text: str) -> str:
         Updated content string. Returns original content unchanged if
         the mission is not found in either section.
     """
+    from app.security_audit import MISSION_COMPLETE, log_event
+    log_event(MISSION_COMPLETE, details={"mission": mission_text})
     return _move_pending_to_section(content, mission_text, "done", "\u2705", "Done")
 
 
@@ -933,7 +987,48 @@ def fail_mission(content: str, mission_text: str) -> str:
 
     Returns content unchanged if the mission is not found in either section.
     """
+    from app.security_audit import MISSION_FAIL, log_event
+    log_event(MISSION_FAIL, details={"mission": mission_text})
     return _move_pending_to_section(content, mission_text, "failed", "\u274c", "Failed")
+
+
+def requeue_mission(content: str, mission_text: str) -> str:
+    """Move a mission from In Progress back to Pending.
+
+    Used when an error is recoverable by human intervention (e.g. re-login)
+    rather than a mission failure.  Strips the started timestamp so the
+    mission looks like a fresh pending item.
+
+    Returns content unchanged if the mission is not found in In Progress.
+    """
+    needle = mission_text.strip()
+    result = _remove_item_by_text(content, needle, "in_progress")
+    if result is None:
+        return content
+
+    updated, removed = result
+    # Strip the "- " prefix and started marker so we re-insert cleanly
+    display = removed.strip()
+    if display.startswith("- "):
+        display = display[2:]
+    # Remove started timestamp (▶(2026-03-26T22:00))
+    display = _STARTED_PATTERN.sub("", display).strip()
+
+    entry = f"- {display}"
+
+    lines = updated.splitlines()
+    boundaries = find_section_boundaries(lines)
+    if "pending" in boundaries:
+        start, end = boundaries["pending"]
+        insert_at = start + 1
+        # Skip blank lines after header
+        while insert_at < end and lines[insert_at].strip() == "":
+            insert_at += 1
+        lines.insert(insert_at, entry)
+        return normalize_content("\n".join(lines))
+
+    # No Pending section — create one
+    return normalize_content(updated + f"\n## Pending\n\n{entry}\n")
 
 
 def clean_mission_display(text: str, max_length: int = 120) -> str:
@@ -956,6 +1051,11 @@ def clean_mission_display(text: str, max_length: int = 120) -> str:
         project = tag_match.group(1)
         text = re.sub(r'\[projec?t:[a-zA-Z0-9_-]+\]\s*', '', text)
         text = f"[{project}] {text}"
+
+    # Strip trailing GitHub origin marker (displayed by /list as a leading hint)
+    text = text.rstrip()
+    if text.endswith("📬"):
+        text = text[:-1].rstrip()
 
     # Truncate for readability
     if len(text) > max_length:
@@ -1107,3 +1207,423 @@ def reorder_mission(content: str, position: int, target: int = 1) -> Tuple[str, 
 
     display = clean_mission_display(moved_text)
     return normalize_content("\n".join(result_lines)), display
+
+
+def edit_pending_mission(content: str, position: int, new_text: str) -> Tuple[str, str]:
+    """Replace the text of a pending mission at the given 1-indexed position.
+
+    Args:
+        content: Full missions.md content.
+        position: 1-indexed position in the pending list.
+        new_text: New mission text (without leading "- ").
+
+    Returns:
+        (updated_content, new_display_text) tuple.
+
+    Raises:
+        ValueError: If position is invalid or new_text is empty.
+    """
+    new_text = new_text.strip()
+    # Strip leading "- " if the user accidentally includes it
+    if new_text.startswith("- "):
+        new_text = new_text[2:].strip()
+    if not new_text:
+        raise ValueError("Mission text cannot be empty.")
+
+    lines = content.splitlines()
+    boundaries = find_section_boundaries(lines)
+
+    if "pending" not in boundaries:
+        raise ValueError("No pending section found.")
+
+    start, end = boundaries["pending"]
+
+    # Collect pending items as (start_line_idx, end_line_idx) tuples
+    items = []
+    i = start + 1
+    while i < end:
+        stripped = lines[i].strip()
+        if stripped.startswith("- "):
+            item_start = i
+            i += 1
+            while i < end:
+                next_stripped = lines[i].strip()
+                if (next_stripped.startswith("- ") or
+                        next_stripped.startswith("## ") or
+                        next_stripped.startswith("### ") or
+                        next_stripped == ""):
+                    break
+                i += 1
+            items.append((item_start, i))
+        else:
+            i += 1
+
+    if not items:
+        raise ValueError("No pending missions to edit.")
+
+    if position < 1 or position > len(items):
+        raise ValueError(
+            f"Invalid position: {position}. Queue has {len(items)} pending mission(s)."
+        )
+
+    item_start, item_end = items[position - 1]
+    old_line = lines[item_start].strip()
+
+    # Preserve existing timestamps from the old line
+    old_timestamps = ""
+    for pattern in [_QUEUED_PATTERN, _STARTED_PATTERN]:
+        match = pattern.search(old_line)
+        if match:
+            old_timestamps += " " + match.group(0).strip()
+
+    # Build the new line
+    new_line = f"- {new_text}{old_timestamps}"
+
+    # Replace the item (first line only; drop continuation lines)
+    new_lines = lines[:item_start] + [new_line] + lines[item_end:]
+
+    display = clean_mission_display(new_line)
+    return normalize_content("\n".join(new_lines)), display
+
+
+def prune_done_section(content: str, keep: int = 50) -> Tuple[str, int]:
+    """Prune the Done section to keep only the most recent items.
+
+    Old done items are removed entirely — they serve no operational purpose
+    and inflate file size (missions.md can grow to 200KB+ without pruning).
+
+    Args:
+        content: Full missions.md content.
+        keep: Number of most recent Done items to keep.
+
+    Returns:
+        (new_content, pruned_count) tuple.
+    """
+    lines = content.splitlines()
+    boundaries = find_section_boundaries(lines)
+
+    if "done" not in boundaries:
+        return content, 0
+
+    start, end = boundaries["done"]
+
+    # Collect done items as line ranges
+    items = []  # list of (item_start, item_end) tuples
+    i = start + 1  # skip ## header
+    while i < end:
+        stripped = lines[i].strip()
+        if stripped.startswith("- "):
+            item_start = i
+            i += 1
+            while i < end:
+                next_stripped = lines[i].strip()
+                if (next_stripped.startswith("- ") or
+                        next_stripped.startswith("## ") or
+                        next_stripped.startswith("### ") or
+                        next_stripped == ""):
+                    break
+                i += 1
+            items.append((item_start, i))
+        else:
+            i += 1
+
+    if len(items) <= keep:
+        return content, 0
+
+    pruned_count = len(items) - keep
+    # Keep the last `keep` items (most recent are at the top of Done)
+    keep_items = items[:keep]
+
+    # Build the set of lines to keep from the Done section
+    keep_lines = set()
+    for item_start, item_end in keep_items:
+        for j in range(item_start, item_end):
+            keep_lines.add(j)
+
+    # Rebuild: header + kept items + everything after Done section
+    new_lines = lines[:start + 1]  # everything before and including ## Done
+    for j in range(start + 1, end):
+        if j in keep_lines or lines[j].strip() == "":
+            new_lines.append(lines[j])
+            # Only keep the first blank line after a removed block
+    new_lines.extend(lines[end:])  # everything after Done section
+
+    return normalize_content("\n".join(new_lines)), pruned_count
+
+
+# ---------------------------------------------------------------------------
+# Parallel session support
+# ---------------------------------------------------------------------------
+
+# Session tag pattern: [session:abc123] embedded in in-progress mission lines
+_SESSION_TAG_PATTERN = re.compile(r'\[session:([a-zA-Z0-9_-]+)\]')
+
+
+def _stamp_session(entry: str, session_id: str) -> str:
+    """Add a session tag to a mission entry."""
+    return f"[session:{session_id}] {entry}" if session_id else entry
+
+
+def _extract_session_id(text: str) -> str:
+    """Extract session ID from a mission line, or empty string."""
+    match = _SESSION_TAG_PATTERN.search(text)
+    return match.group(1) if match else ""
+
+
+def _strip_session_tag(text: str) -> str:
+    """Remove [session:X] tag from a mission line."""
+    return _SESSION_TAG_PATTERN.sub("", text).strip()
+
+
+def pick_missions(
+    content: str,
+    n: int = 1,
+    exclude_projects: Optional[List[str]] = None,
+) -> List[str]:
+    """Extract up to N pending missions, preferring project diversity.
+
+    When multiple missions are available, prefers picking from different
+    projects before taking multiple missions from the same project.
+    This maximizes parallelism across the project portfolio.
+
+    Args:
+        content: missions.md content.
+        n: Maximum number of missions to pick.
+        exclude_projects: Project names to skip (e.g., already have active sessions).
+
+    Returns:
+        List of mission text strings (without leading "- ").
+    """
+    if n <= 0:
+        return []
+
+    if exclude_projects is None:
+        exclude_projects = []
+    exclude_set = {p.lower() for p in exclude_projects}
+
+    sections = parse_sections(content)
+    pending = sections.get("pending", [])
+    if not pending:
+        return []
+
+    # Build (project, mission_text) pairs
+    candidates: List[Tuple[str, str]] = []
+    for item in pending:
+        first_line = item.split("\n")[0].strip()
+        if first_line.startswith("- "):
+            first_line = first_line[2:]
+        if re.match(r"^~~.+~~", first_line):
+            continue  # Skip strikethrough
+        project = extract_project_tag(item)
+        if project.lower() in exclude_set:
+            continue
+        candidates.append((project, first_line))
+
+    if not candidates:
+        return []
+
+    # Pick with project diversity: round-robin across projects
+    picked: List[str] = []
+    picked_projects: Dict[str, int] = defaultdict(int)
+    remaining = list(candidates)
+
+    while len(picked) < n and remaining:
+        # Find the project with the fewest picks so far
+        best_idx = 0
+        best_count = picked_projects.get(remaining[0][0], 0)
+        for idx, (proj, _) in enumerate(remaining):
+            count = picked_projects.get(proj, 0)
+            if count < best_count:
+                best_count = count
+                best_idx = idx
+
+        proj, text = remaining.pop(best_idx)
+        picked.append(text)
+        picked_projects[proj] += 1
+
+    return picked
+
+
+def start_mission_parallel(
+    content: str,
+    mission_text: str,
+    session_id: str,
+) -> str:
+    """Move a mission from Pending to In Progress for parallel execution.
+
+    Unlike start_mission(), this does NOT flush existing In Progress
+    missions — multiple missions can be in progress simultaneously.
+    Each in-progress entry is tagged with [session:ID] for tracking.
+
+    Args:
+        content: missions.md content.
+        mission_text: The mission text to start.
+        session_id: Unique session identifier for tracking.
+
+    Returns:
+        Updated content string. Unchanged if mission not found in Pending.
+    """
+    needle = mission_text.strip()
+    result = _remove_pending_by_text(content, needle)
+    if result is None:
+        return content
+
+    from app.security_audit import MISSION_START, log_event
+    log_event(MISSION_START, details={
+        "mission": mission_text,
+        "project": extract_project_tag(mission_text),
+        "session_id": session_id,
+    })
+
+    updated = result[0]
+    removed = result[1].strip()
+    entry = removed if removed.startswith("- ") else f"- {removed}"
+
+    # Add session tag and started timestamp
+    # Insert session tag after "- " prefix
+    if entry.startswith("- "):
+        entry = f"- [session:{session_id}] {entry[2:]}"
+    entry = stamp_started(entry)
+
+    # Do NOT flush existing In Progress — parallel mode allows multiple
+    lines = updated.splitlines()
+    boundaries = find_section_boundaries(lines)
+    if "in_progress" in boundaries:
+        start, end = boundaries["in_progress"]
+        insert_at = start + 1
+        while insert_at < end and lines[insert_at].strip() == "":
+            insert_at += 1
+        lines.insert(insert_at, entry)
+        return normalize_content("\n".join(lines))
+
+    return normalize_content(updated + f"\n## In Progress\n\n{entry}\n")
+
+
+def complete_mission_by_session(content: str, session_id: str) -> str:
+    """Move an in-progress mission to Done, matching by session ID.
+
+    Used in parallel mode where multiple missions are in progress.
+    Finds the mission tagged with [session:ID] and completes it.
+
+    Returns content unchanged if no mission matches the session ID.
+    """
+    return _move_by_session(content, session_id, "done", "\u2705", "Done")
+
+
+def fail_mission_by_session(content: str, session_id: str) -> str:
+    """Move an in-progress mission to Failed, matching by session ID.
+
+    Returns content unchanged if no mission matches the session ID.
+    """
+    return _move_by_session(content, session_id, "failed", "\u274c", "Failed")
+
+
+def _move_by_session(
+    content: str,
+    session_id: str,
+    target_section: str,
+    marker: str,
+    header: str,
+) -> str:
+    """Move an in-progress mission to a target section, matching by session ID."""
+    tag = f"[session:{session_id}]"
+    lines = content.splitlines()
+    boundaries = find_section_boundaries(lines)
+
+    if "in_progress" not in boundaries:
+        return content
+
+    start, end = boundaries["in_progress"]
+
+    # Find the line with the matching session tag
+    for i in range(start + 1, end):
+        stripped = lines[i].strip()
+        if stripped.startswith("- ") and tag in stripped:
+            item_end = _find_item_extent(lines, i, end)
+            result = _splice_pending_item(lines, i, item_end)
+            if result is None:
+                return content
+            updated, removed = result
+            removed = removed.strip()
+            # Strip session tag and "- " prefix for display
+            display = removed.removeprefix("- ") if removed.startswith("- ") else removed
+            display = _SESSION_TAG_PATTERN.sub("", display).strip()
+
+            timestamp = time.strftime("%Y-%m-%d %H:%M")
+            entry = f"- {display} {marker} ({timestamp})"
+
+            lines2 = updated.splitlines()
+            boundaries2 = find_section_boundaries(lines2)
+            if target_section in boundaries2:
+                s2, e2 = boundaries2[target_section]
+                insert_at = s2 + 1
+                while insert_at < e2 and lines2[insert_at].strip() == "":
+                    insert_at += 1
+                lines2.insert(insert_at, entry)
+                return normalize_content("\n".join(lines2))
+
+            return normalize_content(updated + f"\n## {header}\n\n{entry}\n")
+
+    return content
+
+
+def count_in_progress(content: str) -> int:
+    """Count the number of missions currently in progress."""
+    sections = parse_sections(content)
+    return len(sections.get("in_progress", []))
+
+
+# ---------------------------------------------------------------------------
+# Quarantine helpers
+# ---------------------------------------------------------------------------
+
+# Max quarantine file size in bytes. Once exceeded, the oldest half of
+# entries is pruned to make room.  100 KB is ~200 entries at ~500 bytes each.
+QUARANTINE_MAX_BYTES = 100_000
+
+
+def quarantine_mission(
+    quarantine_path: "Path",
+    text: str,
+    reason: str,
+    source: str = "unknown",
+) -> bool:
+    """Append a flagged mission to the quarantine file.
+
+    Args:
+        quarantine_path: Path to missions-quarantine.md.
+        text: The mission text (truncated to 500 chars).
+        reason: Why it was quarantined.
+        source: Origin label (e.g. "telegram", "github/@user").
+
+    Returns:
+        True if the entry was written, False on error.
+    """
+    from pathlib import Path  # local to avoid top-level import
+
+    quarantine_path = Path(quarantine_path)
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+    entry = f"- \U0001f6e1\ufe0f [{timestamp}] ({source}) {reason}: {text[:500]}\n"
+    try:
+        _enforce_quarantine_cap(quarantine_path)
+        with open(quarantine_path, "a") as f:
+            f.write(entry)
+        return True
+    except OSError:
+        return False
+
+
+def _enforce_quarantine_cap(path: "Path") -> None:
+    """If the quarantine file exceeds QUARANTINE_MAX_BYTES, prune oldest half."""
+    from pathlib import Path
+
+    path = Path(path)
+    if not path.exists():
+        return
+    size = path.stat().st_size
+    if size <= QUARANTINE_MAX_BYTES:
+        return
+    lines = path.read_text().splitlines(keepends=True)
+    # Keep the newer half
+    half = len(lines) // 2
+    path.write_text("".join(lines[half:]))

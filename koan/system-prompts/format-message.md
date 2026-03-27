@@ -21,6 +21,6 @@ Requirements:
 - If this is a "kōan" (zen question), preserve its essence but make it conversational
 - DO NOT include metadata like "Mission ended" or generic status updates
 - Focus on WHAT was accomplished and WHY it matters, not process details
-- Preserve emoji markers (🚀, 🏁, ❌) at the start of messages — they indicate mission lifecycle
+- Preserve emoji markers (🚀, 🏁, ❌) and project prefixes (e.g. "🏁 [koan]") at the start of messages — they indicate mission lifecycle and project
 
 Output ONLY the formatted message. No preamble, no explanation, no markdown, no asterisks, no hashtags.

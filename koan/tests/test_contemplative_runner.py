@@ -69,10 +69,12 @@ class TestShouldRunContemplative:
 class TestBuildContemplativeCommand:
     """Tests for CLI command construction."""
 
+    @patch("app.config.get_contemplative_tools")
     @patch("app.prompt_builder.build_contemplative_prompt")
-    def test_basic_command(self, mock_prompt):
+    def test_basic_command(self, mock_prompt, mock_tools):
         """Produces correct base command structure."""
         mock_prompt.return_value = "test prompt"
+        mock_tools.return_value = "Read,Write,Glob,Grep"
         cmd = build_contemplative_command(
             instance="/path/instance",
             project_name="koan",
@@ -84,12 +86,48 @@ class TestBuildContemplativeCommand:
         assert "--allowedTools" in cmd
         assert "Read,Write,Glob,Grep" in cmd
         assert "--max-turns" in cmd
-        assert "5" in cmd
+        assert "10" in cmd
 
+    @patch("app.config.get_contemplative_tools")
     @patch("app.prompt_builder.build_contemplative_prompt")
-    def test_passes_args_to_prompt_builder(self, mock_prompt):
+    def test_custom_tools_from_config(self, mock_prompt, mock_tools):
+        """Tools are read from config, not hardcoded."""
+        mock_prompt.return_value = "test prompt"
+        mock_tools.return_value = "Read,Glob,Grep,Bash"
+        cmd = build_contemplative_command(
+            instance="/path/instance",
+            project_name="koan",
+            session_info="test session",
+        )
+        assert "--allowedTools" in cmd
+        assert "Read,Glob,Grep,Bash" in cmd
+
+    @patch("app.config.get_contemplative_tools")
+    @patch("app.prompt_builder.build_contemplative_prompt")
+    def test_max_turns_is_10(self, mock_prompt, mock_tools):
+        """Regression: max_turns=5 was too low for contemplative prompts.
+
+        The contemplative prompt requires reading 5 files (soul.md, summary.md,
+        emotional-memory.md, personality-evolution.md, learnings.md) plus writing
+        output — 6-7 tool calls minimum. max_turns=5 caused ~40% of contemplative
+        sessions to hit the limit before producing any output.
+        """
+        mock_prompt.return_value = "test prompt"
+        mock_tools.return_value = "Read,Write,Glob,Grep"
+        cmd = build_contemplative_command(
+            instance="/path/instance",
+            project_name="koan",
+            session_info="test session",
+        )
+        idx = cmd.index("--max-turns")
+        assert cmd[idx + 1] == "10"
+
+    @patch("app.config.get_contemplative_tools")
+    @patch("app.prompt_builder.build_contemplative_prompt")
+    def test_passes_args_to_prompt_builder(self, mock_prompt, mock_tools):
         """Forwards instance, project_name, session_info to prompt builder."""
         mock_prompt.return_value = "prompt"
+        mock_tools.return_value = "Read,Write,Glob,Grep"
         build_contemplative_command(
             instance="/my/instance",
             project_name="myproject",
@@ -101,10 +139,25 @@ class TestBuildContemplativeCommand:
             session_info="my info",
         )
 
+    @patch("app.config.get_contemplative_tools")
     @patch("app.prompt_builder.build_contemplative_prompt")
-    def test_extra_flags_appended(self, mock_prompt):
+    def test_forwards_project_name_to_get_tools(self, mock_prompt, mock_tools):
+        """project_name is forwarded to get_contemplative_tools for per-project overrides."""
+        mock_prompt.return_value = "prompt"
+        mock_tools.return_value = "Read,Write"
+        build_contemplative_command(
+            instance="/path",
+            project_name="myproject",
+            session_info="info",
+        )
+        mock_tools.assert_called_once_with(project_name="myproject")
+
+    @patch("app.config.get_contemplative_tools")
+    @patch("app.prompt_builder.build_contemplative_prompt")
+    def test_extra_flags_appended(self, mock_prompt, mock_tools):
         """Extra flags are appended to the command."""
         mock_prompt.return_value = "prompt"
+        mock_tools.return_value = "Read,Write,Glob,Grep"
         cmd = build_contemplative_command(
             instance="/path",
             project_name="koan",
@@ -114,10 +167,12 @@ class TestBuildContemplativeCommand:
         assert "--model" in cmd
         assert "claude-sonnet-4-5-20250929" in cmd
 
+    @patch("app.config.get_contemplative_tools")
     @patch("app.prompt_builder.build_contemplative_prompt")
-    def test_no_extra_flags(self, mock_prompt):
+    def test_no_extra_flags(self, mock_prompt, mock_tools):
         """Without extra flags, command is base only."""
         mock_prompt.return_value = "prompt"
+        mock_tools.return_value = "Read,Write,Glob,Grep"
         cmd = build_contemplative_command(
             instance="/path",
             project_name="koan",
@@ -126,10 +181,12 @@ class TestBuildContemplativeCommand:
         assert "--model" not in cmd
         assert "--fallback-model" not in cmd
 
+    @patch("app.config.get_contemplative_tools")
     @patch("app.prompt_builder.build_contemplative_prompt")
-    def test_none_extra_flags(self, mock_prompt):
+    def test_none_extra_flags(self, mock_prompt, mock_tools):
         """None extra_flags treated same as no flags."""
         mock_prompt.return_value = "prompt"
+        mock_tools.return_value = "Read,Write,Glob,Grep"
         cmd = build_contemplative_command(
             instance="/path",
             project_name="koan",
@@ -407,6 +464,132 @@ class TestCLIMain:
         with pytest.raises(SystemExit) as exc_info:
             main_with_args(["bogus"])
         assert exc_info.value.code == 1
+
+
+# --- Additional edge case tests ---
+
+
+class TestShouldRunContemplativeEdgeCases:
+    """Additional boundary tests for probability roll."""
+
+    @patch("app.contemplative_runner.random.randint")
+    def test_chance_99_roll_98_triggers(self, mock_randint):
+        """99% chance with roll=98 should trigger (98 < 99)."""
+        mock_randint.return_value = 98
+        assert should_run_contemplative(99) is True
+
+    @patch("app.contemplative_runner.random.randint")
+    def test_chance_99_roll_99_no_trigger(self, mock_randint):
+        """99% chance with roll=99 should NOT trigger (99 < 99 is False)."""
+        mock_randint.return_value = 99
+        assert should_run_contemplative(99) is False
+
+    @patch("app.contemplative_runner.random.randint")
+    def test_chance_1_roll_0_triggers(self, mock_randint):
+        """1% chance with roll=0 should trigger (0 < 1)."""
+        mock_randint.return_value = 0
+        assert should_run_contemplative(1) is True
+
+    @patch("app.contemplative_runner.random.randint")
+    def test_chance_1_roll_1_no_trigger(self, mock_randint):
+        """1% chance with roll=1 should NOT trigger (1 < 1 is False)."""
+        mock_randint.return_value = 1
+        assert should_run_contemplative(1) is False
+
+
+class TestRunContemplativeSessionEdgeCases:
+    """Additional edge case tests for the session runner."""
+
+    @patch("app.claude_step.run_claude")
+    @patch("app.contemplative_runner.get_contemplative_flags")
+    @patch("app.contemplative_runner.build_contemplative_command")
+    def test_default_cwd_is_instance(self, mock_cmd, mock_flags, mock_run_claude):
+        """When cwd is not provided, instance path is used as working directory."""
+        mock_flags.return_value = []
+        mock_cmd.return_value = ["claude", "-p", "prompt"]
+        mock_run_claude.return_value = {
+            "success": True, "output": "", "error": ""
+        }
+
+        run_contemplative_session(
+            instance="/path/to/instance",
+            project_name="koan",
+            session_info="test",
+        )
+
+        assert mock_run_claude.call_args.kwargs["cwd"] == "/path/to/instance"
+
+    @patch("app.claude_step.run_claude")
+    @patch("app.contemplative_runner.get_contemplative_flags")
+    @patch("app.contemplative_runner.build_contemplative_command")
+    def test_default_timeout_is_300(self, mock_cmd, mock_flags, mock_run_claude):
+        """Default timeout should be 300 seconds."""
+        mock_flags.return_value = []
+        mock_cmd.return_value = ["claude", "-p", "prompt"]
+        mock_run_claude.return_value = {
+            "success": True, "output": "", "error": ""
+        }
+
+        run_contemplative_session(
+            instance="/path",
+            project_name="koan",
+            session_info="test",
+        )
+
+        assert mock_run_claude.call_args.kwargs["timeout"] == 300
+
+
+class TestCLIShouldRunEdgeCases:
+    """Additional CLI edge case tests."""
+
+    @patch("app.contemplative_runner.should_run_contemplative")
+    def test_zero_chance_parsed(self, mock_roll):
+        """'0' argument is parsed correctly."""
+        mock_roll.return_value = False
+        with pytest.raises(SystemExit) as exc_info:
+            main_with_args(["should-run", "0"])
+        assert exc_info.value.code == 1
+        mock_roll.assert_called_once_with(0)
+
+    def test_float_chance_rejected(self):
+        """Float chance argument exits with error."""
+        with pytest.raises(SystemExit) as exc_info:
+            main_with_args(["should-run", "3.14"])
+        assert exc_info.value.code == 1
+
+
+class TestCLIRunEdgeCases:
+    """Additional CLI run subcommand edge cases."""
+
+    @patch("app.contemplative_runner.run_contemplative_session")
+    def test_run_no_output_no_crash(self, mock_session):
+        """Empty output and empty error should not crash."""
+        mock_session.return_value = {
+            "success": True,
+            "output": "",
+            "error": "",
+        }
+        # Should not raise
+        main_with_args([
+            "run",
+            "--instance", "/path",
+            "--project-name", "koan",
+            "--session-info", "test",
+        ])
+
+    @patch("app.contemplative_runner.run_contemplative_session")
+    def test_run_default_timeout_300(self, mock_session):
+        """CLI default timeout should be 300."""
+        mock_session.return_value = {
+            "success": True, "output": "", "error": ""
+        }
+        main_with_args([
+            "run",
+            "--instance", "/path",
+            "--project-name", "koan",
+            "--session-info", "test",
+        ])
+        assert mock_session.call_args.kwargs["timeout"] == 300
 
 
 # --- Helpers ---

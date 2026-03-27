@@ -32,27 +32,18 @@ class TestUsageTrackerCLI:
                 run_module("app.usage_tracker", run_name="__main__")
 
     def test_cli_normal_run(self, tmp_path, capsys):
-        """Normal CLI run outputs mode:available:reason:project_idx."""
+        """Normal CLI run outputs mode:available:reason."""
         usage = tmp_path / "usage.md"
         usage.write_text("Session (5hr) : 10% (reset in 4h)\nWeekly (7 day) : 25% (Resets in 5d)")
-        with patch.object(sys, "argv", ["usage_tracker.py", str(usage), "3", "p1:/a;p2:/b"]):
+        with patch.object(sys, "argv", ["usage_tracker.py", str(usage), "3"]):
             run_module("app.usage_tracker", run_name="__main__")
         out = capsys.readouterr().out.strip()
         parts = out.split(":")
-        assert len(parts) == 4
+        assert len(parts) == 3
         assert parts[0] == "deep"
 
-    def test_cli_no_projects_arg(self, tmp_path, capsys):
-        """CLI with only 2 args (no projects string)."""
-        usage = tmp_path / "usage.md"
-        usage.write_text("Session (5hr) : 50% (reset in 2h)\nWeekly (7 day) : 50% (Resets in 3d)")
-        with patch.object(sys, "argv", ["usage_tracker.py", str(usage), "5"]):
-            run_module("app.usage_tracker", run_name="__main__")
-        out = capsys.readouterr().out.strip()
-        assert out.endswith(":0")
-
     def test_cli_parse_error_fallback(self, tmp_path, capsys):
-        """Parse error falls back to review:50:Fallback mode:0."""
+        """Parse error falls back to review:50:Fallback mode."""
         from app.usage_tracker import main
         usage = tmp_path / "usage.md"
         usage.write_text("garbage")
@@ -92,14 +83,6 @@ class TestUsageTrackerWaitMode:
         tracker = UsageTracker(usage)
         reason = tracker.get_decision_reason("implement")
         assert "normal" in reason.lower()
-
-    def test_select_project_empty_list(self, tmp_path):
-        """Empty project list after split returns 0."""
-        from app.usage_tracker import UsageTracker
-        usage = tmp_path / "usage.md"
-        usage.write_text("Session (5hr) : 50% (reset in 2h)\nWeekly (7 day) : 50% (Resets in 3d)")
-        tracker = UsageTracker(usage)
-        assert tracker.select_project(";;;", "implement", 1) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -212,7 +195,7 @@ class TestRecoverComplexMissionFallback:
     """Cover L74 — complex mission ending with non-sub-item line."""
 
     def test_complex_mission_ends_with_non_subitem(self, instance_dir):
-        """Complex mission (### header) followed by a simple mission line ends complex block."""
+        """Everything from ### header to next ### header (or section end) stays in-progress."""
         from app.recover import recover_missions
         missions = instance_dir / "missions.md"
         missions.write_text(
@@ -222,13 +205,13 @@ class TestRecoverComplexMissionFallback:
             "### Complex project\n"
             "- ~~done step~~ done\n"
             "- Still working\n"
-            "Simple stale mission\n"  # This triggers L74 (in_complex_mission = False, then falls through)
+            "Simple stale mission\n"
             "- Another stale\n\n"
             "## Done\n\n"
         )
         count = recover_missions(str(instance_dir))
-        # "- Another stale" should be recovered; "Simple stale mission" is not a "- " item
-        assert count == 1
+        # All lines after ### are part of the complex mission — none recovered
+        assert count == 0
 
 
 # ---------------------------------------------------------------------------
@@ -495,6 +478,22 @@ class TestModelConfig:
         with patch("app.utils.load_config", return_value=config):
             chance = get_contemplative_chance()
         assert chance == 100
+
+    def test_get_contemplative_chance_clamped_above_100(self):
+        """Values above 100 are clamped to 100."""
+        from app.utils import get_contemplative_chance
+        config = {"contemplative_chance": 500}
+        with patch("app.utils.load_config", return_value=config):
+            chance = get_contemplative_chance()
+        assert chance == 100
+
+    def test_get_contemplative_chance_clamped_below_zero(self):
+        """Negative values are clamped to 0."""
+        from app.utils import get_contemplative_chance
+        config = {"contemplative_chance": -10}
+        with patch("app.utils.load_config", return_value=config):
+            chance = get_contemplative_chance()
+        assert chance == 0
 
 
 class TestUtilsConversationHistory:

@@ -53,6 +53,8 @@ def handle(ctx):
         return _handle_ping(ctx)
     elif cmd == "usage":
         return _handle_usage(ctx)
+    elif cmd == "metrics":
+        return _handle_metrics(ctx)
     else:
         return _handle_status(ctx)
 
@@ -69,16 +71,32 @@ def _handle_status(ctx) -> str:
 
     pause_file = koan_root / ".koan-pause"
     stop_file = koan_root / ".koan-stop"
-    pause_reason_file = koan_root / ".koan-pause-reason"
 
     if stop_file.exists():
         parts.append("\n⛔ Mode: Stopping")
     elif pause_file.exists():
-        reason = ""
-        if pause_reason_file.exists():
-            reason = pause_reason_file.read_text().strip().split("\n")[0]
+        from app.pause_manager import get_pause_state
+        state = get_pause_state(str(koan_root))
+        reason = state.reason if state else ""
         if reason == "quota":
             parts.append("\n⏸️ Mode: Paused (quota exhausted)")
+            if state and state.timestamp > 0:
+                try:
+                    from app.reset_parser import time_until_reset
+                    remaining = time_until_reset(state.timestamp)
+                    parts.append(f"  Resets in ~{remaining}")
+                except Exception:
+                    pass
+        elif reason == "timed":
+            if state and state.timestamp > 0:
+                try:
+                    from app.reset_parser import time_until_reset
+                    remaining = time_until_reset(state.timestamp)
+                    parts.append(f"\n⏸️ Mode: Paused (~{remaining} remaining)")
+                except Exception:
+                    parts.append("\n⏸️ Mode: Paused (timed)")
+            else:
+                parts.append("\n⏸️ Mode: Paused (timed)")
         elif reason == "max_runs":
             parts.append("\n⏸️ Mode: Paused (max runs reached)")
         else:
@@ -111,6 +129,18 @@ def _handle_status(ctx) -> str:
         if loop_status:
             parts.append(f"  Loop: {loop_status}")
 
+    # Show cache stats if cache has been used
+    try:
+        from app.response_cache import get_format_cache
+        cache_stats = get_format_cache().stats()
+        total = cache_stats["hits"] + cache_stats["misses"]
+        if total > 0:
+            parts.append(
+                f"  Cache: {cache_stats['hits']} hits / {cache_stats['misses']} misses"
+            )
+    except Exception:
+        pass
+
     if missions_file.exists():
         content = missions_file.read_text()
         missions_by_project = group_by_project(content)
@@ -132,7 +162,104 @@ def _handle_status(ctx) -> str:
                         for m in pending[:3]:
                             parts.append(f"    {_format_mission_display(m)}")
 
+    # Health section
+    parts.extend(_build_health_section(koan_root, instance_dir))
+
     return "\n".join(parts)
+
+
+def _build_health_section(koan_root, instance_dir) -> list:
+    """Build health status lines for /status output."""
+    lines = []
+    try:
+        from app.health_check import get_run_heartbeat_age
+        from app.heartbeat import check_stale_missions, get_disk_free_gb
+
+        health_items = []
+
+        # Run heartbeat age
+        age = get_run_heartbeat_age(str(koan_root))
+        if age >= 0:
+            if age < 120:
+                health_items.append(f"💓 Heartbeat: {age:.0f}s ago")
+            elif age < 900:
+                health_items.append(f"💓 Heartbeat: {age / 60:.0f}m ago")
+            else:
+                health_items.append(f"⚠️ Heartbeat: {age / 60:.0f}m ago")
+        else:
+            health_items.append("💓 Heartbeat: n/a")
+
+        # Stale missions (read-only check, no alerting)
+        stale = check_stale_missions(str(instance_dir))
+        if stale:
+            health_items.append(f"⚠️ {len(stale)} stale mission(s)")
+
+        # Usage data freshness
+        health_items.append(_check_usage_staleness(instance_dir))
+
+        # GitHub notification queue depth
+        gh_item = _check_github_notifications()
+        if gh_item:
+            health_items.append(gh_item)
+
+        # Disk space
+        free_gb = get_disk_free_gb(str(koan_root))
+        if free_gb >= 0:
+            if free_gb < 1.0:
+                health_items.append(f"⚠️ Disk: {free_gb:.1f} GB free")
+            else:
+                health_items.append(f"💾 Disk: {free_gb:.0f} GB free")
+
+        if health_items:
+            lines.append("\nHealth")
+            for item in health_items:
+                lines.append(f"  {item}")
+    except Exception:
+        pass
+    return lines
+
+
+def _check_usage_staleness(instance_dir) -> str:
+    """Check if usage.md is stale (>6h), which triggers the 75% fallback."""
+    import os
+    import time
+
+    usage_path = instance_dir / "usage.md"
+    if not usage_path.exists():
+        return "⚠️ Usage: no data (defaulting to 75%)"
+
+    try:
+        age_seconds = time.time() - os.path.getmtime(usage_path)
+        age_hours = age_seconds / 3600
+
+        if age_hours > 6:
+            return f"⚠️ Usage: stale ({age_hours:.0f}h old, 75% fallback active)"
+        elif age_hours > 1:
+            return f"📊 Usage: {age_hours:.1f}h old"
+        else:
+            minutes = age_seconds / 60
+            return f"📊 Usage: {minutes:.0f}m old"
+    except OSError:
+        return "⚠️ Usage: unreadable"
+
+
+def _check_github_notifications() -> str:
+    """Check unread GitHub notification queue depth."""
+    try:
+        from app.github import api
+        raw = api("notifications?per_page=100")
+        if not raw or raw.strip() == "[]":
+            return "📬 GitHub: 0 unread"
+
+        import json
+        notifications = json.loads(raw)
+        count = len(notifications)
+        if count >= 100:
+            return f"📬 GitHub: {count}+ unread"
+        else:
+            return f"📬 GitHub: {count} unread"
+    except Exception:
+        return None
 
 
 def _handle_ping(ctx) -> str:
@@ -225,3 +352,11 @@ def _handle_usage(ctx) -> str:
                 pending_text = content
 
     return f"Quota:\n{usage_text}\n\nMissions:\n{missions_text}\n\nCurrent:\n{pending_text}"
+
+
+def _handle_metrics(ctx) -> str:
+    """Build mission metrics summary."""
+    from app.mission_metrics import format_metrics_summary
+
+    instance_dir = str(ctx.instance_dir)
+    return format_metrics_summary(instance_dir, days=30)

@@ -8,7 +8,6 @@ for delivery via Telegram. Called when usage tracker enters WAIT mode.
 Usage: python send_retrospective.py <instance_dir> <project_name>
 """
 
-import fcntl
 import sys
 from datetime import date
 from pathlib import Path
@@ -40,39 +39,33 @@ def extract_session_summary(journal_path: Path, max_chars: int = 800) -> str:
     if not content.strip():
         return "No journal entries today — session was brief."
 
-    # Extract last ~800 chars for context (will be formatted by Claude)
-    # This gives Claude the session context without dumping the whole journal
-    if len(content) > max_chars:
-        # Get last section or last N chars
-        sections = content.split("\n## ")
-        if len(sections) > 1:
-            # Take last 2-3 sections
-            recent_sections = sections[-3:]
-            summary = "\n## ".join(recent_sections)
-            if len(summary) > max_chars:
-                summary = "..." + summary[-max_chars:]
-        else:
-            summary = "..." + content[-max_chars:]
-    else:
-        summary = content
+    if len(content) <= max_chars:
+        return content
 
-    return summary
+    # Try to extract last 2-3 markdown sections for coherent context
+    sections = content.split("\n## ")
+    if len(sections) > 1:
+        summary = "\n## ".join(sections[-3:])
+        if len(summary) <= max_chars:
+            return summary
+
+    # Fall back to raw tail
+    return "..." + content[-max_chars:]
 
 
-def append_to_outbox(instance_dir: Path, message: str):
+def append_to_outbox(instance_dir: Path, message: str, priority=None):
     """Append message to outbox.md with file locking.
 
     Args:
         instance_dir: Path to instance directory
         message: Message to append
+        priority: Optional NotificationPriority for the message
     """
-    outbox_file = instance_dir / "outbox.md"
+    from app.utils import append_to_outbox as _append
 
+    outbox_file = instance_dir / "outbox.md"
     try:
-        with open(outbox_file, "a") as f:
-            fcntl.flock(f, fcntl.LOCK_EX)
-            f.write(message + "\n")
-            fcntl.flock(f, fcntl.LOCK_UN)
+        _append(outbox_file, message + "\n", priority=priority)
     except OSError as e:
         print(f"[send_retrospective] Error writing to outbox: {e}", file=sys.stderr)
 
@@ -99,8 +92,17 @@ def create_retrospective(instance_dir: Path, project_name: str):
 *Kōan paused due to quota limit. Use /resume command when quota resets.*
 """
 
-    append_to_outbox(instance_dir, retrospective)
+    from app.notify import NotificationPriority
+    append_to_outbox(instance_dir, retrospective, priority=NotificationPriority.WARNING)
     print(f"[send_retrospective] Retrospective sent to outbox ({len(retrospective)} chars)")
+
+    # Also email the digest if email is configured
+    try:
+        from app.email_notify import send_session_digest
+        if send_session_digest(project_name, retrospective):
+            print("[send_retrospective] Session digest emailed to owner")
+    except Exception as e:
+        print(f"[send_retrospective] Email digest skipped: {e}", file=sys.stderr)
 
 
 def main():

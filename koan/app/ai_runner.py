@@ -13,6 +13,13 @@ CLI:
 from pathlib import Path
 from typing import Optional, Tuple
 
+from app.project_explorer import (
+    gather_git_activity,
+    gather_project_structure,
+    get_missions_context,
+)
+from app.prompts import load_skill_prompt
+
 
 def run_exploration(
     project_path: str,
@@ -36,17 +43,15 @@ def run_exploration(
     notify_fn(f"Exploring {project_name}...")
 
     # Gather context
-    git_activity = _gather_git_activity(project_path)
-    project_structure = _gather_project_structure(project_path)
-    missions_context = _get_missions_context(Path(instance_dir))
+    git_activity = gather_git_activity(project_path)
+    project_structure = gather_project_structure(project_path)
+    missions_context = get_missions_context(Path(instance_dir))
 
     # Build prompt from skill template
     if skill_dir is None:
         skill_dir = (
             Path(__file__).resolve().parent.parent / "skills" / "core" / "ai"
         )
-
-    from app.prompts import load_skill_prompt
 
     prompt = load_skill_prompt(
         skill_dir,
@@ -59,11 +64,11 @@ def run_exploration(
 
     # Run Claude
     try:
-        from app.cli_provider import run_command
-        result = run_command(
+        from app.cli_provider import run_command_streaming
+        result = run_command_streaming(
             prompt, project_path,
             allowed_tools=["Read", "Glob", "Grep", "Bash"],
-            max_turns=5, timeout=600,
+            max_turns=10, timeout=600,
         )
     except Exception as e:
         return False, f"Exploration failed: {str(e)[:300]}"
@@ -71,100 +76,72 @@ def run_exploration(
     if not result:
         return False, "Claude returned an empty exploration result."
 
-    # Send result to Telegram (truncated)
+    # Extract MISSION: lines and queue them as pending missions
+    missions = _extract_missions(result, project_name)
+    if missions:
+        missions_path = Path(instance_dir) / "missions.md"
+        _queue_missions(missions_path, missions)
+
+    # Send result to Telegram (truncated, without MISSION: lines)
     cleaned = _clean_response(result)
-    notify_fn(f"AI exploration of {project_name}:\n\n{cleaned}")
+    report = _strip_mission_lines(cleaned)
+    suffix = f"\n\n({len(missions)} mission(s) queued)" if missions else ""
+    notify_fn(f"AI exploration of {project_name}:\n\n{report}{suffix}")
 
-    return True, f"Exploration of {project_name} completed."
-
-
-def _gather_git_activity(project_path: str) -> str:
-    """Gather recent git activity for a project."""
-    from app.git_sync import run_git
-
-    parts = []
-
-    commits = run_git(project_path, "log", "--oneline", "-15", "--no-merges")
-    if commits:
-        parts.append("Recent commits:\n" + commits)
-
-    branches_out = run_git(
-        project_path, "branch", "-r", "--sort=-committerdate",
-        "--format=%(refname:short)",
-    )
-    if branches_out:
-        branches = branches_out.split("\n")[:10]
-        parts.append("Active branches:\n" + "\n".join(branches))
-
-    diff_stat = run_git(project_path, "diff", "--stat", "HEAD~10", "HEAD")
-    if diff_stat:
-        parts.append("Recent changes:\n" + diff_stat)
-
-    return "\n\n".join(parts) if parts else "No git activity available."
+    return True, f"Exploration of {project_name} completed ({len(missions)} missions queued)."
 
 
-def _gather_project_structure(project_path: str) -> str:
-    """Gather top-level project structure."""
-    try:
-        p = Path(project_path)
-        entries = sorted(p.iterdir())
-        dirs = [
-            e.name + "/"
-            for e in entries
-            if e.is_dir() and not e.name.startswith(".")
-        ]
-        files = [
-            e.name
-            for e in entries
-            if e.is_file() and not e.name.startswith(".")
-        ]
-        parts = []
-        if dirs:
-            parts.append("Directories: " + ", ".join(dirs[:20]))
-        if files:
-            parts.append("Files: " + ", ".join(files[:20]))
-        return "\n".join(parts)
-    except Exception:
-        return "Structure unavailable."
+def _extract_missions(text: str, project_name: str) -> list:
+    """Extract MISSION: lines from Claude output.
+
+    Sanitizes each description to match the missions.md convention:
+    ``- [project:<name>] <description>``
+
+    Handles common Claude output quirks:
+    - Leading ``- `` bullet prefix
+    - Duplicate ``[project:name]`` tags (prompt says not to, but LLMs…)
+    """
+    import re
+
+    tag_re = re.compile(r"^\[project:[^\]]+\]\s*", re.IGNORECASE)
+
+    missions = []
+    for line in text.splitlines():
+        match = re.match(r"^MISSION:\s*(.+)$", line.strip())
+        if match:
+            desc = match.group(1).strip()
+            # Strip leading bullet if Claude added one
+            desc = re.sub(r"^-\s+", "", desc)
+            # Strip duplicate project tag if Claude added one despite prompt
+            desc = tag_re.sub("", desc)
+            desc = desc.strip()
+            if desc:
+                missions.append(f"- [project:{project_name}] {desc}")
+    return missions
 
 
-def _get_missions_context(instance_dir: Path) -> str:
-    """Get current missions context for the prompt."""
-    missions_file = instance_dir / "missions.md"
-    if not missions_file.exists():
-        return "No active missions."
+def _queue_missions(missions_path: Path, missions: list):
+    """Insert extracted missions into the Pending section of missions.md."""
+    from app.utils import insert_pending_mission
 
-    from app.missions import parse_sections
+    for entry in missions:
+        insert_pending_mission(missions_path, entry)
 
-    sections = parse_sections(missions_file.read_text())
-    in_progress = sections.get("in_progress", [])
-    pending = sections.get("pending", [])
-    parts = []
-    if in_progress:
-        parts.append("In progress:\n" + "\n".join(in_progress[:5]))
-    if pending:
-        parts.append("Pending:\n" + "\n".join(pending[:5]))
-    return "\n".join(parts) if parts else "No active missions."
+
+def _strip_mission_lines(text: str) -> str:
+    """Remove MISSION: lines from the report sent to Telegram."""
+    lines = text.splitlines()
+    filtered = [l for l in lines if not l.strip().startswith("MISSION:")]
+    # Clean up trailing blank lines
+    result = "\n".join(filtered).rstrip()
+    return result
 
 
 def _clean_response(text: str) -> str:
     """Clean Claude CLI output for Telegram delivery."""
-    import re
+    from app.text_utils import clean_cli_response
 
-    lines = text.splitlines()
-    lines = [
-        line for line in lines
-        if not re.match(r'^Error:.*max turns', line, re.IGNORECASE)
-    ]
-    cleaned = "\n".join(lines).strip()
-    cleaned = cleaned.replace("```", "")
-    cleaned = cleaned.replace("**", "")
-    cleaned = cleaned.replace("__", "")
-    cleaned = cleaned.replace("~~", "")
-    cleaned = re.sub(r'^#{1,6}\s+', '', cleaned, flags=re.MULTILINE)
-    if len(cleaned) > 2000:
-        cleaned = cleaned[:1997] + "..."
-    return cleaned.strip()
+    return clean_cli_response(text)
 
 
 # ---------------------------------------------------------------------------

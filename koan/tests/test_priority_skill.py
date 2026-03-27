@@ -187,12 +187,10 @@ class TestPriorityCommandRouting:
 
     @patch("app.command_handlers.send_telegram")
     def test_priority_appears_in_help(self, mock_send, tmp_path):
-        """Verify /priority is included in /help output via skill discovery."""
-        from app.command_handlers import handle_command
+        """Verify /priority is included in /help missions group output."""
+        from app.command_handlers import _handle_help_detail
 
-        with patch("app.command_handlers.KOAN_ROOT", tmp_path), \
-             patch("app.command_handlers.INSTANCE_DIR", tmp_path):
-            handle_command("/help")
+        _handle_help_detail("missions")
         mock_send.assert_called_once()
         help_text = mock_send.call_args[0][0]
         assert "/priority" in help_text

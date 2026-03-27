@@ -6,12 +6,12 @@ from unittest.mock import patch, MagicMock
 from app.skills import SkillContext
 
 # The PR handler imports lazily inside handle():
-#   from app.pr_review import parse_pr_url     → patch at app.pr_review.parse_pr_url
-#   from app.utils import resolve_project_path  → patch at app.utils.resolve_project_path
-#   from app.pr_review import run_pr_review     → patch at app.pr_review.run_pr_review
-#   from app.utils import get_known_projects    → patch at app.utils.get_known_projects
+#   from app.github_url_parser import parse_pr_url → patch at app.github_url_parser.parse_pr_url
+#   from app.utils import resolve_project_path     → patch at app.utils.resolve_project_path
+#   from app.pr_review import run_pr_review        → patch at app.pr_review.run_pr_review
+#   from app.utils import get_known_projects       → patch at app.utils.get_known_projects
 
-_P_PARSE = "app.pr_review.parse_pr_url"
+_P_PARSE = "app.github_url_parser.parse_pr_url"
 _P_RESOLVE = "app.utils.resolve_project_path"
 _P_REVIEW = "app.pr_review.run_pr_review"
 _P_KNOWN = "app.utils.get_known_projects"

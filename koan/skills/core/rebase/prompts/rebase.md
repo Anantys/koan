@@ -47,3 +47,8 @@ Stay on the current branch. Your changes will be committed and pushed automatica
 4. **Do not run tests.** The caller handles testing separately.
 
 When you're done, output a concise summary of what you changed and why.
+This summary will be used in the git commit message and PR comment, so it must
+clearly explain each change and justify it by referencing the reviewer's request.
+Use bullet points if you made multiple changes. Be specific about what was
+modified (e.g. "Renamed `get_user()` to `fetch_user()` per reviewer request")
+rather than vague (e.g. "Applied feedback").

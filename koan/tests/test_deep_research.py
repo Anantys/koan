@@ -10,6 +10,8 @@ import pytest
 
 from app.deep_research import DeepResearch
 
+pytestmark = pytest.mark.slow
+
 
 @pytest.fixture
 def research_env(tmp_path):
@@ -503,3 +505,818 @@ Context for the agent.
             assert "do_not_touch" in result
             assert "open_issues" in result
             assert "recent_topics" in result
+
+
+# ---------------------------------------------------------------------------
+# get_known_learnings
+# ---------------------------------------------------------------------------
+
+class TestGetKnownLearnings:
+    """Tests for learnings.md section header extraction."""
+
+    def test_extracts_section_headers(self, research_env):
+        """Parses ## headers from learnings.md."""
+        learnings_file = (
+            research_env["instance"]
+            / "memory"
+            / "projects"
+            / research_env["project_name"]
+            / "learnings.md"
+        )
+        learnings_file.write_text(
+            "# Learnings\n\n"
+            "## Architecture\n\nSome notes.\n\n"
+            "## Test Patterns\n\nMore notes.\n\n"
+            "## Common Pitfalls\n\nWatch out.\n"
+        )
+
+        research = DeepResearch(
+            research_env["instance"],
+            research_env["project_name"],
+            research_env["project_path"],
+        )
+
+        result = research.get_known_learnings()
+
+        assert "Architecture" in result
+        assert "Test Patterns" in result
+        assert "Common Pitfalls" in result
+        assert len(result) == 3
+
+    def test_missing_learnings_file(self, research_env):
+        """Returns empty list when learnings.md doesn't exist."""
+        research = DeepResearch(
+            research_env["instance"],
+            research_env["project_name"],
+            research_env["project_path"],
+        )
+
+        result = research.get_known_learnings()
+
+        assert result == []
+
+    def test_empty_learnings_file(self, research_env):
+        """Returns empty list for a file with no ## headers."""
+        learnings_file = (
+            research_env["instance"]
+            / "memory"
+            / "projects"
+            / research_env["project_name"]
+            / "learnings.md"
+        )
+        learnings_file.write_text("# Learnings\n\nNo sections yet.\n")
+
+        research = DeepResearch(
+            research_env["instance"],
+            research_env["project_name"],
+            research_env["project_path"],
+        )
+
+        result = research.get_known_learnings()
+
+        assert result == []
+
+
+# ---------------------------------------------------------------------------
+# get_do_not_touch (direct)
+# ---------------------------------------------------------------------------
+
+class TestGetDoNotTouch:
+    """Tests for the do_not_touch convenience method."""
+
+    def test_returns_do_not_touch_items(self, research_env):
+        """Returns items from Do Not Touch section."""
+        priorities_file = (
+            research_env["instance"]
+            / "memory"
+            / "projects"
+            / research_env["project_name"]
+            / "priorities.md"
+        )
+        priorities_file.write_text("## Do Not Touch\n\n- Legacy billing\n- Mobile app\n")
+
+        research = DeepResearch(
+            research_env["instance"],
+            research_env["project_name"],
+            research_env["project_path"],
+        )
+
+        result = research.get_do_not_touch()
+
+        assert "Legacy billing" in result
+        assert "Mobile app" in result
+
+    def test_empty_when_no_section(self, research_env):
+        """Returns empty list when no Do Not Touch section exists."""
+        research = DeepResearch(
+            research_env["instance"],
+            research_env["project_name"],
+            research_env["project_path"],
+        )
+
+        result = research.get_do_not_touch()
+
+        assert result == []
+
+
+# ---------------------------------------------------------------------------
+# get_staleness_warning
+# ---------------------------------------------------------------------------
+
+class TestGetStalenessWarning:
+    """Tests for staleness warning from session tracker."""
+
+    def test_returns_warning_when_stale(self, research_env):
+        """Returns warning string from session_tracker when stale."""
+        with patch("app.session_tracker.get_staleness_warning", return_value="⚠️ 5 consecutive empty sessions"):
+            research = DeepResearch(
+                research_env["instance"],
+                research_env["project_name"],
+                research_env["project_path"],
+            )
+
+            result = research.get_staleness_warning()
+
+            assert "5 consecutive" in result
+
+    def test_returns_empty_when_fresh(self, research_env):
+        """Returns empty string when not stale."""
+        with patch("app.session_tracker.get_staleness_warning", return_value=""):
+            research = DeepResearch(
+                research_env["instance"],
+                research_env["project_name"],
+                research_env["project_path"],
+            )
+
+            result = research.get_staleness_warning()
+
+            assert result == ""
+
+    def test_returns_empty_on_import_error(self, research_env):
+        """Returns empty string when session_tracker import fails."""
+        with patch.dict("sys.modules", {"app.session_tracker": None}):
+            research = DeepResearch(
+                research_env["instance"],
+                research_env["project_name"],
+                research_env["project_path"],
+            )
+
+            result = research.get_staleness_warning()
+
+            assert result == ""
+
+    def test_returns_empty_on_exception(self, research_env):
+        """Returns empty string when staleness check raises."""
+        with patch("app.session_tracker.get_staleness_warning", side_effect=RuntimeError("db error")):
+            research = DeepResearch(
+                research_env["instance"],
+                research_env["project_name"],
+                research_env["project_path"],
+            )
+
+            result = research.get_staleness_warning()
+
+            assert result == ""
+
+
+# ---------------------------------------------------------------------------
+# suggest_topics — additional edge cases
+# ---------------------------------------------------------------------------
+
+class TestSuggestTopicsEdgeCases:
+    """Additional edge cases for the suggestion algorithm."""
+
+    def test_strategic_goals_get_priority_3(self, research_env):
+        """Strategic goals are always priority 3."""
+        priorities_file = (
+            research_env["instance"]
+            / "memory"
+            / "projects"
+            / research_env["project_name"]
+            / "priorities.md"
+        )
+        priorities_file.write_text("## Strategic Goals\n\n- Long-term refactor\n- Launch v2\n")
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1)
+
+            research = DeepResearch(
+                research_env["instance"],
+                research_env["project_name"],
+                research_env["project_path"],
+            )
+
+            result = research.suggest_topics()
+
+            assert len(result) == 2
+            assert all(s["priority"] == 3 for s in result)
+            assert all(s["source"] == "priorities.md (Strategic Goals)" for s in result)
+
+    def test_issues_without_labels_get_priority_3(self, research_env):
+        """GitHub issues with no recognized labels get priority 3."""
+        mock_issues = [
+            {"number": 10, "title": "Something random", "labels": [], "createdAt": "2024-01-01"},
+        ]
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout=json.dumps(mock_issues),
+            )
+
+            research = DeepResearch(
+                research_env["instance"],
+                research_env["project_name"],
+                research_env["project_path"],
+            )
+
+            result = research.suggest_topics()
+
+            assert len(result) == 1
+            assert result[0]["priority"] == 3
+
+    def test_critical_label_gets_priority_1(self, research_env):
+        """Issues labeled 'critical' get priority 1."""
+        mock_issues = [
+            {"number": 5, "title": "Server crash", "labels": [{"name": "critical"}], "createdAt": "2024-01-01"},
+        ]
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout=json.dumps(mock_issues),
+            )
+
+            research = DeepResearch(
+                research_env["instance"],
+                research_env["project_name"],
+                research_env["project_path"],
+            )
+
+            result = research.suggest_topics()
+
+            assert result[0]["priority"] == 1
+
+    def test_limits_issues_to_top_5(self, research_env):
+        """Only first 5 issues are included in suggestions."""
+        mock_issues = [
+            {"number": i, "title": f"Issue {i}", "labels": [], "createdAt": "2024-01-01"}
+            for i in range(10)
+        ]
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout=json.dumps(mock_issues),
+            )
+
+            research = DeepResearch(
+                research_env["instance"],
+                research_env["project_name"],
+                research_env["project_path"],
+            )
+
+            result = research.suggest_topics()
+
+            issue_topics = [s for s in result if s["source"] == "GitHub Issues"]
+            assert len(issue_topics) == 5
+
+    def test_technical_debt_dedup_with_journal(self, research_env):
+        """Technical debt items matching recent journal topics are skipped."""
+        priorities_file = (
+            research_env["instance"]
+            / "memory"
+            / "projects"
+            / research_env["project_name"]
+            / "priorities.md"
+        )
+        priorities_file.write_text(
+            "## Technical Debt\n\n"
+            "- Refactor payment module\n"
+            "- Clean up test fixtures\n"
+        )
+
+        today = datetime.now().strftime("%Y-%m-%d")
+        journal_dir = research_env["instance"] / "journal" / today
+        journal_dir.mkdir(parents=True)
+        journal_file = journal_dir / f"{research_env['project_name']}.md"
+        journal_file.write_text("## Session — Refactor payment module\n")
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1)
+
+            research = DeepResearch(
+                research_env["instance"],
+                research_env["project_name"],
+                research_env["project_path"],
+            )
+
+            result = research.suggest_topics()
+
+            topics = [s["topic"] for s in result]
+            assert "Clean up test fixtures" in topics
+            assert "Refactor payment module" not in topics
+
+    def test_empty_with_no_sources(self, research_env):
+        """Returns empty list when no priorities, no issues, no debt."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1)
+
+            research = DeepResearch(
+                research_env["instance"],
+                research_env["project_name"],
+                research_env["project_path"],
+            )
+
+            result = research.suggest_topics()
+
+            assert result == []
+
+    def test_sorted_by_priority(self, research_env):
+        """Suggestions are sorted by priority (1 first, 3 last)."""
+        priorities_file = (
+            research_env["instance"]
+            / "memory"
+            / "projects"
+            / research_env["project_name"]
+            / "priorities.md"
+        )
+        priorities_file.write_text(
+            "## Strategic Goals\n\n- Big vision\n\n"
+            "## Current Focus\n\n- Urgent task\n\n"
+            "## Technical Debt\n\n- Cleanup\n"
+        )
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1)
+
+            research = DeepResearch(
+                research_env["instance"],
+                research_env["project_name"],
+                research_env["project_path"],
+            )
+
+            result = research.suggest_topics()
+
+            priorities = [s["priority"] for s in result]
+            assert priorities == sorted(priorities)
+            assert result[0]["topic"] == "Urgent task"
+
+
+# ---------------------------------------------------------------------------
+# format_for_agent — additional paths
+# ---------------------------------------------------------------------------
+
+class TestFormatForAgentEdgeCases:
+    """Additional edge cases for agent formatting."""
+
+    def test_includes_staleness_warning(self, research_env):
+        """Staleness warning appears at top of output."""
+        priorities_file = (
+            research_env["instance"]
+            / "memory"
+            / "projects"
+            / research_env["project_name"]
+            / "priorities.md"
+        )
+        priorities_file.write_text("## Current Focus\n\n- Task\n")
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1)
+
+            with patch("app.session_tracker.get_staleness_warning", return_value="⚠️ Stale project warning"):
+                research = DeepResearch(
+                    research_env["instance"],
+                    research_env["project_name"],
+                    research_env["project_path"],
+                )
+
+                result = research.format_for_agent()
+
+                assert "⚠️ Stale project warning" in result
+                # Staleness warning should appear before suggestions
+                stale_pos = result.index("Stale project")
+                suggest_pos = result.index("Suggested Topics")
+                assert stale_pos < suggest_pos
+
+    def test_emoji_markers_by_priority(self, research_env):
+        """Priority 1=🔴, 2=🟡, 3=🟢."""
+        priorities_file = (
+            research_env["instance"]
+            / "memory"
+            / "projects"
+            / research_env["project_name"]
+            / "priorities.md"
+        )
+        priorities_file.write_text(
+            "## Current Focus\n\n- P1 task\n\n"
+            "## Technical Debt\n\n- P2 task\n\n"
+            "## Strategic Goals\n\n- P3 task\n"
+        )
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1)
+
+            research = DeepResearch(
+                research_env["instance"],
+                research_env["project_name"],
+                research_env["project_path"],
+            )
+
+            result = research.format_for_agent()
+
+            assert "🔴" in result
+            assert "🟡" in result
+            assert "🟢" in result
+
+    def test_limits_format_to_top_5(self, research_env):
+        """Format truncates to 5 suggestions."""
+        priorities_file = (
+            research_env["instance"]
+            / "memory"
+            / "projects"
+            / research_env["project_name"]
+            / "priorities.md"
+        )
+        # 8 items — only 5 should be formatted
+        items = "\n".join(f"- Item {i}" for i in range(8))
+        priorities_file.write_text(f"## Current Focus\n\n{items}\n")
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1)
+
+            research = DeepResearch(
+                research_env["instance"],
+                research_env["project_name"],
+                research_env["project_path"],
+            )
+
+            result = research.format_for_agent()
+
+            # Count numbered items in output
+            numbered = [line for line in result.split("\n") if line.strip().startswith(("1.", "2.", "3.", "4.", "5.", "6.", "7.", "8."))]
+            assert len(numbered) == 5
+
+    def test_no_suggestions_fallback_message(self, research_env):
+        """Shows fallback message when no suggestions and only do_not_touch."""
+        priorities_file = (
+            research_env["instance"]
+            / "memory"
+            / "projects"
+            / research_env["project_name"]
+            / "priorities.md"
+        )
+        priorities_file.write_text("## Do Not Touch\n\n- Fragile module\n")
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1)
+
+            research = DeepResearch(
+                research_env["instance"],
+                research_env["project_name"],
+                research_env["project_path"],
+            )
+
+            result = research.format_for_agent()
+
+            assert "No specific suggestions" in result
+            assert "Fragile module" in result
+
+    def test_staleness_only_produces_output(self, research_env):
+        """Staleness warning alone is enough to produce output."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1)
+
+            with patch("app.session_tracker.get_staleness_warning", return_value="⚠️ Warning"):
+                research = DeepResearch(
+                    research_env["instance"],
+                    research_env["project_name"],
+                    research_env["project_path"],
+                )
+
+                result = research.format_for_agent()
+
+                assert result != ""
+                assert "⚠️ Warning" in result
+
+
+# ---------------------------------------------------------------------------
+# get_pending_prs error handling
+# ---------------------------------------------------------------------------
+
+class TestGetPendingPrsEdgeCases:
+    """Edge cases for PR fetching."""
+
+    def test_gh_not_available(self, research_env):
+        """Returns empty list when gh CLI is not available."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = FileNotFoundError()
+
+            research = DeepResearch(
+                research_env["instance"],
+                research_env["project_name"],
+                research_env["project_path"],
+            )
+
+            result = research.get_pending_prs()
+
+            assert result == []
+
+    def test_gh_timeout(self, research_env):
+        """Returns empty list on timeout."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = subprocess.TimeoutExpired(cmd="gh", timeout=30)
+
+            research = DeepResearch(
+                research_env["instance"],
+                research_env["project_name"],
+                research_env["project_path"],
+            )
+
+            result = research.get_pending_prs()
+
+            assert result == []
+
+    def test_gh_returns_invalid_json(self, research_env):
+        """Returns empty list on invalid JSON."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="not valid json",
+            )
+
+            research = DeepResearch(
+                research_env["instance"],
+                research_env["project_name"],
+                research_env["project_path"],
+            )
+
+            result = research.get_pending_prs()
+
+            assert result == []
+
+
+# ---------------------------------------------------------------------------
+# get_open_issues edge cases
+# ---------------------------------------------------------------------------
+
+class TestGetOpenIssuesEdgeCases:
+    """Additional edge cases for issue fetching."""
+
+    def test_custom_limit(self, research_env):
+        """Custom limit is passed to gh CLI."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="[]",
+            )
+
+            research = DeepResearch(
+                research_env["instance"],
+                research_env["project_name"],
+                research_env["project_path"],
+            )
+
+            research.get_open_issues(limit=3)
+
+            cmd = mock_run.call_args[0][0]
+            assert "--limit" in cmd
+            idx = cmd.index("--limit")
+            assert cmd[idx + 1] == "3"
+
+    def test_invalid_json_returns_empty(self, research_env):
+        """Returns empty list when gh returns invalid JSON."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="{broken json",
+            )
+
+            research = DeepResearch(
+                research_env["instance"],
+                research_env["project_name"],
+                research_env["project_path"],
+            )
+
+            result = research.get_open_issues()
+
+            assert result == []
+
+
+# ---------------------------------------------------------------------------
+# get_recent_journal_topics edge cases
+# ---------------------------------------------------------------------------
+
+class TestGetRecentJournalTopicsEdgeCases:
+    """Edge cases for journal topic extraction."""
+
+    def test_multiple_days(self, research_env):
+        """Extracts topics from multiple day files."""
+        from datetime import timedelta
+
+        for i in range(3):
+            date = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")
+            journal_dir = research_env["instance"] / "journal" / date
+            journal_dir.mkdir(parents=True)
+            journal_file = journal_dir / f"{research_env['project_name']}.md"
+            journal_file.write_text(f"## Session — Day {i} work\n")
+
+        research = DeepResearch(
+            research_env["instance"],
+            research_env["project_name"],
+            research_env["project_path"],
+        )
+
+        result = research.get_recent_journal_topics(days=3)
+
+        assert len(result) == 3
+        assert "Session — Day 0 work" in result
+        assert "Session — Day 2 work" in result
+
+    def test_custom_days_parameter(self, research_env):
+        """Respects the days parameter."""
+        from datetime import timedelta
+
+        # Create entries for 5 days
+        for i in range(5):
+            date = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")
+            journal_dir = research_env["instance"] / "journal" / date
+            journal_dir.mkdir(parents=True)
+            journal_file = journal_dir / f"{research_env['project_name']}.md"
+            journal_file.write_text(f"## Day {i}\n")
+
+        research = DeepResearch(
+            research_env["instance"],
+            research_env["project_name"],
+            research_env["project_path"],
+        )
+
+        # Only look at last 2 days
+        result = research.get_recent_journal_topics(days=2)
+
+        assert len(result) == 2
+
+
+# ---------------------------------------------------------------------------
+# get_priorities edge cases
+# ---------------------------------------------------------------------------
+
+class TestGetPrioritiesEdgeCases:
+    """Additional edge cases for priorities parsing."""
+
+    def test_empty_dash_items_skipped(self, research_env):
+        """Items that are just '- ' (dash + space) are skipped."""
+        priorities_file = (
+            research_env["instance"]
+            / "memory"
+            / "projects"
+            / research_env["project_name"]
+            / "priorities.md"
+        )
+        priorities_file.write_text("## Current Focus\n\n- \n- Real task\n- \n")
+
+        research = DeepResearch(
+            research_env["instance"],
+            research_env["project_name"],
+            research_env["project_path"],
+        )
+
+        result = research.get_priorities()
+
+        assert len(result["current_focus"]) == 1
+        assert result["current_focus"][0] == "Real task"
+
+    def test_notes_placeholder_skipped(self, research_env):
+        """Notes section with placeholder is returned as empty."""
+        priorities_file = (
+            research_env["instance"]
+            / "memory"
+            / "projects"
+            / research_env["project_name"]
+            / "priorities.md"
+        )
+        priorities_file.write_text("## Notes\n\n(Add context here)\n")
+
+        research = DeepResearch(
+            research_env["instance"],
+            research_env["project_name"],
+            research_env["project_path"],
+        )
+
+        result = research.get_priorities()
+
+        assert result["notes"] == ""
+
+    def test_case_insensitive_section_headers(self, research_env):
+        """Section headers are matched case-insensitively."""
+        priorities_file = (
+            research_env["instance"]
+            / "memory"
+            / "projects"
+            / research_env["project_name"]
+            / "priorities.md"
+        )
+        priorities_file.write_text("## current focus\n\n- Task A\n\n## TECHNICAL DEBT\n\n- Task B\n")
+
+        research = DeepResearch(
+            research_env["instance"],
+            research_env["project_name"],
+            research_env["project_path"],
+        )
+
+        result = research.get_priorities()
+
+        assert "Task A" in result["current_focus"]
+        assert "Task B" in result["technical_debt"]
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point (main)
+# ---------------------------------------------------------------------------
+
+class TestMainCLI:
+    """Tests for the CLI entry point."""
+
+    def test_main_markdown_output(self, research_env, capsys):
+        """CLI outputs markdown by default."""
+        priorities_file = (
+            research_env["instance"]
+            / "memory"
+            / "projects"
+            / research_env["project_name"]
+            / "priorities.md"
+        )
+        priorities_file.write_text("## Current Focus\n\n- CLI test task\n")
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1)
+
+            with patch("sys.argv", [
+                "deep_research.py",
+                str(research_env["instance"]),
+                research_env["project_name"],
+                str(research_env["project_path"]),
+            ]):
+                from app.deep_research import main
+                main()
+
+        captured = capsys.readouterr()
+        assert "Deep Research Suggestions" in captured.out
+        assert "CLI test task" in captured.out
+
+    def test_main_json_output(self, research_env, capsys):
+        """CLI with --json outputs valid JSON."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1)
+
+            with patch("sys.argv", [
+                "deep_research.py",
+                str(research_env["instance"]),
+                research_env["project_name"],
+                str(research_env["project_path"]),
+                "--json",
+            ]):
+                from app.deep_research import main
+                main()
+
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+        assert "priorities" in data
+        assert "suggestions" in data
+
+    def test_main_insufficient_args(self):
+        """CLI exits with error when args are missing."""
+        with patch("sys.argv", ["deep_research.py"]):
+            from app.deep_research import main
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 1
+
+
+# ---------------------------------------------------------------------------
+# Constructor and path resolution
+# ---------------------------------------------------------------------------
+
+class TestConstructor:
+    """Tests for DeepResearch initialization."""
+
+    def test_memory_dir_path(self, research_env):
+        """Memory dir is correctly computed from instance + project name."""
+        research = DeepResearch(
+            research_env["instance"],
+            research_env["project_name"],
+            research_env["project_path"],
+        )
+
+        expected = research_env["instance"] / "memory" / "projects" / research_env["project_name"]
+        assert research.memory_dir == expected
+
+    def test_stores_project_path(self, research_env):
+        """Project path is stored for gh CLI cwd."""
+        research = DeepResearch(
+            research_env["instance"],
+            research_env["project_name"],
+            research_env["project_path"],
+        )
+
+        assert research.project_path == research_env["project_path"]

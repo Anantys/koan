@@ -81,6 +81,81 @@ def get_mission_summary(instance_dir: str, project_name: str, max_chars: int = 4
     return summarize_section(section, max_chars)
 
 
+# Error signal patterns — ordered by specificity (most specific first)
+_ERROR_PATTERNS = [
+    re.compile(r"(?:FAIL|FAILED|failures?)\b.*", re.IGNORECASE),
+    re.compile(r"Error:.*", re.IGNORECASE),
+    re.compile(r"Traceback \(most recent call last\).*"),
+    re.compile(r"(?:exit code|returncode)[:\s]+\d+", re.IGNORECASE),
+    re.compile(r"Rebase conflict.*", re.IGNORECASE),
+    re.compile(r"Permission denied.*", re.IGNORECASE),
+    re.compile(r"fatal:.*"),
+]
+
+# Lines to ignore even if they match error patterns
+_ERROR_NOISE = re.compile(
+    r"Error:.*max turns|error_context|error handling|"
+    r"error.*test|test.*error|fix.*error|error.*fix",
+    re.IGNORECASE,
+)
+
+
+def extract_error_lines(text: str, max_lines: int = 5) -> list[str]:
+    """Extract lines containing error signals from text.
+
+    Returns up to *max_lines* error-relevant lines, preserving order.
+    """
+    hits = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if _ERROR_NOISE.search(stripped):
+            continue
+        for pattern in _ERROR_PATTERNS:
+            if pattern.search(stripped):
+                hits.append(stripped)
+                break
+        if len(hits) >= max_lines:
+            break
+    return hits
+
+
+def get_failure_context(
+    instance_dir: str, project_name: str, max_chars: int = 300,
+) -> str:
+    """Extract error context from the latest journal entry for a failed mission.
+
+    Scans the most recent journal section for error patterns (stack traces,
+    failure messages, non-zero exit codes) and returns a brief summary
+    suitable for inclusion in Telegram notifications.
+
+    Returns empty string if no error context is found.
+    """
+    from app.journal import get_journal_file
+    instance = Path(instance_dir)
+
+    journal_file = get_journal_file(instance, date.today(), project_name)
+    if not journal_file.exists():
+        return ""
+
+    content = journal_file.read_text().strip()
+    if not content:
+        return ""
+
+    section = extract_latest_section(content)
+    error_lines = extract_error_lines(section)
+    if not error_lines:
+        return ""
+
+    result = "\n".join(error_lines)
+    if len(result) > max_chars:
+        result = result[:max_chars].rsplit("\n", 1)[0]
+        if not result:
+            result = error_lines[0][:max_chars]
+    return result
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 3:
         print("Usage: mission_summary.py <instance_dir> <project_name> [max_chars]", file=sys.stderr)

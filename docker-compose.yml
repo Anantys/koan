@@ -1,0 +1,44 @@
+# Kōan Docker Compose
+#
+# Claude CLI is installed in the image. Auth options:
+#   1. ANTHROPIC_API_KEY in .env (API billing accounts)
+#   2. make docker-auth (subscription — generates OAuth token from host CLI)
+#
+# Run ./setup-docker.sh first — it generates docker-compose.override.yml
+# with workspace mounts and GitHub CLI auth for your system.
+#
+# Usage:
+#   ./setup-docker.sh                        # Auto-detect host setup
+#   make docker-auth                         # Generate OAuth token from host CLI
+#   docker compose up --build                # Full stack (agent + bridge)
+#   docker compose run --rm koan test        # Run test suite
+#   docker compose run --rm koan shell       # Interactive shell
+
+services:
+  koan:
+    build:
+      context: .
+      args:
+        HOST_UID: ${HOST_UID:-1000}
+        HOST_GID: ${HOST_GID:-1000}
+    container_name: koan
+    env_file:
+      - .env
+      - path: .env.docker
+        required: false
+    environment:
+      - KOAN_ROOT=/app
+      - PYTHONPATH=/app/koan
+      - SSH_AUTH_SOCK=/run/ssh-agent.sock
+    volumes:
+      # Instance state — persisted across restarts
+      - ./instance:/app/instance
+      # Isolated mission queue for Docker (overlays instance/ mount)
+      - ./instance/missions.docker.md:/app/instance/missions.md
+      # Logs
+      - ./logs:/app/logs
+    restart: unless-stopped
+    # No ports exposed by default — Telegram/Slack only
+    # Uncomment to expose dashboard:
+    # ports:
+    #   - "5001:5001"

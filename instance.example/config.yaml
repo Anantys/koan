@@ -9,12 +9,40 @@
 # project_path: "/path/to/your/project"
 # pilot_repo: "/path/to/koan"
 
+# Start on pause — boot directly into pause mode
+# When true, Kōan starts paused and waits for an explicit /resume before
+# picking up missions. Useful for scheduled launches (cron, launchd) where
+# you want the stack running but idle until you're ready.
+# Manual pauses (/pause) are preserved; stale system pauses (quota, max_runs)
+# are replaced with a clean start_on_pause reason.
+# The /resume command sets KOAN_SKIP_START_PAUSE=1 internally so auto-restart
+# after resume doesn't immediately re-pause.
+# start_on_pause: false
+
 # Budget & Scheduling
 # These are the primary source of truth for run loop configuration.
 # max_runs_per_day: Maximum runs before auto-pause (resets on /resume or quota reset)
 # interval_seconds: Seconds between runs (how often the loop iterates)
 max_runs_per_day: 20
 interval_seconds: 300
+
+# Startup delay — seconds to wait before the first mission after boot.
+# Gives you time to send /pause before any mission runs.
+# Set to 0 to disable. Skipped automatically if already paused at startup.
+# startup_delay: 30
+
+# Auto-pause — automatically pause after max_runs or idle timeout.
+# When false, Kōan keeps running indefinitely (quota and error pauses still apply).
+# Useful when you have scheduled recurring tasks that must fire reliably.
+# auto_pause: true
+
+# Prompt caching behavior
+# Keep consecutive autonomous runs on the same project to preserve
+# prompt-prefix cache warmth across iterations.
+# 0 = disabled (always avoid repeating last project, legacy behavior)
+# 100 = always stay on the previous project when still eligible
+# prompt_caching:
+#   same_project_stickiness_percent: 30
 
 # Fast reply mode — use lightweight model (Haiku) for command handlers
 # When true, /usage, /sparring, and similar commands use Haiku instead of default model
@@ -25,11 +53,37 @@ fast_reply: false
 # Use `tail -f .koan-debug.log` to watch dispatch decisions, commands, and errors
 # debug: false
 
+# CLI output journal — stream CLI output to the daily journal file in real-time
+# When enabled, mission and contemplative CLI output is appended to the project's
+# journal file as it runs. Use `tail -f instance/journal/YYYY-MM-DD/project.md`
+# to watch the agent work. Set to false to disable.
+# cli_output_journal: true
+
 # Branch prefix — used for all agent-created branches
 # Default is "koan" which creates branches like "koan/fix-something"
 # Change this for multi-bot setups to avoid branch name collisions
 # e.g., "koan-alice" creates branches like "koan-alice/fix-something"
 # branch_prefix: "koan"
+
+# Skill timeout — maximum seconds for heavy skill execution (fix, implement, recreate)
+# These skills invoke Claude with full tool access and can run for a long time.
+# Increase if you see timeouts on complex issues; decrease to save quota.
+# Default: 3600 (60 minutes). Previous default was 900 (15 minutes).
+skill_timeout: 3600
+
+# Skill max turns — maximum agentic turns for heavy skill execution
+# Controls how many back-and-forth turns Claude CLI is allowed during
+# /implement, /fix, and /incident invocations. Complex multi-step plans
+# may need more turns to complete. If you see "Reached max turns (N)"
+# errors, increase this value.
+# Default: 200.
+# skill_max_turns: 200
+
+# Post-mission pipeline timeout — maximum seconds for the steps that run after
+# a mission completes: verification, reflection, PR review learning, auto-merge.
+# Increase if post-mission steps are being cut short; decrease to keep the loop snappy.
+# Default: 300 (5 minutes).
+# post_mission_timeout: 300
 
 # Contemplative mode trigger chance (0-100%)
 # When no mission is pending, this is the probability of running a reflective
@@ -37,6 +91,19 @@ fast_reply: false
 # without waiting for budget exhaustion.
 # 0 = never contemplative, 10 = ~1 in 10 runs, 20 = ~1 in 5 runs
 contemplative_chance: 10
+
+# Notification priority filtering
+# Controls which priority levels are sent to Telegram vs written to the daily journal.
+# Priority levels (highest to lowest): urgent, action, warning, info
+#   urgent  — critical failures, quota exhausted (always sent)
+#   action  — mission complete, command responses (default threshold)
+#   warning — quota low, focus validation warnings
+#   info    — progress updates, reflections
+# Messages below min_priority are suppressed from Telegram and written to the daily
+# journal instead (under a "notifications" project entry), so nothing is lost.
+# Default: "action" (sends urgent + action; suppresses warning + info)
+# notifications:
+#   min_priority: action
 
 # Telegram
 # NOTE: Prefer setting these in .env (KOAN_TELEGRAM_TOKEN, KOAN_TELEGRAM_CHAT_ID)
@@ -73,9 +140,13 @@ tools:
     - Shell: Bash (run git, gh, make, and other commands)
 
 # CLI provider — which AI CLI to use as the backend
-# Options: "claude" (default), "copilot" (GitHub Copilot CLI), "local" (local LLM)
+# Options: "claude" (default), "codex" (OpenAI Codex CLI), "copilot" (GitHub Copilot CLI), "local" (local LLM)
 # Can also be set via KOAN_CLI_PROVIDER env var (overrides this)
 cli_provider: "claude"
+
+# Skip permission prompts — required for MCP tools to work in autonomous mode.
+# Only enable this if you understand the security implications.
+# skip_permissions: false
 
 # Local LLM configuration (used when cli_provider: "local")
 # Connects to any OpenAI-compatible API server:
@@ -111,13 +182,18 @@ git_auto_merge:
       delete_after_merge: true      # Clean up branch after successful merge
 
 # Schedule — control when deep exploration vs mission-only work happens
-# deep_hours: time ranges for deep/contemplative work (higher exploration chance)
+# deep_hours: time ranges for deep/contemplative work (higher exploration chance,
+#              PR limits relaxed so exploration isn't blocked by pending reviews)
 # work_hours: time ranges for mission-only work (exploration suppressed)
 # Format: "START-END" using 24h hours. Wraps around midnight: "22-6".
 # Multiple ranges: "0-6,22-24". Leave empty to disable.
-# Example: deep exploration at night (0-6), missions only during work day (8-20)
+# NOTE: deep_hours and work_hours should NOT overlap. If they do, deep_hours
+# takes priority but work_hours has no effect during the overlap.
+# Recommended: use non-overlapping ranges with a gap for normal behavior.
+# Example: deep exploration at night (0-8), missions during work day (8-20),
+#          normal behavior in the evening (20-24)
 # schedule:
-#   deep_hours: "0-6"
+#   deep_hours: "0-8"
 #   work_hours: "8-20"
 
 # Log rotation — controls backup behavior when processes restart
@@ -138,11 +214,44 @@ usage:
 # Per-project overrides are now configured in projects.yaml.
 # Supported per-project settings:
 #   - git_auto_merge: per-project merge rules
-#   - cli_provider: override AI provider ("claude", "copilot", "local")
+#   - cli_provider: override AI provider ("claude", "codex", "copilot", "local")
 #   - models: override model selection (mission, chat, lightweight, etc.)
 #   - tools: restrict available tools (mission, chat tool lists)
 #   - github: override authorized_users for GitHub @mention commands
 # See projects.example.yaml for documentation and examples.
+
+# Plan review loop — validates generated plans before posting to GitHub
+# A lightweight subagent (Haiku) reviews each plan for missing file paths,
+# TODO placeholders, oversized phases, scope creep, and missing tests.
+# If issues are found, the plan is re-generated with reviewer feedback
+# (up to max_rounds times). Disable if the extra latency is unwanted.
+# plan_review:
+#   enabled: true       # Run review loop after plan generation (default: true)
+#   max_rounds: 3       # Maximum re-generation rounds per plan (default: 3)
+
+# Prompt injection guard — scans incoming missions for suspicious patterns
+# Detects instruction overrides, role confusion, secret extraction, shell injection.
+# Complements outbox_scanner (output defense) with input-side defense.
+# prompt_guard:
+#   enabled: true          # Master switch (default: true)
+#   block_mode: false      # false = warn + quarantine, true = reject mission entirely
+
+# Dashboard — web UI for monitoring and interacting with Kōan
+# When enabled, `make start` / `make stop` / `make restart` also manage
+# the dashboard process. You can always run it standalone with `make dashboard`.
+# dashboard:
+#   enabled: false          # Include dashboard in managed processes (default: false)
+#   port: 5001              # HTTP port (default: 5001)
+
+# Auto-update — automatically keep Kōan up to date
+# When enabled, Kōan periodically checks if upstream has new commits
+# and pulls + restarts automatically. Checks run at startup and every
+# N iterations. A 2-minute cache prevents excessive git fetches.
+# See docs/auto-update.md for full details.
+# auto_update:
+#   enabled: true           # Master switch (default: false)
+#   check_interval: 10      # Check every N iterations (default: 10)
+#   notify: true            # Notify on Telegram before/after update (default: true)
 
 # GitHub notification-driven commands
 # Enable Kōan to respond to @mentions in GitHub PR/issue comments.
@@ -153,3 +262,33 @@ usage:
 #   commands_enabled: false          # Master switch (default: false)
 #   authorized_users: ["*"]          # "*" = all users, or list of GitHub usernames
 #   max_age_hours: 24                # Ignore notifications older than this (default: 24)
+#   check_interval_seconds: 60       # Base polling interval (default: 60, min: 10)
+#   max_check_interval_seconds: 180  # Backoff cap when idle (default: 180, min: 30)
+#   reply_enabled: false             # AI replies to non-command @mentions (default: false)
+#                                    # When enabled, the bot replies to questions/requests
+#                                    # from authorized users with contextual AI-generated answers.
+#   reply_authorized_users: ["*"]    # Who can trigger AI replies (default: uses authorized_users)
+#                                    # Separate from command permissions — allows broader audience
+#                                    # for read-only replies. ["*"] = anyone (no permission check).
+#                                    # Omit to fall back to authorized_users. Set [] to disable.
+#                                    # Per-project override available in projects.yaml.
+#   reply_rate_limit: 5              # Max AI replies per user per hour (default: 5, min: 1)
+#                                    # Prevents API quota abuse when replies are open broadly.
+#   natural_language: false           # NLP intent parsing for @mentions (default: false)
+#                                    # When enabled, unrecognized commands are sent to Claude
+#                                    # for intent classification before falling back to error.
+#                                    # Per-project override available in projects.yaml.
+
+# Review concurrency — parallel GitHub API calls during code reviews
+# When enabled, PR context and comment fetching run concurrently using a
+# ThreadPoolExecutor. The LLM call (Claude CLI) is always sequential.
+# review_concurrency:
+#   enabled: true           # Enable parallel GitHub API fetches (default: true)
+#   github_workers: 4       # Max concurrent GitHub API calls (default: 4)
+
+# Dashboard attention zone — GitHub @mention notifications
+# When true, the dashboard attention zone also shows unread GitHub @mention
+# notifications (reason: mention or review_requested). Requires github_url
+# to be set in projects.yaml and the gh CLI to be authenticated.
+# Default: false (avoids GitHub API calls for users who haven't configured it).
+# attention_github_notifications: false

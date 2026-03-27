@@ -18,12 +18,19 @@ import sys
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from app.claude_step import _run_git, run_claude_step
-from app.github import pr_create, run_gh
-from app.rebase_pr import (
+from app.claude_step import (
+    _build_pr_prompt,
     _get_current_branch,
-    _is_permission_error,
+    _get_diffstat,
+    _push_with_pr_fallback,
+    _run_git,
     _safe_checkout,
+    run_claude_step,
+    run_project_tests,
+)
+from app.github import run_gh
+from app.prompts import load_prompt, load_skill_prompt  # noqa: F401 — safety import
+from app.rebase_pr import (
     build_comment_summary,
     fetch_pr_context,
 )
@@ -109,7 +116,7 @@ def run_recreate(
         # Delete local branch if it exists (we're recreating from scratch)
         try:
             _run_git(["git", "branch", "-D", work_branch], cwd=project_path)
-        except Exception:
+        except (RuntimeError, OSError):
             pass  # Branch doesn't exist locally, that's fine
 
         _run_git(
@@ -153,9 +160,14 @@ def run_recreate(
 
     # -- Step 4: Run tests ----------------------------------------------------
     notify_fn("Running tests...")
-    test_result = _run_tests(project_path)
-    if test_result:
-        actions_log.append(test_result)
+    test_result = run_project_tests(project_path)
+    if test_result["passed"]:
+        actions_log.append(f"Tests pass ({test_result['details']})")
+    elif test_result["details"] != "command not found":
+        actions_log.append(f"Tests: {test_result['details']} (non-blocking)")
+
+    # -- Step 4b: Collect diffstat before push ---------------------------------
+    diffstat = _get_diffstat(f"{upstream_remote}/{base}", project_path)
 
     # -- Step 5: Push the result -----------------------------------------------
     notify_fn(f"Pushing `{work_branch}`...")
@@ -176,6 +188,7 @@ def run_recreate(
     comment_body = _build_recreate_comment(
         pr_number, work_branch, base, actions_log, context,
         new_pr_url=push_result.get("new_pr_url"),
+        diffstat=diffstat,
     )
 
     try:
@@ -203,46 +216,25 @@ def run_recreate(
 # ---------------------------------------------------------------------------
 
 def _fetch_upstream_target(base: str, project_path: str) -> Optional[str]:
-    """Fetch the target branch from origin or upstream.
+    """Fetch the target branch from upstream or origin.
+
+    Prefers upstream (source-of-truth in fork setups) over origin
+    to ensure the freshest base when recreating a PR from scratch.
 
     Returns the remote name used, or None on failure.
     """
-    for remote in ("origin", "upstream"):
+    for remote in ("upstream", "origin"):
         try:
             _run_git(["git", "fetch", remote, base], cwd=project_path)
             return remote
-        except Exception:
+        except (RuntimeError, OSError):
             continue
     return None
 
 
 def _build_recreate_prompt(context: dict, skill_dir: Optional[Path] = None) -> str:
     """Build a prompt for Claude to reimplement the feature from scratch."""
-    if skill_dir is not None:
-        from app.prompts import load_skill_prompt
-        return load_skill_prompt(
-            skill_dir, "recreate",
-            TITLE=context["title"],
-            BODY=context.get("body", ""),
-            BRANCH=context["branch"],
-            BASE=context["base"],
-            DIFF=context.get("diff", ""),
-            REVIEW_COMMENTS=context.get("review_comments", ""),
-            REVIEWS=context.get("reviews", ""),
-            ISSUE_COMMENTS=context.get("issue_comments", ""),
-        )
-    from app.prompts import load_prompt
-    return load_prompt(
-        "recreate",
-        TITLE=context["title"],
-        BODY=context.get("body", ""),
-        BRANCH=context["branch"],
-        BASE=context["base"],
-        DIFF=context.get("diff", ""),
-        REVIEW_COMMENTS=context.get("review_comments", ""),
-        REVIEWS=context.get("reviews", ""),
-        ISSUE_COMMENTS=context.get("issue_comments", ""),
-    )
+    return _build_pr_prompt("recreate", context, skill_dir=skill_dir)
 
 
 def _reimpl_feature(
@@ -256,6 +248,7 @@ def _reimpl_feature(
 
     Returns True if the step produced a commit, False otherwise.
     """
+    from app.config import get_skill_timeout
     prompt = _build_recreate_prompt(context, skill_dir=skill_dir)
     return run_claude_step(
         prompt=prompt,
@@ -265,7 +258,7 @@ def _reimpl_feature(
         failure_label="Feature reimplementation step failed",
         actions_log=actions_log,
         max_turns=30,
-        timeout=900,
+        timeout=get_skill_timeout(),
     )
 
 
@@ -285,39 +278,9 @@ def _has_commits_on_branch(
             )
             if log.strip():
                 return True
-        except Exception:
+        except (RuntimeError, OSError):
             continue
     return False
-
-
-def _run_tests(project_path: str) -> Optional[str]:
-    """Run the project test suite, return summary or None."""
-    import subprocess
-    try:
-        result = subprocess.run(
-            ["make", "test"],
-            stdin=subprocess.DEVNULL,
-            capture_output=True, text=True,
-            timeout=300, cwd=project_path,
-        )
-        if result.returncode == 0:
-            # Extract test count from output
-            output = result.stdout + result.stderr
-            passed_match = re.search(r'(\d+)\s+passed', output)
-            if passed_match:
-                return f"Tests pass ({passed_match.group(1)} passed)"
-            return "Tests pass"
-        else:
-            # Extract failure info
-            output = result.stdout + result.stderr
-            failed_match = re.search(r'(\d+)\s+failed', output)
-            if failed_match:
-                return f"Tests: {failed_match.group(1)} failures (non-blocking)"
-            return "Tests: some failures (non-blocking)"
-    except subprocess.TimeoutExpired:
-        return "Tests: timeout (non-blocking)"
-    except FileNotFoundError:
-        return None  # No Makefile or make not available
 
 
 def _push_recreated(
@@ -328,102 +291,11 @@ def _push_recreated(
     context: dict,
     project_path: str,
 ) -> dict:
-    """Push recreated branch, falling back to new draft PR if permission denied.
-
-    Returns:
-        dict with keys: success (bool), actions (list), error (str),
-        new_pr_url (optional str).
-    """
-    actions = []
-
-    # Option 1: Try force-pushing to the existing branch
-    try:
-        _run_git(
-            ["git", "push", "origin", branch, "--force-with-lease"],
-            cwd=project_path,
-        )
-        actions.append(f"Force-pushed `{branch}` (recreated from scratch)")
-        return {"success": True, "actions": actions, "error": ""}
-    except Exception as push_error:
-        error_msg = str(push_error)
-
-    # Option 2: Permission denied -- create a new draft PR
-    if not _is_permission_error(error_msg):
-        return {
-            "success": False,
-            "actions": actions,
-            "error": error_msg,
-        }
-
-    # Create new branch and draft PR
-    from app.config import get_branch_prefix
-    prefix = get_branch_prefix()
-    new_branch = f"{prefix}recreate-{branch.replace('/', '-')}"
-    try:
-        _run_git(
-            ["git", "checkout", "-b", new_branch],
-            cwd=project_path,
-        )
-        _run_git(
-            ["git", "push", "-u", "origin", new_branch],
-            cwd=project_path,
-        )
-        actions.append(
-            f"Created new branch `{new_branch}` (no push permission on `{branch}`)"
-        )
-
-        # Create draft PR
-        title = context.get("title", f"Recreate of #{pr_number}")
-        new_pr_body = (
-            f"Supersedes #{pr_number}.\n\n"
-            f"This PR contains a fresh reimplementation of the original feature, "
-            f"built on top of current `{base}`.\n\n"
-            f"The original branch had diverged too far for a clean rebase, so the "
-            f"feature was recreated from scratch based on the original PR's intent.\n\n"
-            f"Original PR: {context.get('url', f'#{pr_number}')}\n\n"
-            f"---\n_Automated by Kōan_"
-        )
-        new_pr_url = pr_create(
-            title=f"[Recreate] {title}",
-            body=new_pr_body,
-            draft=True,
-            base=base,
-            repo=full_repo,
-            head=new_branch,
-        )
-        actions.append(f"Created draft PR: {new_pr_url.strip()}")
-
-        # Cross-link on the original PR
-        new_pr_match = re.search(r'/pull/(\d+)', new_pr_url)
-        new_pr_ref = new_pr_match.group(0) if new_pr_match else new_pr_url.strip()
-
-        try:
-            run_gh(
-                "pr", "comment", pr_number,
-                "--repo", full_repo,
-                "--body",
-                f"This PR has been recreated from scratch and superseded by {new_pr_ref}.\n\n"
-                f"The original branch had diverged too far for a clean rebase. "
-                f"The new PR contains a fresh reimplementation on current `{base}`.\n\n"
-                f"---\n_Automated by Kōan_",
-            )
-            actions.append("Cross-linked original PR")
-        except Exception as e:
-            print(f"[recreate_pr] Cross-link comment failed: {e}", file=sys.stderr)
-
-        return {
-            "success": True,
-            "actions": actions,
-            "error": "",
-            "new_pr_url": new_pr_url.strip(),
-        }
-
-    except Exception as e:
-        return {
-            "success": False,
-            "actions": actions,
-            "error": f"Failed to create fallback PR: {e}",
-        }
+    """Push recreated branch, falling back to new draft PR if permission denied."""
+    return _push_with_pr_fallback(
+        branch, base, full_repo, pr_number, context, project_path,
+        pr_type="recreate",
+    )
 
 
 def _build_recreate_comment(
@@ -433,33 +305,52 @@ def _build_recreate_comment(
     actions_log: List[str],
     context: dict,
     new_pr_url: Optional[str] = None,
+    diffstat: str = "",
 ) -> str:
     """Build a markdown comment summarizing the recreation."""
     title = context.get("title", f"PR #{pr_number}")
 
+    # Filter out mechanical steps for cleaner output
+    meaningful_actions = [
+        a for a in actions_log
+        if not a.startswith(f"Read PR #{pr_number}:")
+        and not a.startswith("Read PR comments")
+        and not a.startswith("Commented on")
+    ]
     actions_md = "\n".join(
-        f"- {a}" for a in actions_log
-    ) if actions_log else "- No changes needed"
+        f"- {a}" for a in meaningful_actions
+    ) if meaningful_actions else "- Reimplemented from scratch"
 
-    comment = (
-        f"## Recreated: {title}\n\n"
-        f"The original branch `{branch}` had diverged too far from `{base}` "
-        f"for a clean rebase. The feature has been **reimplemented from scratch** "
-        f"on top of current `{base}`.\n\n"
+    parts = [f"## Recreated: {title}\n"]
+    parts.append(
+        f"Branch `{branch}` diverged too far from `{base}` for a clean rebase — "
+        f"reimplemented from scratch.\n"
     )
 
     if new_pr_url:
-        comment += f"New PR: {new_pr_url}\n\n"
+        parts.append(f"**New PR**: {new_pr_url}\n")
     else:
-        comment += f"Branch `{branch}` has been force-pushed with the recreation.\n\n"
+        parts.append(f"Branch `{branch}` force-pushed with the recreation.\n")
 
-    comment += (
-        f"### Actions\n\n"
-        f"{actions_md}\n\n"
-        f"---\n"
-        f"_Automated by Kōan_"
-    )
-    return comment
+    if diffstat:
+        parts.append(f"**Diff**: {diffstat}\n")
+
+    # Extract test result from actions for prominent display
+    test_actions = [a for a in actions_log if a.startswith("Tests")]
+    if test_actions:
+        parts.append(f"**{test_actions[0]}**\n")
+        # Remove from actions_md to avoid duplication
+        meaningful_actions = [
+            a for a in meaningful_actions if not a.startswith("Tests")
+        ]
+        actions_md = "\n".join(
+            f"- {a}" for a in meaningful_actions
+        ) if meaningful_actions else "- Reimplemented from scratch"
+
+    parts.append(f"### Actions\n\n{actions_md}\n")
+    parts.append("---\n_Automated by Kōan_")
+
+    return "\n".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -474,7 +365,7 @@ def main(argv=None):
     import argparse
     import sys
 
-    from app.pr_review import parse_pr_url as _parse_url
+    from app.github_url_parser import parse_pr_url as _parse_url
 
     parser = argparse.ArgumentParser(
         description="Recreate a GitHub PR from scratch on current upstream."

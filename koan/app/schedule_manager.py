@@ -183,7 +183,7 @@ def get_schedule_config() -> Tuple[str, str]:
         deep = str(schedule.get("deep_hours", ""))
         work = str(schedule.get("work_hours", ""))
         return deep, work
-    except Exception:
+    except (ImportError, OSError, ValueError):
         return "", ""
 
 
@@ -220,6 +220,23 @@ def adjust_contemplative_chance(base_chance: int, schedule: ScheduleState) -> in
     return base_chance
 
 
+def should_relax_pr_limit(schedule: ScheduleState) -> bool:
+    """Check if PR limits should be relaxed for exploration.
+
+    During deep_hours, the agent should be free to explore even when
+    projects are at their PR limit — it can work in review mode
+    (read-only: audit code, find bugs, write reports) without creating
+    new PRs.
+
+    Args:
+        schedule: Current schedule state.
+
+    Returns:
+        True if PR limits should be relaxed (deep_hours active).
+    """
+    return schedule.in_deep_hours
+
+
 def should_suppress_exploration(schedule: ScheduleState) -> bool:
     """Check if autonomous exploration should be suppressed.
 
@@ -233,6 +250,24 @@ def should_suppress_exploration(schedule: ScheduleState) -> bool:
         True if exploration should be suppressed.
     """
     return schedule.in_work_hours
+
+
+def is_scheduled_active(schedule: Optional[ScheduleState] = None) -> bool:
+    """Check if a schedule window (deep_hours or work_hours) is currently active.
+
+    Used to prevent idle auto-pause during scheduled hours. When the human
+    configures deep_hours or work_hours, the agent should respect those
+    windows and stay active — not give up after an idle timeout.
+
+    Args:
+        schedule: Current schedule state (fetched if not provided).
+
+    Returns:
+        True if currently in deep_hours or work_hours.
+    """
+    if schedule is None:
+        schedule = get_current_schedule()
+    return schedule.in_deep_hours or schedule.in_work_hours
 
 
 def cap_mode_for_schedule(

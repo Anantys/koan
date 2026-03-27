@@ -21,13 +21,15 @@ Your job is to read the original plan and all discussion comments, understand th
    - Current state of the code (it may have changed since the original plan)
    - Related patterns and conventions
 
-3. **Produce the updated plan**: Write a complete, consolidated plan that:
+3. **Reconsider approach**: If comments suggest a different direction, briefly reconsider whether the chosen approach is still the best one. Update the "Alternatives Considered" section if new options were raised.
+
+4. **Produce the updated plan**: Write a complete, consolidated plan that:
    - Addresses every question and suggestion from the comments
    - Notes which suggestions were accepted and which were declined (with reasoning)
    - Updates implementation steps based on new information
    - Keeps the phased structure so work can be done incrementally
 
-4. **Summarize changes**: Start with a brief "Changes in this iteration" section listing what changed and why.
+5. **Summarize changes**: Start with a brief "Changes in this iteration" section listing what changed and why.
 
 ## Output Format
 
@@ -47,9 +49,12 @@ Bulleted list of what changed since the previous version and why. Reference spec
 
 One paragraph explaining what this plan achieves and why it matters.
 
-### Open Questions
+### Alternatives Considered
 
-Bulleted list of remaining questions or decisions that need human input. If none, write "None — ready to implement."
+List 2-3 approaches that were evaluated, with the chosen one marked. Update if comments raised new alternatives. If only one reasonable approach exists, state why briefly.
+
+- **Approach A (chosen)**: Description. *Trade-off: ...*
+- **Approach B**: Description. *Trade-off: ...*
 
 ### Implementation Phases
 
@@ -79,6 +84,10 @@ How to verify the implementation works correctly.
 ### Risks & Alternatives
 
 Any risks with this approach and alternative approaches considered.
+
+### Open Questions
+
+Bulleted list of remaining questions or decisions that need human input. If none, write "None — ready to implement."
 
 Keep the plan actionable and specific to this codebase. Reference actual file paths and function names.
 Do NOT include any preamble or commentary outside the plan structure — just the title line followed by the plan body.

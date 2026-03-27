@@ -10,6 +10,7 @@ from app.claudemd_refresh import (
     _git_log_since,
     _git_diff_stat_since,
     _git_log_full,
+    _has_changes,
     build_git_context,
     run_refresh,
     main,
@@ -200,51 +201,71 @@ class TestBuildGitContext:
 class TestRunRefresh:
     """Tests for run_refresh().
 
-    Lazy imports inside run_refresh() mean we must patch at source:
-    - app.claude_step.run_claude
-    - app.cli_provider.build_full_command
-    - app.prompts.load_skill_prompt
-    - app.utils.get_model_config
+    run_refresh now creates a branch, invokes Claude, commits/pushes,
+    and creates a draft PR.  We mock all git and GitHub operations.
     """
 
-    def _patches(self, git_ctx="abc Commit", claude_result=None, prompt="prompt",
-                 models=None, cmd=None):
-        """Return a list of context managers for standard patches."""
-        if claude_result is None:
-            claude_result = {"success": True, "output": "OK", "error": ""}
-        if models is None:
-            models = {"mission": "", "fallback": ""}
-        if cmd is None:
-            cmd = ["claude"]
-        return [
-            patch("app.claudemd_refresh.build_git_context", return_value=git_ctx),
-            patch("app.claude_step.run_claude", return_value=claude_result),
-            patch("app.cli_provider.build_full_command", return_value=cmd),
-            patch("app.prompts.load_skill_prompt", return_value=prompt),
-            patch("app.utils.get_model_config", return_value=models),
-        ]
-
-    def test_success_returns_zero(self, tmp_path):
-        project = tmp_path / "project"
-        project.mkdir()
-        (project / "CLAUDE.md").write_text("# Project\n")
-
-        patches = self._patches(git_ctx="abc Commit 1")
-        with patches[0], patches[1], patches[2], patches[3], patches[4]:
-            result = run_refresh(str(project), "test")
-            assert result == 0
-
-    def test_failure_returns_one(self, tmp_path):
-        project = tmp_path / "project"
-        project.mkdir()
-        (project / "CLAUDE.md").write_text("# Project\n")
-
-        patches = self._patches(
-            claude_result={"success": False, "output": "", "error": "timeout"},
+    @pytest.fixture(autouse=True)
+    def _common_patches(self):
+        """Patches shared by all run_refresh tests."""
+        self._mock_run_claude = MagicMock(
+            return_value={"success": True, "output": "OK", "error": ""},
         )
-        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+        self._mock_build_cmd = MagicMock(return_value=["claude"])
+        self._mock_prompt = MagicMock(return_value="prompt")
+        self._mock_models = MagicMock(
+            return_value={"mission": "", "fallback": ""},
+        )
+        self._mock_branch_prefix = MagicMock(return_value="koan/")
+        self._mock_git_strict = MagicMock(return_value="main")
+        self._mock_has_changes = MagicMock(return_value=True)
+        self._mock_pr_create = MagicMock(
+            return_value="https://github.com/o/r/pull/42",
+        )
+
+        with patch("app.claude_step.run_claude", self._mock_run_claude), \
+             patch("app.cli_provider.build_full_command", self._mock_build_cmd), \
+             patch("app.claudemd_refresh.load_skill_prompt", self._mock_prompt), \
+             patch("app.config.get_model_config", self._mock_models), \
+             patch("app.config.get_branch_prefix", self._mock_branch_prefix), \
+             patch("app.claudemd_refresh.run_git_strict", self._mock_git_strict), \
+             patch("app.claudemd_refresh._has_changes", self._mock_has_changes), \
+             patch("app.github.pr_create", self._mock_pr_create):
+            yield
+
+    def test_success_creates_branch_and_pr(self, tmp_path):
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "CLAUDE.md").write_text("# Project\n")
+
+        with patch("app.claudemd_refresh.build_git_context", return_value="abc Commit"):
             result = run_refresh(str(project), "test")
-            assert result == 1
+
+        assert result == 0
+        # Branch was created
+        branch_calls = [c for c in self._mock_git_strict.call_args_list
+                        if c[0][0] == "checkout" and "-b" in c[0]]
+        assert len(branch_calls) == 1
+        assert "koan/update-claudemd-test" in branch_calls[0][0]
+        # PR was created
+        self._mock_pr_create.assert_called_once()
+
+    def test_failure_returns_to_base_branch(self, tmp_path):
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "CLAUDE.md").write_text("# Project\n")
+        self._mock_run_claude.return_value = {
+            "success": False, "output": "", "error": "timeout",
+        }
+
+        with patch("app.claudemd_refresh.build_git_context", return_value="abc Commit"):
+            result = run_refresh(str(project), "test")
+
+        assert result == 1
+        # Returns to base branch on failure
+        checkout_calls = [c for c in self._mock_git_strict.call_args_list
+                          if c[0] == ("checkout", "main")]
+        assert len(checkout_calls) >= 1
 
     def test_no_changes_needed_returns_zero(self, tmp_path):
         project = tmp_path / "project"
@@ -252,81 +273,130 @@ class TestRunRefresh:
         (project / "CLAUDE.md").write_text("# Project\n")
 
         with patch("app.claudemd_refresh.build_git_context",
-                    return_value="CLAUDE.md was last updated: 2026-02-07\n\nNo new commits since then. CLAUDE.md is up to date."):
+                    return_value="No new commits since then. CLAUDE.md is up to date."):
             result = run_refresh(str(project), "test")
-            assert result == 0
+
+        assert result == 0
+        # No branch created when nothing to do
+        self._mock_pr_create.assert_not_called()
+
+    def test_no_file_changes_skips_pr(self, tmp_path):
+        """Claude decided no changes needed — no commit/PR."""
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "CLAUDE.md").write_text("# Project\n")
+        self._mock_has_changes.return_value = False
+
+        with patch("app.claudemd_refresh.build_git_context", return_value="abc Commit"):
+            result = run_refresh(str(project), "test")
+
+        assert result == 0
+        self._mock_pr_create.assert_not_called()
 
     def test_init_mode_when_no_claudemd(self, tmp_path):
         project = tmp_path / "project"
         project.mkdir()
-        # No CLAUDE.md file
 
-        patches = self._patches(git_ctx="No CLAUDE.md exists")
-        with patches[0], patches[1], patches[2], patches[3], \
-             patch("app.prompts.load_skill_prompt", return_value="prompt") as mock_prompt, \
-             patches[4]:
-            result = run_refresh(str(project), "test")
-            assert result == 0
-            prompt_call = mock_prompt.call_args
-            assert prompt_call[1]["MODE"] == "INIT"
+        with patch("app.claudemd_refresh.build_git_context", return_value="No CLAUDE.md"):
+            run_refresh(str(project), "test")
+
+        prompt_call = self._mock_prompt.call_args
+        assert prompt_call[1]["MODE"] == "INIT"
 
     def test_update_mode_when_claudemd_exists(self, tmp_path):
         project = tmp_path / "project"
         project.mkdir()
         (project / "CLAUDE.md").write_text("# Existing\n")
 
-        with patch("app.claudemd_refresh.build_git_context", return_value="abc Commits"), \
-             patch("app.claude_step.run_claude", return_value={"success": True, "output": "Updated", "error": ""}), \
-             patch("app.cli_provider.build_full_command", return_value=["claude"]), \
-             patch("app.prompts.load_skill_prompt", return_value="prompt") as mock_prompt, \
-             patch("app.utils.get_model_config", return_value={"mission": "", "fallback": ""}):
-            result = run_refresh(str(project), "test")
-            assert result == 0
-            prompt_call = mock_prompt.call_args
-            assert prompt_call[1]["MODE"] == "UPDATE"
+        with patch("app.claudemd_refresh.build_git_context", return_value="abc Commits"):
+            run_refresh(str(project), "test")
+
+        prompt_call = self._mock_prompt.call_args
+        assert prompt_call[1]["MODE"] == "UPDATE"
 
     def test_allowed_tools_include_edit(self, tmp_path):
         project = tmp_path / "project"
         project.mkdir()
         (project / "CLAUDE.md").write_text("# Project\n")
 
-        with patch("app.claudemd_refresh.build_git_context", return_value="abc Commit"), \
-             patch("app.claude_step.run_claude", return_value={"success": True, "output": "OK", "error": ""}), \
-             patch("app.cli_provider.build_full_command", return_value=["claude"]) as mock_cmd, \
-             patch("app.prompts.load_skill_prompt", return_value="prompt"), \
-             patch("app.utils.get_model_config", return_value={"mission": "", "fallback": ""}):
+        with patch("app.claudemd_refresh.build_git_context", return_value="abc Commit"):
             run_refresh(str(project), "test")
-            tools = mock_cmd.call_args[1]["allowed_tools"]
-            assert "Edit" in tools
-            assert "Read" in tools
-            assert "Write" in tools
-            assert "Bash" in tools
+
+        tools = self._mock_build_cmd.call_args[1]["allowed_tools"]
+        assert "Edit" in tools
+        assert "Read" in tools
+        assert "Write" in tools
+        assert "Bash" in tools
 
     def test_project_name_in_prompt(self, tmp_path):
         project = tmp_path / "project"
         project.mkdir()
         (project / "CLAUDE.md").write_text("# Project\n")
 
-        with patch("app.claudemd_refresh.build_git_context", return_value="abc Commit"), \
-             patch("app.claude_step.run_claude", return_value={"success": True, "output": "OK", "error": ""}), \
-             patch("app.cli_provider.build_full_command", return_value=["claude"]), \
-             patch("app.prompts.load_skill_prompt", return_value="prompt") as mock_prompt, \
-             patch("app.utils.get_model_config", return_value={"mission": "", "fallback": ""}):
+        with patch("app.claudemd_refresh.build_git_context", return_value="abc Commit"):
             run_refresh(str(project), "myproject")
-            assert mock_prompt.call_args[1]["PROJECT_NAME"] == "myproject"
+
+        assert self._mock_prompt.call_args[1]["PROJECT_NAME"] == "myproject"
 
     def test_max_turns_set(self, tmp_path):
         project = tmp_path / "project"
         project.mkdir()
         (project / "CLAUDE.md").write_text("# Project\n")
 
-        with patch("app.claudemd_refresh.build_git_context", return_value="abc Commit"), \
-             patch("app.claude_step.run_claude", return_value={"success": True, "output": "OK", "error": ""}), \
-             patch("app.cli_provider.build_full_command", return_value=["claude"]) as mock_cmd, \
-             patch("app.prompts.load_skill_prompt", return_value="prompt"), \
-             patch("app.utils.get_model_config", return_value={"mission": "", "fallback": ""}):
+        with patch("app.claudemd_refresh.build_git_context", return_value="abc Commit"):
             run_refresh(str(project), "test")
-            assert mock_cmd.call_args[1]["max_turns"] == 10
+
+        assert self._mock_build_cmd.call_args[1]["max_turns"] == 10
+
+    def test_commit_stages_only_claudemd(self, tmp_path):
+        """Commit should stage CLAUDE.md specifically, not git add -A."""
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "CLAUDE.md").write_text("# Project\n")
+
+        with patch("app.claudemd_refresh.build_git_context", return_value="abc Commit"):
+            run_refresh(str(project), "test")
+
+        add_calls = [c for c in self._mock_git_strict.call_args_list
+                     if c[0][0] == "add"]
+        assert len(add_calls) == 1
+        assert add_calls[0][0] == ("add", "CLAUDE.md")
+
+    def test_pr_title_for_init_mode(self, tmp_path):
+        project = tmp_path / "project"
+        project.mkdir()
+        # No CLAUDE.md — INIT mode
+
+        with patch("app.claudemd_refresh.build_git_context", return_value="No CLAUDE.md"):
+            run_refresh(str(project), "myproj")
+
+        pr_kwargs = self._mock_pr_create.call_args[1]
+        assert "create" in pr_kwargs["title"].lower()
+        assert pr_kwargs["draft"] is True
+
+    def test_pr_title_for_update_mode(self, tmp_path):
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "CLAUDE.md").write_text("# Existing\n")
+
+        with patch("app.claudemd_refresh.build_git_context", return_value="abc Commit"):
+            run_refresh(str(project), "myproj")
+
+        pr_kwargs = self._mock_pr_create.call_args[1]
+        assert "update" in pr_kwargs["title"].lower()
+
+    def test_returns_to_base_branch_after_success(self, tmp_path):
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "CLAUDE.md").write_text("# Project\n")
+
+        with patch("app.claudemd_refresh.build_git_context", return_value="abc Commit"):
+            run_refresh(str(project), "test")
+
+        # Last checkout should be back to base branch
+        checkout_main = [c for c in self._mock_git_strict.call_args_list
+                         if c[0] == ("checkout", "main")]
+        assert len(checkout_main) >= 1
 
 
 # ---------------------------------------------------------------------------

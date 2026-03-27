@@ -1,0 +1,39 @@
+# Runtime state (user-specific, mounted at runtime)
+instance/
+.koan*
+.last-review-sha
+.coverage
+logs/
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Environment & secrets
+.env
+.env.*
+.envrc
+
+# OS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Git
+.git/
+
+# Test cache
+.pytest_cache/
+
+# Docker (don't copy into build context)
+docker-compose.override.yml
+.env.docker
+claude-auth/
+
+# Workspace (mounted at runtime, not copied)
+workspace/

@@ -9,12 +9,17 @@ Config schema in config.yaml:
       commands_enabled: true
       authorized_users: ["*"]
       max_age_hours: 24
+      reply_enabled: false
+      reply_authorized_users: ["*"]   # separate from command permissions
+      reply_rate_limit: 5             # max replies per user per hour
+      check_interval_seconds: 60
 
 Per-project override in projects.yaml:
     projects:
       myproject:
         github:
           authorized_users: ["alice", "bob"]
+          reply_authorized_users: ["*"]
 """
 
 from typing import List, Optional
@@ -58,6 +63,77 @@ def get_github_authorized_users(config: dict, project_name: Optional[str] = None
     return users if isinstance(users, list) else []
 
 
+def get_github_natural_language(config: dict, project_name: Optional[str] = None,
+                                projects_config: Optional[dict] = None) -> bool:
+    """Check if natural-language intent parsing is enabled for GitHub @mentions.
+
+    When enabled, unrecognized commands are sent to Claude for intent
+    classification before falling back to error/reply paths.
+
+    Checks per-project override first (via projects.yaml), then falls back
+    to global config.yaml setting.  Default: False.
+    """
+    # Check per-project override first
+    if project_name and projects_config:
+        from app.projects_config import get_project_github_natural_language
+        project_value = get_project_github_natural_language(projects_config, project_name)
+        if project_value is not None:
+            return project_value
+
+    # Fall back to global config.yaml
+    github = config.get("github") or {}
+    return bool(github.get("natural_language", False))
+
+
+def get_github_reply_authorized_users(config: dict, project_name: Optional[str] = None,
+                                       projects_config: Optional[dict] = None) -> Optional[List[str]]:
+    """Get the list of users authorized to receive AI replies.
+
+    Separate from command authorized_users — allows broader audience for
+    read-only replies while keeping command permissions restricted.
+
+    Returns a list of usernames or ["*"] if explicitly configured.
+    Returns None if not configured (caller should fall back to authorized_users).
+    """
+    # Check per-project override first
+    if project_name and projects_config:
+        from app.projects_config import get_project_github_reply_authorized_users
+        project_users = get_project_github_reply_authorized_users(projects_config, project_name)
+        if project_users is not None:
+            return project_users
+
+    # Fall back to global config.yaml
+    github = config.get("github") or {}
+    users = github.get("reply_authorized_users")
+    if users is None:
+        return None
+    return users if isinstance(users, list) else None
+
+
+def get_github_reply_rate_limit(config: dict) -> int:
+    """Get the max number of AI replies per user per hour.
+
+    Prevents API quota abuse when replies are open to a broad audience.
+    Default: 5. Floor: 1.
+    """
+    github = config.get("github") or {}
+    try:
+        val = int(github.get("reply_rate_limit", 5))
+        return max(1, val)
+    except (ValueError, TypeError):
+        return 5
+
+
+def get_github_reply_enabled(config: dict) -> bool:
+    """Check if AI-powered replies to non-command @mentions are enabled.
+
+    When enabled, the bot will generate contextual replies to questions
+    from authorized users, rather than only responding to known commands.
+    """
+    github = config.get("github") or {}
+    return bool(github.get("reply_enabled", False))
+
+
 def get_github_max_age_hours(config: dict) -> int:
     """Get max age in hours for processing notifications.
 
@@ -69,6 +145,57 @@ def get_github_max_age_hours(config: dict) -> int:
         return int(github.get("max_age_hours", 24))
     except (ValueError, TypeError):
         return 24
+
+
+def get_github_check_interval(config: dict) -> int:
+    """Get the minimum interval in seconds between notification checks.
+
+    Controls throttling of GitHub API calls for notification polling.
+    Default: 60 seconds.
+    """
+    github = config.get("github") or {}
+    try:
+        val = int(github.get("check_interval_seconds", 60))
+        return max(10, val)  # Floor at 10s to prevent API abuse
+    except (ValueError, TypeError):
+        return 60
+
+
+def get_github_max_check_interval(config: dict) -> int:
+    """Get the maximum backoff interval in seconds for notification checks.
+
+    When consecutive checks find no notifications, the interval grows
+    exponentially up to this cap.  Default: 180 seconds (3 minutes).
+    """
+    github = config.get("github") or {}
+    try:
+        val = int(github.get("max_check_interval_seconds", 180))
+        return max(30, val)  # Floor at 30s — below that backoff is pointless
+    except (ValueError, TypeError):
+        return 180
+
+
+def get_github_subscribe_enabled(config: dict) -> bool:
+    """Check if thread subscription monitoring is enabled.
+
+    When enabled, Kōan monitors GitHub threads for new comments and
+    queues /reply missions for actionable ones.
+    """
+    github = config.get("github") or {}
+    return bool(github.get("subscribe_enabled", False))
+
+
+def get_github_subscribe_max_per_cycle(config: dict) -> int:
+    """Max subscription notifications to process per polling cycle.
+
+    Prevents excessive API usage when many threads are active.
+    Default: 5.
+    """
+    github = config.get("github") or {}
+    try:
+        return max(1, int(github.get("subscribe_max_per_cycle", 5)))
+    except (ValueError, TypeError):
+        return 5
 
 
 def validate_github_config(config: dict) -> Optional[str]:

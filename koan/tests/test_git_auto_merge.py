@@ -1,5 +1,7 @@
 """Tests for git_auto_merge.py — automatic branch merging."""
 
+import os
+import sys
 import pytest
 from unittest.mock import patch, MagicMock
 from pathlib import Path
@@ -81,7 +83,8 @@ class TestGetAutoMergeConfig:
         assert result["strategy"] == "merge"  # Overridden via projects.yaml
         assert result["enabled"] is True  # Inherited from defaults
 
-    def test_missing_config_section(self):
+    @patch("app.projects_config.load_projects_config", return_value=None)
+    def test_missing_config_section(self, mock_projects):
         """When git_auto_merge section missing, return safe defaults."""
         config = {}
         result = get_auto_merge_config(config, "koan")
@@ -343,7 +346,8 @@ class TestGetAuthorEnv:
 # --- Integration Tests ---
 
 class TestIntegration:
-    def test_full_config_resolution_global_only(self):
+    @patch("app.projects_config.load_projects_config", return_value=None)
+    def test_full_config_resolution_global_only(self, mock_projects):
         """Test full config resolution uses global config.yaml settings."""
         config = {
             "git_auto_merge": {
@@ -594,8 +598,8 @@ class TestPerformMerge:
             assert ok is False
             assert "pull" in err.lower()
 
-    def test_push_failure(self):
-        """Push failure after successful merge."""
+    def test_push_failure_resets_to_origin(self):
+        """Push failure after successful merge resets local to origin state."""
         calls = [
             (0, "", ""),   # git log
             (0, "", ""),   # checkout
@@ -603,12 +607,58 @@ class TestPerformMerge:
             (0, "", ""),   # merge --squash
             (0, "", ""),   # commit
             (1, "", "rejected"),  # push fails
+            (0, "", ""),   # reset --hard origin/main
             (0, "", ""),   # checkout main (finally)
         ]
-        with self._mock_git(calls):
+        with self._mock_git(calls) as mock:
             ok, err = perform_merge("/tmp", "koan/fix", "main", "squash")
             assert ok is False
             assert "push" in err.lower()
+            # reset --hard origin/main is call index 6 (after push at index 5)
+            reset_call = mock.call_args_list[6]
+            assert "reset" in str(reset_call)
+            assert "--hard" in str(reset_call)
+            assert "origin/main" in str(reset_call)
+
+    def test_push_failure_rebase_resets_to_origin(self):
+        """Push failure after successful rebase+ff-merge resets local to origin."""
+        calls = [
+            (0, "", ""),   # git log
+            (0, "", ""),   # checkout
+            (0, "", ""),   # pull
+            (0, "", ""),   # rebase ok
+            (0, "", ""),   # checkout main
+            (0, "", ""),   # merge --ff-only
+            (1, "", "rejected"),  # push fails
+            (0, "", ""),   # reset --hard origin/main
+            (0, "", ""),   # checkout main (finally)
+        ]
+        with self._mock_git(calls) as mock:
+            ok, err = perform_merge("/tmp", "koan/fix", "main", "rebase")
+            assert ok is False
+            assert "push" in err.lower()
+            reset_call = mock.call_args_list[7]
+            assert "reset" in str(reset_call)
+            assert "origin/main" in str(reset_call)
+
+    def test_push_failure_noff_resets_to_origin(self):
+        """Push failure after successful --no-ff merge resets local to origin."""
+        calls = [
+            (0, "", ""),   # git log
+            (0, "", ""),   # checkout
+            (0, "", ""),   # pull
+            (0, "", ""),   # merge --no-ff
+            (1, "", "rejected"),  # push fails
+            (0, "", ""),   # reset --hard origin/main
+            (0, "", ""),   # checkout main (finally)
+        ]
+        with self._mock_git(calls) as mock:
+            ok, err = perform_merge("/tmp", "koan/fix", "main", "merge")
+            assert ok is False
+            assert "push" in err.lower()
+            reset_call = mock.call_args_list[5]
+            assert "reset" in str(reset_call)
+            assert "origin/main" in str(reset_call)
 
     def test_rebase_ff_merge_failure(self):
         """After successful rebase, ff-merge fails."""
@@ -755,6 +805,11 @@ class TestJournalWriters:
 # --- auto_merge_branch (orchestrator) ---
 
 class TestAutoMergeBranch:
+    """Tests for module-level auto_merge_branch (delegates to GitAutoMerger).
+
+    These tests use patch.object on GitAutoMerger since module-level functions
+    now delegate to the class. Tests verify the delegation works correctly.
+    """
     def _base_config(self):
         return {
             "git_auto_merge": {
@@ -765,11 +820,11 @@ class TestAutoMergeBranch:
             }
         }
 
-    @patch("app.git_auto_merge.cleanup_local_branch", return_value=True)
-    @patch("app.git_auto_merge.write_merge_success_to_journal")
-    @patch("app.git_auto_merge.perform_merge", return_value=(True, ""))
-    @patch("app.git_auto_merge.is_branch_pushed", return_value=True)
-    @patch("app.git_auto_merge.is_working_tree_clean", return_value=True)
+    @patch.object(GitAutoMerger, "cleanup_local_branch", return_value=True)
+    @patch.object(GitAutoMerger, "write_merge_success_to_journal")
+    @patch.object(GitAutoMerger, "perform_merge", return_value=(True, ""))
+    @patch.object(GitAutoMerger, "is_branch_pushed", return_value=True)
+    @patch.object(GitAutoMerger, "is_working_tree_clean", return_value=True)
     @patch("app.git_auto_merge.get_auto_merge_config")
     @patch("app.git_auto_merge.load_config")
     def test_success_flow(self, mock_load, mock_cfg, mock_clean, mock_pushed, mock_merge, mock_journal, mock_local_cleanup):
@@ -781,8 +836,8 @@ class TestAutoMergeBranch:
         }
         result = auto_merge_branch("/inst", "koan", "/proj", "koan/fix")
         assert result == 0
-        mock_merge.assert_called_once_with("/proj", "koan/fix", "main", "squash")
-        mock_local_cleanup.assert_called_once_with("/proj", "koan/fix")  # Always delete local
+        mock_merge.assert_called_once_with("koan/fix", "main", "squash")
+        mock_local_cleanup.assert_called_once_with("koan/fix")
         mock_journal.assert_called_once()
 
     @patch("app.git_auto_merge.get_auto_merge_config")
@@ -794,8 +849,8 @@ class TestAutoMergeBranch:
         result = auto_merge_branch("/inst", "koan", "/proj", "koan/fix")
         assert result == 0
 
-    @patch("app.git_auto_merge.write_merge_failure_to_journal")
-    @patch("app.git_auto_merge.is_working_tree_clean", return_value=False)
+    @patch.object(GitAutoMerger, "write_merge_failure_to_journal")
+    @patch.object(GitAutoMerger, "is_working_tree_clean", return_value=False)
     @patch("app.git_auto_merge.get_auto_merge_config")
     @patch("app.git_auto_merge.load_config")
     def test_dirty_tree(self, mock_load, mock_cfg, mock_clean, mock_journal):
@@ -808,11 +863,11 @@ class TestAutoMergeBranch:
         result = auto_merge_branch("/inst", "koan", "/proj", "koan/fix")
         assert result == 1
         mock_journal.assert_called_once()
-        assert "uncommitted" in mock_journal.call_args[0][3].lower()
+        assert "uncommitted" in mock_journal.call_args[0][1].lower()
 
-    @patch("app.git_auto_merge.write_merge_failure_to_journal")
-    @patch("app.git_auto_merge.is_branch_pushed", return_value=False)
-    @patch("app.git_auto_merge.is_working_tree_clean", return_value=True)
+    @patch.object(GitAutoMerger, "write_merge_failure_to_journal")
+    @patch.object(GitAutoMerger, "is_branch_pushed", return_value=False)
+    @patch.object(GitAutoMerger, "is_working_tree_clean", return_value=True)
     @patch("app.git_auto_merge.get_auto_merge_config")
     @patch("app.git_auto_merge.load_config")
     def test_not_pushed(self, mock_load, mock_cfg, mock_clean, mock_pushed, mock_journal):
@@ -825,14 +880,14 @@ class TestAutoMergeBranch:
         result = auto_merge_branch("/inst", "koan", "/proj", "koan/fix")
         assert result == 1
         mock_journal.assert_called_once()
-        assert "not pushed" in mock_journal.call_args[0][3].lower()
+        assert "not pushed" in mock_journal.call_args[0][1].lower()
 
-    @patch("app.git_auto_merge.cleanup_remote_branch", return_value=True)
-    @patch("app.git_auto_merge.cleanup_local_branch", return_value=True)
-    @patch("app.git_auto_merge.write_merge_success_to_journal")
-    @patch("app.git_auto_merge.perform_merge", return_value=(True, ""))
-    @patch("app.git_auto_merge.is_branch_pushed", return_value=True)
-    @patch("app.git_auto_merge.is_working_tree_clean", return_value=True)
+    @patch.object(GitAutoMerger, "cleanup_remote_branch", return_value=True)
+    @patch.object(GitAutoMerger, "cleanup_local_branch", return_value=True)
+    @patch.object(GitAutoMerger, "write_merge_success_to_journal")
+    @patch.object(GitAutoMerger, "perform_merge", return_value=(True, ""))
+    @patch.object(GitAutoMerger, "is_branch_pushed", return_value=True)
+    @patch.object(GitAutoMerger, "is_working_tree_clean", return_value=True)
     @patch("app.git_auto_merge.get_auto_merge_config")
     @patch("app.git_auto_merge.load_config")
     def test_delete_after_merge(self, mock_load, mock_cfg, mock_clean, mock_pushed, mock_merge, mock_journal, mock_local_cleanup, mock_remote_cleanup):
@@ -844,15 +899,15 @@ class TestAutoMergeBranch:
         }
         result = auto_merge_branch("/inst", "koan", "/proj", "koan/fix")
         assert result == 0
-        mock_local_cleanup.assert_called_once_with("/proj", "koan/fix")  # Always
-        mock_remote_cleanup.assert_called_once_with("/proj", "koan/fix")  # When configured
+        mock_local_cleanup.assert_called_once_with("koan/fix")
+        mock_remote_cleanup.assert_called_once_with("koan/fix")
 
-    @patch("app.git_auto_merge.cleanup_remote_branch")
-    @patch("app.git_auto_merge.cleanup_local_branch", return_value=True)
-    @patch("app.git_auto_merge.write_merge_success_to_journal")
-    @patch("app.git_auto_merge.perform_merge", return_value=(True, ""))
-    @patch("app.git_auto_merge.is_branch_pushed", return_value=True)
-    @patch("app.git_auto_merge.is_working_tree_clean", return_value=True)
+    @patch.object(GitAutoMerger, "cleanup_remote_branch")
+    @patch.object(GitAutoMerger, "cleanup_local_branch", return_value=True)
+    @patch.object(GitAutoMerger, "write_merge_success_to_journal")
+    @patch.object(GitAutoMerger, "perform_merge", return_value=(True, ""))
+    @patch.object(GitAutoMerger, "is_branch_pushed", return_value=True)
+    @patch.object(GitAutoMerger, "is_working_tree_clean", return_value=True)
     @patch("app.git_auto_merge.get_auto_merge_config")
     @patch("app.git_auto_merge.load_config")
     def test_no_remote_delete_without_config(self, mock_load, mock_cfg, mock_clean, mock_pushed, mock_merge, mock_journal, mock_local_cleanup, mock_remote_cleanup):
@@ -864,13 +919,13 @@ class TestAutoMergeBranch:
         }
         result = auto_merge_branch("/inst", "koan", "/proj", "koan/fix")
         assert result == 0
-        mock_local_cleanup.assert_called_once_with("/proj", "koan/fix")  # Always delete local
-        mock_remote_cleanup.assert_not_called()  # Remote NOT deleted
+        mock_local_cleanup.assert_called_once_with("koan/fix")
+        mock_remote_cleanup.assert_not_called()
 
-    @patch("app.git_auto_merge.write_merge_failure_to_journal")
-    @patch("app.git_auto_merge.perform_merge", return_value=(False, "Merge conflict"))
-    @patch("app.git_auto_merge.is_branch_pushed", return_value=True)
-    @patch("app.git_auto_merge.is_working_tree_clean", return_value=True)
+    @patch.object(GitAutoMerger, "write_merge_failure_to_journal")
+    @patch.object(GitAutoMerger, "perform_merge", return_value=(False, "Merge conflict"))
+    @patch.object(GitAutoMerger, "is_branch_pushed", return_value=True)
+    @patch.object(GitAutoMerger, "is_working_tree_clean", return_value=True)
     @patch("app.git_auto_merge.get_auto_merge_config")
     @patch("app.git_auto_merge.load_config")
     def test_merge_failure(self, mock_load, mock_cfg, mock_clean, mock_pushed, mock_merge, mock_journal):
@@ -1149,3 +1204,126 @@ class TestHelperFunctions:
         monkeypatch.delenv("KOAN_EMAIL", raising=False)
         env = get_author_env()
         assert env == {}
+
+
+class TestModuleLevelDelegation:
+    """Verify module-level functions correctly delegate to GitAutoMerger."""
+
+    @patch("app.git_auto_merge.run_git", return_value=(0, "", ""))
+    def test_is_working_tree_clean_delegates(self, mock_git):
+        """Module-level is_working_tree_clean delegates to class."""
+        result = is_working_tree_clean("/proj")
+        assert result is True
+        mock_git.assert_called_once_with("/proj", "status", "--porcelain")
+
+    @patch("app.git_auto_merge.run_git", return_value=(0, "abc\trefs/heads/koan/fix", ""))
+    def test_is_branch_pushed_delegates(self, mock_git):
+        """Module-level is_branch_pushed delegates to class."""
+        result = is_branch_pushed("/proj", "koan/fix")
+        assert result is True
+
+    @patch("app.git_auto_merge.run_git", return_value=(0, "", ""))
+    def test_cleanup_local_branch_delegates(self, mock_git):
+        """Module-level cleanup_local_branch delegates to class."""
+        result = cleanup_local_branch("/proj", "koan/fix")
+        assert result is True
+
+    @patch("app.git_auto_merge.run_git", return_value=(0, "", ""))
+    def test_cleanup_remote_branch_delegates(self, mock_git):
+        """Module-level cleanup_remote_branch delegates to class."""
+        result = cleanup_remote_branch("/proj", "koan/fix")
+        assert result is True
+
+    @patch("app.git_auto_merge.run_git", return_value=(0, "", ""))
+    def test_cleanup_branch_delegates(self, mock_git):
+        """Module-level cleanup_branch delegates to class."""
+        result = cleanup_branch("/proj", "koan/fix")
+        assert result is True
+
+    def test_write_merge_success_delegates(self, tmp_path):
+        """Module-level write_merge_success_to_journal delegates to class."""
+        inst = str(tmp_path)
+        write_merge_success_to_journal(inst, "koan", "koan/fix", "main", "squash")
+        from datetime import datetime
+        journal_file = tmp_path / "journal" / datetime.now().strftime("%Y-%m-%d") / "koan.md"
+        assert journal_file.exists()
+        assert "koan/fix" in journal_file.read_text()
+
+    def test_write_merge_failure_delegates(self, tmp_path):
+        """Module-level write_merge_failure_to_journal delegates to class."""
+        inst = str(tmp_path)
+        write_merge_failure_to_journal(inst, "koan", "koan/fix", "conflict")
+        from datetime import datetime
+        journal_file = tmp_path / "journal" / datetime.now().strftime("%Y-%m-%d") / "koan.md"
+        assert journal_file.exists()
+        assert "conflict" in journal_file.read_text()
+
+
+class TestSquashCommitFailureCleanup:
+    """Verify squash commit failure resets working tree."""
+
+    @patch("app.git_auto_merge.run_git")
+    def test_squash_commit_failure_resets_hard(self, mock_git):
+        """When squash commit fails, git reset --hard is called to clean up."""
+        mock_git.side_effect = [
+            (0, "fix stuff", ""),  # git log
+            (0, "", ""),           # checkout base
+            (0, "", ""),           # pull
+            (0, "", ""),           # merge --squash (succeeds)
+            (1, "", "commit failed"),  # commit fails
+            (0, "", ""),           # reset --hard (cleanup)
+            (0, "", ""),           # checkout base (finally)
+        ]
+        merger = GitAutoMerger("/inst", "koan", "/proj")
+        success, error = merger.perform_merge("koan/fix", "main", "squash")
+        assert success is False
+        assert "commit" in error.lower()
+        # Verify reset --hard was called (6th call, index 5)
+        reset_call = mock_git.call_args_list[5]
+        assert "reset" in reset_call[0]
+        assert "--hard" in reset_call[0]
+
+
+# ---------------------------------------------------------------------------
+# CLI __main__ interface
+# ---------------------------------------------------------------------------
+
+class TestCLIMainBlock:
+    """Test the CLI interface via runpy."""
+
+    def test_no_args_exits_1(self):
+        """CLI with insufficient arguments exits 1."""
+        import sys
+        from unittest.mock import patch
+        from tests._helpers import run_module
+
+        with patch.object(sys, "argv", ["git_auto_merge"]):
+            with pytest.raises(SystemExit) as exc_info:
+                run_module("app.git_auto_merge", run_name="__main__")
+            assert exc_info.value.code == 1
+
+    def test_too_few_args_exits_1(self):
+        """CLI with 3 args (needs 4) exits 1."""
+        import sys
+        from unittest.mock import patch
+        from tests._helpers import run_module
+
+        with patch.object(sys, "argv", ["git_auto_merge", "/inst", "proj", "/path"]):
+            with pytest.raises(SystemExit) as exc_info:
+                run_module("app.git_auto_merge", run_name="__main__")
+            assert exc_info.value.code == 1
+
+    def test_calls_auto_merge_branch(self, tmp_path):
+        """CLI with 4 args creates merger and calls auto_merge_branch."""
+        import subprocess
+        result = subprocess.run(
+            [sys.executable, "-m", "app.git_auto_merge",
+             str(tmp_path), "testproj", str(tmp_path), "koan/fake-branch"],
+            capture_output=True, text=True, timeout=10,
+            cwd=str(Path(__file__).resolve().parent.parent),
+            env={**os.environ, "KOAN_ROOT": str(tmp_path)},
+        )
+        # Should run without crashing (may fail gracefully since no git config)
+        # The key test: arg parsing works and it reaches the merger logic
+        assert "Usage:" not in result.stdout
+        assert result.returncode in (0, 1)  # 0=success or 1=merge not configured

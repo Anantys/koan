@@ -1,6 +1,7 @@
 ---
 name: check
 scope: core
+group: code
 description: Queue a check mission for a GitHub PR or Issue (rebase, review, plan)
 version: 2.0.0
 audience: hybrid

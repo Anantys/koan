@@ -21,22 +21,26 @@ import sys
 import time
 from pathlib import Path
 
-RESTART_FILE = ".koan-restart"
+from app.signals import RESTART_FILE
 RESTART_EXIT_CODE = 42
 
 
-def request_restart(koan_root: Path) -> None:
+def request_restart(koan_root: str) -> None:
     """Create the restart signal file.
 
     Both processes check for this file:
     - run.py: at loop start, exits with code 42
     - awake.py: in main loop, triggers os.execv()
     """
-    restart_file = koan_root / RESTART_FILE
-    restart_file.write_text(f"restart requested at {time.strftime('%H:%M:%S')}\n")
+    from app.utils import atomic_write
+
+    atomic_write(
+        Path(koan_root) / RESTART_FILE,
+        f"restart requested at {time.strftime('%H:%M:%S')}\n",
+    )
 
 
-def check_restart(koan_root: Path, since: float = 0) -> bool:
+def check_restart(koan_root: str, since: float = 0) -> bool:
     """Check if a restart has been requested.
 
     Args:
@@ -46,17 +50,24 @@ def check_restart(koan_root: Path, since: float = 0) -> bool:
                from a previous process incarnation (prevents restart loops
                when Telegram re-delivers the /restart message).
     """
-    restart_file = koan_root / RESTART_FILE
-    if not restart_file.exists():
+    restart_file = os.path.join(koan_root, RESTART_FILE)
+    if not os.path.isfile(restart_file):
         return False
-    if since > 0 and restart_file.stat().st_mtime <= since:
+    try:
+        if since > 0 and os.path.getmtime(restart_file) <= since:
+            return False
+    except OSError:
         return False
     return True
 
 
-def clear_restart(koan_root: Path) -> None:
+def clear_restart(koan_root: str) -> None:
     """Remove the restart signal file."""
-    (koan_root / RESTART_FILE).unlink(missing_ok=True)
+    path = os.path.join(koan_root, RESTART_FILE)
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
 
 
 def reexec_bridge() -> None:

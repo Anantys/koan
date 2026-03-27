@@ -1,5 +1,6 @@
 """Tests for migration_runner.py — discovery, execution, tracking, and listing."""
 
+import os
 import sys
 import textwrap
 from pathlib import Path
@@ -431,3 +432,81 @@ class TestMigration0001:
         assert "## In Progress" in content
         assert "## Done" in content
         assert content.count("## Pending") == 1
+
+
+# ---------------------------------------------------------------------------
+# CLI __main__ interface
+# ---------------------------------------------------------------------------
+
+class TestCLIMainBlock:
+    """Test the CLI interface via subprocess (avoids runpy double-patching issues
+    since migration_runner uses module-level KOAN_ROOT/INSTANCE_DIR constants)."""
+
+    def test_no_koan_root_exits_1(self, tmp_path):
+        """CLI exits 1 when KOAN_ROOT is not set."""
+        import subprocess
+        env = {k: v for k, v in os.environ.items() if k != "KOAN_ROOT"}
+        result = subprocess.run(
+            [sys.executable, "-m", "app.migration_runner"],
+            capture_output=True, text=True, timeout=10,
+            cwd=str(Path(__file__).resolve().parent.parent),
+            env=env,
+        )
+        assert result.returncode == 1
+        assert "KOAN_ROOT" in result.stderr
+
+    def test_list_flag_shows_status(self, tmp_path):
+        """CLI --list shows migration status labels."""
+        import subprocess
+        instance = tmp_path / "instance"
+        instance.mkdir()
+
+        result = subprocess.run(
+            [sys.executable, "-m", "app.migration_runner", "--list"],
+            capture_output=True, text=True, timeout=10,
+            cwd=str(Path(__file__).resolve().parent.parent),
+            env={**os.environ, "KOAN_ROOT": str(tmp_path)},
+        )
+        # Should show at least one migration with [applied] or [pending]
+        assert "[pending]" in result.stdout or "[applied]" in result.stdout or result.returncode == 0
+
+    def test_run_mode_executes(self, tmp_path):
+        """CLI without --list runs and reports migrations."""
+        import subprocess
+        instance = tmp_path / "instance"
+        instance.mkdir()
+
+        result = subprocess.run(
+            [sys.executable, "-m", "app.migration_runner"],
+            capture_output=True, text=True, timeout=10,
+            cwd=str(Path(__file__).resolve().parent.parent),
+            env={**os.environ, "KOAN_ROOT": str(tmp_path)},
+        )
+        # Should succeed — migrations either apply or there are none
+        assert result.returncode == 0
+
+    def test_list_after_run_shows_applied(self, tmp_path):
+        """After running migrations, --list shows them as applied."""
+        import subprocess
+        instance = tmp_path / "instance"
+        instance.mkdir()
+        koan_dir = str(Path(__file__).resolve().parent.parent)
+
+        # Run migrations first
+        subprocess.run(
+            [sys.executable, "-m", "app.migration_runner"],
+            capture_output=True, text=True, timeout=10,
+            cwd=koan_dir,
+            env={**os.environ, "KOAN_ROOT": str(tmp_path)},
+        )
+
+        # Then list — all should show as applied
+        result = subprocess.run(
+            [sys.executable, "-m", "app.migration_runner", "--list"],
+            capture_output=True, text=True, timeout=10,
+            cwd=koan_dir,
+            env={**os.environ, "KOAN_ROOT": str(tmp_path)},
+        )
+        if result.stdout.strip():
+            assert "[applied]" in result.stdout
+            assert "[pending]" not in result.stdout

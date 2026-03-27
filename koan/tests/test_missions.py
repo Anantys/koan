@@ -1,21 +1,43 @@
 """Tests for missions.py — centralized missions.md parser."""
 
 import pytest
+from unittest.mock import patch
+from datetime import datetime
 from app.missions import (
+    cancel_pending_mission,
     classify_section,
     complete_mission,
+    delete_idea,
+    extract_timestamps,
     fail_mission,
-    parse_sections,
+    format_duration,
+    insert_idea,
     insert_mission,
+    list_pending,
+    mission_timing_display,
+    parse_ideas,
+    parse_sections,
     count_pending,
     extract_next_pending,
     extract_project_tag,
+    extract_tdd_tag,
     extract_now_flag,
     group_by_project,
     find_section_boundaries,
     normalize_content,
+    promote_all_ideas,
+    promote_idea,
+    quarantine_mission,
+    QUARANTINE_MAX_BYTES,
     reorder_mission,
+    requeue_mission,
+    sanitize_mission_text,
+    stamp_queued,
+    stamp_started,
     start_mission,
+    strip_timestamps,
+    prune_done_section,
+    _enforce_quarantine_cap,
     _flush_in_progress_to_done,
     DEFAULT_SKELETON,
 )
@@ -623,6 +645,35 @@ class TestSubHeaderProjectGrouping:
         block = "### projet:anantys-back\n- Task"
         assert extract_project_tag(block) == "anantys-back"
 
+    # --- extract_tdd_tag ---
+
+    def test_tdd_tag_present(self):
+        """extract_tdd_tag should detect [tdd] tag."""
+        assert extract_tdd_tag("- [tdd] Add user validation") is True
+
+    def test_tdd_tag_absent(self):
+        """extract_tdd_tag should return False when no [tdd] tag."""
+        assert extract_tdd_tag("- Add user validation") is False
+
+    def test_tdd_tag_case_insensitive(self):
+        """extract_tdd_tag should be case-insensitive."""
+        assert extract_tdd_tag("- [TDD] Add tests") is True
+        assert extract_tdd_tag("- [Tdd] Add tests") is True
+
+    def test_tdd_tag_with_project_tag(self):
+        """extract_tdd_tag should work alongside [project:name] tag."""
+        assert extract_tdd_tag("- [tdd] [project:koan] Fix bug") is True
+        assert extract_tdd_tag("- [project:koan] [tdd] Fix bug") is True
+
+    def test_tdd_tag_does_not_match_partial(self):
+        """extract_tdd_tag should not match partial words like [tddd]."""
+        assert extract_tdd_tag("- [tddd] Not a match") is False
+
+    def test_tdd_tag_in_multiline_block(self):
+        """extract_tdd_tag should detect tag in multi-line mission text."""
+        block = "- [tdd] Build feature\n  with detailed spec"
+        assert extract_tdd_tag(block) is True
+
     def test_group_by_project_with_subheaders(self):
         """group_by_project should correctly assign missions under ### sub-headers."""
         content = (
@@ -842,6 +893,87 @@ class TestReorderMission:
 
 
 # ---------------------------------------------------------------------------
+# edit_pending_mission
+# ---------------------------------------------------------------------------
+
+class TestEditPendingMission:
+    SAMPLE = (
+        "## Pending\n\n"
+        "- first task ⏳(2026-03-13T10:00)\n"
+        "- [project:koan] second task\n"
+        "- third task\n\n"
+        "## In Progress\n\n"
+        "## Done\n"
+    )
+
+    def test_edit_simple(self):
+        from app.missions import edit_pending_mission
+        new_content, display = edit_pending_mission(self.SAMPLE, 3, "updated task")
+        assert "- updated task" in new_content
+        assert "third task" not in new_content
+
+    def test_edit_preserves_timestamp(self):
+        from app.missions import edit_pending_mission
+        new_content, _ = edit_pending_mission(self.SAMPLE, 1, "renamed first")
+        assert "⏳(2026-03-13T10:00)" in new_content
+        assert "- renamed first" in new_content
+
+    def test_edit_strips_leading_dash(self):
+        from app.missions import edit_pending_mission
+        new_content, _ = edit_pending_mission(self.SAMPLE, 3, "- new text")
+        assert "- new text" in new_content
+        # Should not have double "- - "
+        assert "- - " not in new_content
+
+    def test_edit_invalid_position(self):
+        from app.missions import edit_pending_mission
+        with pytest.raises(ValueError, match="Invalid position"):
+            edit_pending_mission(self.SAMPLE, 5, "text")
+
+    def test_edit_zero_position(self):
+        from app.missions import edit_pending_mission
+        with pytest.raises(ValueError, match="Invalid position"):
+            edit_pending_mission(self.SAMPLE, 0, "text")
+
+    def test_edit_empty_text(self):
+        from app.missions import edit_pending_mission
+        with pytest.raises(ValueError, match="empty"):
+            edit_pending_mission(self.SAMPLE, 1, "")
+
+    def test_edit_whitespace_only_text(self):
+        from app.missions import edit_pending_mission
+        with pytest.raises(ValueError, match="empty"):
+            edit_pending_mission(self.SAMPLE, 1, "   ")
+
+    def test_edit_no_pending_section(self):
+        from app.missions import edit_pending_mission
+        content = "## In Progress\n\n- working\n\n## Done\n"
+        with pytest.raises(ValueError, match="No pending section"):
+            edit_pending_mission(content, 1, "text")
+
+    def test_edit_empty_pending(self):
+        from app.missions import edit_pending_mission
+        content = "## Pending\n\n## In Progress\n\n## Done\n"
+        with pytest.raises(ValueError, match="No pending missions"):
+            edit_pending_mission(content, 1, "text")
+
+    def test_edit_multiline_replaces_all(self):
+        """Editing a multi-line mission replaces all lines with the new single line."""
+        from app.missions import edit_pending_mission
+        content = (
+            "## Pending\n\n"
+            "- multi task\n"
+            "  continuation line\n"
+            "- other task\n\n"
+            "## Done\n"
+        )
+        new_content, _ = edit_pending_mission(content, 1, "simple replacement")
+        assert "continuation line" not in new_content
+        assert "- simple replacement" in new_content
+        assert "- other task" in new_content
+
+
+# ---------------------------------------------------------------------------
 # extract_now_flag
 # ---------------------------------------------------------------------------
 
@@ -895,6 +1027,40 @@ class TestExtractNowFlag:
         urgent, text = extract_now_flag("--nowhere fix bug")
         assert urgent is False
         assert text == "--nowhere fix bug"
+
+    def test_em_dash_variant_at_start(self):
+        """Mobile keyboards auto-correct -- to em dash (\u2014)."""
+        urgent, text = extract_now_flag("\u2014now fix the login bug")
+        assert urgent is True
+        assert text == "fix the login bug"
+
+    def test_em_dash_variant_in_middle(self):
+        urgent, text = extract_now_flag("fix \u2014now the login bug")
+        assert urgent is True
+        assert text == "fix the login bug"
+
+    def test_en_dash_variant_at_start(self):
+        """En dash (\u2013) variant also works."""
+        urgent, text = extract_now_flag("\u2013now fix the login bug")
+        assert urgent is True
+        assert text == "fix the login bug"
+
+    def test_em_dash_variant_with_project_tag(self):
+        urgent, text = extract_now_flag("\u2014now [project:koan] fix auth")
+        assert urgent is True
+        assert text == "[project:koan] fix auth"
+
+    def test_em_dash_variant_stripped_from_text(self):
+        urgent, text = extract_now_flag("\u2014now deploy hotfix")
+        assert urgent is True
+        assert "\u2014now" not in text
+        assert "--now" not in text
+        assert text == "deploy hotfix"
+
+    def test_em_dash_only_flag(self):
+        urgent, text = extract_now_flag("\u2014now")
+        assert urgent is True
+        assert text == ""
 
 
 # ---------------------------------------------------------------------------
@@ -1156,6 +1322,68 @@ class TestFailMission:
         sections = parse_sections(result)
         assert len(sections["pending"]) == 0
         assert len(sections["failed"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# requeue_mission — move from In Progress back to Pending
+# ---------------------------------------------------------------------------
+
+class TestRequeueMission:
+    def test_basic_requeue(self):
+        content = (
+            "## Pending\n\n"
+            "## In Progress\n\n"
+            "- Fix login bug\n"
+        )
+        result = requeue_mission(content, "Fix login bug")
+        sections = parse_sections(result)
+        assert len(sections["in_progress"]) == 0
+        assert len(sections["pending"]) == 1
+        assert "Fix login bug" in sections["pending"][0]
+
+    def test_requeue_strips_started_timestamp(self):
+        content = (
+            "## Pending\n\n"
+            "## In Progress\n\n"
+            "- Fix login bug ▶(2026-03-26T22:00)\n"
+        )
+        result = requeue_mission(content, "Fix login bug")
+        sections = parse_sections(result)
+        assert len(sections["pending"]) == 1
+        assert "▶" not in sections["pending"][0]
+        assert "Fix login bug" in sections["pending"][0]
+
+    def test_requeue_preserves_project_tag(self):
+        content = (
+            "## Pending\n\n"
+            "## In Progress\n\n"
+            "- [project:koan] Fix login bug ▶(2026-03-26T22:00)\n"
+        )
+        result = requeue_mission(content, "Fix login bug")
+        sections = parse_sections(result)
+        assert len(sections["pending"]) == 1
+        assert "[project:koan]" in sections["pending"][0]
+
+    def test_requeue_not_found_returns_unchanged(self):
+        content = (
+            "## Pending\n\n"
+            "## In Progress\n\n"
+            "- Some other mission\n"
+        )
+        result = requeue_mission(content, "Fix login bug")
+        assert result == normalize_content(content)
+
+    def test_requeue_with_existing_pending(self):
+        content = (
+            "## Pending\n\n"
+            "- Existing task\n\n"
+            "## In Progress\n\n"
+            "- Fix login bug ▶(2026-03-26T22:00)\n"
+        )
+        result = requeue_mission(content, "Fix login bug")
+        sections = parse_sections(result)
+        assert len(sections["pending"]) == 2
+        assert len(sections["in_progress"]) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -1907,3 +2135,708 @@ class TestStartMissionSanityEnforcement:
         done_text = "\n".join(sections["done"])
         assert "Alpha" in done_text
         assert "Beta" in done_text
+
+
+# --- stamp_queued / stamp_started ---
+
+class TestStampQueued:
+    def test_appends_queued_marker(self):
+        result = stamp_queued("Fix the bug")
+        assert result.startswith("Fix the bug ⏳(")
+        assert "T" in result  # ISO format
+
+    def test_preserves_existing_text(self):
+        result = stamp_queued("[project:koan] Do something")
+        assert result.startswith("[project:koan] Do something ⏳(")
+
+
+class TestStampStarted:
+    def test_appends_started_marker(self):
+        result = stamp_started("Fix the bug")
+        assert result.startswith("Fix the bug ▶(")
+
+    def test_preserves_existing_text(self):
+        result = stamp_started("Fix it ⏳(2026-02-18T10:00)")
+        assert "⏳(2026-02-18T10:00)" in result
+        assert "▶(" in result
+
+
+# --- extract_timestamps ---
+
+class TestExtractTimestamps:
+    def test_all_timestamps_present(self):
+        text = "Fix bug ⏳(2026-02-18T10:00) ▶(2026-02-18T10:05) ✅ (2026-02-18 10:15)"
+        ts = extract_timestamps(text)
+        assert ts["queued"] == datetime(2026, 2, 18, 10, 0)
+        assert ts["started"] == datetime(2026, 2, 18, 10, 5)
+        assert ts["completed"] == datetime(2026, 2, 18, 10, 15)
+
+    def test_only_queued(self):
+        ts = extract_timestamps("Fix bug ⏳(2026-02-18T10:00)")
+        assert ts["queued"] == datetime(2026, 2, 18, 10, 0)
+        assert ts["started"] is None
+        assert ts["completed"] is None
+
+    def test_no_timestamps(self):
+        ts = extract_timestamps("Fix the bug")
+        assert ts["queued"] is None
+        assert ts["started"] is None
+        assert ts["completed"] is None
+
+    def test_failed_marker(self):
+        ts = extract_timestamps("Fix bug ❌ (2026-02-18 10:15)")
+        assert ts["completed"] == datetime(2026, 2, 18, 10, 15)
+
+    def test_queued_and_started(self):
+        text = "Do thing ⏳(2026-01-15T08:30) ▶(2026-01-15T09:00)"
+        ts = extract_timestamps(text)
+        assert ts["queued"] == datetime(2026, 1, 15, 8, 30)
+        assert ts["started"] == datetime(2026, 1, 15, 9, 0)
+        assert ts["completed"] is None
+
+
+# --- format_duration ---
+
+class TestFormatDuration:
+    def test_less_than_minute(self):
+        assert format_duration(30) == "< 1m"
+
+    def test_zero(self):
+        assert format_duration(0) == "< 1m"
+
+    def test_negative(self):
+        assert format_duration(-10) == "< 1m"
+
+    def test_exact_minutes(self):
+        assert format_duration(300) == "5m"
+
+    def test_exact_hour(self):
+        assert format_duration(3600) == "1h"
+
+    def test_hours_and_minutes(self):
+        assert format_duration(5400) == "1h 30m"
+
+    def test_multiple_hours(self):
+        assert format_duration(10800) == "3h"
+
+    def test_just_over_hour(self):
+        assert format_duration(3660) == "1h 1m"
+
+
+# --- mission_timing_display ---
+
+class TestMissionTimingDisplay:
+    def test_completed_with_start_and_end(self):
+        text = "Fix bug ⏳(2026-02-18T10:00) ▶(2026-02-18T10:05) ✅ (2026-02-18 10:35)"
+        result = mission_timing_display(text)
+        assert "took 30m" in result
+        assert "waited 5m" in result
+
+    def test_completed_no_wait(self):
+        text = "Fix bug ▶(2026-02-18T10:00) ✅ (2026-02-18 10:30)"
+        result = mission_timing_display(text)
+        assert result == "took 30m"
+
+    def test_completed_short_wait_included(self):
+        # Wait of exactly 1 minute (>= 60s) IS shown
+        text = "Fix bug ⏳(2026-02-18T10:04) ▶(2026-02-18T10:05) ✅ (2026-02-18 10:35)"
+        result = mission_timing_display(text)
+        assert "took 30m" in result
+        assert "waited" in result
+
+    def test_in_progress(self):
+        # Use a fixed "now" to avoid flaky tests
+        text = "Fix bug ▶(2026-02-18T10:00)"
+        with patch("app.missions.datetime") as mock_dt:
+            mock_dt.now.return_value = datetime(2026, 2, 18, 10, 15)
+            mock_dt.strptime = datetime.strptime
+            result = mission_timing_display(text)
+        assert result == "running 15m"
+
+    def test_queued_waiting(self):
+        text = "Fix bug ⏳(2026-02-18T10:00)"
+        with patch("app.missions.datetime") as mock_dt:
+            mock_dt.now.return_value = datetime(2026, 2, 18, 10, 30)
+            mock_dt.strptime = datetime.strptime
+            result = mission_timing_display(text)
+        assert result == "waiting 30m"
+
+    def test_no_timestamps(self):
+        assert mission_timing_display("Fix the bug") == ""
+
+    def test_negative_duration_returns_empty(self):
+        # Completed before started (clock issue)
+        text = "Bug ▶(2026-02-18T11:00) ✅ (2026-02-18 10:00)"
+        result = mission_timing_display(text)
+        assert result == ""
+
+
+# --- strip_timestamps ---
+
+class TestStripTimestamps:
+    def test_strips_queued_and_started(self):
+        text = "Fix bug ⏳(2026-02-18T10:00) ▶(2026-02-18T10:05)"
+        result = strip_timestamps(text)
+        assert result == "Fix bug"
+
+    def test_preserves_completion_marker(self):
+        text = "Fix bug ⏳(2026-02-18T10:00) ▶(2026-02-18T10:05) ✅ (2026-02-18 10:30)"
+        result = strip_timestamps(text)
+        assert "✅" in result
+        assert "⏳" not in result
+        assert "▶" not in result
+
+    def test_no_timestamps(self):
+        assert strip_timestamps("Fix the bug") == "Fix the bug"
+
+
+# --- parse_ideas ---
+
+IDEAS_CONTENT = (
+    "# Missions\n\n"
+    "## Ideas\n"
+    "- Build a widget\n"
+    "- Improve performance\n"
+    "  with better caching\n"
+    "- Fix the login page\n\n"
+    "## Pending\n\n"
+    "- Some task\n\n"
+    "## In Progress\n\n"
+    "## Done\n"
+)
+
+
+class TestParseIdeas:
+    def test_basic_ideas(self):
+        ideas = parse_ideas(IDEAS_CONTENT)
+        assert len(ideas) == 3
+        assert ideas[0] == "- Build a widget"
+        assert ideas[2] == "- Fix the login page"
+
+    def test_multiline_idea(self):
+        ideas = parse_ideas(IDEAS_CONTENT)
+        assert "with better caching" in ideas[1]
+
+    def test_no_ideas_section(self):
+        content = "# Missions\n\n## Pending\n\n- Task\n\n## Done\n"
+        assert parse_ideas(content) == []
+
+    def test_empty_ideas_section(self):
+        content = "# Missions\n\n## Ideas\n\n## Pending\n\n## Done\n"
+        assert parse_ideas(content) == []
+
+    def test_ideas_only(self):
+        content = "# Missions\n\n## Ideas\n- One idea\n"
+        ideas = parse_ideas(content)
+        assert len(ideas) == 1
+        assert ideas[0] == "- One idea"
+
+
+# --- insert_idea ---
+
+class TestInsertIdea:
+    def test_insert_into_existing_section(self):
+        result = insert_idea(IDEAS_CONTENT, "- New idea")
+        ideas = parse_ideas(result)
+        assert len(ideas) == 4
+        assert ideas[-1] == "- New idea"
+
+    def test_insert_creates_section_when_missing(self):
+        content = "# Missions\n\n## Pending\n\n## Done\n"
+        result = insert_idea(content, "- First idea")
+        ideas = parse_ideas(result)
+        assert len(ideas) == 1
+        assert ideas[0] == "- First idea"
+
+    def test_insert_into_empty_content(self):
+        result = insert_idea("", "- An idea")
+        ideas = parse_ideas(result)
+        assert len(ideas) == 1
+
+    def test_insert_preserves_other_sections(self):
+        result = insert_idea(IDEAS_CONTENT, "- New idea")
+        sections = parse_sections(result)
+        assert "Some task" in sections["pending"][0]
+
+
+# --- delete_idea ---
+
+class TestDeleteIdea:
+    def test_delete_first_idea(self):
+        updated, deleted = delete_idea(IDEAS_CONTENT, 1)
+        assert deleted == "- Build a widget"
+        ideas = parse_ideas(updated)
+        assert len(ideas) == 2
+        assert "Build a widget" not in "\n".join(ideas)
+
+    def test_delete_last_idea(self):
+        updated, deleted = delete_idea(IDEAS_CONTENT, 3)
+        assert deleted == "- Fix the login page"
+        ideas = parse_ideas(updated)
+        assert len(ideas) == 2
+
+    def test_delete_multiline_idea(self):
+        updated, deleted = delete_idea(IDEAS_CONTENT, 2)
+        assert "Improve performance" in deleted
+        ideas = parse_ideas(updated)
+        assert len(ideas) == 2
+        # Verify the multiline content is gone
+        assert all("caching" not in i for i in ideas)
+
+    def test_delete_out_of_range(self):
+        updated, deleted = delete_idea(IDEAS_CONTENT, 99)
+        assert deleted is None
+        assert updated == IDEAS_CONTENT
+
+    def test_delete_zero_index(self):
+        updated, deleted = delete_idea(IDEAS_CONTENT, 0)
+        assert deleted is None
+
+    def test_delete_preserves_other_sections(self):
+        updated, _ = delete_idea(IDEAS_CONTENT, 1)
+        sections = parse_sections(updated)
+        assert len(sections["pending"]) == 1
+
+
+# --- promote_idea ---
+
+class TestPromoteIdea:
+    def test_promote_moves_to_pending(self):
+        updated, promoted = promote_idea(IDEAS_CONTENT, 1)
+        assert promoted == "- Build a widget"
+        sections = parse_sections(updated)
+        # Should be in pending now (urgent = top)
+        assert any("Build a widget" in p for p in sections["pending"])
+        # Should no longer be in ideas
+        ideas = parse_ideas(updated)
+        assert all("Build a widget" not in i for i in ideas)
+
+    def test_promote_invalid_index(self):
+        updated, promoted = promote_idea(IDEAS_CONTENT, 99)
+        assert promoted is None
+        assert updated == IDEAS_CONTENT
+
+    def test_promote_last_idea(self):
+        updated, promoted = promote_idea(IDEAS_CONTENT, 3)
+        assert promoted == "- Fix the login page"
+        ideas = parse_ideas(updated)
+        assert len(ideas) == 2
+
+
+# --- promote_all_ideas ---
+
+class TestPromoteAllIdeas:
+    def test_promotes_all(self):
+        updated, promoted = promote_all_ideas(IDEAS_CONTENT)
+        assert len(promoted) == 3
+        ideas = parse_ideas(updated)
+        assert len(ideas) == 0
+        sections = parse_sections(updated)
+        # Original pending + 3 promoted
+        assert len(sections["pending"]) == 4
+
+    def test_promotes_none_when_empty(self):
+        content = "# Missions\n\n## Ideas\n\n## Pending\n\n## Done\n"
+        updated, promoted = promote_all_ideas(content)
+        assert promoted == []
+        assert updated == content
+
+    def test_preserves_original_order(self):
+        updated, promoted = promote_all_ideas(IDEAS_CONTENT)
+        assert "Build a widget" in promoted[0]
+        assert "Fix the login page" in promoted[2]
+
+
+# --- list_pending ---
+
+class TestListPending:
+    def test_returns_pending_items(self):
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- Alpha\n"
+            "- Beta\n\n"
+            "## Done\n"
+        )
+        result = list_pending(content)
+        assert len(result) == 2
+        assert "Alpha" in result[0]
+        assert "Beta" in result[1]
+
+    def test_empty_pending(self):
+        content = "# Missions\n\n## Pending\n\n## Done\n"
+        assert list_pending(content) == []
+
+    def test_no_pending_section(self):
+        content = "# Missions\n\n## Done\n- Task\n"
+        assert list_pending(content) == []
+
+    def test_skips_strikethrough_items(self):
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- ~~[project:foo] Old task~~ ✅ (2026-03-07, PR #1)\n"
+            "- ~~Another done task~~ ✅ (2026-03-07)\n"
+            "- [project:foo] Real pending task\n\n"
+            "## Done\n"
+        )
+        result = list_pending(content)
+        assert len(result) == 1
+        assert "Real pending task" in result[0]
+
+
+# --- extract_next_pending with strikethrough ---
+
+
+class TestExtractNextPendingStrikethrough:
+    def test_skips_strikethrough_returns_real_pending(self):
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- ~~[project:foo] Completed task~~ ✅ (2026-03-07)\n"
+            "- [project:foo] Actual pending task\n\n"
+            "## In Progress\n\n"
+            "## Done\n"
+        )
+        result = extract_next_pending(content, "foo")
+        assert "Actual pending task" in result
+        assert "Completed task" not in result
+
+    def test_skips_all_strikethrough_returns_empty(self):
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- ~~[project:foo] Done 1~~ ✅ (2026-03-07)\n"
+            "- ~~[project:foo] Done 2~~ ✅ (2026-03-07)\n\n"
+            "## In Progress\n\n"
+            "## Done\n"
+        )
+        result = extract_next_pending(content, "foo")
+        assert result == ""
+
+    def test_count_pending_skips_strikethrough(self):
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- ~~Old task~~ ✅ (2026-03-07)\n"
+            "- Real task\n\n"
+            "## Done\n"
+        )
+        assert count_pending(content) == 2  # count_pending uses parse_sections (raw)
+        assert len(list_pending(content)) == 1  # list_pending filters
+
+
+# --- cancel_pending_mission ---
+
+class TestCancelPendingMission:
+    def test_cancel_by_number(self):
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- Fix auth\n"
+            "- Add tests\n"
+            "- Update docs\n\n"
+            "## Done\n"
+        )
+        updated, cancelled = cancel_pending_mission(content, "2")
+        assert "Add tests" in cancelled
+        pending = list_pending(updated)
+        assert len(pending) == 2
+        assert all("Add tests" not in p for p in pending)
+
+    def test_cancel_by_keyword(self):
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- Fix auth bug\n"
+            "- Add tests for login\n\n"
+            "## Done\n"
+        )
+        updated, cancelled = cancel_pending_mission(content, "login")
+        assert "login" in cancelled
+        pending = list_pending(updated)
+        assert len(pending) == 1
+
+    def test_cancel_keyword_case_insensitive(self):
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- Fix AUTH bug\n\n"
+            "## Done\n"
+        )
+        updated, cancelled = cancel_pending_mission(content, "auth")
+        assert "AUTH" in cancelled
+
+    def test_cancel_no_pending_raises(self):
+        content = "# Missions\n\n## Pending\n\n## Done\n"
+        with pytest.raises(ValueError, match="No pending missions"):
+            cancel_pending_mission(content, "1")
+
+    def test_cancel_number_out_of_range(self):
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- Only one\n\n"
+            "## Done\n"
+        )
+        with pytest.raises(ValueError, match="not found"):
+            cancel_pending_mission(content, "5")
+
+    def test_cancel_keyword_no_match(self):
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- Fix auth\n\n"
+            "## Done\n"
+        )
+        with pytest.raises(ValueError, match="No pending mission matching"):
+            cancel_pending_mission(content, "nonexistent")
+
+    def test_cancel_first_item(self):
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- Alpha\n"
+            "- Beta\n\n"
+            "## Done\n"
+        )
+        updated, cancelled = cancel_pending_mission(content, "1")
+        assert "Alpha" in cancelled
+        pending = list_pending(updated)
+        assert len(pending) == 1
+        assert "Beta" in pending[0]
+
+    def test_cancel_with_whitespace_identifier(self):
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- Fix auth\n\n"
+            "## Done\n"
+        )
+        updated, cancelled = cancel_pending_mission(content, "  1  ")
+        assert "Fix auth" in cancelled
+
+
+# ---------------------------------------------------------------------------
+# prune_done_section
+# ---------------------------------------------------------------------------
+
+class TestPruneDoneSection:
+    """Tests for prune_done_section() — keeps Done section bounded."""
+
+    def test_no_pruning_when_under_limit(self):
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "## In Progress\n\n"
+            "## Done\n"
+            "- Task 1 ✅\n"
+            "- Task 2 ✅\n"
+            "- Task 3 ✅\n"
+        )
+        result, pruned = prune_done_section(content, keep=5)
+        assert pruned == 0
+        assert result == content
+
+    def test_prunes_excess_done_items(self):
+        done_items = "\n".join(f"- Task {i} ✅" for i in range(10))
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- Pending task\n\n"
+            "## In Progress\n\n"
+            "## Done\n"
+            f"{done_items}\n"
+        )
+        result, pruned = prune_done_section(content, keep=3)
+        assert pruned == 7
+        sections = parse_sections(result)
+        assert len(sections["done"]) == 3
+        # Keeps the first 3 (most recent, at top of Done)
+        assert "Task 0" in sections["done"][0]
+        assert "Task 2" in sections["done"][2]
+        # Pending is preserved
+        assert len(sections["pending"]) == 1
+
+    def test_no_done_section(self):
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- Task\n"
+        )
+        result, pruned = prune_done_section(content, keep=5)
+        assert pruned == 0
+
+    def test_preserves_other_sections(self):
+        done_items = "\n".join(f"- Done {i}" for i in range(20))
+        content = (
+            "# Missions\n\n"
+            "## Ideas\n\n"
+            "- An idea\n\n"
+            "## Pending\n\n"
+            "- Pending task\n\n"
+            "## In Progress\n\n"
+            "- Active task\n\n"
+            "## Done\n"
+            f"{done_items}\n"
+        )
+        result, pruned = prune_done_section(content, keep=5)
+        assert pruned == 15
+        sections = parse_sections(result)
+        assert len(sections["done"]) == 5
+        assert len(sections["pending"]) == 1
+        assert len(sections["in_progress"]) == 1
+        assert "An idea" in result
+
+    def test_exactly_at_limit(self):
+        done_items = "\n".join(f"- Task {i}" for i in range(5))
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "## Done\n"
+            f"{done_items}\n"
+        )
+        result, pruned = prune_done_section(content, keep=5)
+        assert pruned == 0
+
+
+# ---------------------------------------------------------------------------
+# sanitize_mission_text
+# ---------------------------------------------------------------------------
+
+class TestSanitizeMissionText:
+    def test_replaces_newlines_with_space(self):
+        text = "line one\nline two\nline three"
+        assert sanitize_mission_text(text) == "line one line two line three"
+
+    def test_replaces_crlf(self):
+        text = "line one\r\nline two\r\nline three"
+        assert sanitize_mission_text(text) == "line one line two line three"
+
+    def test_replaces_cr(self):
+        text = "line one\rline two"
+        assert sanitize_mission_text(text) == "line one line two"
+
+    def test_collapses_multiple_spaces(self):
+        text = "word   word    word"
+        assert sanitize_mission_text(text) == "word word word"
+
+    def test_strips_whitespace(self):
+        text = "  hello world  "
+        assert sanitize_mission_text(text) == "hello world"
+
+    def test_mixed_newlines_and_spaces(self):
+        text = "line one\n  \n  line two  \n"
+        assert sanitize_mission_text(text) == "line one line two"
+
+    def test_empty_string(self):
+        assert sanitize_mission_text("") == ""
+
+    def test_single_line_unchanged(self):
+        text = "a normal single-line mission"
+        assert sanitize_mission_text(text) == text
+
+    def test_preserves_markdown_content(self):
+        text = "fix the **bold** and `code` formatting"
+        assert sanitize_mission_text(text) == text
+
+
+# ---------------------------------------------------------------------------
+# insert_mission newline safety net
+# ---------------------------------------------------------------------------
+
+class TestInsertMissionNewlineSanitization:
+    @patch("app.missions._now_iso", return_value="2026-01-01T12:00")
+    def test_newlines_in_entry_collapsed(self, _mock):
+        content = "## Pending\n\n## Done\n"
+        entry = "- fix\nthe\nbug"
+        result = insert_mission(content, entry)
+        # The entry should appear as a single line
+        assert "- fix the bug" in result
+        # No bare newlines within the entry text
+        for line in result.split("\n"):
+            if "fix" in line and "bug" in line:
+                assert "\n" not in line.replace("\n", "")  # trivially true per line
+
+
+# ---------------------------------------------------------------------------
+# quarantine_mission shared helper
+# ---------------------------------------------------------------------------
+
+class TestQuarantineMission:
+
+    def test_writes_entry(self, tmp_path):
+        qpath = tmp_path / "missions-quarantine.md"
+        ok = quarantine_mission(qpath, "bad text", "injection", source="telegram")
+        assert ok is True
+        content = qpath.read_text()
+        assert "injection" in content
+        assert "bad text" in content
+        assert "telegram" in content
+        assert "\U0001f6e1\ufe0f" in content  # shield emoji
+
+    def test_appends_multiple(self, tmp_path):
+        qpath = tmp_path / "missions-quarantine.md"
+        quarantine_mission(qpath, "first", "reason1", source="telegram")
+        quarantine_mission(qpath, "second", "reason2", source="github/@alice")
+        content = qpath.read_text()
+        assert "first" in content
+        assert "second" in content
+        assert "github/@alice" in content
+
+    def test_truncates_long_text(self, tmp_path):
+        qpath = tmp_path / "missions-quarantine.md"
+        long_text = "x" * 1000
+        quarantine_mission(qpath, long_text, "too long")
+        content = qpath.read_text()
+        # Entry should contain at most 500 chars of the text
+        assert "x" * 500 in content
+        assert "x" * 501 not in content
+
+    def test_returns_false_on_oserror(self, tmp_path):
+        # Non-existent parent → OSError
+        qpath = tmp_path / "no" / "such" / "dir" / "quarantine.md"
+        ok = quarantine_mission(qpath, "text", "reason")
+        assert ok is False
+
+    def test_default_source(self, tmp_path):
+        qpath = tmp_path / "missions-quarantine.md"
+        quarantine_mission(qpath, "text", "reason")
+        assert "unknown" in qpath.read_text()
+
+
+class TestQuarantineSizeCap:
+
+    def test_no_prune_under_limit(self, tmp_path):
+        qpath = tmp_path / "quarantine.md"
+        qpath.write_text("- entry 1\n- entry 2\n")
+        _enforce_quarantine_cap(qpath)
+        assert "entry 1" in qpath.read_text()
+        assert "entry 2" in qpath.read_text()
+
+    def test_prunes_when_over_limit(self, tmp_path):
+        qpath = tmp_path / "quarantine.md"
+        # Write enough data to exceed the cap
+        lines = [f"- entry {i}: {'x' * 200}\n" for i in range(600)]
+        qpath.write_text("".join(lines))
+        assert qpath.stat().st_size > QUARANTINE_MAX_BYTES
+        _enforce_quarantine_cap(qpath)
+        remaining = qpath.read_text()
+        # Older half was pruned
+        assert "entry 0" not in remaining
+        assert "entry 1" not in remaining
+        # Newer half is kept
+        assert "entry 599" in remaining
+        # File is smaller now
+        assert qpath.stat().st_size < QUARANTINE_MAX_BYTES * 0.7
+
+    def test_cap_enforced_on_write(self, tmp_path):
+        qpath = tmp_path / "quarantine.md"
+        lines = [f"- old entry {i}: {'y' * 200}\n" for i in range(600)]
+        qpath.write_text("".join(lines))
+        quarantine_mission(qpath, "new entry", "reason", source="test")
+        content = qpath.read_text()
+        # Old entries pruned
+        assert "old entry 0" not in content
+        # New entry present
+        assert "new entry" in content

@@ -8,10 +8,12 @@ messages that make Kōan feel like a collaborator, not just a tool.
 Usage: python -m app.rituals <morning|evening> <instance_dir>
 """
 
+import os
 import subprocess
 import sys
 from pathlib import Path
 
+from app.cli_exec import run_cli
 from app.cli_provider import build_full_command
 from app.claude_step import strip_cli_noise
 from app.prompts import get_prompt_path
@@ -55,16 +57,12 @@ def run_ritual(ritual_type: str, instance_dir: Path) -> bool:
         print(f"[rituals] {e}", file=sys.stderr)
         return False
 
-    # Get KOAN_ROOT for proper working directory
-    import os
     koan_root = os.environ.get("KOAN_ROOT", "")
     if not koan_root:
         print("[rituals] KOAN_ROOT not set", file=sys.stderr)
         return False
 
     try:
-        from app.cli_exec import run_cli
-
         cmd = build_full_command(
             prompt=prompt,
             allowed_tools=["Read", "Write", "Glob"],

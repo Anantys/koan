@@ -8,30 +8,83 @@ any messaging provider.
 import fcntl
 import json
 import os
-import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List
 
 
-def save_conversation_message(history_file: Path, role: str, text: str):
+def _atomic_write(path: Path, content: str):
+    """Crash-safe file write using temp file + rename.
+
+    Local wrapper to avoid circular import with utils.py (which re-exports
+    from this module). Uses the same mkstemp + fsync + replace pattern.
+    """
+    import tempfile
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".koan-")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, str(path))
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _parse_jsonl_lines(lines: list) -> List[Dict]:
+    """Parse JSONL lines into a list of message dicts.
+
+    Skips blank lines and lines with invalid JSON.
+    """
+    messages = []
+    for line in lines:
+        line = line.strip()
+        if line:
+            try:
+                messages.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return messages
+
+
+def save_conversation_message(
+    history_file: Path,
+    role: str,
+    text: str,
+    message_id: int = 0,
+    message_type: str = "",
+):
     """Save a message to the conversation history file (JSONL format).
 
     Args:
         history_file: Path to the history file (e.g., instance/conversation-history.jsonl)
         role: "user" or "assistant"
         text: Message content
+        message_id: Telegram message_id for reaction correlation (0 = unknown)
+        message_type: Origin context tag (e.g., "chat", "conclusion", "notification")
     """
     message = {
         "timestamp": datetime.now().isoformat(),
         "role": role,
         "text": text
     }
+    if message_id:
+        message["message_id"] = message_id
+    if message_type:
+        message["message_type"] = message_type
     try:
         with open(history_file, "a", encoding="utf-8") as f:
             fcntl.flock(f, fcntl.LOCK_EX)
-            f.write(json.dumps(message, ensure_ascii=False) + "\n")
-            fcntl.flock(f, fcntl.LOCK_UN)
+            try:
+                f.write(json.dumps(message, ensure_ascii=False) + "\n")
+                f.flush()
+            finally:
+                fcntl.flock(f, fcntl.LOCK_UN)
     except OSError as e:
         print(f"[conversation_history] Error saving message to history: {e}")
 
@@ -52,20 +105,12 @@ def load_recent_history(history_file: Path, max_messages: int = 10) -> List[Dict
     try:
         with open(history_file, "r", encoding="utf-8") as f:
             fcntl.flock(f, fcntl.LOCK_SH)
-            lines = f.readlines()
-            fcntl.flock(f, fcntl.LOCK_UN)
+            try:
+                lines = f.readlines()
+            finally:
+                fcntl.flock(f, fcntl.LOCK_UN)
 
-        # Parse JSONL (one JSON per line)
-        messages = []
-        for line in lines:
-            line = line.strip()
-            if line:
-                try:
-                    messages.append(json.loads(line))
-                except json.JSONDecodeError:
-                    continue
-
-        # Return last N messages
+        messages = _parse_jsonl_lines(lines)
         return messages[-max_messages:] if len(messages) > max_messages else messages
     except OSError as e:
         print(f"[conversation_history] Error loading history: {e}")
@@ -104,6 +149,31 @@ def format_conversation_history(
     return "\n".join(lines)
 
 
+def prune_topics(entries: list, max_entries: int = 20) -> list:
+    """Keep only the most recent N compaction entries.
+
+    Sorts by ``compacted_at`` timestamp (falling back to list order) and
+    returns the last ``max_entries`` items.
+
+    Args:
+        entries: List of compaction entry dicts.
+        max_entries: Maximum entries to retain.
+
+    Returns:
+        Pruned list (may be the same list if already within limit).
+    """
+    if not isinstance(entries, list) or len(entries) <= max_entries:
+        return entries
+
+    # Sort by compacted_at to ensure we keep the most recent
+    try:
+        entries.sort(key=lambda e: e.get("compacted_at", ""))
+    except (TypeError, AttributeError):
+        pass
+
+    return entries[-max_entries:]
+
+
 def compact_history(history_file: Path, topics_file: Path, min_messages: int = 20) -> int:
     """Compact conversation history at startup to avoid context bleed.
 
@@ -126,18 +196,14 @@ def compact_history(history_file: Path, topics_file: Path, min_messages: int = 2
     try:
         with open(history_file, "r", encoding="utf-8") as f:
             fcntl.flock(f, fcntl.LOCK_SH)
-            lines = f.readlines()
-            fcntl.flock(f, fcntl.LOCK_UN)
+            try:
+                lines = f.readlines()
+            finally:
+                fcntl.flock(f, fcntl.LOCK_UN)
     except OSError:
         return 0
 
-    for line in lines:
-        line = line.strip()
-        if line:
-            try:
-                messages.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
+    messages = _parse_jsonl_lines(lines)
 
     if len(messages) < min_messages:
         return 0
@@ -158,8 +224,11 @@ def compact_history(history_file: Path, topics_file: Path, min_messages: int = 2
                     topics_by_date[date].append(topic)
 
     if not topics_by_date:
-        # No extractable topics, just purge
-        history_file.write_text("")
+        # No extractable topics, just purge atomically
+        try:
+            _atomic_write(history_file, "")
+        except OSError:
+            pass
         return len(messages)
 
     # Build compaction entry
@@ -185,23 +254,20 @@ def compact_history(history_file: Path, topics_file: Path, min_messages: int = 2
 
     existing.append(entry)
 
+    # Prune to keep only the most recent entries
+    existing = prune_topics(existing)
+
     # Write topics file atomically
-    tmp_fd, tmp_path = tempfile.mkstemp(
-        dir=str(topics_file.parent), suffix=".tmp"
-    )
     try:
-        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
-            json.dump(existing, f, ensure_ascii=False, indent=2)
-        os.replace(tmp_path, str(topics_file))
+        _atomic_write(topics_file, json.dumps(existing, ensure_ascii=False, indent=2))
     except OSError:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
         return 0
 
-    # Truncate history
-    history_file.write_text("")
+    # Truncate history atomically
+    try:
+        _atomic_write(history_file, "")
+    except OSError:
+        return 0
 
     count = len(messages)
     print(f"[conversation_history] Compacted {count} messages \u2192 {topics_file.name}")

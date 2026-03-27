@@ -53,7 +53,7 @@ def get_gh_token(username: str) -> Optional[str]:
         if result.returncode == 0 and result.stdout.strip():
             return result.stdout.strip()
         return None
-    except Exception:
+    except (subprocess.SubprocessError, OSError):
         return None
 
 

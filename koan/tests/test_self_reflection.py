@@ -110,6 +110,29 @@ class TestSaveReflection:
         content = personality.read_text()
         assert re.search(r"## Reflection — \d{4}-\d{2}-\d{2}", content)
 
+    def test_handles_missing_personality_file(self, instance_dir):
+        """save_reflection works even when personality-evolution.md doesn't exist."""
+        personality = instance_dir / "memory" / "global" / "personality-evolution.md"
+        personality.unlink(missing_ok=True)
+        save_reflection(instance_dir, "- first observation")
+        content = personality.read_text()
+        assert "first observation" in content
+
+    def test_handles_unreadable_personality_file(self, instance_dir, monkeypatch):
+        """When personality file read raises OSError, treats as empty."""
+        personality = instance_dir / "memory" / "global" / "personality-evolution.md"
+        personality.write_text("existing content")
+        original_read = Path.read_text
+
+        def bad_read(self, *args, **kwargs):
+            if self.name == "personality-evolution.md":
+                raise OSError("Permission denied")
+            return original_read(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", bad_read)
+        # Should not crash
+        save_reflection(instance_dir, "- new observation")
+
 
 class TestNotifyOutbox:
     def test_writes_to_outbox(self, instance_dir):
@@ -121,13 +144,21 @@ class TestNotifyOutbox:
         assert "🪷" in content
         assert "personality-evolution.md" in content
 
-    def test_overwrites_existing_outbox(self, instance_dir):
+    def test_appends_to_existing_outbox(self, instance_dir):
         outbox = instance_dir / "outbox.md"
-        outbox.write_text("old message")
+        outbox.write_text("old message\n")
         notify_outbox(instance_dir, "- new reflection")
         content = outbox.read_text()
-        assert "old message" not in content
+        assert "old message" in content
         assert "new reflection" in content
+
+    def test_multiple_reflections_preserve_all(self, instance_dir):
+        outbox = instance_dir / "outbox.md"
+        notify_outbox(instance_dir, "- first reflection")
+        notify_outbox(instance_dir, "- second reflection")
+        content = outbox.read_text()
+        assert "first reflection" in content
+        assert "second reflection" in content
 
 
 class TestShouldReflectEdgeCases:

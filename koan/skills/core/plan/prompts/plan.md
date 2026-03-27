@@ -14,22 +14,31 @@ This plan will be posted as a GitHub issue — write it as a living document tha
 
 1. **Understand the idea**: Restate the problem in your own words. What is the user really asking for?
 
-2. **Explore the codebase**: Use Read, Glob, and Grep to understand the relevant code. Look at:
+2. **Explore intent**: Before touching code, think about:
+   - What problem is this *really* solving? What's the underlying need?
+   - What does success look like from the user's perspective?
+   - What is explicitly *not* in scope? Draw the boundary early.
+   This step separates the "why" from the "what" and prevents solving the wrong problem.
+
+3. **Explore the codebase**: Use Read, Glob, and Grep to understand the relevant code. Look at:
    - Existing patterns and conventions
    - Related modules and functions
    - Test patterns in use
    - Configuration and dependencies
 
-3. **Think deeply**: Consider:
+4. **Consider alternatives**: Before committing to an approach, identify 2-3 distinct implementation strategies with their trade-offs. Lead with the recommended option and explain why it wins. If only one reasonable approach exists, state that briefly rather than inventing artificial alternatives.
+
+5. **Think deeply**: Consider:
    - Edge cases and corner cases
    - Security implications
    - Performance considerations
    - Backward compatibility
    - What could go wrong
+   - **YAGNI**: Ruthlessly eliminate features that aren't strictly necessary for the core ask.
 
-4. **Identify open questions**: List anything that needs clarification before implementation.
+6. **Identify open questions**: List anything that needs clarification before implementation.
 
-5. **Produce the plan**: Write a structured implementation plan in markdown.
+7. **Produce the plan**: Write a structured implementation plan in markdown.
 
 ## Output Format
 
@@ -53,9 +62,12 @@ After the title line, leave a blank line and then write the plan body:
 
 One paragraph explaining what this plan achieves and why it matters.
 
-### Open Questions
+### Alternatives Considered
 
-Bulleted list of questions or decisions that need human input before proceeding. If none, write "None — ready to implement."
+List 2-3 approaches that were evaluated, with the chosen one marked. For each, give a one-line description and the key trade-off. If only one reasonable approach exists, state why briefly.
+
+- **Approach A (chosen)**: Description. *Trade-off: ...*
+- **Approach B**: Description. *Trade-off: ...*
 
 ### Implementation Phases
 
@@ -85,6 +97,10 @@ How to verify the implementation works correctly.
 ### Risks & Alternatives
 
 Any risks with this approach and alternative approaches considered.
+
+### Open Questions
+
+Bulleted list of questions or decisions that need human input before proceeding. If none, write "None — ready to implement."
 
 Keep the plan actionable and specific to this codebase. Reference actual file paths and function names.
 Do NOT include any preamble or commentary outside the plan structure — just the title line followed by the plan body.

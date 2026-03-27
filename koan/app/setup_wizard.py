@@ -82,7 +82,7 @@ def _load_wizard_projects() -> list:
 
     try:
         return [{"name": name, "path": path} for name, path in get_known_projects()]
-    except Exception:
+    except (OSError, ValueError, ImportError):
         return []
 
 
@@ -180,7 +180,7 @@ def get_chat_id_from_updates(token: str) -> Optional[str]:
                     chat = msg.get("chat", {})
                     if chat.get("id"):
                         return str(chat["id"])
-    except Exception:
+    except (OSError, ValueError):
         pass
     return None
 
@@ -230,9 +230,11 @@ def index():
 def step_welcome():
     """Step 1: Welcome + prerequisites check."""
     status = get_installation_status()
+    hostname_hint = not os.environ.get("SETUP_HOSTNAME")
     return render_template("wizard/welcome.html",
         status=status,
         koan_root=str(KOAN_ROOT),
+        hostname_hint=hostname_hint,
     )
 
 
@@ -448,7 +450,7 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(description="Kōan Setup Wizard")
     parser.add_argument("--port", type=int, default=5002)
-    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--host", default=os.environ.get("SETUP_HOSTNAME", "127.0.0.1"))
     parser.add_argument("--no-browser", action="store_true", help="Don't open browser automatically")
     args = parser.parse_args()
 
@@ -469,7 +471,10 @@ def main():
 ╚══════════════════════════════════════════════════════════════════╝
 
     Starting setup wizard at: {url}
-
+{f"""
+    💡 To bind to a different address, restart with:
+       SETUP_HOSTNAME=<your-ip> make install
+""" if args.host == "127.0.0.1" else ""}
     Press Ctrl+C to stop.
 """)
 

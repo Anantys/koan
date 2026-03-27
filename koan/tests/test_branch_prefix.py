@@ -210,11 +210,12 @@ class TestBuildAgentPromptBranchPrefix:
     @patch("app.prompt_builder._get_focus_section", return_value="")
     @patch("app.prompt_builder._get_verbose_section", return_value="")
     @patch("app.prompt_builder._get_deep_research", return_value="")
+    @patch("app.prompt_builder._get_submit_pr_section", return_value="")
     @patch("app.prompt_builder._get_merge_policy", return_value="\nMerge\n")
     @patch("app.prompt_builder._get_branch_prefix", return_value="mybot/")
     @patch("app.prompts.load_prompt", return_value="Base")
     def test_branch_prefix_in_load_prompt(
-        self, mock_load, mock_prefix, mock_merge, mock_deep,
+        self, mock_load, mock_prefix, mock_merge, mock_submit_pr, mock_deep,
         mock_verbose, mock_focus, tmp_path
     ):
         from app.prompt_builder import build_agent_prompt
@@ -234,7 +235,10 @@ class TestBuildAgentPromptBranchPrefix:
             mission_title="Do stuff",
         )
 
-        call_kwargs = mock_load.call_args[1]
+        # Find the "agent" template call (not "verification-gate")
+        agent_call = [c for c in mock_load.call_args_list if c[0][0] == "agent"]
+        assert agent_call, "load_prompt('agent', ...) should have been called"
+        call_kwargs = agent_call[0][1]
         assert call_kwargs["BRANCH_PREFIX"] == "mybot/"
 
 

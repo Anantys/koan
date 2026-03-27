@@ -146,8 +146,9 @@ def run_migration(koan_root: str) -> List[str]:
 
     # Build and write projects.yaml
     content = build_projects_yaml(projects, overrides)
+    from app.utils import atomic_write
     projects_yaml_path = Path(koan_root) / "projects.yaml"
-    projects_yaml_path.write_text(content)
+    atomic_write(projects_yaml_path, content)
 
     source = "KOAN_PROJECTS" if os.environ.get("KOAN_PROJECTS") else "KOAN_PROJECT_PATH"
     messages.append(

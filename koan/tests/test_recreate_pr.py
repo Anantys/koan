@@ -47,19 +47,21 @@ def skill_dir():
 # ---------------------------------------------------------------------------
 
 class TestFetchUpstreamTarget:
-    def test_origin_succeeds(self):
+    def test_upstream_preferred(self):
+        """upstream is tried first (source-of-truth in fork setups)."""
         with patch("app.recreate_pr._run_git") as mock_git:
-            result = _fetch_upstream_target("main", "/project")
-            assert result == "origin"
-            mock_git.assert_called_once_with(
-                ["git", "fetch", "origin", "main"], cwd="/project"
-            )
-
-    def test_falls_back_to_upstream(self):
-        with patch("app.recreate_pr._run_git") as mock_git:
-            mock_git.side_effect = [RuntimeError("no origin"), None]
             result = _fetch_upstream_target("main", "/project")
             assert result == "upstream"
+            mock_git.assert_called_once_with(
+                ["git", "fetch", "upstream", "main"], cwd="/project"
+            )
+
+    def test_falls_back_to_origin(self):
+        """When upstream fails, falls back to origin."""
+        with patch("app.recreate_pr._run_git") as mock_git:
+            mock_git.side_effect = [RuntimeError("no upstream"), None]
+            result = _fetch_upstream_target("main", "/project")
+            assert result == "origin"
             assert mock_git.call_count == 2
 
     def test_both_fail_returns_none(self):
@@ -117,7 +119,7 @@ class TestBuildRecreatePrompt:
     def test_without_skill_dir_uses_system_prompts(self, pr_context):
         """Without skill_dir, falls back to system-prompts/recreate.md which
         may not exist. That's fine -- the test just verifies the code path."""
-        with patch("app.prompts.load_prompt", return_value="fallback prompt") as mock:
+        with patch("app.claude_step.load_prompt_or_skill", return_value="fallback prompt") as mock:
             prompt = _build_recreate_prompt(pr_context, skill_dir=None)
             mock.assert_called_once()
             assert prompt == "fallback prompt"
@@ -167,7 +169,44 @@ class TestBuildRecreateComment:
 
     def test_empty_actions(self, pr_context):
         comment = _build_recreate_comment("71", "br", "main", [], pr_context)
-        assert "No changes needed" in comment
+        assert "Reimplemented from scratch" in comment
+
+    def test_diffstat_included(self, pr_context):
+        comment = _build_recreate_comment(
+            "71", "koan/feat", "main",
+            ["Created fresh branch", "Reimplemented feature"],
+            pr_context,
+            diffstat="4 files changed, 80 insertions(+), 12 deletions(-)",
+        )
+        assert "4 files changed" in comment
+        assert "**Diff**" in comment
+
+    def test_test_result_highlighted(self, pr_context):
+        comment = _build_recreate_comment(
+            "71", "koan/feat", "main",
+            ["Created fresh branch", "Reimplemented feature", "Tests pass (47 passed)"],
+            pr_context,
+        )
+        assert "**Tests pass (47 passed)**" in comment
+        # Test result should not be duplicated in actions
+        actions_section = comment.split("### Actions")[1]
+        assert "Tests pass" not in actions_section
+
+    def test_mechanical_actions_filtered(self, pr_context):
+        comment = _build_recreate_comment(
+            "71", "koan/feat", "main",
+            [
+                "Read PR #71: \"feat: add outbox scanner\"",
+                "Read PR comments and review feedback",
+                "Reimplemented feature",
+                "Commented on original PR",
+            ],
+            pr_context,
+        )
+        assert "Read PR #71" not in comment
+        assert "Read PR comments" not in comment
+        assert "Commented on" not in comment
+        assert "Reimplemented feature" in comment
 
 
 # ---------------------------------------------------------------------------
@@ -176,7 +215,7 @@ class TestBuildRecreateComment:
 
 class TestPushRecreated:
     def test_force_push_succeeds(self, pr_context):
-        with patch("app.recreate_pr._run_git") as mock_git:
+        with patch("app.claude_step._run_git") as mock_git:
             result = _push_recreated(
                 "koan/feat", "main", "sukria/koan", "71",
                 pr_context, "/project",
@@ -189,9 +228,9 @@ class TestPushRecreated:
             )
 
     def test_permission_denied_creates_new_pr(self, pr_context):
-        with patch("app.recreate_pr._run_git") as mock_git, \
-             patch("app.recreate_pr.pr_create", return_value="https://github.com/sukria/koan/pull/120"), \
-             patch("app.recreate_pr.run_gh"), \
+        with patch("app.claude_step._run_git") as mock_git, \
+             patch("app.claude_step.pr_create", return_value="https://github.com/sukria/koan/pull/120"), \
+             patch("app.claude_step.run_gh"), \
              patch("app.utils.get_branch_prefix", return_value="koan/"):
             mock_git.side_effect = [
                 RuntimeError("permission denied"),  # force-push fails
@@ -207,7 +246,7 @@ class TestPushRecreated:
             assert any("draft PR" in a for a in result["actions"])
 
     def test_non_permission_error_fails(self, pr_context):
-        with patch("app.recreate_pr._run_git") as mock_git:
+        with patch("app.claude_step._run_git") as mock_git:
             mock_git.side_effect = RuntimeError("network error")
             result = _push_recreated(
                 "koan/feat", "main", "sukria/koan", "71",
@@ -341,7 +380,7 @@ class TestRunRecreate:
              patch("app.recreate_pr._run_git"), \
              patch("app.recreate_pr._reimpl_feature", return_value=True), \
              patch("app.recreate_pr._has_commits_on_branch", return_value=True), \
-             patch("app.recreate_pr._run_tests", return_value=None), \
+             patch("app.recreate_pr.run_project_tests", return_value={"passed": False, "output": "", "details": "command not found"}), \
              patch("app.recreate_pr._push_recreated", return_value={
                  "success": True, "actions": [], "error": "",
              }), \
@@ -359,7 +398,7 @@ class TestRunRecreate:
              patch("app.recreate_pr._run_git"), \
              patch("app.recreate_pr._reimpl_feature"), \
              patch("app.recreate_pr._has_commits_on_branch", return_value=True), \
-             patch("app.recreate_pr._run_tests", return_value="Tests pass (50 passed)"), \
+             patch("app.recreate_pr.run_project_tests", return_value={"passed": True, "output": "50 passed", "details": "50 passed"}), \
              patch("app.recreate_pr._push_recreated", return_value={
                  "success": True, "actions": ["Force-pushed `koan/scanner`"], "error": "",
              }), \
@@ -379,7 +418,7 @@ class TestRunRecreate:
              patch("app.recreate_pr._run_git"), \
              patch("app.recreate_pr._reimpl_feature"), \
              patch("app.recreate_pr._has_commits_on_branch", return_value=True), \
-             patch("app.recreate_pr._run_tests", return_value=None), \
+             patch("app.recreate_pr.run_project_tests", return_value={"passed": False, "output": "", "details": "command not found"}), \
              patch("app.recreate_pr._push_recreated", return_value={
                  "success": False, "actions": [], "error": "network error",
              }), \
@@ -397,7 +436,7 @@ class TestRunRecreate:
              patch("app.recreate_pr._run_git"), \
              patch("app.recreate_pr._reimpl_feature"), \
              patch("app.recreate_pr._has_commits_on_branch", return_value=True), \
-             patch("app.recreate_pr._run_tests", return_value=None), \
+             patch("app.recreate_pr.run_project_tests", return_value={"passed": False, "output": "", "details": "command not found"}), \
              patch("app.recreate_pr._push_recreated", return_value={
                  "success": True, "actions": ["Force-pushed"], "error": "",
              }), \
@@ -416,7 +455,7 @@ class TestRunRecreate:
              patch("app.recreate_pr._run_git"), \
              patch("app.recreate_pr._reimpl_feature"), \
              patch("app.recreate_pr._has_commits_on_branch", return_value=True), \
-             patch("app.recreate_pr._run_tests", return_value=None), \
+             patch("app.recreate_pr.run_project_tests", return_value={"passed": False, "output": "", "details": "command not found"}), \
              patch("app.recreate_pr._push_recreated", return_value={
                  "success": True, "actions": [], "error": "",
              }), \
@@ -436,7 +475,7 @@ class TestRunRecreate:
              patch("app.recreate_pr._run_git"), \
              patch("app.recreate_pr._reimpl_feature"), \
              patch("app.recreate_pr._has_commits_on_branch", return_value=True), \
-             patch("app.recreate_pr._run_tests", return_value=None), \
+             patch("app.recreate_pr.run_project_tests", return_value={"passed": False, "output": "", "details": "command not found"}), \
              patch("app.recreate_pr._push_recreated", return_value={
                  "success": True, "actions": [], "error": "",
              }), \
@@ -454,7 +493,7 @@ class TestRunRecreate:
              patch("app.recreate_pr._run_git"), \
              patch("app.recreate_pr._reimpl_feature"), \
              patch("app.recreate_pr._has_commits_on_branch", return_value=True), \
-             patch("app.recreate_pr._run_tests", return_value=None), \
+             patch("app.recreate_pr.run_project_tests", return_value={"passed": False, "output": "", "details": "command not found"}), \
              patch("app.recreate_pr._push_recreated", return_value={
                  "success": True, "actions": [], "error": "",
              }), \
@@ -479,7 +518,7 @@ class TestRunRecreate:
              patch("app.recreate_pr._run_git"), \
              patch("app.recreate_pr._reimpl_feature", return_value=True), \
              patch("app.recreate_pr._has_commits_on_branch", return_value=True) as mock_has, \
-             patch("app.recreate_pr._run_tests", return_value=None), \
+             patch("app.recreate_pr.run_project_tests", return_value={"passed": False, "output": "", "details": "command not found"}), \
              patch("app.recreate_pr._push_recreated", return_value={
                  "success": True, "actions": [], "error": "",
              }) as mock_push, \
@@ -512,7 +551,7 @@ class TestRunRecreate:
              patch("app.recreate_pr._run_git"), \
              patch("app.recreate_pr._reimpl_feature", return_value=True), \
              patch("app.recreate_pr._has_commits_on_branch", return_value=True), \
-             patch("app.recreate_pr._run_tests", return_value=None), \
+             patch("app.recreate_pr.run_project_tests", return_value={"passed": False, "output": "", "details": "command not found"}), \
              patch("app.recreate_pr._push_recreated", return_value={
                  "success": True, "actions": [], "error": "",
              }), \
@@ -563,39 +602,43 @@ class TestCLI:
 # ---------------------------------------------------------------------------
 
 class TestRunTests:
+    """Tests for run_project_tests (now in claude_step.py, used by recreate_pr)."""
+
     def test_tests_pass(self):
-        from app.recreate_pr import _run_tests
-        import subprocess
-        with patch("subprocess.run") as mock_run:
+        from app.claude_step import run_project_tests
+        with patch("app.claude_step.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0,
                 stdout="50 passed in 3.2s",
                 stderr="",
             )
-            result = _run_tests("/project")
-            assert "50 passed" in result
+            result = run_project_tests("/project")
+            assert result["passed"] is True
+            assert "50 passed" in result["details"]
 
     def test_tests_fail(self):
-        from app.recreate_pr import _run_tests
-        with patch("subprocess.run") as mock_run:
+        from app.claude_step import run_project_tests
+        with patch("app.claude_step.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=1,
                 stdout="2 failed, 48 passed",
                 stderr="",
             )
-            result = _run_tests("/project")
-            assert "2 failures" in result
-            assert "non-blocking" in result
+            result = run_project_tests("/project")
+            assert result["passed"] is False
+            assert "2 failed" in result["details"]
 
     def test_tests_timeout(self):
-        from app.recreate_pr import _run_tests
+        from app.claude_step import run_project_tests
         import subprocess
-        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("make", 300)):
-            result = _run_tests("/project")
-            assert "timeout" in result.lower()
+        with patch("app.claude_step.subprocess.run", side_effect=subprocess.TimeoutExpired("make", 300)):
+            result = run_project_tests("/project")
+            assert result["passed"] is False
+            assert "timeout" in result["details"]
 
     def test_no_makefile(self):
-        from app.recreate_pr import _run_tests
-        with patch("subprocess.run", side_effect=FileNotFoundError):
-            result = _run_tests("/project")
-            assert result is None
+        from app.claude_step import run_project_tests
+        with patch("app.claude_step.subprocess.run", side_effect=FileNotFoundError):
+            result = run_project_tests("/project")
+            assert result["passed"] is False
+            assert result["details"] == "command not found"

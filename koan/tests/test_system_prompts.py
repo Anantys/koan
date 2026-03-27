@@ -5,21 +5,21 @@ from pathlib import Path
 PROMPTS_DIR = Path(__file__).parent.parent / "system-prompts"
 
 
-def test_agent_prompt_has_audit_github_issue_instructions():
-    """Audit missions should be instructed to create GitHub issues when appropriate."""
-    agent_prompt = (PROMPTS_DIR / "agent.md").read_text()
+def test_submit_pr_prompt_has_github_issue_instructions():
+    """Submit-pull-request template should instruct to create GitHub issues when appropriate."""
+    prompt = (PROMPTS_DIR / "submit-pull-request.md").read_text()
 
     # Must have the audit section header
-    assert "# Audit Missions" in agent_prompt
+    assert "# Audit Missions" in prompt
 
     # Must mention gh issue create
-    assert "gh issue create" in agent_prompt
+    assert "gh issue create" in prompt
 
     # Must have skip conditions (don't create issues for trivial findings)
-    assert "Skip issue creation when" in agent_prompt
+    assert "Skip issue creation when" in prompt
 
     # Must check for GitHub remote first
-    assert "gh repo view" in agent_prompt
+    assert "gh repo view" in prompt
 
 
 def test_agent_prompt_has_all_required_placeholders():
@@ -47,9 +47,24 @@ def test_agent_prompt_has_branch_pr_notification_instructions():
     agent_prompt = (PROMPTS_DIR / "agent.md").read_text()
 
     # Must mention branch notification in conclusion section
-    assert "pushed a branch" in agent_prompt
+    assert "branch name" in agent_prompt
     # Must mention PR link
-    assert "draft PR" in agent_prompt
+    assert "PR link" in agent_prompt
+
+
+def test_agent_prompt_conclusion_has_project_prefix():
+    """Conclusion message instruction must include project name prefix after emoji."""
+    agent_prompt = (PROMPTS_DIR / "agent.md").read_text()
+
+    # The 🏁 instruction should include {PROJECT_NAME} prefix
+    assert "🏁 [{PROJECT_NAME}]" in agent_prompt
+
+
+def test_format_message_preserves_project_prefix():
+    """Format-message prompt must instruct to preserve project prefixes."""
+    prompt = (PROMPTS_DIR / "format-message.md").read_text()
+
+    assert "project prefix" in prompt.lower()
 
 
 def test_all_prompts_exist():

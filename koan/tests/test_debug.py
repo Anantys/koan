@@ -68,7 +68,51 @@ class TestDebugLog:
 
     def test_handles_config_error(self, tmp_path, monkeypatch):
         monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
-        with patch("app.config.get_debug_enabled", side_effect=RuntimeError("boom")):
+        with patch("app.config.get_debug_enabled", side_effect=ImportError("boom")):
             # Should not raise — falls back to disabled
             debug_log("config error")
         assert not (tmp_path / ".koan-debug.log").exists()
+
+    def test_handles_os_error_from_config(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        with patch("app.config.get_debug_enabled", side_effect=OSError("disk")):
+            debug_log("os error")
+        assert not (tmp_path / ".koan-debug.log").exists()
+
+    def test_handles_value_error_from_config(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        with patch("app.config.get_debug_enabled", side_effect=ValueError("bad")):
+            debug_log("value error")
+        assert not (tmp_path / ".koan-debug.log").exists()
+
+    def test_enabled_but_empty_koan_root(self, monkeypatch):
+        monkeypatch.setenv("KOAN_ROOT", "")
+        with patch("app.config.get_debug_enabled", return_value=True):
+            debug_log("no root dir")
+        # Empty KOAN_ROOT disables debug even when config says enabled
+
+    def test_write_error_silently_ignored(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        with patch("app.config.get_debug_enabled", return_value=True):
+            debug_log("init")  # triggers _init, sets _log_path
+        with patch("builtins.open", side_effect=OSError("permission denied")):
+            # Should not raise
+            debug_log("write fails")
+
+    def test_timestamp_format(self, tmp_path, monkeypatch):
+        import re
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        with patch("app.config.get_debug_enabled", return_value=True):
+            debug_log("check format")
+        content = (tmp_path / ".koan-debug.log").read_text().strip()
+        # Expected: [YYYY-MM-DD HH:MM:SS] check format
+        assert re.match(r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] check format$", content)
+
+    def test_lazy_init_only_once(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        with patch("app.config.get_debug_enabled", return_value=True) as mock_cfg:
+            debug_log("first")
+            debug_log("second")
+            debug_log("third")
+            # _init called only on the first debug_log
+            assert mock_cfg.call_count == 1

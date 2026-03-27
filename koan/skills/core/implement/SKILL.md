@@ -1,6 +1,7 @@
 ---
 name: implement
 scope: core
+group: code
 description: "Implement a GitHub issue (ex: /implement https://github.com/owner/repo/issues/42)"
 version: 1.0.0
 audience: hybrid

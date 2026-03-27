@@ -23,10 +23,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from app.signals import FOCUS_FILE
+
 # Default focus duration: 5 hours
 DEFAULT_FOCUS_DURATION = 5 * 60 * 60
-
-FOCUS_FILE = ".koan-focus"
 
 
 @dataclass

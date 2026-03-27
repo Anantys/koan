@@ -9,6 +9,7 @@ Default: 3 backups, 50MB max per backup, gzip compression for .log.2+.
 Configurable via instance/config.yaml under `logs:` key.
 """
 
+import fcntl
 import gzip
 import os
 import shutil
@@ -68,31 +69,23 @@ def rotate_log(log_path: Path, max_backups: int = DEFAULT_MAX_BACKUPS,
         # Permission denied or other filesystem error
         return
 
-    # Use a lock file to prevent concurrent rotation
+    # Use flock for concurrent rotation protection (consistent with project conventions)
     lock_path = log_path.with_suffix(f"{log_path.suffix}.lock")
-    lock_fd = None
+    lock_fh = None
     try:
-        lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-    except FileExistsError:
-        # Stale lock from a crash? Remove if older than 60s
-        try:
-            import time as _time
-            if _time.time() - lock_path.stat().st_mtime > 60:
-                lock_path.unlink(missing_ok=True)
-                lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-            else:
-                return
-        except (OSError, IOError):
-            return
+        lock_fh = open(lock_path, "w")
+        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except (OSError, IOError):
-        # Permission error or filesystem issue
+        # Another process is rotating — skip
+        if lock_fh:
+            lock_fh.close()
         return
-    
+
     try:
         # Re-check file still exists after acquiring lock
         if not log_path.exists():
             return
-        
+
         # Shift existing backups (highest first to avoid overwrite)
         for i in range(max_backups, 0, -1):
             src = _backup_path(log_path, i)
@@ -118,16 +111,15 @@ def rotate_log(log_path: Path, max_backups: int = DEFAULT_MAX_BACKUPS,
                 if plain.exists() and plain.suffix != ".gz":
                     _compress_file(plain)
     finally:
-        # Always release lock
-        if lock_fd is not None:
+        if lock_fh:
             try:
-                os.close(lock_fd)
+                lock_fh.close()  # close() releases the flock
+            except (OSError, ValueError):
+                pass
+            try:
+                lock_path.unlink(missing_ok=True)
             except OSError:
                 pass
-        try:
-            lock_path.unlink(missing_ok=True)
-        except OSError:
-            pass
 
 
 def _backup_path(log_path: Path, index: int) -> Path:

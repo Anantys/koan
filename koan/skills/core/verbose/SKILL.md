@@ -1,6 +1,7 @@
 ---
 name: verbose
 scope: core
+group: config
 description: Toggle verbose/silent progress updates
 version: 1.0.0
 audience: bridge

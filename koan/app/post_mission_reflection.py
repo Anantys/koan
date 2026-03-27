@@ -135,7 +135,7 @@ def build_reflection_prompt(
 
     # Load and fill template
     template = _get_prompt_template()
-    return template.format(
+    prompt = template.format(
         INSTANCE=str(instance_dir),
         SOUL_CONTEXT=soul_context or "(no soul.md found)",
         EMOTIONAL_CONTEXT=emotional_context or "(no emotional-memory.md found)",
@@ -143,6 +143,24 @@ def build_reflection_prompt(
         MISSION_TEXT=mission_text,
         MISSION_JOURNAL=mission_journal or "(no journal content available)",
     )
+
+    # Append spec comparison if a spec was generated for this mission
+    try:
+        from app.spec_generator import load_spec_for_mission
+        spec = load_spec_for_mission(str(instance_dir), mission_text)
+        if spec:
+            spec_excerpt = spec[:1500]
+            prompt += (
+                "\n\n## Mission Spec Comparison\n\n"
+                "A spec was generated before this mission started. Compare the "
+                "implementation against the original spec. Note any deviations "
+                "and whether they were justified.\n\n"
+                f"### Original Spec\n\n{spec_excerpt}\n"
+            )
+    except Exception as e:
+        print(f"[post_mission_reflection] Spec comparison skipped: {e}", file=sys.stderr)
+
+    return prompt
 
 
 def write_to_journal(instance_dir: Path, reflection: str):
@@ -156,7 +174,10 @@ def write_to_journal(instance_dir: Path, reflection: str):
 
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-    existing = journal_file.read_text() if journal_file.exists() else ""
+    try:
+        existing = journal_file.read_text()
+    except OSError:
+        existing = ""
     new_content = existing.rstrip() + f"\n\n### Kōan — {timestamp}\n\n{reflection}\n"
 
     atomic_write(journal_file, new_content)

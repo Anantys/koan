@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from app.messaging.base import MessagingProvider, Update, Message
+from app.messaging.base import DEFAULT_MAX_MESSAGE_SIZE, MessagingProvider, Update, Message
 
 
 # ---------------------------------------------------------------------------
@@ -276,3 +276,50 @@ class TestProviderResolution:
                 return_value={"messaging": {"provider": "telegram"}},
             ):
                 assert _resolve_provider_name() == "slack"
+
+
+# ---------------------------------------------------------------------------
+# DEFAULT_MAX_MESSAGE_SIZE constant consistency
+# ---------------------------------------------------------------------------
+
+class TestDefaultMaxMessageSize:
+    """Verify the shared constant is used consistently across all providers."""
+
+    def test_constant_value(self):
+        assert DEFAULT_MAX_MESSAGE_SIZE == 4000
+
+    def test_exported_from_package(self):
+        from app.messaging import DEFAULT_MAX_MESSAGE_SIZE as pkg_const
+        assert pkg_const == 4000
+        assert pkg_const is DEFAULT_MAX_MESSAGE_SIZE
+
+    def test_telegram_uses_shared_constant(self):
+        from app.messaging.telegram import MAX_MESSAGE_SIZE
+        assert MAX_MESSAGE_SIZE == DEFAULT_MAX_MESSAGE_SIZE
+
+    def test_slack_uses_shared_constant(self):
+        from app.messaging.slack import MAX_MESSAGE_SIZE
+        assert MAX_MESSAGE_SIZE == DEFAULT_MAX_MESSAGE_SIZE
+
+    def test_chunk_message_default_matches_constant(self):
+        """Base class chunk_message default matches DEFAULT_MAX_MESSAGE_SIZE."""
+        provider = MockProvider()
+        # A message exactly at the limit should be a single chunk
+        text = "a" * DEFAULT_MAX_MESSAGE_SIZE
+        assert provider.chunk_message(text) == [text]
+        # One char over should split into two chunks
+        text_plus_one = "a" * (DEFAULT_MAX_MESSAGE_SIZE + 1)
+        chunks = provider.chunk_message(text_plus_one)
+        assert len(chunks) == 2
+        assert len(chunks[0]) == DEFAULT_MAX_MESSAGE_SIZE
+
+
+# ---------------------------------------------------------------------------
+# send_typing (base class default)
+# ---------------------------------------------------------------------------
+
+class TestSendTypingBase:
+    def test_default_send_typing_returns_true(self):
+        """Base class send_typing is a no-op that returns True."""
+        provider = MockProvider()
+        assert provider.send_typing() is True

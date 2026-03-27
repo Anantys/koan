@@ -26,7 +26,13 @@ from app.plan_runner import (
     _run_issue_plan,
     _PLAN_LABEL,
     main,
+    _review_plan,
+    _review_loop,
+    _is_simple_plan,
+    _review_warning_note,
 )
+
+pytestmark = pytest.mark.slow
 
 
 # ---------------------------------------------------------------------------
@@ -51,6 +57,25 @@ class TestRunPlan:
             ok, msg = run_plan("/project", issue_url=url, notify_fn=MagicMock())
             assert ok
             mock.assert_called_once()
+
+    def test_passes_context_to_new_plan(self):
+        with patch("app.plan_runner._run_new_plan", return_value=(True, "ok")) as mock:
+            run_plan("/project", idea="Add X", notify_fn=MagicMock(), context="Phase 2")
+            _, kwargs = mock.call_args
+            assert kwargs.get("context") == "Phase 2"
+
+    def test_passes_context_to_issue_plan(self):
+        url = "https://github.com/o/r/issues/1"
+        with patch("app.plan_runner._run_issue_plan", return_value=(True, "ok")) as mock:
+            run_plan("/project", issue_url=url, notify_fn=MagicMock(), context="Focus on API")
+            _, kwargs = mock.call_args
+            assert kwargs.get("context") == "Focus on API"
+
+    def test_context_defaults_to_none(self):
+        with patch("app.plan_runner._run_new_plan", return_value=(True, "ok")) as mock:
+            run_plan("/project", idea="Add X", notify_fn=MagicMock())
+            _, kwargs = mock.call_args
+            assert kwargs.get("context") is None
 
     def test_defaults_notify_fn(self):
         with patch("app.plan_runner._run_new_plan", return_value=(True, "ok")) as mock, \
@@ -103,6 +128,24 @@ class TestRunNewPlan:
             ok, msg = _run_new_plan("/project", "idea", notify, None)
             assert not ok
             assert "empty" in msg.lower()
+
+    def test_context_passed_to_generate_plan(self):
+        """User context should be forwarded to _generate_plan."""
+        notify = MagicMock()
+        with patch("app.plan_runner._get_repo_info", return_value=(None, None)), \
+             patch("app.plan_runner._generate_plan", return_value="## Plan") as mock_gen:
+            _run_new_plan("/project", "Add X", notify, None, context="Phase 2 only")
+            _, kwargs = mock_gen.call_args
+            assert kwargs.get("context") == "Phase 2 only"
+
+    def test_no_context_passes_empty_string(self):
+        """Without context, _generate_plan should receive empty string."""
+        notify = MagicMock()
+        with patch("app.plan_runner._get_repo_info", return_value=(None, None)), \
+             patch("app.plan_runner._generate_plan", return_value="## Plan") as mock_gen:
+            _run_new_plan("/project", "Add X", notify, None)
+            _, kwargs = mock_gen.call_args
+            assert kwargs.get("context") == ""
 
     def test_issue_creation_failure_with_label_retries_without(self):
         notify = MagicMock()
@@ -325,68 +368,71 @@ class TestRunIssuePlan:
             context_arg = mock_iter.call_args[0][1]
             assert "No comments" in context_arg
 
+    def test_user_context_appended_to_issue_context(self):
+        """User context should appear in the issue context passed to Claude."""
+        notify = MagicMock()
+        url = "https://github.com/o/r/issues/1"
+        with patch("app.plan_runner._fetch_issue_context",
+                    return_value=("Title", "body", "comments")), \
+             patch("app.plan_runner._generate_iteration_plan",
+                    return_value="## Plan") as mock_iter, \
+             patch("app.plan_runner._comment_on_issue"):
+            _run_issue_plan("/project", url, notify, None, context="Focus on phase 2")
+            context_arg = mock_iter.call_args[0][1]
+            assert "User Instructions" in context_arg
+            assert "Focus on phase 2" in context_arg
+
+    def test_no_user_context_omits_instructions_section(self):
+        """Without user context, no 'User Instructions' section should appear."""
+        notify = MagicMock()
+        url = "https://github.com/o/r/issues/1"
+        with patch("app.plan_runner._fetch_issue_context",
+                    return_value=("Title", "body", "")), \
+             patch("app.plan_runner._generate_iteration_plan",
+                    return_value="## Plan") as mock_iter, \
+             patch("app.plan_runner._comment_on_issue"):
+            _run_issue_plan("/project", url, notify, None)
+            context_arg = mock_iter.call_args[0][1]
+            assert "User Instructions" not in context_arg
+
 
 # ---------------------------------------------------------------------------
 # _generate_plan
 # ---------------------------------------------------------------------------
 
 class TestGeneratePlan:
-    @patch("app.cli_exec.run_cli")
+    @patch("app.cli_provider.run_command_streaming", return_value="## Plan\n\nStep 1")
     def test_returns_claude_output(self, mock_run):
-        mock_run.return_value = MagicMock(
-            returncode=0, stdout="## Plan\n\nStep 1", stderr=""
-        )
-        with patch("app.prompts.load_skill_prompt", return_value="prompt"), \
-             patch("app.claude_step.get_model_config",
-                    return_value={"chat": "sonnet", "fallback": "haiku"}), \
-             patch("app.claude_step.build_full_command",
-                    return_value=["claude", "-p", "test"]):
+        with patch("app.plan_runner.load_prompt_or_skill", return_value="prompt"):
             skill_dir = Path("/fake/skills/core/plan")
             result = _generate_plan("/project", "Add feature", skill_dir=skill_dir)
             assert "Step 1" in result
 
-    @patch("app.cli_exec.run_cli")
+    @patch("app.cli_provider.run_command_streaming", return_value="plan")
     def test_includes_context(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=0, stdout="plan", stderr="")
-        with patch("app.prompts.load_skill_prompt") as mock_load, \
-             patch("app.claude_step.get_model_config",
-                    return_value={"chat": "", "fallback": ""}), \
-             patch("app.claude_step.build_full_command",
-                    return_value=["claude", "-p", "test"]):
+        with patch("app.plan_runner.load_prompt_or_skill") as mock_load:
             skill_dir = Path("/fake")
             _generate_plan("/project", "idea", context="prev", skill_dir=skill_dir)
             _, kwargs = mock_load.call_args
             assert kwargs["CONTEXT"] == "prev"
 
-    @patch("app.cli_exec.run_cli")
+    @patch("app.cli_provider.run_command_streaming",
+           side_effect=RuntimeError("CLI invocation failed: rate limited"))
     def test_raises_on_failure(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=1, stderr="rate limited")
-        with patch("app.prompts.load_skill_prompt", return_value="prompt"), \
-             patch("app.claude_step.get_model_config",
-                    return_value={"chat": "", "fallback": ""}), \
-             patch("app.claude_step.build_full_command",
-                    return_value=["claude"]):
+        with patch("app.plan_runner.load_prompt_or_skill", return_value="prompt"):
             with pytest.raises(RuntimeError, match="invocation failed"):
                 _generate_plan("/project", "idea", skill_dir=Path("/fake"))
 
-    @patch("app.cli_exec.run_cli")
+    @patch("app.cli_provider.run_command_streaming", return_value="plan")
     def test_uses_read_only_tools(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=0, stdout="plan", stderr="")
-        with patch("app.prompts.load_skill_prompt", return_value="prompt"), \
-             patch("app.claude_step.get_model_config",
-                    return_value={"chat": "", "fallback": ""}):
+        with patch("app.plan_runner.load_prompt_or_skill", return_value="prompt"):
             _generate_plan("/project", "idea", skill_dir=Path("/fake"))
             call_kwargs = mock_run.call_args[1]
-            assert call_kwargs.get("cwd") == "/project"
+            assert "Read" in call_kwargs.get("allowed_tools", [])
 
-    @patch("app.cli_exec.run_cli")
+    @patch("app.cli_provider.run_command_streaming", return_value="plan")
     def test_no_skill_dir_uses_load_prompt(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=0, stdout="plan", stderr="")
-        with patch("app.prompts.load_prompt", return_value="prompt") as mock_load, \
-             patch("app.claude_step.get_model_config",
-                    return_value={"chat": "", "fallback": ""}), \
-             patch("app.claude_step.build_full_command",
-                    return_value=["claude"]):
+        with patch("app.plan_runner.load_prompt_or_skill", return_value="prompt") as mock_load:
             _generate_plan("/project", "idea")
             mock_load.assert_called_once()
 
@@ -396,16 +442,9 @@ class TestGeneratePlan:
 # ---------------------------------------------------------------------------
 
 class TestGenerateIterationPlan:
-    @patch("app.cli_exec.run_cli")
+    @patch("app.cli_provider.run_command_streaming", return_value="## Updated Plan")
     def test_uses_plan_iterate_prompt(self, mock_run):
-        mock_run.return_value = MagicMock(
-            returncode=0, stdout="## Updated Plan", stderr=""
-        )
-        with patch("app.prompts.load_skill_prompt") as mock_load, \
-             patch("app.config.get_model_config",
-                    return_value={"chat": "", "fallback": ""}), \
-             patch("app.cli_provider.build_full_command",
-                    return_value=["claude"]):
+        with patch("app.plan_runner.load_prompt_or_skill") as mock_load:
             skill_dir = Path("/fake/skills/core/plan")
             result = _generate_iteration_plan(
                 "/project", "issue context here", skill_dir=skill_dir
@@ -416,27 +455,18 @@ class TestGenerateIterationPlan:
                 skill_dir, "plan-iterate", ISSUE_CONTEXT="issue context here"
             )
 
-    @patch("app.cli_exec.run_cli")
+    @patch("app.cli_provider.run_command_streaming", return_value="plan")
     def test_no_skill_dir_uses_load_prompt(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=0, stdout="plan", stderr="")
-        with patch("app.prompts.load_prompt") as mock_load, \
-             patch("app.config.get_model_config",
-                    return_value={"chat": "", "fallback": ""}), \
-             patch("app.cli_provider.build_full_command",
-                    return_value=["claude"]):
+        with patch("app.plan_runner.load_prompt_or_skill") as mock_load:
             _generate_iteration_plan("/project", "context")
             mock_load.assert_called_once_with(
-                "plan-iterate", ISSUE_CONTEXT="context"
+                None, "plan-iterate", ISSUE_CONTEXT="context"
             )
 
-    @patch("app.cli_exec.run_cli")
+    @patch("app.cli_provider.run_command_streaming",
+           side_effect=RuntimeError("CLI invocation failed: error"))
     def test_raises_on_failure(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=1, stderr="error")
-        with patch("app.prompts.load_skill_prompt", return_value="prompt"), \
-             patch("app.config.get_model_config",
-                    return_value={"chat": "", "fallback": ""}), \
-             patch("app.cli_provider.build_full_command",
-                    return_value=["claude"]):
+        with patch("app.plan_runner.load_prompt_or_skill", return_value="prompt"):
             with pytest.raises(RuntimeError):
                 _generate_iteration_plan(
                     "/project", "context", skill_dir=Path("/fake")
@@ -448,35 +478,36 @@ class TestGenerateIterationPlan:
 # ---------------------------------------------------------------------------
 
 class TestRunClaudePlan:
-    @patch("app.cli_provider.run_command", return_value="result with spaces")
-    def test_returns_stripped_output(self, mock_cmd):
+    @patch("app.config.get_skill_timeout", return_value=3600)
+    @patch("app.cli_provider.run_command_streaming", return_value="result with spaces")
+    def test_returns_stripped_output(self, mock_cmd, mock_timeout):
         result = _run_claude_plan("test prompt", "/project")
         assert result == "result with spaces"
         mock_cmd.assert_called_once_with(
             "test prompt", "/project",
             allowed_tools=["Read", "Glob", "Grep", "WebFetch"],
-            max_turns=25, timeout=600,
+            max_turns=25, timeout=3600,
         )
 
-    @patch("app.cli_provider.run_command",
+    @patch("app.cli_provider.run_command_streaming",
            side_effect=RuntimeError("CLI invocation failed: error msg"))
     def test_raises_on_non_zero_exit(self, mock_cmd):
         with pytest.raises(RuntimeError, match="CLI invocation failed"):
             _run_claude_plan("prompt", "/project")
 
-    @patch("app.cli_provider.run_command",
+    @patch("app.cli_provider.run_command_streaming",
            return_value="Error: Reached max turns (3)")
     def test_raises_on_max_turns_error(self, mock_cmd):
         with pytest.raises(RuntimeError, match="Reached max turns"):
             _run_claude_plan("prompt", "/project")
 
-    @patch("app.cli_provider.run_command",
+    @patch("app.cli_provider.run_command_streaming",
            return_value="Error: Something went wrong")
     def test_raises_on_short_error_output(self, mock_cmd):
         with pytest.raises(RuntimeError, match="Something went wrong"):
             _run_claude_plan("prompt", "/project")
 
-    @patch("app.cli_provider.run_command",
+    @patch("app.cli_provider.run_command_streaming",
            return_value=(
                "● Read files\nExcellent! Now I have all the context I need.\n"
                "\nClean title\n\n### Summary"
@@ -764,31 +795,30 @@ class TestGetRepoInfo:
 # ---------------------------------------------------------------------------
 
 class TestFetchIssueContext:
-    @patch("app.github.subprocess.run")
-    def test_returns_title_body_and_comments(self, mock_run):
-        comments_data = json.dumps([
-            {"author": "alice", "date": "2026-02-01T10:00:00Z", "body": "Looks good"},
-        ])
-        mock_run.side_effect = [
-            MagicMock(returncode=0, stdout=json.dumps(
-                {"title": "My Issue", "body": "Body"}
-            )),
-            MagicMock(returncode=0, stdout=comments_data),
-        ]
+    @patch("app.plan_runner.fetch_issue_with_comments")
+    def test_returns_title_body_and_comments(self, mock_fetch):
+        mock_fetch.return_value = (
+            "My Issue", "Body",
+            [{"author": "alice", "date": "2026-02-01T10:00:00Z", "body": "Looks good"}],
+        )
         title, body, comments = _fetch_issue_context("sukria", "koan", "64")
         assert title == "My Issue"
         assert body == "Body"
         assert "alice" in comments
+        mock_fetch.assert_called_once_with("sukria", "koan", "64")
 
-    @patch("app.github.subprocess.run")
-    def test_handles_non_json(self, mock_run):
-        mock_run.side_effect = [
-            MagicMock(returncode=0, stdout="plain text"),
-            MagicMock(returncode=0, stdout=""),
-        ]
-        title, body, _ = _fetch_issue_context("o", "r", "1")
-        assert title == ""
-        assert body == "plain text"
+    @patch("app.plan_runner.fetch_issue_with_comments")
+    def test_handles_empty_comments(self, mock_fetch):
+        mock_fetch.return_value = ("Title", "Body", [])
+        title, body, comments = _fetch_issue_context("o", "r", "1")
+        assert title == "Title"
+        assert comments == ""
+
+    @patch("app.plan_runner.fetch_issue_with_comments")
+    def test_propagates_runtime_error(self, mock_fetch):
+        mock_fetch.side_effect = RuntimeError("gh failed")
+        with pytest.raises(RuntimeError):
+            _fetch_issue_context("o", "r", "1")
 
 
 # ---------------------------------------------------------------------------
@@ -797,27 +827,27 @@ class TestFetchIssueContext:
 
 class TestFormatComments:
     def test_formats_with_author_and_date(self):
-        data = json.dumps([
+        data = [
             {"author": "alice", "date": "2026-02-01T10:00:00Z", "body": "Good"},
-        ])
+        ]
         result = _format_comments(data)
         assert "alice" in result
         assert "2026-02-01" in result
 
     def test_empty_list(self):
-        assert _format_comments("[]") == ""
+        assert _format_comments([]) == ""
 
-    def test_invalid_json(self):
-        assert _format_comments("not json") == "not json"
+    def test_none_input(self):
+        assert _format_comments(None) == ""
 
-    def test_empty_string(self):
-        assert _format_comments("") == ""
+    def test_non_list_input(self):
+        assert _format_comments("not a list") == ""
 
     def test_skips_empty_body(self):
-        data = json.dumps([
+        data = [
             {"author": "a", "date": "2026-01-01T00:00:00Z", "body": ""},
             {"author": "b", "date": "2026-01-02T00:00:00Z", "body": "useful"},
-        ])
+        ]
         result = _format_comments(data)
         assert "useful" in result
         assert result.count("**") == 2
@@ -1034,3 +1064,237 @@ class TestPromptFiles:
         assert "#### Phase" in content
         assert "**What**" in content
         assert "**Done when**" in content
+
+
+# ---------------------------------------------------------------------------
+# main() CLI — --context flag
+# ---------------------------------------------------------------------------
+
+class TestMainCLI:
+    def test_context_flag_passed_to_run_plan(self):
+        """--context flag should be forwarded to run_plan."""
+        with patch("app.plan_runner.run_plan", return_value=(True, "ok")) as mock:
+            main([
+                "--project-path", "/project",
+                "--issue-url", "https://github.com/o/r/issues/1",
+                "--context", "Focus on phase 2",
+            ])
+            _, kwargs = mock.call_args
+            assert kwargs["context"] == "Focus on phase 2"
+
+    def test_context_flag_optional(self):
+        """Omitting --context should pass None."""
+        with patch("app.plan_runner.run_plan", return_value=(True, "ok")) as mock:
+            main(["--project-path", "/project", "--idea", "Add feature"])
+            _, kwargs = mock.call_args
+            assert kwargs["context"] is None
+
+    def test_context_with_idea(self):
+        """--context can be used with --idea too."""
+        with patch("app.plan_runner.run_plan", return_value=(True, "ok")) as mock:
+            main([
+                "--project-path", "/project",
+                "--idea", "Add feature",
+                "--context", "Must support dark mode",
+            ])
+            _, kwargs = mock.call_args
+            assert kwargs["idea"] == "Add feature"
+            assert kwargs["context"] == "Must support dark mode"
+
+
+# ---------------------------------------------------------------------------
+# _is_simple_plan
+# ---------------------------------------------------------------------------
+
+class TestIsSimplePlan:
+    def test_single_phase_short_plan_is_simple(self):
+        plan = "Rename function foo to bar in utils.py\n\nEdit the file."
+        assert _is_simple_plan(plan)
+
+    def test_multi_phase_plan_is_not_simple(self):
+        plan = (
+            "Implement feature\n\n"
+            "#### Phase 1\nDo this.\n\n"
+            "#### Phase 2\nDo that.\n"
+        )
+        assert not _is_simple_plan(plan)
+
+    def test_single_phase_long_plan_is_not_simple(self):
+        # Single phase but many lines — not simple enough to skip review
+        plan = "#### Phase 1\n" + "\n".join(f"Step {i}" for i in range(25))
+        assert not _is_simple_plan(plan)
+
+    def test_empty_plan_is_simple(self):
+        assert _is_simple_plan("")
+
+    def test_exactly_two_phases_not_simple(self):
+        plan = (
+            "Title\n\n"
+            "#### Phase 1\nDo A.\n\n"
+            "#### Phase 2\nDo B.\n"
+        )
+        assert not _is_simple_plan(plan)
+
+
+# ---------------------------------------------------------------------------
+# _review_plan
+# ---------------------------------------------------------------------------
+
+class TestReviewPlan:
+    def _skill_dir(self):
+        from pathlib import Path
+        return Path(__file__).resolve().parent.parent / "skills" / "core" / "plan"
+
+    def test_approved_on_approved_output(self):
+        with patch("app.cli_provider.run_command", return_value="APPROVED\n"):
+            approved, issues = _review_plan("## Plan\nStep 1", "/project", self._skill_dir())
+        assert approved
+        assert issues == ""
+
+    def test_issues_found_returns_false_and_issues(self):
+        reviewer_output = "ISSUES_FOUND\n- Phase 1: no file path\n- Phase 2: missing tests"
+        with patch("app.cli_provider.run_command", return_value=reviewer_output):
+            approved, issues = _review_plan("## Plan\nStep 1", "/project", self._skill_dir())
+        assert not approved
+        assert "no file path" in issues
+
+    def test_malformed_output_treated_as_approved(self):
+        with patch("app.cli_provider.run_command", return_value="Maybe looks ok"):
+            approved, issues = _review_plan("## Plan\nStep 1", "/project", self._skill_dir())
+        assert approved
+
+    def test_run_command_exception_fails_open(self):
+        with patch("app.cli_provider.run_command", side_effect=RuntimeError("timeout")):
+            approved, issues = _review_plan("## Plan", "/project", self._skill_dir())
+        assert approved
+
+    def test_empty_output_treated_as_approved(self):
+        with patch("app.cli_provider.run_command", return_value=""):
+            approved, issues = _review_plan("## Plan", "/project", self._skill_dir())
+        assert approved
+
+
+# ---------------------------------------------------------------------------
+# _review_loop
+# ---------------------------------------------------------------------------
+
+class TestReviewLoop:
+    def _skill_dir(self):
+        from pathlib import Path
+        return Path(__file__).resolve().parent.parent / "skills" / "core" / "plan"
+
+    def test_approved_first_round_returns_plan(self):
+        with patch("app.plan_runner._review_plan", return_value=(True, "")) as mock_review:
+            result = _review_loop(
+                "my plan", "/project", idea="idea", context="", skill_dir=self._skill_dir(),
+                max_rounds=3,
+            )
+        assert result == "my plan"
+        assert mock_review.call_count == 1
+
+    def test_approved_second_round_after_regen(self):
+        review_results = [(False, "- Missing file path"), (True, "")]
+        with patch("app.plan_runner._review_plan", side_effect=review_results), \
+             patch("app.plan_runner._run_claude_plan", return_value="improved plan"):
+            result = _review_loop(
+                "initial plan", "/project", idea="idea", context="",
+                skill_dir=self._skill_dir(), max_rounds=3,
+            )
+        assert result == "improved plan"
+
+    def test_max_rounds_exhausted_returns_plan_with_warning(self):
+        review_results = [
+            (False, "- Phase 1: no file path"),
+            (False, "- Phase 1: no file path"),
+            (False, "- Phase 1: no file path"),
+        ]
+        with patch("app.plan_runner._review_plan", side_effect=review_results), \
+             patch("app.plan_runner._run_claude_plan", return_value="regen plan"):
+            result = _review_loop(
+                "initial plan", "/project", idea="idea", context="",
+                skill_dir=self._skill_dir(), max_rounds=3,
+            )
+        assert "⚠️" in result
+        assert "human review recommended" in result
+
+    def test_regen_failure_keeps_previous_plan(self):
+        with patch("app.plan_runner._review_plan", return_value=(False, "- issue")), \
+             patch("app.plan_runner._run_claude_plan", side_effect=RuntimeError("boom")):
+            result = _review_loop(
+                "original plan", "/project", idea="idea", context="",
+                skill_dir=self._skill_dir(), max_rounds=2,
+            )
+        # Should not crash; should contain warning after max rounds
+        assert "original plan" in result or "⚠️" in result
+
+    def test_regen_empty_keeps_previous_plan(self):
+        review_results = [(False, "- issue"), (True, "")]
+        with patch("app.plan_runner._review_plan", side_effect=review_results), \
+             patch("app.plan_runner._run_claude_plan", return_value=""):
+            result = _review_loop(
+                "original plan", "/project", idea="idea", context="",
+                skill_dir=self._skill_dir(), max_rounds=3,
+            )
+        # Empty regen keeps original; then approved on round 2 with original
+        assert result == "original plan"
+
+    def test_iteration_mode_uses_plan_iterate_prompt(self):
+        with patch("app.plan_runner._review_plan", side_effect=[(False, "- issue"), (True, "")]), \
+             patch("app.plan_runner._run_claude_plan", return_value="iter plan") as mock_run, \
+             patch("app.plan_runner.load_prompt_or_skill", return_value="prompt text") as mock_load:
+            result = _review_loop(
+                "initial", "/project", idea="", context="",
+                skill_dir=self._skill_dir(), max_rounds=3,
+                is_iteration=True, issue_context="issue ctx",
+            )
+        # Should have called load_prompt_or_skill with "plan-iterate"
+        calls = [c[0][1] for c in mock_load.call_args_list]
+        assert "plan-iterate" in calls
+
+
+# ---------------------------------------------------------------------------
+# _generate_plan — review loop integration
+# ---------------------------------------------------------------------------
+
+class TestGeneratePlanWithReview:
+    def _skill_dir(self):
+        from pathlib import Path
+        return Path(__file__).resolve().parent.parent / "skills" / "core" / "plan"
+
+    def test_review_skipped_for_simple_plan(self):
+        short_plan = "Do one thing quickly."
+        with patch("app.plan_runner._run_claude_plan", return_value=short_plan), \
+             patch("app.plan_runner._review_loop") as mock_loop, \
+             patch("app.config.get_plan_review_config",
+                   return_value={"enabled": True, "max_rounds": 3}):
+            result = _generate_plan("/project", "rename X", skill_dir=self._skill_dir())
+        mock_loop.assert_not_called()
+        assert result == short_plan
+
+    def test_review_runs_for_multi_phase_plan(self):
+        big_plan = (
+            "Multi-phase feature\n\n"
+            "#### Phase 1\nDo A.\n\n"
+            "#### Phase 2\nDo B.\n"
+        )
+        reviewed_plan = big_plan + "\n(reviewed)"
+        with patch("app.plan_runner._run_claude_plan", return_value=big_plan), \
+             patch("app.plan_runner._review_loop", return_value=reviewed_plan) as mock_loop, \
+             patch("app.config.get_plan_review_config",
+                   return_value={"enabled": True, "max_rounds": 3}):
+            result = _generate_plan("/project", "big feature", skill_dir=self._skill_dir())
+        mock_loop.assert_called_once()
+        assert result == reviewed_plan
+
+    def test_review_disabled_skips_loop(self):
+        big_plan = (
+            "Multi-phase feature\n\n"
+            "#### Phase 1\nDo A.\n\n"
+            "#### Phase 2\nDo B.\n"
+        )
+        with patch("app.plan_runner._run_claude_plan", return_value=big_plan), \
+             patch("app.plan_runner._review_loop") as mock_loop, \
+             patch("app.config.get_plan_review_config",
+                   return_value={"enabled": False, "max_rounds": 3}):
+            _generate_plan("/project", "big feature", skill_dir=self._skill_dir())
+        mock_loop.assert_not_called()

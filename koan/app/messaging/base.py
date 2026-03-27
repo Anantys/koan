@@ -7,6 +7,10 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+# Shared across all providers — both Telegram and Slack enforce ~4096 char limits.
+# Using 4000 leaves headroom for API overhead and encoding.
+DEFAULT_MAX_MESSAGE_SIZE = 4000
+
 
 @dataclass
 class Message:
@@ -18,10 +22,20 @@ class Message:
 
 
 @dataclass
+class Reaction:
+    """Provider-agnostic reaction representation."""
+    message_id: int
+    emoji: str  # The emoji string (e.g., "👍", "👎", "❤️")
+    is_added: bool  # True = added, False = removed
+    timestamp: str = ""
+
+
+@dataclass
 class Update:
     """Provider-agnostic update from polling."""
     update_id: int
     message: Optional[Message] = None
+    reaction: Optional[Reaction] = None
     raw_data: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -73,7 +87,28 @@ class MessagingProvider(ABC):
         Should print clear error messages to stderr if credentials are missing.
         """
 
-    def chunk_message(self, text: str, max_size: int = 4000) -> List[str]:
+    def get_last_message_ids(self) -> List[int]:
+        """Return message IDs from the last send_message() call.
+
+        Providers that support message ID tracking override this to return
+        the IDs of messages sent in the most recent send_message() invocation.
+        Returns empty list by default (no tracking).
+        """
+        return []
+
+    def send_typing(self) -> bool:
+        """Send a typing indicator to the channel.
+
+        Shows the user that the bot is "thinking". The indicator typically
+        expires after a few seconds (5s on Telegram). Callers that need
+        a persistent indicator should use TypingIndicator context manager.
+
+        Returns:
+            True if the action was sent (or is unsupported — no-op is success).
+        """
+        return True  # No-op by default; providers override if supported
+
+    def chunk_message(self, text: str, max_size: int = DEFAULT_MAX_MESSAGE_SIZE) -> List[str]:
         """Split a message into chunks respecting the provider's size limit.
 
         Note: This is a simple character-based chunking. It does not

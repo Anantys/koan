@@ -63,6 +63,48 @@ def parse_issue_url(url: str) -> Tuple[str, str, str]:
     return match.group(1), match.group(2), match.group(3)
 
 
+def search_pr_url(text: str) -> Tuple[str, str, str]:
+    """Search for a GitHub PR URL anywhere in text.
+
+    Unlike parse_pr_url which expects the URL at the start, this searches
+    the entire string for an embedded PR URL.
+
+    Args:
+        text: Text that may contain a GitHub PR URL
+
+    Returns:
+        Tuple of (owner, repo, pr_number) as strings
+
+    Raises:
+        ValueError: If no PR URL is found in text
+    """
+    match = re.search(PR_URL_PATTERN, text)
+    if not match:
+        raise ValueError(f"No PR URL found in: {text}")
+    return match.group(1), match.group(2), match.group(3)
+
+
+def search_issue_url(text: str) -> Tuple[str, str, str]:
+    """Search for a GitHub issue URL anywhere in text.
+
+    Unlike parse_issue_url which expects the URL at the start, this searches
+    the entire string for an embedded issue URL.
+
+    Args:
+        text: Text that may contain a GitHub issue URL
+
+    Returns:
+        Tuple of (owner, repo, issue_number) as strings
+
+    Raises:
+        ValueError: If no issue URL is found in text
+    """
+    match = re.search(ISSUE_URL_PATTERN, text)
+    if not match:
+        raise ValueError(f"No issue URL found in: {text}")
+    return match.group(1), match.group(2), match.group(3)
+
+
 def parse_github_url(url: str) -> Tuple[str, str, str, str]:
     """Extract owner, repo, type, and number from a GitHub PR or issue URL.
 

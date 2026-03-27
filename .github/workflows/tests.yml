@@ -5,37 +5,66 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      group:
+        description: "Test group to run (fast, slow-1, slow-2, slow-3, or blank for all)"
+        required: false
+        type: string
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 50
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
-        python-version: ["3.12", "3.13", "3.14"]
-        include:
-          - python-version: "3.14"
-            allow-prereleases: true
+        group:
+          - name: fast
+            marker: "not slow"
+          - name: slow-1
+            marker: "slow"
+            split_group: 1
+          - name: slow-2
+            marker: "slow"
+            split_group: 2
+          - name: slow-3
+            marker: "slow"
+            split_group: 3
+
+    name: test (${{ matrix.group.name }})
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+      - name: Set up Python 3.14
+        uses: actions/setup-python@v6
         with:
-          python-version: ${{ matrix.python-version }}
-          allow-prereleases: ${{ matrix.allow-prereleases || false }}
+          python-version: "3.14"
+          allow-prereleases: true
+          cache: 'pip'
+          cache-dependency-path: koan/requirements.txt
 
       - name: Install dependencies
         run: |
           pip install -r koan/requirements.txt
-          pip install pytest
+          pip install pytest pytest-split
 
-      - name: Run tests
+      - name: Run tests (${{ matrix.group.name }})
+        if: ${{ !inputs.group || matrix.group.name == inputs.group }}
         working-directory: koan
         env:
           KOAN_ROOT: ${{ github.workspace }}/koan
           PYTHONPATH: "."
           KOAN_TELEGRAM_TOKEN: "fake-token-for-ci"
-          KOAN_TELEGRAM_CHAT_ID: "123456789"          
-        run: pytest tests/ -v
+          KOAN_TELEGRAM_CHAT_ID: "123456789"
+        run: |
+          if [ -n "${{ matrix.group.split_group }}" ]; then
+            pytest tests/ -m "${{ matrix.group.marker }}" --splits 3 --group ${{ matrix.group.split_group }} -v
+          else
+            pytest tests/ -m "${{ matrix.group.marker }}" -v
+          fi

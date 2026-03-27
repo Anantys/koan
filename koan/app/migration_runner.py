@@ -139,7 +139,7 @@ def list_migrations(
 
 
 if __name__ == "__main__":
-    if not KOAN_ROOT or not INSTANCE_DIR.is_dir():
+    if not os.environ.get("KOAN_ROOT") or not INSTANCE_DIR.is_dir():
         print("KOAN_ROOT not set or instance/ not found.", file=sys.stderr)
         sys.exit(1)
 

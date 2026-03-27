@@ -49,7 +49,7 @@ handler: handler.py
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `name` | yes | Skill identifier (matches directory name) |
+| `name` | yes | Skill identifier (matches directory name). **Must use underscores, not hyphens** — hyphens break Telegram command parsing. |
 | `scope` | no | Defaults to parent directory name |
 | `description` | no | One-line summary shown in `/help` |
 | `version` | no | Semver, defaults to `0.0.0` |
@@ -57,6 +57,7 @@ handler: handler.py
 | `handler` | no | Path to Python handler (relative to skill dir) |
 | `worker` | no | Set to `true` for skills that block (call Claude, APIs, etc.) |
 | `audience` | no | Who consumes this skill: `bridge`, `agent`, `command`, or `hybrid` (default: `bridge`) |
+| `cli_skill` | no | Provider slash command to invoke (e.g. `audit`). Requires `audience: agent`. See [CLI skill bridge](#cli-skill-bridge). |
 | `github_enabled` | no | Set to `true` to allow triggering via GitHub @mentions (default: `false`) |
 | `github_context_aware` | no | Set to `true` if the skill accepts additional context after the command (default: `false`) |
 
@@ -129,6 +130,111 @@ commands:
 Write a haiku about the project described in the soul file.
 Keep it relevant to recent work from the journal.
 ```
+
+## CLI skill bridge
+
+The `cli_skill` field lets you expose any provider slash command (Claude Code, GitHub Copilot, or any other supported CLI) as a Kōan Telegram command — no handler code required.
+
+**How it works:**
+
+1. You type `/ops.audit my-project` in Telegram
+2. Kōan recognises `audience: agent` and queues a mission: `- [project:my-project] /ops.audit`
+3. The runner picks it up and translates it to `/audit` before invoking the Claude CLI
+4. Claude runs `/audit` in the project directory, exactly as if you had typed it in the terminal
+
+The `cli_skill` value is the bare command name without the leading `/`. It is provider-agnostic — Kōan simply passes it through to whichever CLI is configured for the project.
+
+### Complete example — wrapping a custom `/audit` command
+
+**Step 1 — Create the skill directory**
+
+```bash
+mkdir -p instance/skills/ops/audit
+```
+
+**Step 2 — Write the SKILL.md**
+
+```
+instance/skills/ops/audit/SKILL.md
+```
+
+```yaml
+---
+name: audit
+scope: ops
+description: Run a security and maintainability audit via /audit
+version: 1.0.0
+audience: agent
+cli_skill: audit
+commands:
+  - name: audit
+    description: Queue a security/maintainability audit for a project
+    usage: /ops.audit <project> [args]
+---
+```
+
+No `handler` field, no `handler.py` — the `cli_skill` field is all that's needed.
+
+**Step 3 — Use it from Telegram**
+
+```
+/ops.audit my-project Run a deep scan on the auth module
+```
+
+Kōan replies:
+```
+✅ Mission queued (project: my-project):
+
+/ops.audit Run a deep scan on the auth module
+```
+
+Everything after the project name is forwarded as-is to the CLI task. The runner executes the Claude CLI with task `/audit Run a deep scan on the auth module` inside `my-project`.
+
+**Step 4 — (Optional) Create the `/audit` command for Claude Code**
+
+If it doesn't exist yet, add the slash command in your project:
+
+```bash
+mkdir -p my-project/.claude/commands
+cat > my-project/.claude/commands/audit.md << 'EOF'
+Perform a comprehensive security and maintainability audit of this project.
+
+Check for:
+- Dependency vulnerabilities (outdated packages, known CVEs)
+- Secrets or credentials accidentally committed
+- Insecure patterns (hardcoded IPs, eval, shell injection, etc.)
+- Docker and deployment security (root user, exposed ports, etc.)
+- .gitignore coverage for sensitive files
+
+Produce a severity-classified report (Critical / High / Medium / Low) with
+actionable fixes for each finding.
+EOF
+```
+
+Claude Code automatically discovers `.claude/commands/audit.md` as `/audit`.
+
+### How project detection works
+
+When you type `/ops.audit my-project extra args`, Kōan checks whether the first word (`my-project`) matches a known project in your `projects.yaml`. If it does, it prefixes the mission entry with `[project:my-project]` so the runner executes in the right directory. Otherwise all words are passed as arguments to the slash command.
+
+```
+/ops.audit my-project                              → [project:my-project] /ops.audit
+/ops.audit my-project --deep                       → [project:my-project] /ops.audit --deep
+/ops.audit my-project Run a deep scan on auth      → [project:my-project] /ops.audit Run a deep scan on auth
+/ops.audit                                         → /ops.audit   (no project tag)
+```
+
+### Using with any provider slash command
+
+`cli_skill` is not limited to custom commands. You can wrap any slash command your CLI provider supports:
+
+```yaml
+cli_skill: compact         # Claude Code built-in: /compact
+cli_skill: maint-check     # custom command in .claude/commands/maint-check.md
+cli_skill: security-scan   # any name your CLI recognises
+```
+
+The value is passed verbatim as the task text to the CLI, so it must match an existing command in the target project.
 
 ## Writing a handler
 

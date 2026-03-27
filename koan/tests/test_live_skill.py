@@ -83,17 +83,154 @@ class TestReadLiveProgress:
         assert "08:00 — Reading codebase" in result
         assert "08:10 — Writing handler" in result
 
-    def test_returns_all_progress_lines(self, tmp_path):
-        """Unlike /log which truncates to 5 lines, /live shows everything."""
+    def test_returns_all_progress_lines_within_limit(self, tmp_path):
+        """Lines within the display limit are all shown."""
         mod = _load_handler()
         pending = tmp_path / "journal" / "pending.md"
         pending.parent.mkdir(parents=True)
         lines = "\n".join(f"09:{i:02d} — Step {i}" for i in range(15))
         pending.write_text(f"# Mission: test\n\n---\n{lines}")
         result = mod._read_live_progress(tmp_path)
-        # All 15 steps should be present
+        # All 15 steps should be present (within 30-line limit)
         for i in range(15):
             assert f"Step {i}" in result
+
+
+    def test_truncates_long_output_showing_tail(self, tmp_path):
+        """When activity exceeds the limit, only the tail is shown."""
+        mod = _load_handler()
+        pending = tmp_path / "journal" / "pending.md"
+        pending.parent.mkdir(parents=True)
+        lines = "\n".join(f"09:{i:02d} — Step {i}" for i in range(50))
+        pending.write_text(f"# Mission: test\n\n---\n{lines}")
+        result = mod._format_progress(mod._read_live_progress(tmp_path))
+        # Should contain the tail lines
+        assert "Step 49" in result
+        assert "Step 48" in result
+        # Should NOT contain early lines
+        assert "Step 0" not in result
+        # Should indicate truncation
+        assert "earlier lines omitted" in result
+
+
+class TestFormatProgress:
+    """Tests for _format_progress — code block wrapping of activity lines."""
+
+    def test_wraps_activity_in_code_block(self):
+        mod = _load_handler()
+        content = (
+            "# Mission: fix bug\n"
+            "Project: koan\n"
+            "\n"
+            "---\n"
+            "10:00 — Investigating\n"
+            "10:05 — Found root cause"
+        )
+        result = mod._format_progress(content)
+        assert "```\n10:00 — Investigating\n10:05 — Found root cause\n```" in result
+
+    def test_header_preserved_outside_code_block(self):
+        mod = _load_handler()
+        content = (
+            "# Mission: fix bug\n"
+            "Project: koan\n"
+            "\n"
+            "---\n"
+            "10:00 — Investigating"
+        )
+        result = mod._format_progress(content)
+        assert result.startswith("# Mission: fix bug\nProject: koan")
+        assert "```" in result
+
+    def test_no_separator_returns_content_as_is(self):
+        mod = _load_handler()
+        content = "# Mission: fix bug\nProject: koan"
+        result = mod._format_progress(content)
+        assert result == content
+
+    def test_empty_activity_returns_content_as_is(self):
+        mod = _load_handler()
+        content = "# Mission: fix bug\n\n---\n"
+        result = mod._format_progress(content)
+        assert "```" not in result
+
+    def test_multiple_separators_only_splits_on_first(self):
+        mod = _load_handler()
+        content = (
+            "# Mission: fix\n"
+            "\n"
+            "---\n"
+            "10:00 — Step 1\n"
+            "---\n"
+            "10:05 — Step 2"
+        )
+        result = mod._format_progress(content)
+        # The second --- should be inside the code block
+        assert "```\n10:00 — Step 1\n---\n10:05 — Step 2\n```" in result
+
+
+class TestGetInProgressMissions:
+    """Tests for _get_in_progress_missions — fallback when pending.md is absent."""
+
+    def test_no_missions_file(self, tmp_path):
+        mod = _load_handler()
+        result = mod._get_in_progress_missions(tmp_path)
+        assert result == []
+
+    def test_empty_missions_file(self, tmp_path):
+        mod = _load_handler()
+        (tmp_path / "missions.md").write_text(
+            "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n"
+        )
+        result = mod._get_in_progress_missions(tmp_path)
+        assert result == []
+
+    def test_single_in_progress_mission(self, tmp_path):
+        mod = _load_handler()
+        (tmp_path / "missions.md").write_text(
+            "# Missions\n\n## Pending\n\n## In Progress\n\n"
+            "- [project:myapp] /audit security check ▶(2026-03-26T10:00)\n\n"
+            "## Done\n"
+        )
+        result = mod._get_in_progress_missions(tmp_path)
+        assert len(result) == 1
+        project, text = result[0]
+        assert project == "myapp"
+        assert "/audit" in text
+
+    def test_multiple_in_progress_missions(self, tmp_path):
+        mod = _load_handler()
+        (tmp_path / "missions.md").write_text(
+            "# Missions\n\n## Pending\n\n## In Progress\n\n"
+            "- [project:alpha] /review code ▶(2026-03-26T10:00)\n"
+            "- [project:beta] fix the login bug ▶(2026-03-26T10:05)\n\n"
+            "## Done\n"
+        )
+        result = mod._get_in_progress_missions(tmp_path)
+        assert len(result) == 2
+        assert result[0][0] == "alpha"
+        assert result[1][0] == "beta"
+
+
+class TestFormatNoOutput:
+    """Tests for _format_no_output — message when mission runs but has no output."""
+
+    def test_single_mission(self):
+        mod = _load_handler()
+        result = mod._format_no_output([("myapp", "/audit security")])
+        assert "Mission [myapp] running: /audit security" in result
+        assert "No output available yet." in result
+
+    def test_multiple_missions(self):
+        mod = _load_handler()
+        result = mod._format_no_output([
+            ("alpha", "/review code"),
+            ("beta", "fix bug"),
+        ])
+        assert "Missions running:" in result
+        assert "[alpha] /review code" in result
+        assert "[beta] fix bug" in result
+        assert "No output available yet." in result
 
 
 class TestHandleLive:
@@ -111,6 +248,58 @@ class TestHandleLive:
         ctx = _make_ctx(tmp_path)
         result = mod.handle(ctx)
         assert result == "No mission running."
+
+    def test_in_progress_mission_no_output(self, tmp_path):
+        """When a mission is in progress but pending.md doesn't exist yet."""
+        mod = _load_handler()
+        (tmp_path / "journal").mkdir()
+        (tmp_path / "missions.md").write_text(
+            "# Missions\n\n## Pending\n\n## In Progress\n\n"
+            "- [project:koan] /audit full security audit ▶(2026-03-26T10:00)\n\n"
+            "## Done\n"
+        )
+        ctx = _make_ctx(tmp_path)
+        result = mod.handle(ctx)
+        assert "No mission running." not in result
+        assert "koan" in result
+        assert "/audit" in result
+        assert "No output available yet." in result
+
+    def test_in_progress_mission_empty_pending(self, tmp_path):
+        """When a mission is in progress but pending.md is empty."""
+        mod = _load_handler()
+        pending = tmp_path / "journal" / "pending.md"
+        pending.parent.mkdir(parents=True)
+        pending.write_text("")
+        (tmp_path / "missions.md").write_text(
+            "# Missions\n\n## Pending\n\n## In Progress\n\n"
+            "- [project:myapp] implement feature X ▶(2026-03-26T10:00)\n\n"
+            "## Done\n"
+        )
+        ctx = _make_ctx(tmp_path)
+        result = mod.handle(ctx)
+        assert "No mission running." not in result
+        assert "myapp" in result
+        assert "No output available yet." in result
+
+    def test_pending_output_takes_priority_over_missions_check(self, tmp_path):
+        """When pending.md has content, it should be shown (not the fallback)."""
+        mod = _load_handler()
+        pending = tmp_path / "journal" / "pending.md"
+        pending.parent.mkdir(parents=True)
+        pending.write_text(
+            "# Mission: fix bug\nProject: koan\n\n---\n"
+            "10:00 — Investigating\n"
+        )
+        (tmp_path / "missions.md").write_text(
+            "# Missions\n\n## Pending\n\n## In Progress\n\n"
+            "- [project:koan] fix bug ▶(2026-03-26T10:00)\n\n"
+            "## Done\n"
+        )
+        ctx = _make_ctx(tmp_path)
+        result = mod.handle(ctx)
+        assert "Investigating" in result
+        assert "No output available yet." not in result
 
     def test_shows_progress_when_running(self, tmp_path):
         mod = _load_handler()

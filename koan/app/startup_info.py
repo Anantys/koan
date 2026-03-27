@@ -22,7 +22,7 @@ def _get_config_value(key: str, default: str) -> str:
         from app.utils import load_config
         config = load_config()
         return config.get(key, default)
-    except Exception:
+    except (ImportError, OSError, ValueError):
         return default
 
 
@@ -59,7 +59,7 @@ def _get_provider(koan_root: Path) -> str:
     try:
         from app.utils import get_cli_provider_env
         provider = get_cli_provider_env()
-    except Exception:
+    except (ImportError, OSError, ValueError):
         provider = ""
     if not provider:
         provider = _get_config_value("cli_provider", "claude")
@@ -77,7 +77,7 @@ def _get_projects_summary(koan_root: Path) -> str:
         names = [p[0] for p in projects[:3]]
         suffix = f" +{count - 3} more" if count > 3 else ""
         return f"{count} ({', '.join(names)}{suffix})"
-    except Exception:
+    except (ImportError, OSError, ValueError):
         return "unavailable"
 
 
@@ -91,12 +91,12 @@ def _get_skills_summary(koan_root: Path, instance: Path) -> str:
             extra_dirs.append(instance_skills)
         registry = build_registry(extra_dirs)
         core = len(registry.list_by_scope("core"))
-        total = len(registry.all_skills())
+        total = len(registry.list_all())
         extra = total - core
         if extra > 0:
             return f"{core} core + {extra} extra"
         return f"{core} core"
-    except Exception:
+    except (ImportError, OSError, ValueError):
         return "unavailable"
 
 
@@ -109,7 +109,7 @@ def _get_file_size(path: Path) -> str:
         if size >= 1000:
             return f"{size // 1000}k chars"
         return f"{size} chars"
-    except Exception:
+    except OSError:
         return "unavailable"
 
 

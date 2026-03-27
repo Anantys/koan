@@ -3,40 +3,92 @@
 {% block content %}
 <h1>Dashboard</h1>
 
+{# Attention zone — rendered by JS after /api/attention fetch #}
+<div id="attention-zone" class="attention-zone" style="display:none;"></div>
+
 <div class="grid">
     <div class="card">
         <div class="stat-label">Status</div>
         <div class="stat-value" style="font-size:1.3rem;">
-            {% if state == 'running' %}
-                <span class="badge badge-green">{{ state_label }}</span>
-            {% elif state == 'paused' %}
-                <span class="badge badge-orange">{{ state_label }}</span>
-            {% elif state == 'stopped' %}
-                <span class="badge badge-red">{{ state_label }}</span>
-            {% else %}
-                <span class="badge badge-muted">{{ state_label }}</span>
-            {% endif %}
+            <span id="state-badge" class="badge badge-{{ agent_state.badge_color }}">
+                <span id="activity-dot" class="activity-dot activity-dot-{{ agent_state.state }}"></span>
+                <span id="state-label">{{ state_label }}</span>
+            </span>
         </div>
+        <div id="state-elapsed" class="stat-detail"></div>
     </div>
     <div class="card">
         <div class="stat-label">Pending</div>
-        <div class="stat-value">{{ pending_count }}</div>
+        <div class="stat-value" id="count-pending">{{ pending_count }}</div>
     </div>
     <div class="card">
         <div class="stat-label">In Progress</div>
-        <div class="stat-value">{{ in_progress_count }}</div>
+        <div class="stat-value" id="count-in-progress">{{ in_progress_count }}</div>
     </div>
     <div class="card">
         <div class="stat-label">Done</div>
-        <div class="stat-value">{{ done_count }}</div>
+        <div class="stat-value" id="count-done">{{ done_count }}</div>
     </div>
 </div>
+
+{% if agent_state.focus %}
+<div class="card card-focus" id="focus-card">
+    <span id="focus-indicator">Focused — <span id="focus-remaining">{{ agent_state.focus.remaining }}</span> remaining</span>
+</div>
+{% else %}
+<div class="card card-focus" id="focus-card" style="display:none;">
+    <span id="focus-indicator">Focused — <span id="focus-remaining"></span> remaining</span>
+</div>
+{% endif %}
+
+<div id="state-detail" class="card state-detail" {% if agent_state.state == 'idle' %}style="display:none;"{% endif %}>
+    <div class="state-detail-grid">
+        <div id="detail-project" class="detail-item" {% if not agent_state.project %}style="display:none;"{% endif %}>
+            <span class="detail-key">Project</span>
+            <span class="detail-val" id="detail-project-val">{{ agent_state.project }}</span>
+        </div>
+        <div id="detail-run" class="detail-item" {% if not agent_state.run_info %}style="display:none;"{% endif %}>
+            <span class="detail-key">Run</span>
+            <span class="detail-val" id="detail-run-val">{{ agent_state.run_info }}</span>
+        </div>
+        <div id="detail-mode" class="detail-item" {% if not agent_state.autonomous_mode %}style="display:none;"{% endif %}>
+            <span class="detail-key">Mode</span>
+            <span class="detail-val" id="detail-mode-val">{{ agent_state.autonomous_mode }}</span>
+        </div>
+        <div id="detail-pause" class="detail-item" {% if agent_state.state != 'paused' %}style="display:none;"{% endif %}>
+            <span class="detail-key">Pause reason</span>
+            <span class="detail-val" id="detail-pause-val">{{ agent_state.pause_reason }}{% if agent_state.reset_time %} — {{ agent_state.reset_time }}{% endif %}</span>
+        </div>
+        <div id="detail-focus" class="detail-item" {% if not agent_state.focus %}style="display:none;"{% endif %}>
+            <span class="detail-key">Focus</span>
+            <span class="detail-val" id="detail-focus-val">{% if agent_state.focus %}{{ agent_state.focus.remaining }} remaining{% endif %}</span>
+        </div>
+    </div>
+    <div class="detail-link">
+        <a href="/progress">View live output &rarr;</a>
+    </div>
+</div>
+
+{% if project_stats %}
+<h2>Projects</h2>
+<div class="grid">
+{% for pname, pdata in project_stats.items() %}
+    <a href="/?project={{ pname }}" class="card project-card" style="text-decoration:none;color:var(--text);">
+        <div style="font-weight:600;margin-bottom:0.5rem;">{{ "untagged" if pname == "default" else pname }}</div>
+        <div style="font-size:0.85rem;color:var(--text-muted);">
+            <span>{{ pdata.pending }} pending</span>
+            {% if pdata.in_progress %}<span style="margin-left:0.75rem;">{{ pdata.in_progress }} in progress</span>{% endif %}
+        </div>
+    </a>
+{% endfor %}
+</div>
+{% endif %}
 
 {% if missions.in_progress %}
 <h2>In Progress</h2>
 {% for m in missions.in_progress %}
 <div class="card">
-    <div class="mission-item">{{ m }}</div>
+    <div class="mission-item">{% if not selected_project %}{{ m|project_badge|safe }}{% endif %}{{ m|strip_project_tag }}</div>
 </div>
 {% endfor %}
 {% endif %}
@@ -45,20 +97,271 @@
 <h2>Pending</h2>
 {% for m in missions.pending %}
 <div class="card">
-    <div class="mission-item">{{ m }}</div>
+    <div class="mission-item">{% if not selected_project %}{{ m|project_badge|safe }}{% endif %}{{ m|strip_project_tag }}</div>
 </div>
 {% endfor %}
 {% endif %}
 
 <script>
-// Auto-refresh status every 10s
-setInterval(() => {
-    fetch('/api/status')
-        .then(r => r.json())
-        .then(data => {
-            // Could update DOM here; for now just check if page needs reload
-        })
-        .catch(() => {});
-}, 10000);
+(function() {
+    const badgeEl = document.getElementById('state-badge');
+    const labelEl = document.getElementById('state-label');
+    const dotEl = document.getElementById('activity-dot');
+    const elapsedEl = document.getElementById('state-elapsed');
+
+    // Badge color CSS class mapping
+    const colorClasses = ['badge-green', 'badge-orange', 'badge-red', 'badge-blue', 'badge-muted'];
+    const dotClasses = ['activity-dot-working', 'activity-dot-sleeping', 'activity-dot-contemplating',
+                        'activity-dot-paused', 'activity-dot-stopped', 'activity-dot-error_recovery',
+                        'activity-dot-idle'];
+
+    let lastElapsed = {{ agent_state.elapsed }};
+    let lastUpdate = Date.now();
+
+    function formatElapsed(seconds) {
+        if (seconds < 60) return seconds + 's ago';
+        if (seconds < 3600) return Math.floor(seconds / 60) + 'm ago';
+        return Math.floor(seconds / 3600) + 'h ago';
+    }
+
+    function updateElapsed() {
+        const now = Date.now();
+        const delta = Math.floor((now - lastUpdate) / 1000);
+        const current = lastElapsed + delta;
+        elapsedEl.textContent = current > 0 ? formatElapsed(current) : '';
+    }
+
+    // Tick elapsed locally between SSE updates
+    setInterval(updateElapsed, 5000);
+    updateElapsed();
+
+    function applyState(data) {
+        // Update label
+        labelEl.textContent = data.label;
+
+        // Update badge color
+        colorClasses.forEach(c => badgeEl.classList.remove(c));
+        badgeEl.classList.add('badge-' + data.badge_color);
+
+        // Update activity dot
+        dotClasses.forEach(c => dotEl.classList.remove(c));
+        dotEl.classList.add('activity-dot-' + data.state);
+
+        // Update elapsed tracking
+        lastElapsed = data.elapsed;
+        lastUpdate = Date.now();
+        updateElapsed();
+
+        // Update focus card
+        const focusCard = document.getElementById('focus-card');
+        if (focusCard) {
+            if (data.focus) {
+                focusCard.style.display = '';
+                document.getElementById('focus-remaining').textContent = data.focus.remaining;
+            } else {
+                focusCard.style.display = 'none';
+            }
+        }
+
+        // Update detail panel
+        const detailPanel = document.getElementById('state-detail');
+        if (detailPanel) {
+            detailPanel.style.display = data.state === 'idle' ? 'none' : '';
+
+            function showDetail(id, val) {
+                const el = document.getElementById(id);
+                if (el) {
+                    el.style.display = val ? '' : 'none';
+                    const valEl = document.getElementById(id + '-val');
+                    if (valEl) valEl.textContent = val;
+                }
+            }
+
+            showDetail('detail-project', data.project);
+            showDetail('detail-run', data.run_info);
+            showDetail('detail-mode', data.autonomous_mode);
+
+            const pauseEl = document.getElementById('detail-pause');
+            if (pauseEl) {
+                pauseEl.style.display = data.state === 'paused' ? '' : 'none';
+                const pauseVal = document.getElementById('detail-pause-val');
+                if (pauseVal) {
+                    let txt = data.pause_reason || '';
+                    if (data.reset_time) txt += ' — ' + data.reset_time;
+                    pauseVal.textContent = txt;
+                }
+            }
+
+            const focusDetail = document.getElementById('detail-focus');
+            if (focusDetail) {
+                focusDetail.style.display = data.focus ? '' : 'none';
+                const focusVal = document.getElementById('detail-focus-val');
+                if (focusVal && data.focus) {
+                    focusVal.textContent = data.focus.remaining + ' remaining';
+                }
+            }
+        }
+
+        // Update mission counts
+        if (data.missions) {
+            const ids = {pending: 'count-pending', in_progress: 'count-in-progress', done: 'count-done'};
+            for (const [key, id] of Object.entries(ids)) {
+                const el = document.getElementById(id);
+                if (el && data.missions[key] !== undefined) {
+                    el.textContent = data.missions[key];
+                }
+            }
+        }
+    }
+
+    // SSE connection for live state updates
+    function connectSSE() {
+        const source = new EventSource('/api/state/stream');
+        source.onmessage = function(event) {
+            try {
+                const data = JSON.parse(event.data);
+                applyState(data);
+            } catch (e) {}
+        };
+        source.onerror = function() {
+            source.close();
+            // Reconnect after 3s
+            setTimeout(connectSSE, 3000);
+        };
+    }
+    connectSSE();
+
+    // Fallback: poll /api/status every 10s in case SSE fails
+    setInterval(() => {
+        fetch('/api/status')
+            .then(r => r.json())
+            .then(data => {
+                if (data.agent_state) {
+                    applyState(data.agent_state);
+                }
+            })
+            .catch(() => {});
+    }, 10000);
+})();
+</script>
+
+<script>
+// Attention zone
+(function() {
+    const zone = document.getElementById('attention-zone');
+    if (!zone) return;
+
+    const MAX_VISIBLE = 5;
+    const SOURCE_ICONS = {
+        mission: '❌',
+        pr: '🔀',
+        quota: '⏸',
+        github: '💬',
+    };
+
+    function formatAge(seconds) {
+        if (!seconds) return '';
+        if (seconds < 60) return seconds + 's ago';
+        if (seconds < 3600) return Math.floor(seconds / 60) + 'm ago';
+        if (seconds < 86400) return Math.floor(seconds / 3600) + 'h ago';
+        return Math.floor(seconds / 86400) + 'd ago';
+    }
+
+    function renderItem(item) {
+        const icon = SOURCE_ICONS[item.source] || '•';
+        const ageStr = formatAge(item.age_seconds);
+        const metaParts = [];
+        if (item.detail) metaParts.push(item.detail);
+        if (ageStr) metaParts.push(ageStr);
+
+        const titleHtml = item.url
+            ? `<a href="${item.url}" target="_blank" rel="noopener">${escHtml(item.title)}</a>`
+            : escHtml(item.title);
+
+        const div = document.createElement('div');
+        div.className = `attention-item severity-${item.severity}`;
+        div.dataset.id = item.id;
+        div.innerHTML =
+            `<span class="attention-item-icon">${icon}</span>` +
+            `<div class="attention-item-body">` +
+            `  <div class="attention-item-title">${titleHtml}</div>` +
+            (metaParts.length ? `  <div class="attention-item-meta">${escHtml(metaParts.join(' · '))}</div>` : '') +
+            `</div>` +
+            `<button class="attention-item-dismiss" title="Dismiss" data-id="${escAttr(item.id)}">×</button>`;
+        return div;
+    }
+
+    function escHtml(s) {
+        return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+    function escAttr(s) {
+        return String(s).replace(/"/g,'&quot;');
+    }
+
+    function renderZone(items) {
+        zone.innerHTML = '';
+        if (!items || items.length === 0) {
+            zone.style.display = 'none';
+            return;
+        }
+        zone.style.display = '';
+
+        const visible = items.slice(0, MAX_VISIBLE);
+        const hidden = items.slice(MAX_VISIBLE);
+
+        visible.forEach(item => zone.appendChild(renderItem(item)));
+
+        if (hidden.length > 0) {
+            const moreBtn = document.createElement('button');
+            moreBtn.className = 'attention-show-more';
+            moreBtn.textContent = `Show ${hidden.length} more…`;
+            moreBtn.addEventListener('click', function() {
+                hidden.forEach(item => zone.insertBefore(renderItem(item), moreBtn));
+                moreBtn.remove();
+            });
+            zone.appendChild(moreBtn);
+        }
+    }
+
+    function dismissItem(id) {
+        fetch('/api/attention/dismiss', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({id: id}),
+        }).then(() => {
+            const el = zone.querySelector(`[data-id="${CSS.escape(id)}"]`);
+            if (el && el.classList.contains('attention-item')) {
+                el.style.opacity = '0';
+                setTimeout(() => {
+                    el.remove();
+                    // Hide zone if empty
+                    const remaining = zone.querySelectorAll('.attention-item');
+                    if (!remaining.length) zone.style.display = 'none';
+                }, 300);
+            }
+        }).catch(() => {});
+    }
+
+    zone.addEventListener('click', function(e) {
+        const btn = e.target.closest('.attention-item-dismiss');
+        if (btn) {
+            e.preventDefault();
+            dismissItem(btn.dataset.id);
+        }
+    });
+
+    function loadAttention() {
+        const params = new URLSearchParams(window.location.search);
+        const project = params.get('project') || '';
+        const url = project ? `/api/attention?project=${encodeURIComponent(project)}` : '/api/attention';
+        fetch(url)
+            .then(r => r.json())
+            .then(data => renderZone(data.items || []))
+            .catch(() => {});
+    }
+
+    loadAttention();
+    setInterval(loadAttention, 30000);
+})();
 </script>
 {% endblock %}

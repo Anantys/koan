@@ -1,6 +1,7 @@
 ---
 name: live
 scope: core
+group: missions
 description: Show live progress from the current run
 version: 1.0.0
 audience: bridge

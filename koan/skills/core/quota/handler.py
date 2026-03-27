@@ -1,4 +1,8 @@
-"""Koan quota skill — live LLM quota check, no cache."""
+"""Koan quota skill — live LLM quota check + manual override.
+
+/quota        — show current quota metrics
+/quota <N>    — override: tell koan that N% has been used (fixes drift)
+"""
 
 import json
 from datetime import datetime, timedelta
@@ -14,7 +18,55 @@ STATS_CACHE_PATH = Path.home() / ".claude" / "stats-cache.json"
 
 
 def handle(ctx):
-    """Check LLM quota live and display friendly metrics."""
+    """Check LLM quota live, or override remaining % if argument given."""
+    args = (ctx.args or "").strip()
+
+    # --- Override mode: /quota <N> ---
+    if args:
+        return _handle_override(ctx, args)
+
+    # --- Display mode: /quota ---
+    return _handle_display(ctx)
+
+
+def _handle_override(ctx, args):
+    """Override internal quota estimation with human-provided used %."""
+    try:
+        used_pct = int(args)
+    except ValueError:
+        return f"Usage: /quota <used_%>\nExample: /quota 5 (= 5% used, 95% remaining)"
+
+    if used_pct < 0 or used_pct > 100:
+        return "Used percentage must be between 0 and 100."
+
+    instance_dir = ctx.instance_dir
+    koan_root = ctx.koan_root
+    state_file = instance_dir / "usage_state.json"
+    usage_md = instance_dir / "usage.md"
+
+    # Apply the override
+    from app.usage_estimator import cmd_set_used
+    cmd_set_used(used_pct, state_file, usage_md)
+
+    # If paused for quota, clear the pause
+    unpaused = False
+    from app.pause_manager import is_paused, get_pause_state, remove_pause
+    if is_paused(str(koan_root)):
+        state = get_pause_state(str(koan_root))
+        if state and state.is_quota:
+            remove_pause(str(koan_root))
+            unpaused = True
+
+    # Confirm
+    remaining_pct = 100 - used_pct
+    msg = f"Quota override applied: {used_pct}% used ({remaining_pct}% remaining)."
+    if unpaused:
+        msg += "\nQuota pause cleared — agent will resume on next iteration."
+    return msg
+
+
+def _handle_display(ctx):
+    """Show current quota metrics (original behavior)."""
     instance_dir = ctx.instance_dir
     koan_root = ctx.koan_root
 
@@ -35,6 +87,11 @@ def handle(ctx):
     cli_stats = _load_cli_stats()
     if cli_stats:
         parts.append(_format_cli_stats(cli_stats))
+
+    # --- Section 2b: Per-project/model breakdown (last 7 days) ---
+    cost_section = _format_cost_breakdown(instance_dir)
+    if cost_section:
+        parts.append(cost_section)
 
     # --- Section 3: Agent state ---
     parts.append(_format_agent_state(koan_root))
@@ -163,6 +220,67 @@ def _format_koan_usage(state, session_limit, weekly_limit):
     return "\n".join(lines)
 
 
+def _format_cost_breakdown(instance_dir):
+    """Format per-project and per-model breakdown from JSONL cost data."""
+    try:
+        from app.cost_tracker import summarize_by_project, summarize_by_model, summarize_day
+    except ImportError:
+        return None
+
+    by_project = summarize_by_project(instance_dir, days=7)
+    by_model = summarize_by_model(instance_dir, days=7)
+
+    if not by_project and not by_model:
+        return None
+
+    lines = ["Usage (7 days)"]
+
+    if by_project:
+        # Top 3 projects by total tokens
+        sorted_projects = sorted(
+            by_project.items(),
+            key=lambda x: x[1]["input_tokens"] + x[1]["output_tokens"],
+            reverse=True,
+        )[:3]
+        lines.append("  By project:")
+        for name, data in sorted_projects:
+            total = data["input_tokens"] + data["output_tokens"]
+            lines.append(f"    {name}: {_format_tokens(total)} ({data['count']} runs)")
+
+    if by_model:
+        # Top 2 models by total tokens
+        sorted_models = sorted(
+            by_model.items(),
+            key=lambda x: x[1]["input_tokens"] + x[1]["output_tokens"],
+            reverse=True,
+        )[:2]
+        lines.append("  By model:")
+        for name, data in sorted_models:
+            short = _short_model_name(name)
+            inp = data["input_tokens"]
+            out = data["output_tokens"]
+            lines.append(f"    {short}: {_format_tokens(inp)} in / {_format_tokens(out)} out")
+
+    # Cache performance (today)
+    today_summary = summarize_day(instance_dir)
+    cache_read = today_summary.get("cache_read_input_tokens", 0)
+    cache_create = today_summary.get("cache_creation_input_tokens", 0)
+    cache_hit_rate = today_summary.get("cache_hit_rate", 0.0)
+    total_cost = today_summary.get("total_cost_usd", 0.0)
+
+    if cache_read or cache_create:
+        lines.append("  Cache (today):")
+        lines.append(f"    Hit rate: {cache_hit_rate:.0%}")
+        lines.append(
+            f"    Read: {_format_tokens(cache_read)} | "
+            f"Created: {_format_tokens(cache_create)}"
+        )
+    if total_cost > 0:
+        lines.append(f"  Cost (today): ${total_cost:.2f}")
+
+    return "\n".join(lines)
+
+
 def _load_cli_stats():
     """Load Claude CLI stats-cache.json (live, not Koan's cache)."""
     if not STATS_CACHE_PATH.exists():
@@ -241,14 +359,13 @@ def _format_agent_state(koan_root):
 
     pause_file = koan_root / ".koan-pause"
     stop_file = koan_root / ".koan-stop"
-    pause_reason_file = koan_root / ".koan-pause-reason"
 
     if stop_file.exists():
         lines.append("  State: stopping")
     elif pause_file.exists():
-        reason = ""
-        if pause_reason_file.exists():
-            reason = pause_reason_file.read_text().strip().split("\n")[0]
+        from app.pause_manager import get_pause_state
+        state = get_pause_state(str(koan_root))
+        reason = state.reason if state else ""
         if reason == "quota":
             lines.append("  State: paused (quota exhausted)")
         elif reason == "max_runs":

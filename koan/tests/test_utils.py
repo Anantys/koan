@@ -202,6 +202,76 @@ class TestInsertPendingMission:
         for i in range(num_threads):
             assert f"- Task {i}" in content, f"Task {i} lost during concurrent insert"
 
+    def test_uses_lockfile_not_data_file(self, tmp_path):
+        """Verify the lock is on a .lock file, not on missions.md itself."""
+        from app.utils import insert_pending_mission
+        missions = tmp_path / "missions.md"
+        missions.write_text("# Missions\n\n## Pending\n\n## In Progress\n")
+
+        insert_pending_mission(missions, "- Test task")
+
+        lock_file = tmp_path / "missions.lock"
+        assert lock_file.exists(), "Lock file should be created alongside missions.md"
+
+    def test_no_temp_file_left_on_success(self, tmp_path):
+        """Atomic write should clean up temp files on success."""
+        from app.utils import insert_pending_mission
+        missions = tmp_path / "missions.md"
+        missions.write_text("# Missions\n\n## Pending\n\n## In Progress\n")
+
+        insert_pending_mission(missions, "- Clean task")
+
+        temp_files = list(tmp_path.glob(".missions-*"))
+        assert temp_files == [], f"Temp files left behind: {temp_files}"
+
+    def test_atomic_write_preserves_content_on_transform_error(self, tmp_path):
+        """If the transform raises, the original file should be untouched."""
+        from app.utils import modify_missions_file
+        missions = tmp_path / "missions.md"
+        original = "# Missions\n\n## Pending\n- keep this\n\n## In Progress\n"
+        missions.write_text(original)
+
+        def bad_transform(content):
+            raise ValueError("deliberate error")
+
+        with pytest.raises(ValueError, match="deliberate error"):
+            modify_missions_file(missions, bad_transform)
+
+        assert missions.read_text() == original, "Original file must survive a failed transform"
+
+    def test_no_temp_file_left_on_error(self, tmp_path):
+        """Temp file should be cleaned up even when transform raises."""
+        from app.utils import modify_missions_file
+        missions = tmp_path / "missions.md"
+        missions.write_text("# Missions\n\n## Pending\n\n## In Progress\n")
+
+        def bad_transform(content):
+            raise RuntimeError("boom")
+
+        with pytest.raises(RuntimeError):
+            modify_missions_file(missions, bad_transform)
+
+        temp_files = list(tmp_path.glob(".missions-*"))
+        assert temp_files == [], f"Temp files left behind after error: {temp_files}"
+
+    def test_modify_missions_file_returns_new_content(self, tmp_path):
+        """modify_missions_file should return the transformed content."""
+        from app.utils import modify_missions_file
+        missions = tmp_path / "missions.md"
+        missions.write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n")
+
+        result = modify_missions_file(missions, lambda c: c + "# Extra\n")
+        assert result.endswith("# Extra\n")
+        assert missions.read_text() == result
+
+    def test_modify_creates_file_if_missing(self, tmp_path):
+        """modify_missions_file should create the file if it doesn't exist."""
+        from app.utils import modify_missions_file
+        missions = tmp_path / "missions.md"
+
+        result = modify_missions_file(missions, lambda c: c)
+        assert missions.exists()
+        assert "## Pending" in result
 
 
 class TestGetJournalFile:
@@ -650,7 +720,9 @@ class TestGetStartOnPause:
 class TestGetKnownProjects:
     """Tests for get_known_projects() — returns List[Tuple[str, str]]."""
 
-    def test_parses_koan_projects_env(self, monkeypatch):
+    def test_parses_koan_projects_env(self, tmp_path, monkeypatch):
+        from app import utils
+        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
         monkeypatch.setenv("KOAN_PROJECTS", "koan:/home/koan;web:/home/web")
         from app.utils import get_known_projects
         result = get_known_projects()
@@ -658,37 +730,106 @@ class TestGetKnownProjects:
         assert result[0] == ("koan", "/home/koan")
         assert result[1] == ("web", "/home/web")
 
-    def test_sorted_alphabetically(self, monkeypatch):
+    def test_sorted_alphabetically(self, tmp_path, monkeypatch):
+        from app import utils
+        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
         monkeypatch.setenv("KOAN_PROJECTS", "zebra:/z;alpha:/a")
         from app.utils import get_known_projects
         result = get_known_projects()
         assert result[0][0] == "alpha"
         assert result[1][0] == "zebra"
 
-    def test_project_path_no_longer_supported(self, monkeypatch):
+    def test_project_path_no_longer_supported(self, tmp_path, monkeypatch):
         """KOAN_PROJECT_PATH is no longer a fallback for get_known_projects()."""
+        from app import utils
+        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
         monkeypatch.delenv("KOAN_PROJECTS", raising=False)
         monkeypatch.setenv("KOAN_PROJECT_PATH", "/single/path")
         from app.utils import get_known_projects
         assert get_known_projects() == []
 
-    def test_empty_when_no_config(self, monkeypatch):
+    def test_empty_when_no_config(self, tmp_path, monkeypatch):
+        from app import utils
+        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
         monkeypatch.delenv("KOAN_PROJECTS", raising=False)
         from app.utils import get_known_projects
         assert get_known_projects() == []
 
-    def test_handles_whitespace(self, monkeypatch):
+    def test_handles_whitespace(self, tmp_path, monkeypatch):
+        from app import utils
+        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
         monkeypatch.setenv("KOAN_PROJECTS", " koan : /home/koan ; web : /home/web ")
         from app.utils import get_known_projects
         result = get_known_projects()
         assert len(result) == 2
         assert result[0] == ("koan", "/home/koan")
 
-    def test_skips_malformed_entries(self, monkeypatch):
+    def test_skips_malformed_entries(self, tmp_path, monkeypatch):
+        from app import utils
+        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
         monkeypatch.setenv("KOAN_PROJECTS", "koan:/home/koan;badentry;web:/home/web")
         from app.utils import get_known_projects
         result = get_known_projects()
         assert len(result) == 2
+
+
+class TestTruncateText:
+    """Tests for truncate_text() shared utility."""
+
+    def test_short_text_unchanged(self):
+        from app.utils import truncate_text
+        assert truncate_text("hello", 100) == "hello"
+
+    def test_exact_length_unchanged(self):
+        from app.utils import truncate_text
+        assert truncate_text("12345", 5) == "12345"
+
+    def test_long_text_truncated(self):
+        from app.utils import truncate_text
+        result = truncate_text("a" * 20, 10)
+        assert result.startswith("a" * 10)
+        assert "truncated" in result
+
+    def test_empty_string(self):
+        from app.utils import truncate_text
+        assert truncate_text("", 100) == ""
+
+
+class TestIsKnownProject:
+    """Tests for is_known_project() shared utility."""
+
+    def test_known_project(self, monkeypatch):
+        from app.utils import is_known_project
+        monkeypatch.setattr(
+            "app.utils.get_known_projects",
+            lambda: [("koan", "/path"), ("backend", "/path2")],
+        )
+        assert is_known_project("koan") is True
+
+    def test_unknown_project(self, monkeypatch):
+        from app.utils import is_known_project
+        monkeypatch.setattr(
+            "app.utils.get_known_projects",
+            lambda: [("koan", "/path")],
+        )
+        assert is_known_project("foobar") is False
+
+    def test_case_insensitive(self, monkeypatch):
+        from app.utils import is_known_project
+        monkeypatch.setattr(
+            "app.utils.get_known_projects",
+            lambda: [("Koan", "/path")],
+        )
+        assert is_known_project("koan") is True
+        assert is_known_project("KOAN") is True
+
+    def test_exception_returns_false(self, monkeypatch):
+        from app.utils import is_known_project
+        monkeypatch.setattr(
+            "app.utils.get_known_projects",
+            lambda: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        assert is_known_project("koan") is False
 
 
 class TestGetFastReplyModel:

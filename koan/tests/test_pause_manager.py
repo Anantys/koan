@@ -37,7 +37,7 @@ class TestGetPauseState:
 
         assert get_pause_state(str(tmp_path)) is None
 
-    def test_returns_none_when_no_reason_file(self, tmp_path):
+    def test_returns_none_when_empty_file(self, tmp_path):
         from app.pause_manager import get_pause_state
 
         (tmp_path / ".koan-pause").touch()
@@ -46,8 +46,7 @@ class TestGetPauseState:
     def test_reads_quota_pause(self, tmp_path):
         from app.pause_manager import get_pause_state
 
-        (tmp_path / ".koan-pause").touch()
-        (tmp_path / ".koan-pause-reason").write_text("quota\n1707000000\nresets 10am\n")
+        (tmp_path / ".koan-pause").write_text("quota\n1707000000\nresets 10am\n")
 
         state = get_pause_state(str(tmp_path))
         assert state is not None
@@ -59,8 +58,7 @@ class TestGetPauseState:
     def test_reads_max_runs_pause(self, tmp_path):
         from app.pause_manager import get_pause_state
 
-        (tmp_path / ".koan-pause").touch()
-        (tmp_path / ".koan-pause-reason").write_text("max_runs\n1707000000\n\n")
+        (tmp_path / ".koan-pause").write_text("max_runs\n1707000000\n\n")
 
         state = get_pause_state(str(tmp_path))
         assert state is not None
@@ -71,8 +69,7 @@ class TestGetPauseState:
     def test_handles_missing_lines(self, tmp_path):
         from app.pause_manager import get_pause_state
 
-        (tmp_path / ".koan-pause").touch()
-        (tmp_path / ".koan-pause-reason").write_text("quota\n")
+        (tmp_path / ".koan-pause").write_text("quota\n")
 
         state = get_pause_state(str(tmp_path))
         assert state is not None
@@ -83,8 +80,7 @@ class TestGetPauseState:
     def test_handles_reason_only(self, tmp_path):
         from app.pause_manager import get_pause_state
 
-        (tmp_path / ".koan-pause").touch()
-        (tmp_path / ".koan-pause-reason").write_text("manual\n")
+        (tmp_path / ".koan-pause").write_text("manual\n")
 
         state = get_pause_state(str(tmp_path))
         assert state is not None
@@ -94,8 +90,7 @@ class TestGetPauseState:
     def test_handles_invalid_timestamp(self, tmp_path):
         from app.pause_manager import get_pause_state
 
-        (tmp_path / ".koan-pause").touch()
-        (tmp_path / ".koan-pause-reason").write_text("quota\nnot_a_number\ninfo\n")
+        (tmp_path / ".koan-pause").write_text("quota\nnot_a_number\ninfo\n")
 
         state = get_pause_state(str(tmp_path))
         assert state is not None
@@ -103,19 +98,17 @@ class TestGetPauseState:
         assert state.timestamp == 0
         assert state.display == "info"
 
-    def test_handles_empty_reason_file(self, tmp_path):
+    def test_handles_empty_file(self, tmp_path):
         from app.pause_manager import get_pause_state
 
-        (tmp_path / ".koan-pause").touch()
-        (tmp_path / ".koan-pause-reason").write_text("")
+        (tmp_path / ".koan-pause").write_text("")
 
         assert get_pause_state(str(tmp_path)) is None
 
     def test_strips_whitespace(self, tmp_path):
         from app.pause_manager import get_pause_state
 
-        (tmp_path / ".koan-pause").touch()
-        (tmp_path / ".koan-pause-reason").write_text("  quota  \n  1707000000  \n  resets 10am  \n")
+        (tmp_path / ".koan-pause").write_text("  quota  \n  1707000000  \n  resets 10am  \n")
 
         state = get_pause_state(str(tmp_path))
         assert state.reason == "quota"
@@ -203,20 +196,19 @@ class TestShouldAutoResume:
 class TestCreatePause:
     """Test create_pause function."""
 
-    def test_creates_both_files(self, tmp_path):
+    def test_creates_file(self, tmp_path):
         from app.pause_manager import create_pause
 
         create_pause(str(tmp_path), "quota", 1707000000, "resets 10am")
 
         assert (tmp_path / ".koan-pause").exists()
-        assert (tmp_path / ".koan-pause-reason").exists()
 
     def test_writes_correct_format(self, tmp_path):
         from app.pause_manager import create_pause
 
         create_pause(str(tmp_path), "quota", 1707000000, "resets 10am")
 
-        content = (tmp_path / ".koan-pause-reason").read_text()
+        content = (tmp_path / ".koan-pause").read_text()
         lines = content.strip().splitlines()
         assert lines[0] == "quota"
         assert lines[1] == "1707000000"
@@ -227,7 +219,7 @@ class TestCreatePause:
 
         create_pause(str(tmp_path), "max_runs", 1707000000)
 
-        content = (tmp_path / ".koan-pause-reason").read_text()
+        content = (tmp_path / ".koan-pause").read_text()
         lines = content.strip().splitlines()
         assert lines[0] == "max_runs"
         assert lines[1] == "1707000000"
@@ -241,7 +233,7 @@ class TestCreatePause:
         create_pause(str(tmp_path), "max_runs")
         after = int(time.time())
 
-        content = (tmp_path / ".koan-pause-reason").read_text()
+        content = (tmp_path / ".koan-pause").read_text()
         ts = int(content.strip().splitlines()[1])
         assert before <= ts <= after
 
@@ -250,7 +242,7 @@ class TestCreatePause:
 
         create_pause(str(tmp_path), "max_runs", 1000, "")
 
-        content = (tmp_path / ".koan-pause-reason").read_text()
+        content = (tmp_path / ".koan-pause").read_text()
         lines = content.splitlines()
         assert len(lines) >= 3
         assert lines[2] == ""
@@ -261,7 +253,7 @@ class TestCreatePause:
         create_pause(str(tmp_path), "quota", 1000, "old")
         create_pause(str(tmp_path), "max_runs", 2000, "new")
 
-        content = (tmp_path / ".koan-pause-reason").read_text()
+        content = (tmp_path / ".koan-pause").read_text()
         lines = content.strip().splitlines()
         assert lines[0] == "max_runs"
         assert lines[1] == "2000"
@@ -271,18 +263,16 @@ class TestCreatePause:
 class TestRemovePause:
     """Test remove_pause function."""
 
-    def test_removes_both_files(self, tmp_path):
+    def test_removes_pause_file(self, tmp_path):
         from app.pause_manager import remove_pause
 
-        (tmp_path / ".koan-pause").touch()
-        (tmp_path / ".koan-pause-reason").write_text("quota\n1000\ninfo\n")
+        (tmp_path / ".koan-pause").write_text("quota\n1000\ninfo\n")
 
         remove_pause(str(tmp_path))
 
         assert not (tmp_path / ".koan-pause").exists()
-        assert not (tmp_path / ".koan-pause-reason").exists()
 
-    def test_removes_pause_without_reason(self, tmp_path):
+    def test_removes_empty_pause(self, tmp_path):
         from app.pause_manager import remove_pause
 
         (tmp_path / ".koan-pause").touch()
@@ -306,17 +296,18 @@ class TestCheckAndResume:
 
         assert check_and_resume(str(tmp_path)) is None
 
-    def test_returns_none_when_no_reason_file(self, tmp_path):
-        from app.pause_manager import check_and_resume
+    def test_empty_pause_stays_paused(self, tmp_path):
+        from app.pause_manager import check_and_resume, is_paused
 
         (tmp_path / ".koan-pause").touch()
-        assert check_and_resume(str(tmp_path)) is None
+        msg = check_and_resume(str(tmp_path))
+        assert msg is None, "Empty pause file should stay paused"
+        assert is_paused(str(tmp_path)), "Pause file should remain"
 
     def test_auto_resumes_quota_past_reset(self, tmp_path, monkeypatch):
         from app.pause_manager import check_and_resume
 
-        (tmp_path / ".koan-pause").touch()
-        (tmp_path / ".koan-pause-reason").write_text("quota\n1000\nresets 10am\n")
+        (tmp_path / ".koan-pause").write_text("quota\n1000\nresets 10am\n")
 
         # Mock time to be past reset
         monkeypatch.setattr("app.pause_manager.time.time", lambda: 2000)
@@ -326,13 +317,11 @@ class TestCheckAndResume:
         assert "quota reset time reached" in msg
         assert "resets 10am" in msg
         assert not (tmp_path / ".koan-pause").exists()
-        assert not (tmp_path / ".koan-pause-reason").exists()
 
     def test_stays_paused_before_quota_reset(self, tmp_path, monkeypatch):
         from app.pause_manager import check_and_resume
 
-        (tmp_path / ".koan-pause").touch()
-        (tmp_path / ".koan-pause-reason").write_text("quota\n5000\nresets 10am\n")
+        (tmp_path / ".koan-pause").write_text("quota\n5000\nresets 10am\n")
 
         monkeypatch.setattr("app.pause_manager.time.time", lambda: 1000)
 
@@ -344,8 +333,7 @@ class TestCheckAndResume:
         from app.pause_manager import check_and_resume
 
         pause_time = 1000
-        (tmp_path / ".koan-pause").touch()
-        (tmp_path / ".koan-pause-reason").write_text(f"max_runs\n{pause_time}\n\n")
+        (tmp_path / ".koan-pause").write_text(f"max_runs\n{pause_time}\n\n")
 
         monkeypatch.setattr("app.pause_manager.time.time", lambda: pause_time + 5 * 3600)
 
@@ -358,8 +346,7 @@ class TestCheckAndResume:
         from app.pause_manager import check_and_resume
 
         pause_time = 1000
-        (tmp_path / ".koan-pause").touch()
-        (tmp_path / ".koan-pause-reason").write_text(f"max_runs\n{pause_time}\n\n")
+        (tmp_path / ".koan-pause").write_text(f"max_runs\n{pause_time}\n\n")
 
         monkeypatch.setattr("app.pause_manager.time.time", lambda: pause_time + 3600)
 
@@ -548,6 +535,140 @@ class TestCLI:
         assert result.returncode == 1
 
 
+class TestEmptyPauseStaysPaused:
+    """Tests for empty .koan-pause handling (no reason content).
+
+    Empty .koan-pause files (e.g. touch-created) stay paused as a safe
+    default.  The user can always /resume manually.
+    """
+
+    def test_empty_pause_stays_paused(self, tmp_path):
+        """Empty .koan-pause should stay paused."""
+        from app.pause_manager import check_and_resume, is_paused
+
+        (tmp_path / ".koan-pause").touch()
+
+        msg = check_and_resume(str(tmp_path))
+        assert msg is None, "Empty pause should stay paused (safe default)"
+        assert is_paused(str(tmp_path)), "Pause file should still exist"
+
+    def test_empty_content_stays_paused(self, tmp_path):
+        """Explicitly empty .koan-pause should stay paused."""
+        from app.pause_manager import check_and_resume, is_paused
+
+        (tmp_path / ".koan-pause").write_text("")
+
+        msg = check_and_resume(str(tmp_path))
+        assert msg is None, "Empty pause should stay paused"
+        assert is_paused(str(tmp_path))
+
+    def test_empty_stays_paused_repeatedly(self, tmp_path):
+        """Calling check_and_resume on empty pause always returns None."""
+        from app.pause_manager import check_and_resume, is_paused
+
+        (tmp_path / ".koan-pause").touch()
+
+        for _ in range(3):
+            msg = check_and_resume(str(tmp_path))
+            assert msg is None
+            assert is_paused(str(tmp_path))
+
+    def test_normal_pause_not_treated_as_empty(self, tmp_path, monkeypatch):
+        """A valid pause (with content) should NOT be treated as empty."""
+        from app.pause_manager import check_and_resume, create_pause
+
+        create_pause(str(tmp_path), "quota", 9999999999, "future")
+        monkeypatch.setattr("app.pause_manager.time.time", lambda: 1000)
+
+        msg = check_and_resume(str(tmp_path))
+        assert msg is None  # Still paused, not empty
+        assert (tmp_path / ".koan-pause").exists()
+
+    def test_empty_cleared_by_manual_resume(self, tmp_path):
+        """Empty pause can be cleared via remove_pause (like /resume does)."""
+        from app.pause_manager import check_and_resume, is_paused, remove_pause
+
+        (tmp_path / ".koan-pause").touch()
+
+        # Stays paused
+        assert check_and_resume(str(tmp_path)) is None
+        assert is_paused(str(tmp_path))
+
+        # Manual resume clears it
+        remove_pause(str(tmp_path))
+        assert not is_paused(str(tmp_path))
+
+
+class TestManualPauseNeverAutoResumes:
+    """Tests that manual pauses (reason='manual') never auto-resume.
+
+    Manual pauses represent explicit user intent via /pause or /sleep.
+    Only /resume should clear them — no timeout, no orphan cleanup.
+    """
+
+    def test_manual_pause_never_auto_resumes_via_should_auto_resume(self):
+        """should_auto_resume always returns False for manual pauses."""
+        from app.pause_manager import PauseState, should_auto_resume
+
+        pause_time = 1000
+        five_hours = 5 * 60 * 60
+        state = PauseState(reason="manual", timestamp=pause_time, display="paused via Telegram")
+        # Even after 5h, manual pause should NOT auto-resume
+        assert should_auto_resume(state, now=pause_time + five_hours) is False
+        assert should_auto_resume(state, now=pause_time + 10 * five_hours) is False
+
+    def test_manual_pause_never_auto_resumes_via_check_and_resume(self, tmp_path, monkeypatch):
+        """check_and_resume never resumes a manual pause regardless of time elapsed."""
+        from app.pause_manager import check_and_resume, create_pause, is_paused
+
+        pause_time = 1000
+        create_pause(str(tmp_path), "manual", pause_time, "paused via Telegram")
+
+        # Even 24h later, should stay paused
+        monkeypatch.setattr("app.pause_manager.time.time", lambda: pause_time + 24 * 3600)
+        msg = check_and_resume(str(tmp_path))
+        assert msg is None
+        assert is_paused(str(tmp_path))
+
+    def test_manual_pause_with_zero_timestamp(self):
+        """Manual pause with zero timestamp should not auto-resume."""
+        from app.pause_manager import PauseState, should_auto_resume
+
+        state = PauseState(reason="manual", timestamp=0, display="")
+        assert should_auto_resume(state, now=9999999999) is False
+
+    def test_manual_pause_cleared_only_by_resume(self, tmp_path, monkeypatch):
+        """Manual pause stays until explicitly removed via /resume."""
+        from app.pause_manager import (
+            check_and_resume,
+            create_pause,
+            is_paused,
+            remove_pause,
+        )
+
+        create_pause(str(tmp_path), "manual", 1000, "paused via Telegram")
+
+        # Time passes — still paused
+        monkeypatch.setattr("app.pause_manager.time.time", lambda: 999999)
+        assert check_and_resume(str(tmp_path)) is None
+        assert is_paused(str(tmp_path))
+
+        # Only remove_pause (triggered by /resume) clears it
+        remove_pause(str(tmp_path))
+        assert not is_paused(str(tmp_path))
+
+    def test_system_pauses_still_auto_resume(self, tmp_path, monkeypatch):
+        """Non-manual pauses (quota, max_runs) still auto-resume as before."""
+        from app.pause_manager import check_and_resume, create_pause
+
+        # Quota pause with past reset time
+        create_pause(str(tmp_path), "quota", 1000, "resets 10am")
+        monkeypatch.setattr("app.pause_manager.time.time", lambda: 2000)
+        msg = check_and_resume(str(tmp_path))
+        assert msg is not None
+        assert "quota reset time reached" in msg
+
+
 class TestBudgetLoopRegression:
     """Regression tests for the budget exhaustion infinite loop bug.
 
@@ -604,3 +725,127 @@ class TestBudgetLoopRegression:
         msg = check_and_resume(str(tmp_path))
         assert msg is not None
         assert "quota reset time reached" in msg
+
+
+class TestCreatePauseAtomicWrite:
+    """Test that create_pause uses atomic_write for thread safety."""
+
+    def test_uses_atomic_write_for_single_file(self, tmp_path):
+        from unittest.mock import patch
+
+        from app.pause_manager import create_pause
+
+        with patch("app.utils.atomic_write") as mock_aw:
+            create_pause(str(tmp_path), "quota", 1707000000, "resets 10am")
+            assert mock_aw.call_count == 1
+            pause_path = str(mock_aw.call_args_list[0][0][0])
+            assert pause_path.endswith(".koan-pause")
+            content = mock_aw.call_args_list[0][0][1]
+            assert "quota" in content
+            assert "1707000000" in content
+
+
+class TestParseDuration:
+    """Test parse_duration helper function."""
+
+    def test_hours_only(self):
+        from app.pause_manager import parse_duration
+
+        assert parse_duration("2h") == 7200
+
+    def test_minutes_only(self):
+        from app.pause_manager import parse_duration
+
+        assert parse_duration("30m") == 1800
+
+    def test_hours_and_minutes(self):
+        from app.pause_manager import parse_duration
+
+        assert parse_duration("1h30m") == 5400
+
+    def test_large_minutes(self):
+        from app.pause_manager import parse_duration
+
+        assert parse_duration("90m") == 5400
+
+    def test_strips_whitespace(self):
+        from app.pause_manager import parse_duration
+
+        assert parse_duration("  2h  ") == 7200
+
+    def test_case_insensitive(self):
+        from app.pause_manager import parse_duration
+
+        assert parse_duration("2H") == 7200
+        assert parse_duration("30M") == 1800
+
+    def test_invalid_returns_none(self):
+        from app.pause_manager import parse_duration
+
+        assert parse_duration("") is None
+        assert parse_duration("abc") is None
+        assert parse_duration("2") is None
+
+    def test_zero_duration_returns_none(self):
+        from app.pause_manager import parse_duration
+
+        assert parse_duration("0h") is None
+        assert parse_duration("0m") is None
+
+
+class TestTimedPauseAutoResume:
+    """Test auto-resume for timed (time-bounded manual) pauses."""
+
+    def test_timed_pauses_before_resume_time(self):
+        from app.pause_manager import PauseState, should_auto_resume
+
+        resume_at = 2000
+        state = PauseState(reason="timed", timestamp=resume_at, display="until 5pm")
+        assert should_auto_resume(state, now=1999) is False
+
+    def test_timed_resumes_at_exact_time(self):
+        from app.pause_manager import PauseState, should_auto_resume
+
+        resume_at = 2000
+        state = PauseState(reason="timed", timestamp=resume_at, display="until 5pm")
+        assert should_auto_resume(state, now=2000) is True
+
+    def test_timed_resumes_after_time(self):
+        from app.pause_manager import PauseState, should_auto_resume
+
+        resume_at = 2000
+        state = PauseState(reason="timed", timestamp=resume_at, display="until 5pm")
+        assert should_auto_resume(state, now=3000) is True
+
+    def test_timed_with_zero_timestamp_stays_paused(self):
+        from app.pause_manager import PauseState, should_auto_resume
+
+        state = PauseState(reason="timed", timestamp=0, display="")
+        assert should_auto_resume(state, now=9999) is False
+
+    def test_is_timed_property(self):
+        from app.pause_manager import PauseState
+
+        timed = PauseState(reason="timed", timestamp=2000, display="")
+        manual = PauseState(reason="manual", timestamp=0, display="")
+        quota = PauseState(reason="quota", timestamp=2000, display="")
+        assert timed.is_timed is True
+        assert manual.is_timed is False
+        assert quota.is_timed is False
+
+    def test_check_and_resume_returns_message_for_timed(self, tmp_path, monkeypatch):
+        from app.pause_manager import create_pause, check_and_resume
+
+        now = 1000000
+        resume_at = now + 7200  # 2 hours from now
+        create_pause(str(tmp_path), "timed", resume_at, "until 5pm (paused for 2h)")
+
+        # Still paused before resume time
+        monkeypatch.setattr("app.pause_manager.time.time", lambda: now + 3600)
+        assert check_and_resume(str(tmp_path)) is None
+
+        # Auto-resumes at resume time
+        monkeypatch.setattr("app.pause_manager.time.time", lambda: resume_at + 1)
+        msg = check_and_resume(str(tmp_path))
+        assert msg is not None
+        assert "timed" in msg.lower() or "expired" in msg.lower() or "until 5pm" in msg

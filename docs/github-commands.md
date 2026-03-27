@@ -95,9 +95,23 @@ github:
 - **`authorized_users`**: Controls who can trigger commands. Even with `["*"]`, Kōan always verifies the user has **write access** to the repository via the GitHub API. This prevents drive-by command injection from random commenters.
 - **`max_age_hours`**: Notifications older than this are silently discarded. Protects against processing a backlog of stale mentions after downtime.
 
+#### AI reply settings
+
+When `reply_enabled: true`, Kōan responds to non-command @mentions with AI-generated replies. Two additional settings control who can trigger replies and how often:
+
+```yaml
+github:
+  reply_enabled: true
+  reply_authorized_users: ["*"]    # Who can trigger AI replies (default: uses authorized_users)
+  reply_rate_limit: 5              # Max replies per user per hour (default: 5, min: 1)
+```
+
+- **`reply_authorized_users`**: Separate from command `authorized_users` — allows a broader audience for read-only replies without granting command execution. `["*"]` means anyone can trigger replies (no permission check at all, unlike command wildcard which still checks GitHub write access). Omit to fall back to `authorized_users`. Set `[]` to disable replies entirely.
+- **`reply_rate_limit`**: Prevents API quota abuse when replies are open broadly. Tracks per-user reply counts over a rolling 1-hour window. Default: 5, minimum: 1.
+
 ### Per-project overrides (`projects.yaml`)
 
-Override `authorized_users` for specific repositories:
+Override `authorized_users` and `reply_authorized_users` for specific repositories:
 
 ```yaml
 projects:
@@ -105,9 +119,10 @@ projects:
     path: "/path/to/sensitive-repo"
     github:
       authorized_users: ["alice", "bob"]  # Only these users, not the global wildcard
+      reply_authorized_users: ["*"]       # But allow AI replies for anyone
 ```
 
-This is useful when the global config allows `["*"]` but a specific repo needs tighter control.
+This is useful when the global config allows `["*"]` but a specific repo needs tighter control for commands, or vice versa for replies.
 
 ### Environment variables
 

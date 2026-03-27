@@ -48,7 +48,7 @@ def handle(ctx):
 
     project_path, project_name = resolve_project_for_repo(repo, owner=owner)
     if not project_path:
-        return format_project_not_found_error(repo)
+        return format_project_not_found_error(repo, owner=owner)
 
     queue_github_mission(ctx, "recreate", pr_url, project_name)
 

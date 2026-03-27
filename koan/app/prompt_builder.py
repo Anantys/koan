@@ -3,6 +3,13 @@
 Handles agent prompt assembly (template + merge policy + deep research +
 verbose mode) and contemplative prompt assembly.
 
+Prompt caching: ``build_agent_prompt_parts()`` splits the assembled prompt
+into a stable *system prompt* (merge policy, PR guidelines, verification
+gate, etc.) and a variable *user prompt* (agent.md template, mission spec,
+drift, deep research). The system prompt is sent via ``--append-system-prompt``
+on Claude Code CLI, placing it in the prefix-cached position for better
+prompt caching across consecutive missions.
+
 Usage:
     PROMPT=$("$PYTHON" -m app.prompt_builder agent \
         --instance "$INSTANCE" \
@@ -23,7 +30,21 @@ Usage:
 
 import argparse
 import os
+import sys
 from pathlib import Path
+from typing import Tuple
+
+
+def _get_language_section() -> str:
+    """Return the language enforcement section if a preference is set."""
+    try:
+        from app.language_preference import get_language_instruction
+        instruction = get_language_instruction()
+        if instruction:
+            return f"\n\n# Language Preference\n\n{instruction}\n"
+    except (ImportError, OSError):
+        pass
+    return ""
 
 
 def _load_config_safe() -> dict:
@@ -31,7 +52,7 @@ def _load_config_safe() -> dict:
     try:
         from app.utils import load_config
         return load_config()
-    except Exception:
+    except (ImportError, OSError, ValueError):
         return {}
 
 
@@ -42,7 +63,7 @@ def _is_auto_merge_enabled(project_name: str) -> bool:
         config = _load_config_safe()
         merge_cfg = get_auto_merge_config(config, project_name)
         return bool(merge_cfg.get("enabled", True) and merge_cfg.get("rules"))
-    except Exception:
+    except (ImportError, OSError, ValueError, KeyError, TypeError):
         return False
 
 
@@ -51,7 +72,7 @@ def _get_branch_prefix() -> str:
     try:
         from app.config import get_branch_prefix
         return get_branch_prefix()
-    except Exception:
+    except (ImportError, OSError, ValueError):
         return "koan/"
 
 
@@ -73,8 +94,8 @@ def _get_deep_research(instance: str, project_name: str, project_path: str) -> s
         suggestions = research.format_for_agent()
         if suggestions:
             return f"\n\n# Deep Research Analysis\n\n{suggestions}\n"
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[prompt_builder] Deep research failed: {e}", file=sys.stderr)
     return ""
 
 
@@ -84,7 +105,8 @@ def _get_focus_section(instance: str) -> str:
     try:
         from app.focus_manager import check_focus
         state = check_focus(koan_root)
-    except Exception:
+    except Exception as e:
+        print(f"[prompt_builder] Focus check failed: {e}", file=sys.stderr)
         return ""
 
     if state is None:
@@ -94,6 +116,133 @@ def _get_focus_section(instance: str) -> str:
 
     remaining = state.remaining_display()
     return load_prompt("focus-mode", REMAINING=remaining)
+
+
+def _get_submit_pr_section(project_path: str) -> str:
+    """Return the submit-pull-request section (always included)."""
+    from app.prompts import load_prompt
+
+    return load_prompt("submit-pull-request", PROJECT_PATH=project_path)
+
+
+def _get_staleness_section(instance: str, project_name: str) -> str:
+    """Get staleness warning for the current project.
+
+    Checks session outcome history and returns a warning if recent sessions
+    for this project were non-productive. Cheap operation (local JSON read),
+    so it's safe to call in every autonomous mode.
+    """
+    try:
+        from app.session_tracker import get_staleness_warning
+        warning = get_staleness_warning(instance, project_name)
+        if warning:
+            return f"\n\n# Session History Feedback\n\n{warning}\n"
+    except Exception as e:
+        print(f"[prompt_builder] Staleness check failed: {e}", file=sys.stderr)
+    return ""
+
+
+def _get_pr_feedback_section(project_path: str) -> str:
+    """Get PR merge feedback for autonomous topic alignment.
+
+    Summarizes which types of work get merged quickly vs. slowly,
+    helping the agent choose high-alignment work. Uses gh CLI
+    (network call), so kept lightweight with small limits.
+    """
+    try:
+        from app.pr_feedback import get_alignment_summary
+        summary = get_alignment_summary(project_path)
+        if summary:
+            return (
+                f"\n\n# PR Merge Feedback\n\n"
+                f"Recent merge patterns for your PRs on this project:\n"
+                f"{summary}\n\n"
+                f"Use this to guide autonomous topic selection — "
+                f"prioritize work types that get merged quickly.\n"
+            )
+    except Exception as e:
+        print(f"[prompt_builder] PR feedback failed: {e}", file=sys.stderr)
+    return ""
+
+
+def _get_drift_section(instance: str, project_name: str, project_path: str) -> str:
+    """Get drift summary for the current project.
+
+    Checks how many commits landed on main since the agent's last session
+    on this project. Helps the agent avoid conflicts and stale assumptions.
+    """
+    try:
+        from app.session_tracker import get_drift_summary
+        summary = get_drift_summary(instance, project_name, project_path)
+        if summary:
+            return f"\n\n# Codebase Drift\n\n{summary}\n"
+    except Exception as e:
+        print(f"[prompt_builder] Drift check failed: {e}", file=sys.stderr)
+    return ""
+
+
+def _get_mission_type_section(mission_title: str) -> str:
+    """Return type-specific guidance based on mission classification.
+
+    Classifies the mission title into a work type (debug, implement, etc.)
+    and loads the corresponding hint from mission-type-hints.md.
+    Returns empty string for "general" type or when no mission is assigned.
+    """
+    if not mission_title:
+        return ""
+
+    try:
+        from app.mission_classifier import classify_mission
+
+        mission_type = classify_mission(mission_title)
+        if mission_type == "general":
+            return ""
+
+        from app.prompts import load_prompt
+
+        hints_text = load_prompt("mission-type-hints")
+
+        # Extract the section for this type (## type\n\ncontent\n\n## next)
+        import re
+
+        pattern = rf"^## {re.escape(mission_type)}\n\n(.*?)(?=\n## |\Z)"
+        match = re.search(pattern, hints_text, re.MULTILINE | re.DOTALL)
+        if match:
+            hint = match.group(1).strip()
+            return (
+                f"\n\n# Mission Approach Guidance\n\n"
+                f"This looks like a **{mission_type}** mission. "
+                f"{hint}\n"
+            )
+    except Exception as e:
+        print(f"[prompt_builder] Mission type hint failed: {e}", file=sys.stderr)
+    return ""
+
+
+def _get_verification_gate_section(mission_title: str) -> str:
+    """Return the verification gate section for mission-driven runs.
+
+    Injects verification-before-completion rules that require fresh evidence
+    before any success claim. Only included when executing a mission.
+    """
+    if not mission_title:
+        return ""
+
+    from app.prompts import load_prompt
+
+    return load_prompt("verification-gate")
+
+
+def _get_tdd_section(mission_title: str) -> str:
+    """Return the TDD mode section if mission is tagged [tdd]."""
+    from app.missions import extract_tdd_tag
+
+    if not mission_title or not extract_tdd_tag(mission_title):
+        return ""
+
+    from app.prompts import load_prompt
+
+    return load_prompt("tdd-mode")
 
 
 def _get_verbose_section(instance: str) -> str:
@@ -107,7 +256,37 @@ def _get_verbose_section(instance: str) -> str:
     return load_prompt("verbose-mode", INSTANCE=instance)
 
 
-def build_agent_prompt(
+def _get_security_flagging_section(mission_title: str, autonomous_mode: str) -> str:
+    """Return the security vulnerability flagging section.
+
+    Only included for mission-driven runs and review/implement autonomous
+    modes — not for deep research or wait modes.
+    """
+    if not mission_title and autonomous_mode not in ("review", "implement"):
+        return ""
+
+    from app.prompts import load_prompt
+
+    return load_prompt("security-flagging")
+
+
+def _build_mission_instruction(mission_title: str, project_name: str) -> str:
+    """Build the mission instruction text for the agent prompt."""
+    if mission_title:
+        return (
+            f"Your assigned mission is: **{mission_title}** "
+            "The mission is already marked In Progress. "
+            "Follow the Mission Execution Workflow below."
+        )
+    return (
+        f"No specific mission assigned. Look for pending missions for "
+        f"{project_name} in missions.md (check [project:{project_name}] "
+        f"tags and ### project:{project_name} sub-headers). "
+        "If none found, proceed to autonomous mode."
+    )
+
+
+def _load_agent_template(
     instance: str,
     project_name: str,
     project_path: str,
@@ -116,44 +295,14 @@ def build_agent_prompt(
     autonomous_mode: str,
     focus_area: str,
     available_pct: int,
-    mission_title: str = "",
+    mission_title: str,
 ) -> str:
-    """Build the complete agent prompt from template + dynamic sections.
-
-    Args:
-        instance: Path to instance directory
-        project_name: Current project name
-        project_path: Path to project directory
-        run_num: Current run number
-        max_runs: Maximum runs per session
-        autonomous_mode: Current mode (review/implement/deep)
-        focus_area: Description of current focus
-        available_pct: Budget percentage available
-        mission_title: Mission title (empty for autonomous mode)
-
-    Returns:
-        Complete prompt string ready for Claude CLI
-    """
+    """Load and populate the agent.md template with standard placeholders."""
     from app.prompts import load_prompt
 
-    # Build mission instruction
-    if mission_title:
-        mission_instruction = (
-            f"Your assigned mission is: **{mission_title}** "
-            "Mark it In Progress in missions.md. Execute it thoroughly. "
-            "Take your time — go deep, don't rush."
-        )
-    else:
-        mission_instruction = (
-            f"No specific mission assigned. Look for pending missions for "
-            f"{project_name} in missions.md (check [project:{project_name}] "
-            f"tags and ### project:{project_name} sub-headers). "
-            "If none found, proceed to autonomous mode."
-        )
-
-    # Load template and substitute placeholders
+    mission_instruction = _build_mission_instruction(mission_title, project_name)
     branch_prefix = _get_branch_prefix()
-    prompt = load_prompt(
+    return load_prompt(
         "agent",
         INSTANCE=instance,
         PROJECT_PATH=project_path,
@@ -167,12 +316,89 @@ def build_agent_prompt(
         BRANCH_PREFIX=branch_prefix,
     )
 
+
+def _append_spec(prompt: str, spec_content: str, mission_title: str) -> str:
+    """Append mission spec section if applicable."""
+    if spec_content and mission_title:
+        prompt += (
+            "\n\n# Mission Spec\n\n"
+            "A spec was generated before implementation. Use it to anchor your work — "
+            "follow the approach and stay within the defined scope. Reference key "
+            "decisions in the PR description.\n\n"
+            f"{spec_content}\n"
+        )
+    return prompt
+
+
+def build_agent_prompt(
+    instance: str,
+    project_name: str,
+    project_path: str,
+    run_num: int,
+    max_runs: int,
+    autonomous_mode: str,
+    focus_area: str,
+    available_pct: int,
+    mission_title: str = "",
+    spec_content: str = "",
+) -> str:
+    """Build the complete agent prompt from template + dynamic sections.
+
+    Args:
+        instance: Path to instance directory
+        project_name: Current project name
+        project_path: Path to project directory
+        run_num: Current run number
+        max_runs: Maximum runs per session
+        autonomous_mode: Current mode (review/implement/deep)
+        focus_area: Description of current focus
+        available_pct: Budget percentage available
+        mission_title: Mission title (empty for autonomous mode)
+        spec_content: Pre-generated mission spec (empty to skip)
+
+    Returns:
+        Complete prompt string ready for Claude CLI
+    """
+    prompt = _load_agent_template(
+        instance, project_name, project_path, run_num, max_runs,
+        autonomous_mode, focus_area, available_pct, mission_title,
+    )
+
+    prompt = _append_spec(prompt, spec_content, mission_title)
+
+    # Append mission type guidance (mission-driven runs only)
+    prompt += _get_mission_type_section(mission_title)
+
     # Append merge policy
     prompt += _get_merge_policy(project_name)
+
+    # Append security vulnerability flagging (mission-driven + review/implement)
+    prompt += _get_security_flagging_section(mission_title, autonomous_mode)
+
+    # Append submit-pull-request section
+    prompt += _get_submit_pr_section(project_path)
+
+    # Append staleness warning (all autonomous modes — cheap local read)
+    if not mission_title:
+        prompt += _get_staleness_section(instance, project_name)
+
+    # Append drift detection (autonomous only — shows what changed on main)
+    if not mission_title:
+        prompt += _get_drift_section(instance, project_name, project_path)
+
+    # Append PR merge feedback (autonomous only — helps topic alignment)
+    if not mission_title and autonomous_mode in ("deep", "implement"):
+        prompt += _get_pr_feedback_section(project_path)
 
     # Append deep research suggestions (DEEP mode, autonomous only)
     if autonomous_mode == "deep" and not mission_title:
         prompt += _get_deep_research(instance, project_name, project_path)
+
+    # Append TDD mode section if mission is tagged [tdd]
+    prompt += _get_tdd_section(mission_title)
+
+    # Append verification gate for mission-driven runs
+    prompt += _get_verification_gate_section(mission_title)
 
     # Append focus mode section if active
     prompt += _get_focus_section(instance)
@@ -180,7 +406,97 @@ def build_agent_prompt(
     # Append verbose mode section if active
     prompt += _get_verbose_section(instance)
 
+    # Append language preference (overrides soul.md default)
+    prompt += _get_language_section()
+
     return prompt
+
+
+def build_agent_prompt_parts(
+    instance: str,
+    project_name: str,
+    project_path: str,
+    run_num: int,
+    max_runs: int,
+    autonomous_mode: str,
+    focus_area: str,
+    available_pct: int,
+    mission_title: str = "",
+    spec_content: str = "",
+) -> Tuple[str, str]:
+    """Build agent prompt split into system prompt and user prompt.
+
+    Returns a (system_prompt, user_prompt) tuple. The system prompt
+    contains stable content (merge policy, PR guidelines, verification
+    gate, etc.) that benefits from prompt caching. The user prompt
+    contains the per-mission variable content.
+
+    Callers should pass ``system_prompt`` to ``build_full_command()``
+    so it's sent via ``--append-system-prompt`` on supported providers.
+    """
+    # --- User prompt: agent template + per-mission dynamic content ---
+
+    user_prompt = _load_agent_template(
+        instance, project_name, project_path, run_num, max_runs,
+        autonomous_mode, focus_area, available_pct, mission_title,
+    )
+
+    user_prompt = _append_spec(user_prompt, spec_content, mission_title)
+
+    # Append mission type guidance (mission-driven runs only)
+    user_prompt += _get_mission_type_section(mission_title)
+
+    # Append staleness warning (all autonomous modes — cheap local read)
+    if not mission_title:
+        user_prompt += _get_staleness_section(instance, project_name)
+
+    # Append drift detection (autonomous only — shows what changed on main)
+    if not mission_title:
+        user_prompt += _get_drift_section(instance, project_name, project_path)
+
+    # Append PR merge feedback (autonomous only — helps topic alignment)
+    if not mission_title and autonomous_mode in ("deep", "implement"):
+        user_prompt += _get_pr_feedback_section(project_path)
+
+    # Append deep research suggestions (DEEP mode, autonomous only)
+    if autonomous_mode == "deep" and not mission_title:
+        user_prompt += _get_deep_research(instance, project_name, project_path)
+
+    # --- System prompt: stable sections (best for cache prefix matching) ---
+    # These rarely change between consecutive missions on the same project.
+
+    sys_parts = []
+
+    sys_parts.append(_get_merge_policy(project_name))
+    sys_parts.append(_get_submit_pr_section(project_path))
+
+    tdd = _get_tdd_section(mission_title)
+    if tdd:
+        sys_parts.append(tdd)
+
+    verification = _get_verification_gate_section(mission_title)
+    if verification:
+        sys_parts.append(verification)
+
+    focus = _get_focus_section(instance)
+    if focus:
+        sys_parts.append(focus)
+
+    verbose = _get_verbose_section(instance)
+    if verbose:
+        sys_parts.append(verbose)
+
+    security = _get_security_flagging_section(mission_title, autonomous_mode)
+    if security:
+        sys_parts.append(security)
+
+    lang = _get_language_section()
+    if lang:
+        sys_parts.append(lang)
+
+    system_prompt = "\n\n".join(part for part in sys_parts if part)
+
+    return system_prompt, user_prompt
 
 
 def build_contemplative_prompt(
@@ -200,12 +516,17 @@ def build_contemplative_prompt(
     """
     from app.prompts import load_prompt
 
-    return load_prompt(
+    prompt = load_prompt(
         "contemplative",
         INSTANCE=instance,
         PROJECT_NAME=project_name,
         SESSION_INFO=session_info,
     )
+
+    # Append language preference (overrides soul.md default)
+    prompt += _get_language_section()
+
+    return prompt
 
 
 def main():

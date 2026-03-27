@@ -13,6 +13,15 @@ from app.format_outbox import (
     format_message,
     fallback_format,
 )
+from app.response_cache import _format_cache
+
+
+@pytest.fixture(autouse=True)
+def _clear_format_cache():
+    """Reset format cache between tests."""
+    _format_cache.clear()
+    yield
+    _format_cache.clear()
 
 
 class TestLoadSoul:
@@ -301,3 +310,84 @@ class TestFormatOutboxCLI:
         with pytest.raises(SystemExit) as exc_info:
             main()
         assert exc_info.value.code == 1
+
+
+class TestFormatMessageCaching:
+    """Tests for format_message() response caching."""
+
+    @patch("app.cli_exec.run_cli")
+    def test_cache_hit_skips_cli_call(self, mock_run):
+        """Second call with identical inputs returns cached result without CLI."""
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout="Formatted result", stderr=""
+        )
+        # First call — cache miss, invokes CLI
+        result1 = format_message("raw", "soul", "prefs", "memory")
+        assert mock_run.call_count == 1
+
+        # Second call — cache hit, no CLI invocation
+        result2 = format_message("raw", "soul", "prefs", "memory")
+        assert mock_run.call_count == 1  # still 1
+        assert result1 == result2
+
+    @patch("app.cli_exec.run_cli")
+    def test_different_content_produces_cache_miss(self, mock_run):
+        """Different raw_content should not hit the cache."""
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout="Formatted", stderr=""
+        )
+        format_message("content A", "soul", "prefs")
+        format_message("content B", "soul", "prefs")
+        assert mock_run.call_count == 2
+
+    @patch("app.cli_exec.run_cli")
+    def test_fallback_result_not_cached(self, mock_run):
+        """Failed CLI calls should not cache the fallback result."""
+        mock_run.return_value = MagicMock(
+            returncode=1, stdout="", stderr="error"
+        )
+        result1 = format_message("## Raw", "soul", "")
+        # Second call should still invoke CLI (fallback not cached)
+        result2 = format_message("## Raw", "soul", "")
+        assert mock_run.call_count == 2
+
+    @patch("app.cli_exec.run_cli")
+    def test_timeout_not_cached(self, mock_run):
+        """Timeout fallback should not be cached."""
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd="claude", timeout=30)
+        format_message("Raw", "soul", "")
+        format_message("Raw", "soul", "")
+        assert mock_run.call_count == 2
+
+    @patch("app.cli_exec.run_cli")
+    def test_cache_stats_updated(self, mock_run):
+        """Cache stats should reflect hits and misses."""
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout="OK", stderr=""
+        )
+        format_message("raw", "soul", "prefs")
+        format_message("raw", "soul", "prefs")  # hit
+        stats = _format_cache.stats()
+        assert stats["hits"] >= 1
+        assert stats["misses"] >= 1
+
+    @patch("app.cli_exec.run_cli")
+    def test_different_time_hint_produces_miss(self, mock_run):
+        """Different time-of-day hint should produce a different cache key."""
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout="OK", stderr=""
+        )
+        from datetime import datetime as real_dt
+
+        morning = real_dt(2026, 3, 8, 9, 0)
+        evening = real_dt(2026, 3, 8, 20, 0)
+
+        with patch("app.format_outbox.datetime") as mock_dt:
+            mock_dt.now.return_value = morning
+            format_message("raw", "soul", "prefs")
+
+        with patch("app.format_outbox.datetime") as mock_dt:
+            mock_dt.now.return_value = evening
+            format_message("raw", "soul", "prefs")
+
+        assert mock_run.call_count == 2

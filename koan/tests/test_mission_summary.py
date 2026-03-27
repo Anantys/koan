@@ -5,7 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from app.mission_summary import extract_latest_section, get_mission_summary, summarize_section
+from app.mission_summary import (
+    extract_error_lines,
+    extract_latest_section,
+    get_failure_context,
+    get_mission_summary,
+    summarize_section,
+)
 
 
 class TestExtractLatestSection:
@@ -156,3 +162,173 @@ class TestMissionSummaryCLI:
         with contextlib.redirect_stdout(f):
             run_module("app.mission_summary", run_name="__main__")
         assert f.getvalue().strip() == ""
+
+
+class TestExtractErrorLines:
+    """Tests for extract_error_lines()."""
+
+    def test_finds_fail_keyword(self):
+        text = "Running tests...\nFAILED test_foo.py::test_bar\nDone."
+        result = extract_error_lines(text)
+        assert len(result) == 1
+        assert "FAILED" in result[0]
+
+    def test_finds_error_colon(self):
+        text = "Building...\nError: module not found\nContinuing."
+        result = extract_error_lines(text)
+        assert len(result) == 1
+        assert "module not found" in result[0]
+
+    def test_finds_traceback(self):
+        text = "Traceback (most recent call last):\n  File foo.py\nKeyError: 'bar'"
+        result = extract_error_lines(text)
+        assert len(result) == 2
+        assert "Traceback" in result[0]
+
+    def test_finds_exit_code(self):
+        text = "Process finished with exit code: 1"
+        result = extract_error_lines(text)
+        assert len(result) == 1
+        assert "exit code" in result[0]
+
+    def test_finds_returncode(self):
+        text = "returncode: 127"
+        result = extract_error_lines(text)
+        assert len(result) == 1
+
+    def test_finds_rebase_conflict(self):
+        text = "Rebase conflict detected in file.py"
+        result = extract_error_lines(text)
+        assert len(result) == 1
+        assert "Rebase conflict" in result[0]
+
+    def test_finds_permission_denied(self):
+        text = "Permission denied: /root/secrets"
+        result = extract_error_lines(text)
+        assert len(result) == 1
+
+    def test_finds_git_fatal(self):
+        text = "fatal: not a git repository"
+        result = extract_error_lines(text)
+        assert len(result) == 1
+        assert "fatal:" in result[0]
+
+    def test_skips_noise_max_turns(self):
+        text = "Error: max turns reached"
+        result = extract_error_lines(text)
+        assert result == []
+
+    def test_skips_noise_error_handling(self):
+        text = "Improved error handling in module"
+        result = extract_error_lines(text)
+        assert result == []
+
+    def test_skips_noise_test_error(self):
+        text = "Added test for error case"
+        result = extract_error_lines(text)
+        assert result == []
+
+    def test_skips_noise_fix_error(self):
+        text = "fix error parsing in CLI"
+        result = extract_error_lines(text)
+        assert result == []
+
+    def test_skips_noise_error_context(self):
+        text = "Added error_context to notifications"
+        result = extract_error_lines(text)
+        assert result == []
+
+    def test_respects_max_lines(self):
+        text = "\n".join(f"Error: problem {i}" for i in range(10))
+        result = extract_error_lines(text, max_lines=3)
+        assert len(result) == 3
+
+    def test_empty_text(self):
+        assert extract_error_lines("") == []
+
+    def test_no_errors(self):
+        text = "All good.\nTests passed.\nBuild succeeded."
+        assert extract_error_lines(text) == []
+
+    def test_skips_blank_lines(self):
+        text = "\n\n  \n\nError: real error\n\n"
+        result = extract_error_lines(text)
+        assert len(result) == 1
+
+    def test_multiple_patterns(self):
+        text = "FAIL test_a\nError: boom\nfatal: bad ref\n"
+        result = extract_error_lines(text)
+        assert len(result) == 3
+
+    def test_case_insensitive_fail(self):
+        text = "failure in test_xyz"
+        result = extract_error_lines(text)
+        assert len(result) == 1
+
+
+class TestGetFailureContext:
+    """Tests for get_failure_context()."""
+
+    def _write_journal(self, tmp_path, project, content):
+        today = date.today().strftime("%Y-%m-%d")
+        journal_dir = tmp_path / "journal" / today
+        journal_dir.mkdir(parents=True, exist_ok=True)
+        (journal_dir / f"{project}.md").write_text(content)
+
+    def test_extracts_errors_from_journal(self, tmp_path):
+        self._write_journal(tmp_path, "proj", (
+            "## Session 1\n\nGood stuff.\n\n"
+            "## Session 2\n\nRunning build...\n"
+            "FAILED to compile module\n"
+            "fatal: unable to resolve ref\n"
+        ))
+        result = get_failure_context(str(tmp_path), "proj")
+        assert "FAILED" in result
+        assert "fatal:" in result
+
+    def test_returns_empty_for_no_errors(self, tmp_path):
+        self._write_journal(tmp_path, "proj",
+            "## Session\n\nAll tests passed. Everything is fine."
+        )
+        result = get_failure_context(str(tmp_path), "proj")
+        assert result == ""
+
+    def test_returns_empty_for_missing_journal(self, tmp_path):
+        result = get_failure_context(str(tmp_path), "noproject")
+        assert result == ""
+
+    def test_returns_empty_for_empty_journal(self, tmp_path):
+        self._write_journal(tmp_path, "proj", "")
+        result = get_failure_context(str(tmp_path), "proj")
+        assert result == ""
+
+    def test_truncates_long_output(self, tmp_path):
+        errors = "\n".join(f"Error: very long error message number {i} with details" for i in range(20))
+        self._write_journal(tmp_path, "proj", f"## Session\n\n{errors}")
+        result = get_failure_context(str(tmp_path), "proj", max_chars=100)
+        assert len(result) <= 100
+
+    def test_truncation_fallback_single_long_line(self, tmp_path):
+        """When rsplit('\\n') leaves empty string, falls back to first line truncation."""
+        long_error = "Error: " + "x" * 500
+        self._write_journal(tmp_path, "proj", f"## Session\n\n{long_error}")
+        result = get_failure_context(str(tmp_path), "proj", max_chars=50)
+        assert len(result) == 50
+
+    def test_uses_latest_section(self, tmp_path):
+        self._write_journal(tmp_path, "proj", (
+            "## Session 1\n\nfatal: early error\n\n"
+            "## Session 2\n\nAll clean now."
+        ))
+        result = get_failure_context(str(tmp_path), "proj")
+        # Latest section has no errors
+        assert result == ""
+
+    def test_filters_noise_in_journal(self, tmp_path):
+        self._write_journal(tmp_path, "proj", (
+            "## Session\n\n"
+            "Improved error handling across the codebase.\n"
+            "Added test for error edge case.\n"
+        ))
+        result = get_failure_context(str(tmp_path), "proj")
+        assert result == ""

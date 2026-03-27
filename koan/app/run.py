@@ -24,6 +24,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import traceback
 from pathlib import Path
@@ -31,8 +32,30 @@ from typing import Optional
 
 from app.iteration_manager import plan_iteration
 from app.loop_manager import check_pending_missions, interruptible_sleep
-from app.pid_manager import acquire_pid, release_pid
+from app.pid_manager import acquire_pidfile, release_pidfile
+from app.restart_manager import check_restart, clear_restart, RESTART_EXIT_CODE
+from app.run_log import (  # noqa: F401 — re-exported for backward compat
+    _ANSI_RESET,
+    _CATEGORY_COLORS,
+    _COLORS,
+    _init_colors,
+    _reset_terminal,
+    _styled,
+    bold_cyan,
+    bold_green,
+    log,
+)
 from app.shutdown_manager import is_shutdown_requested, clear_shutdown
+from app.signals import (
+    CYCLE_FILE,
+    PAUSE_FILE,
+    PROJECT_FILE,
+    RESTART_FILE,
+    SHUTDOWN_FILE,
+    ABORT_FILE,
+    STATUS_FILE,
+    STOP_FILE,
+)
 from app.utils import atomic_write
 
 
@@ -53,87 +76,6 @@ MAX_BACKOFF_ITERATION = 300
 
 # Notification throttling: notify on first error, then every N errors.
 ERROR_NOTIFICATION_INTERVAL = 5
-
-
-# ---------------------------------------------------------------------------
-# Colored logging
-# ---------------------------------------------------------------------------
-
-_COLORS = {}
-
-# Standalone ANSI reset (no dependency on _COLORS initialization)
-_ANSI_RESET = "\033[0m"
-
-
-def _reset_terminal():
-    """Write an ANSI reset to stdout and flush, restoring default attributes.
-
-    Called on exit paths to ensure the terminal is not left with active
-    ANSI attributes (DIM, BOLD, color, etc.) after Kōan shuts down.
-    """
-    try:
-        sys.stdout.write(_ANSI_RESET)
-        sys.stdout.flush()
-    except Exception:
-        pass  # Terminal may be gone during shutdown
-
-
-def _init_colors():
-    """Initialize ANSI color codes based on TTY detection."""
-    global _COLORS
-    if os.environ.get("KOAN_FORCE_COLOR", "") or sys.stdout.isatty():
-        _COLORS = {
-            "reset": "\033[0m",
-            "bold": "\033[1m",
-            "dim": "\033[2m",
-            "red": "\033[31m",
-            "green": "\033[32m",
-            "yellow": "\033[33m",
-            "blue": "\033[34m",
-            "magenta": "\033[35m",
-            "cyan": "\033[36m",
-            "white": "\033[37m",
-        }
-    else:
-        _COLORS = {k: "" for k in [
-            "reset", "bold", "dim", "red", "green", "yellow",
-            "blue", "magenta", "cyan", "white",
-        ]}
-
-
-_CATEGORY_COLORS = {
-    "koan": "cyan",
-    "error": "bold+red",
-    "init": "blue",
-    "health": "yellow",
-    "git": "magenta",
-    "mission": "green",
-    "quota": "bold+yellow",
-    "pause": "dim+blue",
-}
-
-
-def log(category: str, message: str):
-    """Print a colored log message."""
-    if not _COLORS:
-        _init_colors()
-    color_spec = _CATEGORY_COLORS.get(category, "white")
-    parts = color_spec.split("+")
-    prefix = "".join(_COLORS.get(p, "") for p in parts)
-    reset = _COLORS.get("reset", "")
-    print(f"{prefix}[{category}]{reset} {message}", flush=True)
-
-
-def bold_cyan(text: str) -> str:
-    if not _COLORS:
-        _init_colors()
-    return f"{_COLORS.get('bold', '')}{_COLORS.get('cyan', '')}{text}{_COLORS.get('reset', '')}"
-
-
-def bold_green(text: str) -> str:
-    if not _COLORS:
-        _init_colors()
-    return f"{_COLORS.get('bold', '')}{_COLORS.get('green', '')}{text}{_COLORS.get('reset', '')}"
 
 
 # ---------------------------------------------------------------------------
@@ -163,7 +105,7 @@ def _should_notify_error(attempt: int) -> bool:
 def set_status(koan_root: str, message: str):
     """Write loop status for /status and dashboard."""
     try:
-        atomic_write(Path(koan_root, ".koan-status"), message)
+        atomic_write(Path(koan_root, STATUS_FILE), message)
     except Exception as e:
         log("error", f"Failed to write status: {e}")
 
@@ -178,7 +120,7 @@ def _build_startup_status(koan_root: str) -> str:
     """
     from app.pause_manager import get_pause_state
 
-    if not Path(koan_root, ".koan-pause").exists():
+    if not Path(koan_root, PAUSE_FILE).exists():
         return "✅ Active — ready to work"
 
     state = get_pause_state(koan_root)
@@ -237,6 +179,38 @@ class protected_phase:
         return False  # Don't suppress exceptions
 
 
+def _kill_process_group(proc):
+    """Terminate a subprocess and its entire process group.
+
+    When a subprocess is started with ``start_new_session=True``, it becomes
+    the leader of a new process group.  A simple ``proc.terminate()`` only
+    sends SIGTERM to the leader — children survive.  This helper sends
+    SIGTERM to the whole group, then SIGKILL if still alive after 3 s.
+    """
+    if proc is None or proc.poll() is not None:
+        return
+    try:
+        pgid = os.getpgid(proc.pid)
+        os.killpg(pgid, signal.SIGTERM)
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            os.killpg(pgid, signal.SIGKILL)
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                # Process didn't die even after SIGKILL — give up to
+                # avoid blocking the caller.  The OS will reap the
+                # zombie eventually.
+                print(
+                    f"[run] warning: pid {proc.pid} did not exit after SIGKILL",
+                    file=sys.stderr,
+                )
+    except (ProcessLookupError, PermissionError, OSError):
+        # Process already gone or we lack permissions — nothing to do.
+        pass
+
+
 def _on_sigint(signum, frame):
     """SIGINT handler: first press warns, second press aborts."""
     if not _sig.task_running:
@@ -249,8 +223,7 @@ def _on_sigint(signum, frame):
             # Second CTRL-C within timeout — abort
             print()
             log("koan", "Confirmed. Aborting...")
-            if _sig.claude_proc and _sig.claude_proc.poll() is None:
-                _sig.claude_proc.terminate()
+            _kill_process_group(_sig.claude_proc)
             _sig.first_ctrl_c = 0
             _sig.task_running = False
             raise KeyboardInterrupt
@@ -271,54 +244,141 @@ def run_claude_task(
     stdout_file: str,
     stderr_file: str,
     cwd: str,
+    instance_dir: str = "",
+    project_name: str = "",
+    run_num: int = 0,
 ) -> int:
-    """Run Claude CLI as a subprocess with SIGINT isolation.
+    """Run Claude CLI as a subprocess with SIGINT isolation and timeout.
 
     The child process ignores SIGINT (via preexec_fn) so the double-tap
     pattern works: first CTRL-C only warns the user, second kills the child.
 
+    A watchdog timer kills the process if it exceeds the configured mission
+    timeout (default 3600s). This prevents runaway sessions that block the
+    entire agent loop.
+
+    When *instance_dir* and *project_name* are provided and
+    ``cli_output_journal`` is enabled, stdout is streamed to the project's
+    daily journal file in real-time via a background tail thread.
+
     Returns the child exit code.
     """
+    global _last_mission_timed_out, _last_mission_aborted
+    _last_mission_timed_out = False
+    _last_mission_aborted = False
+
     _sig.task_running = True
     _sig.first_ctrl_c = 0
 
-    from app.cli_exec import popen_cli
-
-    with open(stdout_file, "w") as out_f, open(stderr_file, "w") as err_f:
-        proc, cleanup = popen_cli(
-            cmd,
-            stdout=out_f,
-            stderr=err_f,
-            cwd=cwd,
-            preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_IGN),
+    # Start journal streaming if configured
+    journal_stream = None
+    if instance_dir and project_name:
+        from app.cli_journal_streamer import start_journal_stream
+        journal_stream = start_journal_stream(
+            stdout_file, instance_dir, project_name, run_num,
         )
-        _sig.claude_proc = proc
 
-        try:
-            # Wait for child, handling SIGINT interruptions gracefully
-            while True:
-                try:
-                    proc.wait()
-                    break
-                except (KeyboardInterrupt, InterruptedError):
-                    # If task_running was cleared by on_sigint (double-tap),
-                    # the child was terminated — wait for it to finish
-                    if not _sig.task_running:
-                        try:
-                            proc.wait(timeout=5)
-                        except subprocess.TimeoutExpired:
-                            proc.kill()
-                            proc.wait()
+    from app.cli_exec import popen_cli
+    from app.config import get_mission_timeout
+
+    mission_timeout = get_mission_timeout()
+    timed_out = False
+
+    exit_code = 1  # default if subprocess never completes
+    try:
+        with open(stdout_file, "w") as out_f, open(stderr_file, "w") as err_f:
+            proc, cleanup = popen_cli(
+                cmd,
+                stdout=out_f,
+                stderr=err_f,
+                cwd=cwd,
+                start_new_session=True,
+            )
+            _sig.claude_proc = proc
+
+            # Watchdog timer: kills the process group if mission exceeds timeout.
+            # Same pattern as skill dispatch (line ~1828). Without this,
+            # proc.wait() blocks indefinitely on runaway sessions.
+            timer = None
+            if mission_timeout > 0:
+                def _mission_watchdog():
+                    nonlocal timed_out
+                    timed_out = True
+                    log("error", f"Mission timed out ({mission_timeout}s) — killing process")
+                    _kill_process_group(proc)
+
+                timer = threading.Timer(mission_timeout, _mission_watchdog)
+                timer.daemon = True
+                timer.start()
+
+            try:
+                # Wait for child, handling SIGINT interruptions gracefully.
+                # Uses periodic timeout to detect watchdog kills — if
+                # _kill_process_group fails silently, proc.wait() would
+                # otherwise block forever.
+                while True:
+                    try:
+                        proc.wait(timeout=30)
                         break
-                    # Single CTRL-C — keep waiting
-                    continue
-        finally:
-            cleanup()
+                    except subprocess.TimeoutExpired:
+                        # Check for abort signal (user sent /abort)
+                        koan_root_path = os.environ.get("KOAN_ROOT", "")
+                        abort_path = Path(koan_root_path, ABORT_FILE) if koan_root_path else None
+                        if abort_path and abort_path.exists():
+                            log("koan", "Abort signal detected — aborting current mission")
+                            abort_path.unlink(missing_ok=True)
+                            _last_mission_aborted = True
+                            _kill_process_group(proc)
+                            try:
+                                proc.wait(timeout=10)
+                            except subprocess.TimeoutExpired:
+                                log("error", f"Process {proc.pid} unkillable after abort — abandoning")
+                            break
+                        if timed_out:
+                            # Watchdog already fired but process survived —
+                            # make one last kill attempt from the main thread.
+                            _kill_process_group(proc)
+                            try:
+                                proc.wait(timeout=10)
+                            except subprocess.TimeoutExpired:
+                                log("error", f"Process {proc.pid} unkillable — abandoning")
+                            break
+                    except (KeyboardInterrupt, InterruptedError):
+                        # If task_running was cleared by on_sigint (double-tap),
+                        # the child was terminated — wait for it to finish
+                        if not _sig.task_running:
+                            try:
+                                proc.wait(timeout=5)
+                            except subprocess.TimeoutExpired:
+                                _kill_process_group(proc)
+                            break
+                        # Single CTRL-C — keep waiting
+                        continue
+            finally:
+                if timer is not None:
+                    timer.cancel()
+                cleanup()
 
-    exit_code = proc.returncode
-    _sig.claude_proc = None
-    _sig.task_running = False
-    _sig.first_ctrl_c = 0
+        exit_code = proc.returncode
+        if _last_mission_aborted:
+            exit_code = 1
+        elif timed_out:
+            exit_code = 1
+            _last_mission_timed_out = True
+    finally:
+        # Always stop journal streaming, even on exception
+        if journal_stream:
+            from app.cli_journal_streamer import stop_journal_stream
+            stop_journal_stream(
+                journal_stream, exit_code, stderr_file,
+                instance_dir, project_name, run_num,
+            )
+        # Reset signal state even on exception — otherwise _sig.task_running
+        # stays True and CTRL-C requires a double-tap when no subprocess is running.
+        _sig.claude_proc = None
+        _sig.task_running = False
+        _sig.first_ctrl_c = 0
+
     return exit_code
 
 
@@ -355,204 +415,17 @@ def parse_projects() -> list:
 
 
 # ---------------------------------------------------------------------------
-# Startup sequence
+# Startup sequence (delegated to startup_manager.py)
 # ---------------------------------------------------------------------------
 
 def run_startup(koan_root: str, instance: str, projects: list):
-    """Run all startup tasks (crash recovery, health, sync, etc.)."""
-    from app.banners import print_agent_banner
-    from app.github_auth import setup_github_auth
-    from app.git_sync import GitSync
-    from app.health_check import check_and_alert
-    from app.recover import recover_missions
-    from app.utils import (
-        get_branch_prefix,
-        get_cli_binary_for_shell,
-        get_interval_seconds,
-        get_max_runs,
-        get_start_on_pause,
-    )
+    """Run all startup tasks (crash recovery, health, sync, etc.).
 
-    # Load config
-    max_runs = get_max_runs()
-    interval = get_interval_seconds()
-    branch_prefix = get_branch_prefix()
-    cli_provider = get_cli_binary_for_shell()
-
-    # Print banner
-    try:
-        print_agent_banner(f"agent loop — {cli_provider}")
-    except Exception as e:
-        log("error", f"Banner display failed: {e}")
-
-    with protected_phase("Startup checks"):
-        # Crash recovery
-        log("health", "Checking for interrupted missions...")
-        try:
-            recover_missions(instance)
-        except Exception as e:
-            log("error", f"Crash recovery failed: {e}")
-
-        # Auto-migrate env vars to projects.yaml (one-shot, idempotent)
-        try:
-            from app.projects_migration import run_migration
-            migration_msgs = run_migration(koan_root)
-            for msg in migration_msgs:
-                log("init", f"[migration] {msg}")
-        except Exception as e:
-            log("error", f"Projects migration failed: {e}")
-
-        # Auto-populate github_url in projects.yaml from git remotes
-        try:
-            from app.projects_config import ensure_github_urls
-            gh_msgs = ensure_github_urls(koan_root)
-            for msg in gh_msgs:
-                log("init", f"[github-urls] {msg}")
-        except Exception as e:
-            log("error", f"GitHub URL population failed: {e}")
-
-        # Initialize workspace + yaml merged project registry
-        try:
-            from app.projects_merged import (
-                refresh_projects, 
-                get_warnings, 
-                populate_workspace_github_urls,
-                get_yaml_project_names
-            )
-            
-            projects = refresh_projects(koan_root)
-            
-            # Count workspace projects (not in projects.yaml)
-            yaml_project_names = get_yaml_project_names(koan_root)
-            ws_count = sum(1 for name, _ in projects if name not in yaml_project_names)
-            if ws_count:
-                log("init", f"[workspace] Discovered {ws_count} project(s) from workspace/")
-            
-            # Populate github_url cache for workspace projects
-            gh_count = populate_workspace_github_urls(koan_root)
-            if gh_count:
-                log("init", f"[workspace] Cached {gh_count} github_url(s) from git remotes")
-            
-            # Log any warnings from merge
-            for warning in get_warnings():
-                log("warn", f"[workspace] {warning}")
-        except Exception as e:
-            log("error", f"Workspace discovery failed: {e}")
-
-        # Sanity checks (all modules in koan/sanity/, alphabetical order)
-        log("health", "Running sanity checks...")
-        try:
-            from sanity import run_all
-            for name, modified, changes in run_all(instance):
-                if modified:
-                    for change in changes:
-                        log("health", f"  [{name}] {change}")
-        except Exception as e:
-            log("error", f"Sanity checks failed: {e}")
-
-        # Memory cleanup
-        log("health", "Running memory cleanup...")
-        try:
-            from app.memory_manager import run_cleanup
-            run_cleanup(instance)
-        except Exception as e:
-            log("error", f"Memory cleanup failed: {e}")
-
-        # Mission history cleanup
-        try:
-            from app.mission_history import cleanup_old_entries
-            cleanup_old_entries(instance)
-        except Exception as e:
-            log("error", f"Mission history cleanup failed: {e}")
-
-        # Health check
-        log("health", "Checking Telegram bridge health...")
-        try:
-            check_and_alert(koan_root, max_age=120)
-        except Exception as e:
-            log("error", f"Health check failed: {e}")
-
-    with protected_phase("Self-reflection check"):
-        log("health", "Checking self-reflection trigger...")
-        try:
-            from app.self_reflection import (
-                should_reflect, run_reflection, save_reflection, notify_outbox,
-            )
-            inst_path = Path(instance)
-            if should_reflect(inst_path):
-                observations = run_reflection(inst_path)
-                if observations:
-                    save_reflection(inst_path, observations)
-                    notify_outbox(inst_path, observations)
-        except Exception as e:
-            log("error", f"Self-reflection check failed: {e}")
-
-    # Start on pause
-    if get_start_on_pause():
-        # Remove stale reason file to prevent auto-resume from a previous
-        # session's quota/max_runs pause.  Without this, handle_pause() →
-        # check_and_resume() reads the old reason, finds the cooldown
-        # elapsed, and immediately resumes — bypassing start_on_pause.
-        koan_root_path = Path(koan_root)
-        (koan_root_path / ".koan-pause-reason").unlink(missing_ok=True)
-        if not (koan_root_path / ".koan-pause").exists():
-            log("pause", "start_on_pause=true in config. Entering pause mode.")
-            (koan_root_path / ".koan-pause").touch()
-
-    # Git identity
-    koan_email = os.environ.get("KOAN_EMAIL", "")
-    if koan_email:
-        os.environ["GIT_AUTHOR_NAME"] = "Kōan"
-        os.environ["GIT_AUTHOR_EMAIL"] = koan_email
-        os.environ["GIT_COMMITTER_NAME"] = "Kōan"
-        os.environ["GIT_COMMITTER_EMAIL"] = koan_email
-
-    # GitHub auth
-    if os.environ.get("GITHUB_USER"):
-        success = setup_github_auth()
-        if success:
-            log("init", f"GitHub CLI authenticated as {os.environ['GITHUB_USER']}")
-        else:
-            log("init", f"Warning: GitHub auth failed for {os.environ['GITHUB_USER']}")
-
-    # Startup notification
-    log("init", f"Starting. Max runs: {max_runs}, interval: {interval}s")
-
-    project_list = "\n".join(f"  • {n}" for n, _ in sorted(projects))
-    status_line = _build_startup_status(koan_root)
-    set_status(koan_root, status_line)
-    _notify(instance, (
-        f"Kōan starting — {max_runs} max runs, {interval}s interval.\n"
-        f"Projects:\n{project_list}\n"
-        f"Current: {projects[0][0]}.\n"
-        f"Status: {status_line}"
-    ))
-
-    with protected_phase("Git sync"):
-        log("git", "Running git sync...")
-        for name, path in projects:
-            try:
-                gs = GitSync(instance, name, path)
-                gs.sync_and_report()
-            except Exception as e:
-                log("error", f"Git sync failed for {name}: {e}")
-
-    # Daily report
-    try:
-        from app.daily_report import send_daily_report
-        send_daily_report()
-    except Exception as e:
-        log("error", f"Daily report failed: {e}")
-
-    with protected_phase("Morning ritual"):
-        log("init", "Running morning ritual...")
-        try:
-            from app.rituals import run_ritual
-            run_ritual("morning", Path(instance))
-        except Exception as e:
-            log("error", f"Morning ritual failed: {e}")
-
-    return max_runs, interval, branch_prefix
+    Delegates to app.startup_manager which decomposes the startup
+    into independently testable steps.
+    """
+    from app.startup_manager import run_startup as _run_startup
+    return _run_startup(koan_root, instance, projects)
 
 
 # ---------------------------------------------------------------------------
@@ -584,8 +457,8 @@ def _notify_mission_end(
     """
     if exit_code == 0:
         prefix = "✅"
-        label = mission_title if mission_title else f"Autonomous run on {project_name}"
-        msg = f"{prefix} Run {run_num}/{max_runs} — [{project_name}] {label}"
+        label = mission_title if mission_title else "Autonomous run"
+        msg = f"{prefix} [{project_name}] Run {run_num}/{max_runs} — {label}"
         # Try to attach a brief summary from the journal
         try:
             from app.mission_summary import get_mission_summary
@@ -597,9 +470,88 @@ def _notify_mission_end(
     else:
         prefix = "❌"
         label = mission_title if mission_title else "Run"
-        msg = f"{prefix} Run {run_num}/{max_runs} — [{project_name}] Failed: {label}"
+        msg = f"{prefix} [{project_name}] Run {run_num}/{max_runs} — Failed: {label}"
+        # Try to attach error context from the journal
+        try:
+            from app.mission_summary import get_failure_context
+            context = get_failure_context(instance, project_name, max_chars=300)
+            if context:
+                msg += f"\n\n{context}"
+        except Exception as e:
+            log("error", f"Failure context extraction failed: {e}")
 
     _notify(instance, msg)
+
+
+# ---------------------------------------------------------------------------
+# Startup delay (#1039)
+# ---------------------------------------------------------------------------
+
+DEFAULT_STARTUP_DELAY = 30  # seconds
+
+
+def _startup_delay(koan_root: str) -> None:
+    """Wait before the first iteration so /pause can be processed.
+
+    When ``make start`` launches koan, the first mission can be picked up
+    before the Telegram bridge has time to process a /pause command.  This
+    interruptible delay (default 30 s, configurable via ``startup_delay``
+    in config.yaml) closes the race window.
+
+    The delay is skipped when:
+    - The agent is already paused (.koan-pause exists).
+    - ``startup_delay`` is set to ``0``.
+
+    The delay is interrupted early if any lifecycle signal appears
+    (.koan-pause, .koan-stop, .koan-shutdown, .koan-restart).
+    """
+    from app.utils import load_config
+
+    delay = load_config().get("startup_delay", DEFAULT_STARTUP_DELAY)
+    if delay <= 0:
+        return
+
+    # Already paused — skip directly into the main loop's pause handler
+    if Path(koan_root, PAUSE_FILE).exists():
+        log("koan", "Already paused at startup — skipping startup delay.")
+        return
+
+    log(
+        "koan",
+        f"Startup delay: waiting {delay}s before first mission "
+        f"(send /pause now if needed).",
+    )
+
+    tick = 2  # check signals every 2 s
+    elapsed = 0
+    while elapsed < delay:
+        time.sleep(min(tick, delay - elapsed))
+        elapsed += tick
+
+        # Any lifecycle signal → break out
+        for sig in (PAUSE_FILE, STOP_FILE, SHUTDOWN_FILE, RESTART_FILE):
+            if Path(koan_root, sig).exists():
+                log("koan", f"Signal detected during startup delay ({sig}), proceeding.")
+                return
+
+    log("koan", "Startup delay complete — entering main loop.")
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _read_current_project(koan_root: str) -> str:
+    """Read the current project name from .koan-project, safely.
+
+    Returns the project name or "unknown" if the file cannot be read
+    (missing, locked, or corrupt).
+    """
+    try:
+        return Path(koan_root, PROJECT_FILE).read_text().strip() or "unknown"
+    except (OSError, ValueError):
+        return "unknown"
 
 
 # ---------------------------------------------------------------------------
@@ -607,26 +559,43 @@ def _notify_mission_end(
 # ---------------------------------------------------------------------------
 
 def _commit_instance(instance: str, message: str = ""):
-    """Commit instance changes and push."""
-    if not message:
-        message = f"koan: {time.strftime('%Y-%m-%d-%H:%M')}"
-    try:
-        subprocess.run(["git", "add", "-A"], cwd=instance, capture_output=True, timeout=10)
-        diff = subprocess.run(
-            ["git", "diff", "--cached", "--quiet"],
-            cwd=instance, capture_output=True, timeout=10,
-        )
-        if diff.returncode != 0:
-            subprocess.run(
-                ["git", "commit", "-m", message],
-                cwd=instance, capture_output=True, timeout=30,
-            )
-            subprocess.run(
-                ["git", "push", "origin", "main"],
-                cwd=instance, capture_output=True, timeout=30,
-            )
-    except Exception as e:
-        log("error", f"Instance commit/push failed: {e}")
+    """Commit instance changes and push.
+
+    Delegates to :func:`app.mission_runner.commit_instance` which is the
+    single implementation of the git add / commit / push sequence.
+    """
+    from app.mission_runner import commit_instance
+    commit_instance(instance, message)
+
+
+# ---------------------------------------------------------------------------
+# Update handler (graceful update + restart)
+# ---------------------------------------------------------------------------
+
+def _handle_update(koan_root: str, instance: str, count: int):
+    """Handle /update: pull upstream updates, then trigger restart.
+
+    Called after the current mission completes. Pulls the latest code
+    and requests a restart. If the pull fails, notifies and still restarts
+    (the user explicitly asked for an update).
+    """
+    from app.update_manager import pull_upstream
+    from app.restart_manager import request_restart
+    from app.pause_manager import remove_pause
+
+    result = pull_upstream(Path(koan_root))
+    if not result.success:
+        log("koan", f"Update failed: {result.error}")
+        _notify(instance, f"🔄 Update failed ({result.error}), restarting anyway.")
+    elif result.changed:
+        log("koan", f"Update: {result.summary()}")
+        _notify(instance, f"🔄 Update complete after {count} runs. {result.summary()} Restarting...")
+    else:
+        log("koan", "Update: already up to date, restarting.")
+        _notify(instance, f"🔄 Update complete after {count} runs. Already up to date. Restarting...")
+
+    remove_pause(koan_root)
+    request_restart(koan_root)
 
 
 # ---------------------------------------------------------------------------
@@ -634,11 +603,16 @@ def _commit_instance(instance: str, message: str = ""):
 # ---------------------------------------------------------------------------
 
 def handle_pause(
-    koan_root: str, instance: str, projects: list, max_runs: int,
+    koan_root: str, instance: str, max_runs: int,
 ) -> Optional[str]:
-    """Handle pause mode. Returns "resume" if resumed, None to stay paused."""
-    set_status(koan_root, f"Paused ({time.strftime('%H:%M')})")
-    log("pause", f"Paused. Contemplative mode. ({time.strftime('%H:%M')})")
+    """Handle pause mode. Returns "resume" if resumed, None to stay paused.
+
+    When paused, NO autonomous or contemplative work is performed.
+    The agent only checks for resume conditions and sleeps.
+    """
+    timestamp = time.strftime('%H:%M')
+    set_status(koan_root, f"Paused ({timestamp})")
+    log("pause", f"Paused. Waiting for resume. ({timestamp})")
 
     # Check auto-resume
     try:
@@ -655,52 +629,26 @@ def handle_pause(
     # Manual resume (pause file already removed — /resume handler already
     # resets session counters for quota pauses, but we reset here too as
     # a safety net for any resume path)
-    if not Path(koan_root, ".koan-pause").exists():
+    if not Path(koan_root, PAUSE_FILE).exists():
         log("pause", "Manual resume detected")
         _reset_usage_session(instance)
         return "resume"
 
-    # Contemplative session (~50% chance, skip in focus mode)
-    import random
-    roll = random.randint(0, 99)
-    in_focus = False
-    try:
-        from app.focus_manager import check_focus
-        in_focus = check_focus(koan_root) is not None
-    except Exception as e:
-        log("error", f"Focus mode check failed in pause: {e}")
-
-    if roll < 50 and not in_focus:
-        log("pause", "A thought stirs...")
-        project_name, project_path = projects[0]
-        atomic_write(Path(koan_root, ".koan-project"), project_name)
-
-        log("pause", "Running contemplative session...")
-        try:
-            from app.contemplative_runner import build_contemplative_command
-            cmd = build_contemplative_command(
-                instance=instance,
-                project_name=project_name,
-                session_info="Pause mode. Run loop paused.",
-            )
-            exit_code = run_claude_task(
-                cmd=cmd,
-                stdout_file=os.devnull,
-                stderr_file=os.devnull,
-                cwd=koan_root,
-            )
-            log("pause", "Contemplative session ended.")
-        except KeyboardInterrupt:
-            raise
-        except Exception as e:
-            log("error", f"Contemplative session error: {e}")
-
-    # Sleep 5 min in 5s increments — check for resume/restart
+    # Sleep 5 min in 5s increments — check for resume/stop/restart/shutdown/update
     with protected_phase("Paused — waiting for resume"):
         for _ in range(60):
-            if not Path(koan_root, ".koan-pause").exists():
+            if not Path(koan_root, PAUSE_FILE).exists():
                 return "resume"
-            if Path(koan_root, ".koan-restart").exists():
+            if Path(koan_root, STOP_FILE).exists():
+                log("pause", "Stop signal detected while paused")
+                break
+            if Path(koan_root, SHUTDOWN_FILE).exists():
+                log("pause", "Shutdown signal detected while paused")
+                break
+            if Path(koan_root, CYCLE_FILE).exists():
+                log("pause", "Update signal detected while paused")
+                break
+            if check_restart(koan_root):
                 break
             time.sleep(5)
 
@@ -741,71 +689,87 @@ def main_loop():
     # Record startup time
     start_time = time.time()
 
-    # Acquire PID
-    acquire_pid(Path(koan_root), "run", os.getpid())
+    # Acquire PID (flock-based exclusive lock)
+    pidfile_lock = acquire_pidfile(Path(koan_root), "run")
 
     # Clear stale signal files from a previous session.
     # If `make stop` or `/stop` ran while run.py was NOT running, the signal
     # file persists and would cause an immediate exit on next startup.
-    Path(koan_root, ".koan-stop").unlink(missing_ok=True)
-    Path(koan_root, ".koan-shutdown").unlink(missing_ok=True)
+    Path(koan_root, STOP_FILE).unlink(missing_ok=True)
+    Path(koan_root, SHUTDOWN_FILE).unlink(missing_ok=True)
+    Path(koan_root, CYCLE_FILE).unlink(missing_ok=True)
+    Path(koan_root, ABORT_FILE).unlink(missing_ok=True)
+    clear_restart(koan_root)
 
     # Install SIGINT handler
     signal.signal(signal.SIGINT, _on_sigint)
 
     # Initialize project state
-    atomic_write(Path(koan_root, ".koan-project"), projects[0][0])
-    os.environ["KOAN_CURRENT_PROJECT"] = projects[0][0]
-    os.environ["KOAN_CURRENT_PROJECT_PATH"] = projects[0][1]
+    if projects:
+        atomic_write(Path(koan_root, PROJECT_FILE), projects[0][0])
+        os.environ["KOAN_CURRENT_PROJECT"] = projects[0][0]
+        os.environ["KOAN_CURRENT_PROJECT_PATH"] = projects[0][1]
 
     count = 0
     consecutive_errors = 0
+    consecutive_idle = 0
+    MAX_CONSECUTIVE_IDLE = 30  # ~30 min at 60s interval → auto-pause
     try:
         # Startup sequence
         max_runs, interval, branch_prefix = run_startup(koan_root, instance, projects)
 
         git_sync_interval = int(os.environ.get("KOAN_GIT_SYNC_INTERVAL", "5"))
 
+        # --- Startup delay (#1039) ---
+        # Give the user a window to send /pause before the first mission runs.
+        # Without this, a mission can be picked up immediately after startup,
+        # racing with the Telegram bridge processing of /pause.
+        _startup_delay(koan_root)
+
         while True:
             # --- Stop check ---
-            stop_file = Path(koan_root, ".koan-stop")
+            stop_file = Path(koan_root, STOP_FILE)
             if stop_file.exists():
                 log("koan", "Stop requested.")
                 stop_file.unlink(missing_ok=True)
-                current = Path(koan_root, ".koan-project").read_text().strip()
+                current = _read_current_project(koan_root)
                 _notify(instance, f"Kōan stopped on request after {count} runs. Last project: {current}.")
                 break
+
+            # --- Update check (finish mission → update → restart) ---
+            cycle_file = Path(koan_root, CYCLE_FILE)
+            if cycle_file.exists():
+                log("koan", "Update requested. Updating and restarting...")
+                cycle_file.unlink(missing_ok=True)
+                _handle_update(koan_root, instance, count)
+                sys.exit(RESTART_EXIT_CODE)
 
             # --- Shutdown check (stops both agent loop and bridge) ---
             if is_shutdown_requested(koan_root, start_time):
                 log("koan", "Shutdown requested. Exiting.")
                 clear_shutdown(koan_root)
-                current = Path(koan_root, ".koan-project").read_text().strip()
+                current = _read_current_project(koan_root)
                 _notify(instance, f"Kōan shutdown after {count} runs. Last project: {current}.")
                 break
 
             # --- Restart check ---
-            restart_file = Path(koan_root, ".koan-restart")
-            if restart_file.exists():
-                try:
-                    mtime = restart_file.stat().st_mtime
-                    if mtime > start_time:
-                        log("koan", "Restart requested. Exiting for re-launch...")
-                        sys.exit(42)
-                except Exception as e:
-                    log("error", f"Restart signal check failed: {e}")
+            if check_restart(koan_root, since=start_time):
+                log("koan", "Restart requested. Exiting for re-launch...")
+                clear_restart(koan_root)
+                sys.exit(RESTART_EXIT_CODE)
 
             # --- Pause mode ---
-            if Path(koan_root, ".koan-pause").exists():
-                result = handle_pause(koan_root, instance, projects, max_runs)
+            if Path(koan_root, PAUSE_FILE).exists():
+                result = handle_pause(koan_root, instance, max_runs)
                 if result == "resume":
                     count = 0
                     consecutive_errors = 0
+                    consecutive_idle = 0
                 continue
 
             # --- Iteration body (exception-protected) ---
             try:
-                _run_iteration(
+                productive = _run_iteration(
                     koan_root=koan_root,
                     instance=instance,
                     projects=projects,
@@ -815,7 +779,59 @@ def main_loop():
                     git_sync_interval=git_sync_interval,
                 )
                 consecutive_errors = 0
-                count += 1
+                if productive is True:
+                    count += 1
+                    consecutive_idle = 0
+                elif productive == "idle":
+                    consecutive_idle += 1
+                    if consecutive_idle == 1:
+                        try:
+                            from app.schedule_manager import is_scheduled_active
+                            schedule_active = is_scheduled_active()
+                        except (ImportError, Exception):
+                            schedule_active = False
+                        if schedule_active:
+                            _notify(
+                                instance,
+                                "💤 No work available — but schedule is active, "
+                                "staying awake for missions.",
+                            )
+                        else:
+                            _notify(
+                                instance,
+                                "💤 No work available — waiting for pending reviews "
+                                "or new missions. Auto-pause in ~30 min.",
+                            )
+                    if consecutive_idle >= MAX_CONSECUTIVE_IDLE:
+                        # Check if a schedule window is active — if so, the
+                        # human configured deep_hours or work_hours and the
+                        # agent should stay active, not auto-pause.
+                        try:
+                            from app.schedule_manager import is_scheduled_active
+                            if is_scheduled_active():
+                                if consecutive_idle == MAX_CONSECUTIVE_IDLE:
+                                    log("koan", "Idle timeout reached but schedule is active — staying awake")
+                                continue
+                        except (ImportError, Exception):
+                            pass  # schedule check failed — fall through to pause
+
+                        from app.config import get_auto_pause
+                        if get_auto_pause():
+                            idle_min = consecutive_idle * interval // 60
+                            log("koan", f"Idle for {idle_min} min — auto-pausing.")
+                            from app.pause_manager import create_pause
+                            create_pause(koan_root, "idle_timeout")
+                            _notify(
+                                instance,
+                                f"⏸️ Auto-paused after {idle_min} min idle. "
+                                "Use /resume when ready.",
+                            )
+                        else:
+                            consecutive_idle = 0  # Reset so we don't log every iteration
+                else:
+                    # Non-productive but not idle (error recovery, dedup, etc.)
+                    # Don't count toward idle timeout
+                    pass
             except KeyboardInterrupt:
                 raise
             except SystemExit:
@@ -827,18 +843,462 @@ def main_loop():
                 )
 
     except KeyboardInterrupt:
-        current = "unknown"
-        try:
-            current = Path(koan_root, ".koan-project").read_text().strip()
-        except Exception as e:
-            log("error", f"Failed to read last project: {e}")
+        current = _read_current_project(koan_root)
         _notify(instance, f"Kōan interrupted after {count} runs. Last project: {current}.")
     finally:
+        # Fire session_end hook (fire-and-forget, exception-safe)
+        try:
+            from app.hooks import fire_hook
+            fire_hook("session_end", instance_dir=instance, total_runs=count)
+        except Exception as e:
+            print(f"[hooks] session_end hook error: {e}", file=sys.stderr)
         # Cleanup
-        Path(koan_root, ".koan-status").unlink(missing_ok=True)
-        release_pid(Path(koan_root), "run")
+        Path(koan_root, STATUS_FILE).unlink(missing_ok=True)
+        release_pidfile(pidfile_lock, Path(koan_root), "run")
         log("koan", f"Shutdown. {count} runs executed.")
         _reset_terminal()
+
+
+# ---------------------------------------------------------------------------
+# Iteration helpers (extracted from _run_iteration for readability)
+# ---------------------------------------------------------------------------
+
+
+def _sleep_between_runs(
+    koan_root: str,
+    instance: str,
+    interval: int,
+    run_num: int = 0,
+    max_runs: int = 0,
+    context: str = "",
+):
+    """Sleep between runs, waking early if new missions arrive.
+
+    Checks for pending missions first — skips sleep entirely if found.
+    """
+    if check_pending_missions(instance):
+        log("koan", "Pending missions found — skipping sleep")
+        if run_num:
+            set_status(koan_root, f"Run {run_num}/{max_runs} — done, next run starting")
+        return
+
+    status_suffix = f" ({time.strftime('%H:%M')})"
+    if context:
+        set_status(koan_root, f"{context}{status_suffix}")
+    else:
+        set_status(koan_root, f"Idle — sleeping {interval}s{status_suffix}")
+    log("koan", f"Sleeping {interval}s (checking for new missions every 10s)...")
+    with protected_phase("Sleeping between runs"):
+        wake = interruptible_sleep(interval, koan_root, instance)
+    if wake == "mission":
+        log("koan", "New mission detected during sleep — waking up early")
+        if run_num:
+            set_status(koan_root, f"Run {run_num}/{max_runs} — done, new mission detected")
+
+
+def _handle_contemplative(
+    plan: dict,
+    run_num: int,
+    max_runs: int,
+    koan_root: str,
+    instance: str,
+    interval: int,
+):
+    """Run a contemplative session and sleep afterwards."""
+    project_name = plan["project_name"]
+    log("pause", "Decision: CONTEMPLATIVE mode (random reflection)")
+    print("  Action: Running contemplative session instead of autonomous work")
+    print()
+    _notify(instance, f"🪷 Run {run_num}/{max_runs} — Contemplative mode on {project_name}")
+
+    log("pause", "Running contemplative session...")
+    try:
+        from app.contemplative_runner import build_contemplative_command
+        cmd = build_contemplative_command(
+            instance=instance,
+            project_name=project_name,
+            session_info=f"Run {run_num}/{max_runs} on {project_name}. Mode: {plan['autonomous_mode']}.",
+        )
+        fd_out, stdout_file = tempfile.mkstemp(prefix="koan-contemp-out-")
+        os.close(fd_out)
+        fd_err, stderr_file = tempfile.mkstemp(prefix="koan-contemp-err-")
+        os.close(fd_err)
+        try:
+            run_claude_task(
+                cmd, stdout_file, stderr_file, cwd=koan_root,
+                instance_dir=instance, project_name=project_name, run_num=run_num,
+            )
+        finally:
+            _cleanup_temp(stdout_file, stderr_file)
+    except KeyboardInterrupt:
+        raise
+    except Exception as e:
+        log("error", f"Contemplative error: {e}\n{traceback.format_exc()}")
+    log("pause", "Contemplative session ended.")
+
+    # Commit any journal/memory changes from the contemplative session.
+    # Without this, writings are lost if the agent crashes before the
+    # next successful iteration commits.
+    _commit_instance(instance)
+
+    if check_pending_missions(instance):
+        log("koan", "Pending missions found after contemplation — skipping sleep")
+    else:
+        set_status(koan_root, f"Idle — post-contemplation sleep ({time.strftime('%H:%M')})")
+        log("pause", f"Contemplative session complete. Sleeping {interval}s...")
+        with protected_phase("Sleeping between runs"):
+            wake = interruptible_sleep(interval, koan_root, instance)
+        if wake == "mission":
+            log("koan", "New mission detected during sleep — waking up early")
+
+
+def _handle_wait_pause(
+    plan: dict,
+    count: int,
+    koan_root: str,
+    instance: str,
+):
+    """Enter pause mode when budget is exhausted (WAIT action)."""
+    project_name = plan["project_name"]
+    log("quota", "Decision: WAIT mode (budget exhausted)")
+    print(f"  Reason: {plan['decision_reason']}")
+    print("  Action: Entering pause mode (will auto-resume when quota resets)")
+    print()
+    try:
+        from app.send_retrospective import create_retrospective
+        create_retrospective(Path(instance), project_name)
+    except Exception as e:
+        log("error", f"Retrospective sending failed: {e}\n{traceback.format_exc()}")
+
+    # Commit retrospective before entering pause — otherwise these
+    # journal/memory writes are lost if the machine reboots while paused.
+    _commit_instance(instance)
+
+    reset_ts, reset_display = _compute_quota_reset_ts(instance)
+    from app.pause_manager import create_pause
+    create_pause(koan_root, "quota", reset_ts, reset_display)
+
+    quota_details = plan['decision_reason']
+    if plan["display_lines"]:
+        quota_details += "\n" + "\n".join(plan["display_lines"])
+
+    _notify(instance, (
+        f"⏸️ Kōan paused: budget exhausted after {count} runs on [{project_name}].\n"
+        f"{quota_details}\n"
+        f"Auto-resume when session resets or use /resume."
+    ))
+
+
+def _run_preflight_check(
+    plan: dict,
+    koan_root: str,
+    instance: str,
+    count: int,
+) -> bool:
+    """Run pre-flight quota check before mission/autonomous execution.
+
+    Returns True if quota is exhausted (caller should abort), False to proceed.
+    """
+    project_path = plan["project_path"]
+    project_name = plan["project_name"]
+    try:
+        from app.preflight import preflight_quota_check
+        pf_ok, pf_error = preflight_quota_check(
+            project_path=project_path,
+            instance_dir=instance,
+            project_name=project_name,
+        )
+        if not pf_ok:
+            log("quota", "Pre-flight probe detected quota exhaustion")
+            pf_reset_ts, pf_reset_display = _compute_preflight_reset_ts(pf_error)
+            from app.pause_manager import create_pause
+            create_pause(koan_root, "quota", pf_reset_ts, pf_reset_display)
+            label = plan["mission_title"] if plan["mission_title"] else "autonomous run"
+            _notify(instance, (
+                f"⏸️ Pre-flight quota check failed before [{project_name}] {label}.\n"
+                f"Pausing until quota resets. Use /resume to restart manually."
+            ))
+            return True
+    except Exception as e:
+        log("error", f"Pre-flight quota check error: {e}")
+    return False
+
+
+def _handle_skill_dispatch(
+    mission_title: str,
+    project_name: str,
+    project_path: str,
+    koan_root: str,
+    instance: str,
+    run_num: int,
+    max_runs: int,
+    autonomous_mode: str,
+    interval: int,
+) -> tuple:
+    """Try to dispatch a mission as a skill command.
+
+    Returns:
+        (handled: bool, mission_title: str) — if handled is True the caller
+        should return immediately; if False the caller should proceed to Claude
+        using the returned mission_title (which may have been translated by a
+        cli_skill mapping).
+    """
+    from app.debug import debug_log as _debug_log
+    preview = f"{mission_title[:100]}..." if len(mission_title) > 100 else mission_title
+    _debug_log(f"[run] checking skill dispatch for: {preview}")
+
+    from app.skill_dispatch import dispatch_skill_mission, is_skill_mission
+    skill_cmd = dispatch_skill_mission(
+        mission_text=mission_title,
+        project_name=project_name,
+        project_path=project_path,
+        koan_root=koan_root,
+        instance_dir=instance,
+    )
+    if skill_cmd:
+        _debug_log(f"[run] skill dispatch matched: {' '.join(skill_cmd[:5])}")
+        log("mission", "Decision: SKILL DISPATCH (direct runner)")
+        print(f"  Mission: {mission_title}")
+        print(f"  Project: {project_name}")
+        print(f"  Runner: {' '.join(skill_cmd[:4])}...")
+        print()
+        set_status(koan_root, f"Run {run_num}/{max_runs} — skill dispatch on {project_name}")
+        _notify(instance, f"🚀 [{project_name}] Run {run_num}/{max_runs} — Skill: {mission_title}")
+
+        # Create pending.md so /live can show progress during skill dispatch
+        from app.loop_manager import create_pending_file
+        try:
+            create_pending_file(
+                instance_dir=instance,
+                project_name=project_name,
+                run_num=run_num,
+                max_runs=max_runs,
+                autonomous_mode=autonomous_mode or "implement",
+                mission_title=mission_title,
+            )
+        except Exception as e:
+            log("error", f"Failed to create pending.md for skill dispatch: {e}")
+
+        exit_code = 1
+        # Snapshot core files before skill execution
+        from app.core_files import snapshot_core_files, check_core_files, log_integrity_warnings
+        skill_core_snapshot = snapshot_core_files(koan_root, project_path)
+
+        try:
+            with protected_phase(f"Skill: {mission_title[:50]}"):
+                exit_code = _run_skill_mission(
+                    skill_cmd=skill_cmd,
+                    koan_root=koan_root,
+                    instance=instance,
+                    project_name=project_name,
+                    project_path=project_path,
+                    run_num=run_num,
+                    mission_title=mission_title,
+                    autonomous_mode=autonomous_mode,
+                )
+            if exit_code == 0:
+                log("mission", f"Run {run_num}/{max_runs} — [{project_name}] skill completed")
+
+            # Verify core files survived skill execution
+            skill_integrity = check_core_files(koan_root, skill_core_snapshot, project_path)
+            if skill_integrity:
+                log_integrity_warnings(skill_integrity)
+                log("error", f"Core file integrity check failed after skill: {len(skill_integrity)} file(s) missing")
+                exit_code = 1
+        except KeyboardInterrupt:
+            log("error", "Skill dispatch interrupted by user")
+            _finalize_mission(instance, mission_title, project_name, 1)
+            raise
+        except Exception as e:
+            log("error", f"Skill dispatch exception: {e}\n{traceback.format_exc()}")
+        finally:
+            # Clean up temp files created by skill command builders
+            from app.skill_dispatch import cleanup_skill_temp_files
+            cleanup_skill_temp_files(skill_cmd)
+
+        _notify_mission_end(
+            instance, project_name, run_num, max_runs,
+            exit_code, mission_title,
+        )
+        _finalize_mission(instance, mission_title, project_name, exit_code)
+        _commit_instance(instance)
+
+        _sleep_between_runs(koan_root, instance, interval)
+        return True, mission_title
+
+    # Check for cli_skill translation before failing unrecognized /commands
+    if is_skill_mission(mission_title):
+        from pathlib import Path as _Path
+        from app.skill_dispatch import (
+            translate_cli_skill_mission,
+            strip_passthrough_command,
+            expand_combo_skill,
+        )
+
+        # Combo skills (e.g. /rr) are bridge-side handlers that queue
+        # multiple sub-missions. Expand them and mark the original done.
+        if expand_combo_skill(mission_title, instance):
+            log("mission", "Decision: COMBO EXPAND (sub-missions queued)")
+            _notify(instance, f"🔀 [{project_name}] Combo skill expanded into sub-missions")
+            _finalize_mission(instance, mission_title, project_name, exit_code=0)
+            _commit_instance(instance)
+            return True, mission_title
+
+        # Some /commands (e.g. /gh_request) are bridge-side handlers that
+        # can also land in the mission queue via GitHub notifications.
+        # Strip the prefix and let Claude handle them as regular missions.
+        passthrough_text = strip_passthrough_command(mission_title)
+        if passthrough_text is not None:
+            _debug_log(
+                f"[run] passthrough command: '{mission_title}' -> '{passthrough_text}'"
+            )
+            log("mission", "Decision: PASSTHROUGH (command stripped, sending to Claude)")
+            return False, passthrough_text
+
+        translated = translate_cli_skill_mission(
+            mission_text=mission_title,
+            koan_root=_Path(koan_root),
+            instance_dir=_Path(instance),
+        )
+        if translated is not None:
+            _debug_log(
+                f"[run] cli_skill translation: '{mission_title[:80]}' -> '{translated[:80]}'"
+            )
+            log("mission", "Decision: CLI SKILL (provider slash command)")
+            # Return untranslated=False so caller falls through to Claude with translated title
+            return False, translated
+
+        _debug_log(f"[run] skill mission unhandled, failing: {mission_title[:200]}")
+
+        # Differentiate "unknown command" from "known command, bad arguments"
+        from app.skill_dispatch import parse_skill_mission, validate_skill_args
+        _, cmd_name, cmd_args = parse_skill_mission(mission_title)
+        arg_error = validate_skill_args(cmd_name, cmd_args) if cmd_name else None
+        if arg_error:
+            log("warning", f"Skill mission invalid args: {arg_error}")
+            _notify(instance, f"⚠️ [{project_name}] {arg_error}")
+        else:
+            log("warning", f"Skill mission has no runner, failing: {mission_title[:80]}")
+            _notify(instance, f"⚠️ [{project_name}] Unknown skill command: {mission_title[:80]}")
+        _finalize_mission(instance, mission_title, project_name, exit_code=1)
+        _commit_instance(instance)
+        return True, mission_title
+
+    return False, mission_title
+
+
+# ---------------------------------------------------------------------------
+# Mission retry helpers
+# ---------------------------------------------------------------------------
+
+# Maximum retry attempts for mission-level CLI failures.
+# Capped at 1 retry (2 total) since missions are expensive.
+_MISSION_MAX_RETRIES = 1
+_MISSION_RETRY_DELAY = 10  # seconds
+
+# Set by run_claude_task when the watchdog timer kills a runaway session.
+# Checked by _maybe_retry_mission to avoid retrying a timeout as if it
+# were a transient network error (the retryable-pattern list matches
+# "timeout" which would otherwise trigger a second full-length run).
+_last_mission_timed_out = False
+_last_mission_aborted = False
+
+
+def _get_git_head(project_path: str) -> str:
+    """Get current git HEAD SHA for retry safety check."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=project_path,
+            capture_output=True, text=True, timeout=5,
+        )
+        return result.stdout.strip() if result.returncode == 0 else ""
+    except (subprocess.SubprocessError, OSError):
+        return ""
+
+
+def _maybe_retry_mission(
+    claude_exit: int,
+    stdout_file: str,
+    stderr_file: str,
+    cmd: list,
+    project_path: str,
+    pre_head: str,
+    instance: str,
+    project_name: str,
+    run_num: int,
+    has_mission: bool,
+) -> tuple:
+    """Attempt a single retry if the CLI error is transient.
+
+    Returns ``(exit_code, stdout_file, stderr_file)`` — the files may
+    be replaced if a retry was performed (old files are truncated to
+    avoid double-counting output).
+
+    Only retries if:
+    - The error is classified as RETRYABLE
+    - No commits were produced (HEAD didn't move)
+    - This is a mission (not autonomous), since missions are higher-value
+    """
+    from app.cli_errors import ErrorCategory, classify_cli_error
+
+    # Watchdog timeouts are NOT transient — don't retry a session that ran
+    # for the full timeout duration.  Without this guard, "timeout" in the
+    # agent's output text (test logs, error messages) would match the
+    # RETRYABLE pattern and start another full-length session.
+    if _last_mission_timed_out:
+        log("koan", "Skipping retry — mission was killed by watchdog timeout")
+        return claude_exit, stdout_file, stderr_file
+
+    # User-initiated aborts must not be retried — the user explicitly asked
+    # to stop this mission.
+    if _last_mission_aborted:
+        log("koan", "Skipping retry — mission was aborted by user")
+        return claude_exit, stdout_file, stderr_file
+
+    # Read output for classification
+    try:
+        stdout_text = Path(stdout_file).read_text()
+    except OSError:
+        stdout_text = ""
+    try:
+        stderr_text = Path(stderr_file).read_text()
+    except OSError:
+        stderr_text = ""
+
+    category = classify_cli_error(claude_exit, stdout_text, stderr_text)
+    log("error", f"CLI error classified as {category.value} (exit={claude_exit})")
+
+    if category != ErrorCategory.RETRYABLE:
+        return claude_exit, stdout_file, stderr_file
+
+    if not has_mission:
+        log("koan", "Skipping retry for autonomous run (lower priority)")
+        return claude_exit, stdout_file, stderr_file
+
+    # Safety: don't retry if Claude already produced commits
+    post_head = _get_git_head(project_path)
+    if pre_head and post_head and pre_head != post_head:
+        log("koan", "Skipping retry — commits were produced before the error")
+        return claude_exit, stdout_file, stderr_file
+
+    log("koan", f"Transient CLI error — retrying mission in {_MISSION_RETRY_DELAY}s")
+    with protected_phase("Mission retry backoff"):
+        time.sleep(_MISSION_RETRY_DELAY)
+
+    # Clear output files before retry to avoid double-counting
+    try:
+        open(stdout_file, "w").close()
+        open(stderr_file, "w").close()
+    except OSError:
+        pass
+
+    retry_exit = run_claude_task(
+        cmd, stdout_file, stderr_file, cwd=project_path,
+        instance_dir=instance, project_name=project_name, run_num=run_num,
+    )
+    log("koan", f"Mission retry exit_code={retry_exit}")
+    return retry_exit, stdout_file, stderr_file
 
 
 # ---------------------------------------------------------------------------
@@ -859,24 +1319,48 @@ def _run_iteration(
     Called from main_loop() within a try/except block that catches
     unexpected exceptions without killing the process.
 
+    Returns:
+        True if this was a productive iteration (mission, autonomous, or
+        contemplative session that consumed API budget).  ``"idle"`` for
+        idle wait states (PR limit, schedule, focus, exploration).  False
+        for other non-productive iterations (errors, dedup skips,
+        preflight failures).  The caller only increments ``count`` on
+        productive iterations so that ``max_runs`` reflects actual work
+        done, not loop cycles.
+
     Exceptions:
         KeyboardInterrupt: Propagates to caller (user abort)
         SystemExit: Propagates to caller (restart signal)
         Exception: Caught by caller for recovery
-
-    Note: Count is incremented by the caller on success.
     """
     run_num = count + 1
     set_status(koan_root, f"Run {run_num}/{max_runs} — preparing")
+
+    # Write run-loop heartbeat so external monitors can detect a hung agent
+    from app.health_check import write_run_heartbeat
+    write_run_heartbeat(koan_root)
+
     print()
     print(bold_cyan(f"=== Run {run_num}/{max_runs} — {time.strftime('%Y-%m-%d %H:%M:%S')} ==="))
 
-    # Plan iteration (delegated to iteration_manager)
-    last_project = ""
+    # Refresh project list (picks up workspace changes since startup)
+    from app.utils import get_known_projects
+    refreshed = get_known_projects()
+    if refreshed:
+        projects = refreshed
+
+    # Check GitHub notifications before planning (converts @mentions to missions
+    # so plan_iteration() sees them immediately instead of waiting for sleep)
+    from app.loop_manager import process_github_notifications
     try:
-        last_project = Path(koan_root, ".koan-project").read_text().strip()
+        gh_missions = process_github_notifications(koan_root, instance)
+        if gh_missions > 0:
+            log("github", f"Pre-iteration: {gh_missions} mission(s) created from GitHub notifications")
     except Exception as e:
-        log("error", f"Failed to read last project file: {e}")
+        log("error", f"Pre-iteration GitHub notification check failed: {e}")
+
+    # Plan iteration (delegated to iteration_manager)
+    last_project = _read_current_project(koan_root)
     plan = plan_iteration(
         instance_dir=instance,
         koan_root=koan_root,
@@ -893,6 +1377,9 @@ def _run_iteration(
         f"{', mission=' + plan['mission_title'][:60] if plan['mission_title'] else ''}")
     if plan.get("error"):
         log("error", f"Iteration plan error: {plan['error']}")
+    if plan.get("tracker_error"):
+        log("error", f"Usage tracker broken: {plan['tracker_error']} — hard-capped to review mode")
+        _notify(instance, f"⚠️ Budget tracker error: {plan['tracker_error']} — running in review-only mode until fixed")
 
     # Display usage
     log("quota", "Usage Status:")
@@ -914,101 +1401,61 @@ def _run_iteration(
     project_path = plan["project_path"]
 
     if action == "error":
-        log("error", plan.get("error", "Unknown error"))
-        _notify(instance, f"Mission error: {plan.get('error', 'Unknown')}")
-        # Don't kill the process — raise so the caller can recover
-        raise RuntimeError(f"Mission error: {plan.get('error', 'Unknown')}")
+        error_msg = plan.get("error", "Unknown error")
+        mission_title = plan.get("mission_title", "")
+        log("error", error_msg)
+        # Move the mission to Failed so it doesn't block the queue.
+        # Without this, the same mission gets picked every iteration,
+        # causing a retry loop until MAX_CONSECUTIVE_ERRORS triggers pause.
+        if mission_title:
+            _update_mission_in_file(instance, mission_title, failed=True)
+            _notify(instance, f"❌ Mission failed: {error_msg}")
+            _commit_instance(instance)
+        else:
+            _notify(instance, f"⚠️ Iteration error: {error_msg}")
+        return False  # error handling — not productive
 
     if action == "contemplative":
-        log("pause", f"Decision: CONTEMPLATIVE mode (random reflection)")
-        print("  Action: Running contemplative session instead of autonomous work")
-        print()
-        _notify(instance, f"🪷 Run {run_num}/{max_runs} — Contemplative mode on {project_name}")
+        _handle_contemplative(plan, run_num, max_runs, koan_root, instance, interval)
+        return True  # contemplative sessions consume API budget
 
-        log("pause", "Running contemplative session...")
-        try:
-            from app.contemplative_runner import build_contemplative_command
-            cmd = build_contemplative_command(
-                instance=instance,
-                project_name=project_name,
-                session_info=f"Run {run_num}/{max_runs} on {project_name}. Mode: {plan['autonomous_mode']}.",
-            )
-            run_claude_task(cmd, os.devnull, os.devnull, cwd=koan_root)
-        except KeyboardInterrupt:
-            raise
-        except Exception as e:
-            log("error", f"Contemplative error: {e}")
-        log("pause", "Contemplative session ended.")
-
-        # Check for pending before sleeping
-        if check_pending_missions(instance):
-            log("koan", "Pending missions found after contemplation — skipping sleep")
-        else:
-            set_status(koan_root, f"Idle — post-contemplation sleep ({time.strftime('%H:%M')})")
-            log("pause", f"Contemplative session complete. Sleeping {interval}s...")
-            with protected_phase("Sleeping between runs"):
-                wake = interruptible_sleep(interval, koan_root, instance)
-            if wake == "mission":
-                log("koan", "New mission detected during sleep — waking up early")
-        return
-
-    if action == "focus_wait":
-        remaining = plan.get("focus_remaining", "unknown")
-        log("koan", f"Focus mode active ({remaining} remaining) — no missions pending, sleeping")
-        set_status(koan_root, f"Focus mode — waiting for missions ({remaining} remaining)")
-        with protected_phase("Focus mode — waiting for missions"):
+    # Idle wait actions — all follow the same sleep-and-check pattern
+    _IDLE_WAIT_CONFIG = {
+        "focus_wait": lambda p: (
+            f"Focus mode active ({p.get('focus_remaining', 'unknown')} remaining) — no missions pending, sleeping",
+            f"Focus mode — waiting for missions ({p.get('focus_remaining', 'unknown')} remaining)",
+        ),
+        "schedule_wait": lambda _: (
+            "Work hours active — waiting for missions (exploration suppressed)",
+            f"Work hours — waiting for missions ({time.strftime('%H:%M')})",
+        ),
+        "exploration_wait": lambda _: (
+            "All projects have exploration disabled — waiting for missions",
+            f"Exploration disabled — waiting for missions ({time.strftime('%H:%M')})",
+        ),
+        "pr_limit_wait": lambda _: (
+            "PR limit reached for all projects — waiting for reviews",
+            f"PR limit reached — waiting for reviews ({time.strftime('%H:%M')})",
+        ),
+    }
+    if action in _IDLE_WAIT_CONFIG:
+        log_msg, status_msg = _IDLE_WAIT_CONFIG[action](plan)
+        log("koan", log_msg)
+        set_status(koan_root, status_msg)
+        with protected_phase(status_msg):
             wake = interruptible_sleep(interval, koan_root, instance)
         if wake == "mission":
-            log("koan", "New mission detected during focus sleep — waking up")
-        return
-
-    if action == "schedule_wait":
-        log("koan", "Work hours active — waiting for missions (exploration suppressed)")
-        set_status(koan_root, f"Work hours — waiting for missions ({time.strftime('%H:%M')})")
-        with protected_phase("Work hours — waiting for missions"):
-            wake = interruptible_sleep(interval, koan_root, instance)
-        if wake == "mission":
-            log("koan", "New mission detected during work hours sleep — waking up")
-        return
+            log("koan", f"New mission detected during {action} — waking up")
+        return "idle"  # idle wait — not productive, trackable
 
     if action == "wait_pause":
-        log("quota", "Decision: WAIT mode (budget exhausted)")
-        print(f"  Reason: {plan['decision_reason']}")
-        print("  Action: Entering pause mode (will auto-resume when quota resets)")
-        print()
-        try:
-            from app.send_retrospective import create_retrospective
-            create_retrospective(Path(instance), project_name)
-        except Exception as e:
-            log("error", f"Retrospective sending failed: {e}")
-        # Compute a proper future reset timestamp to avoid instant auto-resume
-        reset_ts = None
-        reset_display = ""
-        try:
-            from app.usage_estimator import cmd_reset_time, _estimate_reset_time, _load_state
-            usage_state_path = Path(instance, "usage_state.json")
-            reset_ts = cmd_reset_time(usage_state_path)
-            # Build display info for the pause reason file
-            state = _load_state(usage_state_path)
-            reset_display = f"session reset in ~{_estimate_reset_time(state.get('session_start', ''), 5)}"
-        except Exception as e:
-            log("error", f"Reset time estimation failed: {e}")
-        if reset_ts is None:
-            reset_ts = int(time.time()) + 5 * 3600  # fallback: now + 5h
-        from app.pause_manager import create_pause
-        create_pause(koan_root, "quota", reset_ts, reset_display)
+        _handle_wait_pause(plan, count, koan_root, instance)
+        return False  # budget exhausted — not productive
 
-        # Build quota detail string for the notification
-        quota_details = plan['decision_reason']
-        if plan["display_lines"]:
-            quota_details += "\n" + "\n".join(plan["display_lines"])
-
-        _notify(instance, (
-            f"⏸️ Kōan paused: budget exhausted after {count} runs on [{project_name}].\n"
-            f"{quota_details}\n"
-            f"Auto-resume when session resets or use /resume."
-        ))
-        return
+    # --- Pre-flight quota check ---
+    if action in ("mission", "autonomous"):
+        if _run_preflight_check(plan, koan_root, instance, count):
+            return False  # quota exhausted pre-flight — not productive
 
     # --- Execute mission or autonomous run ---
     mission_title = plan["mission_title"]
@@ -1025,91 +1472,56 @@ def _run_iteration(
                 _update_mission_in_file(instance, mission_title, failed=True)
                 _notify(instance, f"⚠️ Mission failed 3+ times, moved to Failed: {mission_title[:60]}")
                 _commit_instance(instance)
-                return
-        except (OSError, ValueError) as e:
+                return False  # dedup skip — not productive
+        except Exception as e:
             log("error", f"Dedup guard error: {e}")
+            return False  # dedup error — not productive, don't proceed
 
     # Set project state
-    atomic_write(Path(koan_root, ".koan-project"), project_name)
+    atomic_write(Path(koan_root, PROJECT_FILE), project_name)
     os.environ["KOAN_CURRENT_PROJECT"] = project_name
     os.environ["KOAN_CURRENT_PROJECT_PATH"] = project_path
 
     print(bold_green(f">>> Current project: {project_name}") + f" ({project_path})")
     print()
 
+    # --- Prepare project git state ---
+    from app.git_prep import prepare_project_branch
+    try:
+        prep = prepare_project_branch(project_path, project_name, koan_root)
+        if prep.stashed:
+            log("git", f"Stashed uncommitted changes in {project_name}")
+        if not prep.success:
+            log("error", f"Git prep failed for {project_name}: {prep.error}")
+            if mission_title:
+                _update_mission_in_file(instance, mission_title, failed=True)
+                _notify(instance, f"❌ [{project_name}] Git prep failed, aborting mission: {mission_title[:60]}")
+            return False  # abort — branch state is unreliable
+        else:
+            log("git", f"Ready on {prep.base_branch} from {prep.remote_used}")
+    except Exception as e:
+        log("error", f"Git prep error for {project_name}: {e}\n{traceback.format_exc()}")
+        if mission_title:
+            _update_mission_in_file(instance, mission_title, failed=True)
+            _notify(instance, f"❌ [{project_name}] Git prep error, aborting mission: {mission_title[:60]}")
+        return False  # abort — branch state is unreliable
+
     # --- Mark mission as In Progress ---
+    # Save the original title before skill dispatch may translate it.
+    # _finalize_mission must use the original title because that's the
+    # needle recorded in missions.md "In Progress" section.
+    original_mission_title = mission_title
     if mission_title:
         _start_mission_in_file(instance, mission_title)
 
     # --- Check for skill-dispatched mission ---
-    # Missions starting with /command (e.g. "/plan Add dark mode")
-    # are dispatched directly to the skill's CLI runner, bypassing
-    # the Claude agent.
     if mission_title:
-        from app.debug import debug_log as _debug_log
-        preview = f"{mission_title[:100]}..." if len(mission_title) > 100 else mission_title
-        _debug_log(f"[run] checking skill dispatch for: {preview}")
-        from app.skill_dispatch import dispatch_skill_mission, is_skill_mission
-        skill_cmd = dispatch_skill_mission(
-            mission_text=mission_title,
-            project_name=project_name,
-            project_path=project_path,
-            koan_root=koan_root,
-            instance_dir=instance,
+        handled, mission_title = _handle_skill_dispatch(
+            mission_title, project_name, project_path, koan_root,
+            instance, run_num, max_runs, autonomous_mode, interval,
         )
-        if skill_cmd:
-            _debug_log(f"[run] skill dispatch matched: {' '.join(skill_cmd[:5])}")
-            log("mission", "Decision: SKILL DISPATCH (direct runner)")
-            print(f"  Mission: {mission_title}")
-            print(f"  Project: {project_name}")
-            print(f"  Runner: {' '.join(skill_cmd[:4])}...")
-            print()
-            set_status(koan_root, f"Run {run_num}/{max_runs} — skill dispatch on {project_name}")
-            _notify(instance, f"🚀 Run {run_num}/{max_runs} — [{project_name}] Skill: {mission_title}")
-
-            with protected_phase(f"Skill: {mission_title[:50]}"):
-                exit_code = _run_skill_mission(
-                    skill_cmd=skill_cmd,
-                    koan_root=koan_root,
-                    instance=instance,
-                    project_name=project_name,
-                    project_path=project_path,
-                    run_num=run_num,
-                    mission_title=mission_title,
-                    autonomous_mode=autonomous_mode,
-                )
-
-            if exit_code == 0:
-                log("mission", f"Run {run_num}/{max_runs} — [{project_name}] skill completed")
-            _notify_mission_end(
-                instance, project_name, run_num, max_runs,
-                exit_code, mission_title,
-            )
-
-            _finalize_mission(instance, mission_title, project_name, exit_code)
-            _commit_instance(instance)
-
-            if check_pending_missions(instance):
-                log("koan", "Pending missions — skipping sleep")
-            else:
-                set_status(koan_root, f"Idle — sleeping ({time.strftime('%H:%M')})")
-                with protected_phase("Sleeping between runs"):
-                    wake = interruptible_sleep(interval, koan_root, instance)
-                if wake == "mission":
-                    log("koan", "New mission detected during sleep — waking up early")
-            return
-        elif is_skill_mission(mission_title):
-            # Skill mission but no runner matched — fail it instead
-            # of falling through to Claude (which would re-queue it).
-            # Note: is_skill_mission() is called again intentionally —
-            # dispatch returns None for both "not a skill" and "unknown
-            # runner", and we need to distinguish the two cases here.
-            _debug_log(f"[run] skill mission unhandled, failing: {mission_title[:200]}")
-            log("warning", f"Skill mission has no runner, failing: {mission_title[:80]}")
-            _notify(instance, f"⚠️ [{project_name}] Unknown skill command: {mission_title[:80]}")
-            _finalize_mission(instance, mission_title, project_name, exit_code=1)
-            _commit_instance(instance)
-            return
+        if handled:
+            return True  # skill dispatch — productive
 
     # Lifecycle notification
     if mission_title:
@@ -1117,7 +1529,7 @@ def _run_iteration(
         print(f"  Mission: {mission_title}")
         print(f"  Project: {project_name}")
         print()
-        _notify(instance, f"🚀 Run {run_num}/{max_runs} — [{project_name}] Mission taken: {mission_title}")
+        _notify(instance, f"🚀 [{project_name}] Run {run_num}/{max_runs} — Starting: {mission_title}")
     else:
         mode_upper = autonomous_mode.upper()
         log("mission", f"Decision: {mode_upper} mode (estimated cost: 5.0% session)")
@@ -1125,11 +1537,46 @@ def _run_iteration(
         print(f"  Project: {project_name}")
         print(f"  Focus: {focus_area}")
         print()
-        _notify(instance, f"🚀 Run {run_num}/{max_runs} — Autonomous: {autonomous_mode} mode on {project_name}")
+        _notify(instance, f"🚀 [{project_name}] Run {run_num}/{max_runs} — Autonomous: {autonomous_mode} mode")
 
-    # Build prompt
-    from app.prompt_builder import build_agent_prompt
-    prompt = build_agent_prompt(
+    # --- Fire pre-mission hook ---
+    try:
+        from app.hooks import fire_hook
+        fire_hook(
+            "pre_mission",
+            instance_dir=instance,
+            project_name=project_name,
+            project_path=project_path,
+            mission_title=mission_title,
+            autonomous_mode=autonomous_mode,
+            run_num=run_num,
+        )
+    except Exception as e:
+        print(f"[hooks] pre_mission hook error: {e}", file=sys.stderr)
+
+    # --- Generate mission spec for complex missions ---
+    spec_content = ""
+    if mission_title and autonomous_mode not in ("review", "wait"):
+        try:
+            from app.mission_complexity import is_complex_mission
+            if is_complex_mission(mission_title):
+                log("spec", f"Complex mission detected — generating spec")
+                from app.spec_generator import generate_spec, save_spec
+                spec_content = generate_spec(project_path, mission_title, instance) or ""
+                if spec_content:
+                    spec_path = save_spec(instance, mission_title, spec_content)
+                    if spec_path:
+                        log("spec", f"Spec saved to {spec_path}")
+                    else:
+                        log("spec", "Spec generated but save failed")
+                else:
+                    log("spec", "Spec generation returned empty — proceeding without spec")
+        except Exception as e:
+            log("error", f"Spec generation error (non-blocking): {e}")
+
+    # Build prompt (split into system/user for prompt caching)
+    from app.prompt_builder import build_agent_prompt_parts
+    system_prompt, prompt = build_agent_prompt_parts(
         instance=instance,
         project_name=project_name,
         project_path=project_path,
@@ -1139,6 +1586,7 @@ def _run_iteration(
         focus_area=focus_area or "General autonomous work",
         available_pct=available_pct or 50,
         mission_title=mission_title,
+        spec_content=spec_content,
     )
 
     # Create pending.md
@@ -1163,24 +1611,88 @@ def _run_iteration(
 
     mission_start = int(time.time())
     fd_out, stdout_file = tempfile.mkstemp(prefix="koan-out-")
-    fd_err, stderr_file = tempfile.mkstemp(prefix="koan-err-")
     os.close(fd_out)
+    fd_err, stderr_file = tempfile.mkstemp(prefix="koan-err-")
     os.close(fd_err)
+    claude_exit = 1  # default to failure; overwritten on successful execution
+    plugin_dir = None  # generated plugin dir for Skill tool (cleaned up in finally)
     try:
         # Build CLI command (provider-agnostic with per-project overrides)
         from app.mission_runner import build_mission_command
         from app.debug import debug_log as _debug_log
+
+        # Generate plugin directory so Claude CLI can discover Kōan skills
+        plugin_dirs = None
+        try:
+            from app.plugin_generator import generate_plugin_dir, cleanup_plugin_dir
+            from app.skills import build_registry
+            extra_dirs = []
+            # Include project-local skills (<project>/.claude/skills/)
+            project_skills = Path(project_path) / ".claude" / "skills"
+            if project_skills.is_dir():
+                extra_dirs.append(project_skills)
+            instance_skills = instance / "skills"
+            if instance_skills.is_dir():
+                extra_dirs.append(instance_skills)
+            # Include user-installed Claude Code skills (~/.claude/skills/)
+            user_skills = Path.home() / ".claude" / "skills"
+            if user_skills.is_dir():
+                extra_dirs.append(user_skills)
+            registry = build_registry(extra_dirs=extra_dirs or None)
+            if registry.list_by_audience("agent", "command", "hybrid"):
+                plugin_dir = generate_plugin_dir(registry)
+                plugin_dirs = [str(plugin_dir)]
+        except Exception as e:
+            _debug_log(f"[run] plugin dir generation skipped: {e}")
+
         cmd = build_mission_command(
             prompt=prompt,
             autonomous_mode=autonomous_mode,
             extra_flags="",
             project_name=project_name,
+            plugin_dirs=plugin_dirs,
+            system_prompt=system_prompt,
         )
 
         cmd_display = [c[:100] + '...' if len(c) > 100 else c for c in cmd[:6]]
         _debug_log(f"[run] cli: cmd={' '.join(cmd_display)}... cwd={project_path}")
-        claude_exit = run_claude_task(cmd, stdout_file, stderr_file, cwd=project_path)
+
+        # Capture git HEAD before execution for retry safety check
+        pre_head = _get_git_head(project_path)
+
+        # Snapshot core files before execution for integrity check
+        from app.core_files import snapshot_core_files, check_core_files, log_integrity_warnings
+        core_snapshot = snapshot_core_files(koan_root, project_path)
+
+        claude_exit = run_claude_task(
+            cmd, stdout_file, stderr_file, cwd=project_path,
+            instance_dir=instance, project_name=project_name, run_num=run_num,
+        )
         _debug_log(f"[run] cli: exit_code={claude_exit}")
+
+        # --- Mission retry on transient CLI errors ---
+        # One retry for missions, zero for autonomous (they're lower-priority).
+        # Only retry if HEAD didn't move (no commits produced).
+        if claude_exit != 0:
+            claude_exit, stdout_file, stderr_file = _maybe_retry_mission(
+                claude_exit=claude_exit,
+                stdout_file=stdout_file,
+                stderr_file=stderr_file,
+                cmd=cmd,
+                project_path=project_path,
+                pre_head=pre_head,
+                instance=instance,
+                project_name=project_name,
+                run_num=run_num,
+                has_mission=bool(mission_title),
+            )
+
+        # Verify core files survived the mission (after retry, so result is final)
+        integrity_warnings = check_core_files(koan_root, core_snapshot, project_path)
+        if integrity_warnings:
+            log_integrity_warnings(integrity_warnings)
+            log("error", f"Core file integrity check failed: {len(integrity_warnings)} file(s) missing")
+            claude_exit = 1
 
         # Parse and display output
         try:
@@ -1197,13 +1709,48 @@ def _run_iteration(
                 log("error", f"Failed to read CLI output: {e}, {e2}")
         _reset_terminal()
 
+        # --- Auth error detection (logged-out Claude) ---
+        # If Claude is logged out, requeue the mission instead of failing it
+        # and pause the agent until the human re-authenticates.
+        if claude_exit != 0 and original_mission_title:
+            from app.cli_errors import ErrorCategory, classify_cli_error
+            try:
+                _auth_stdout = Path(stdout_file).read_text()
+            except OSError:
+                _auth_stdout = ""
+            try:
+                _auth_stderr = Path(stderr_file).read_text()
+            except OSError:
+                _auth_stderr = ""
+            _auth_category = classify_cli_error(claude_exit, _auth_stdout, _auth_stderr)
+            if _auth_category == ErrorCategory.AUTH:
+                log("error", "Claude is logged out — requeueing mission to Pending")
+                _requeue_mission_in_file(instance, original_mission_title)
+                from app.pause_manager import create_pause
+                create_pause(koan_root, "auth")
+                _notify(instance, (
+                    "🔐 Claude is logged out. Please run `claude /login` to re-authenticate.\n\n"
+                    "The current mission has been moved back to Pending. "
+                    "Use /resume after logging in."
+                ))
+                return True  # consumed API budget before auth expired
+
         # Complete/fail mission in missions.md (safety net — idempotent if Claude already did it)
         # Done BEFORE post-mission pipeline so quota exhaustion can't skip it.
-        if mission_title:
-            _finalize_mission(instance, mission_title, project_name, claude_exit)
+        # Use original_mission_title because that's the needle in "In Progress".
+        # cli_skill translation may have changed mission_title to a different string.
+        if original_mission_title:
+            _finalize_mission(instance, original_mission_title, project_name, claude_exit)
+
+        # If mission was aborted, notify and skip heavy post-mission pipeline
+        if _last_mission_aborted and original_mission_title:
+            log("koan", f"Mission aborted: {original_mission_title[:60]}")
+            _notify(instance, f"⏭️ [{project_name}] Mission aborted: {original_mission_title[:60]}")
+            return True  # count as productive so loop continues immediately
 
         # Post-mission pipeline
-        set_status(koan_root, f"Run {run_num}/{max_runs} — post-mission processing")
+        _status_prefix = f"Run {run_num}/{max_runs}"
+        set_status(koan_root, f"{_status_prefix} — finalizing")
         try:
             from app.mission_runner import run_post_mission
             post_result = run_post_mission(
@@ -1217,6 +1764,9 @@ def _run_iteration(
                 mission_title=mission_title,
                 autonomous_mode=autonomous_mode or "implement",
                 start_time=mission_start,
+                status_callback=lambda step: set_status(
+                    koan_root, f"{_status_prefix} — {step}"
+                ),
             )
 
             if post_result.get("pending_archived"):
@@ -1232,16 +1782,28 @@ def _run_iteration(
                 else:
                     reset_display, resume_msg = "", "Auto-resume in ~5h"
                 log("quota", f"Quota reached. {reset_display}")
+
+                # Create pause state so the main loop actually stops
+                reset_ts, _disp = _compute_quota_reset_ts(instance)
+                from app.pause_manager import create_pause
+                create_pause(koan_root, "quota", reset_ts, reset_display or _disp)
+
                 _commit_instance(instance, f"koan: quota exhausted {time.strftime('%Y-%m-%d-%H:%M')}")
                 _notify(instance, (
                     f"⚠️ Claude quota exhausted. {reset_display}\n\n"
                     f"Kōan paused after {count} runs. {resume_msg} or use /resume to restart manually."
                 ))
-                return
+                return True  # ran Claude before quota hit — productive
         except Exception as e:
-            log("error", f"Post-mission processing error: {e}")
+            log("error", f"Post-mission processing error: {e}\n{traceback.format_exc()}")
     finally:
         _cleanup_temp(stdout_file, stderr_file)
+        if plugin_dir:
+            try:
+                from app.plugin_generator import cleanup_plugin_dir
+                cleanup_plugin_dir(plugin_dir)
+            except Exception as e:
+                print(f"[run] plugin cleanup error: {e}", file=sys.stderr)
 
     # Report result — always notify on completion (success or failure)
     if claude_exit == 0:
@@ -1266,36 +1828,44 @@ def _run_iteration(
                 except Exception as e:
                     log("error", f"Periodic git sync failed for {name}: {e}")
 
+    # Periodic auto-update check
+    try:
+        from app.auto_update import is_auto_update_enabled, get_check_interval
+        if is_auto_update_enabled() and (count + 1) % get_check_interval() == 0:
+            from app.auto_update import perform_auto_update
+            updated = perform_auto_update(koan_root, instance)
+            if updated:
+                log("update", "Auto-update triggered restart.")
+                sys.exit(RESTART_EXIT_CODE)
+    except Exception as e:
+        log("error", f"Periodic auto-update check failed: {e}")
+
     # Max runs check
     if count + 1 >= max_runs:
-        log("koan", f"Max runs ({max_runs}) reached. Running evening ritual before pause.")
-        with protected_phase("Evening ritual"):
-            try:
-                from app.rituals import run_ritual
-                run_ritual("evening", Path(instance))
-            except Exception as e:
-                log("error", f"Evening ritual failed: {e}")
-        log("pause", "Entering pause mode (auto-resume in 5h).")
-        from app.pause_manager import create_pause
-        create_pause(koan_root, "max_runs")
-        _notify(instance, (
-            f"⏸️ Kōan paused: {max_runs} runs completed. "
-            "Auto-resume in 5h or use /resume to restart."
-        ))
-        return
+        from app.config import get_auto_pause
+        if get_auto_pause():
+            log("koan", f"Max runs ({max_runs}) reached. Running evening ritual before pause.")
+            with protected_phase("Evening ritual"):
+                try:
+                    from app.rituals import run_ritual
+                    run_ritual("evening", Path(instance))
+                except Exception as e:
+                    log("error", f"Evening ritual failed: {e}")
+            log("pause", "Entering pause mode (auto-resume in 5h).")
+            from app.pause_manager import create_pause
+            create_pause(koan_root, "max_runs")
+            _notify(instance, (
+                f"⏸️ Kōan paused: {max_runs} runs completed. "
+                "Auto-resume in 5h or use /resume to restart."
+            ))
+            return True  # completed final productive run
+        else:
+            log("koan", f"Max runs ({max_runs}) reached but auto_pause disabled — continuing.")
 
     # Sleep between runs (skip if pending missions)
-    if check_pending_missions(instance):
-        log("koan", "Pending missions found — skipping sleep, starting next run immediately")
-        set_status(koan_root, f"Run {run_num}/{max_runs} — done, next run starting")
-    else:
-        set_status(koan_root, f"Idle — sleeping {interval}s ({time.strftime('%H:%M')})")
-        log("koan", f"Sleeping {interval}s (checking for new missions every 10s)...")
-        with protected_phase("Sleeping between runs"):
-            wake = interruptible_sleep(interval, koan_root, instance)
-        if wake == "mission":
-            log("koan", "New mission detected during sleep — waking up early")
-            set_status(koan_root, f"Run {run_num}/{max_runs} — done, new mission detected")
+    _sleep_between_runs(koan_root, instance, interval, run_num, max_runs)
+
+    return True  # productive iteration completed
 
 
 # ---------------------------------------------------------------------------
@@ -1345,6 +1915,49 @@ def _handle_iteration_error(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _compute_quota_reset_ts(instance: str):
+    """Compute quota reset timestamp and display string.
+
+    Returns (reset_ts: int, reset_display: str). Falls back to
+    QUOTA_RETRY_SECONDS from now if estimation fails.
+    """
+    reset_ts = None
+    reset_display = ""
+    try:
+        from app.usage_estimator import cmd_reset_time, _estimate_reset_time, _load_state
+        usage_state_path = Path(instance, "usage_state.json")
+        reset_ts = cmd_reset_time(usage_state_path)
+        state = _load_state(usage_state_path)
+        reset_display = f"session reset in ~{_estimate_reset_time(state.get('session_start', ''), 5)}"
+    except Exception as e:
+        log("error", f"Reset time estimation failed: {e}")
+    if reset_ts is None:
+        from app.pause_manager import QUOTA_RETRY_SECONDS
+        reset_ts = int(time.time()) + QUOTA_RETRY_SECONDS
+    return reset_ts, reset_display
+
+
+def _compute_preflight_reset_ts(error_output: str):
+    """Compute quota reset timestamp from preflight probe error output.
+
+    Returns (reset_ts: int, reset_display: str). Falls back to
+    QUOTA_RETRY_SECONDS from now if extraction fails.
+    """
+    reset_ts = None
+    reset_display = ""
+    try:
+        from app.quota_handler import extract_reset_info, parse_reset_time, compute_resume_info
+        reset_info = extract_reset_info(error_output or "")
+        reset_ts, reset_display = parse_reset_time(reset_info)
+        reset_ts, _ = compute_resume_info(reset_ts, reset_display)
+    except Exception as e:
+        log("error", f"Pre-flight reset time extraction failed: {e}")
+    if reset_ts is None:
+        from app.pause_manager import QUOTA_RETRY_SECONDS
+        reset_ts = int(time.time()) + QUOTA_RETRY_SECONDS
+    return reset_ts, reset_display
 
 
 def _reset_usage_session(instance: str):
@@ -1400,6 +2013,19 @@ def _update_mission_in_file(instance: str, mission_title: str, *, failed: bool =
         log("error", f"Could not {label} mission in missions.md: {e}")
 
 
+def _requeue_mission_in_file(instance: str, mission_title: str):
+    """Move mission from In Progress back to Pending via locked write."""
+    try:
+        from app.missions import requeue_mission
+        from app.utils import modify_missions_file
+        missions_path = Path(instance, "missions.md")
+        if not missions_path.exists():
+            return
+        modify_missions_file(missions_path, lambda c: requeue_mission(c, mission_title))
+    except Exception as e:
+        log("error", f"Could not requeue mission in missions.md: {e}")
+
+
 def _finalize_mission(instance: str, mission_title: str, project_name: str, exit_code: int):
     """Complete or fail a mission and record execution history."""
     _update_mission_in_file(instance, mission_title, failed=(exit_code != 0))
@@ -1424,7 +2050,7 @@ def _get_koan_branch(koan_root: str) -> str:
             timeout=5,
         )
         return result.stdout.strip() if result.returncode == 0 else ""
-    except Exception:
+    except (subprocess.SubprocessError, OSError):
         return ""
 
 
@@ -1468,12 +2094,16 @@ def _run_skill_mission(
 ) -> int:
     """Execute a skill-dispatched mission directly via subprocess.
 
+    Streams stdout/stderr line-by-line to pending.md so /live can show
+    real-time progress during skill dispatch.
+
     Returns the process exit code (0 = success).
     """
     from app.debug import debug_log
 
     mission_start = int(time.time())
     koan_pkg_dir = os.path.join(koan_root, "koan")
+    pending_path = Path(instance) / "journal" / "pending.md"
 
     # Explicitly set PYTHONPATH so the subprocess can always resolve
     # app.* modules even if the working tree changes (e.g. skill does
@@ -1486,24 +2116,93 @@ def _run_skill_mission(
     # the branch, subsequent runs break.
     koan_branch_before = _get_koan_branch(koan_root)
 
+    from app.config import get_skill_timeout
+    skill_timeout = get_skill_timeout()
+
     debug_log(f"[run] skill exec: cmd={' '.join(skill_cmd)}")
-    debug_log(f"[run] skill exec: cwd={koan_pkg_dir}")
-    skill_stdout = ""
-    skill_stderr = ""
+    debug_log(f"[run] skill exec: cwd={koan_pkg_dir} timeout={skill_timeout}s")
+    stdout_lines = []
+    proc = None
+    timed_out = False
+
+    # Create temp files for post-mission processing up front.
+    # stderr is redirected to a file instead of a pipe to eliminate
+    # deadlock risk: if a background drain thread dies (e.g.
+    # UnicodeDecodeError), the pipe fills and both processes stall.
+    fd_out, stdout_file = tempfile.mkstemp(prefix="koan-out-")
+    os.close(fd_out)
+    fd_err, stderr_file = tempfile.mkstemp(prefix="koan-err-")
+    os.close(fd_err)
+    stderr_fh = None
     try:
-        result = subprocess.run(
+        stderr_fh = open(stderr_file, "w")
+        proc = subprocess.Popen(
             skill_cmd,
             stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=stderr_fh,
             cwd=koan_pkg_dir,
             env=skill_env,
-            capture_output=True,
             text=True,
-            timeout=600,
-            preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_IGN),
+            start_new_session=True,
         )
-        exit_code = result.returncode
-        skill_stdout = result.stdout or ""
-        skill_stderr = result.stderr or ""
+        # Register for double-tap CTRL-C termination.
+        _sig.claude_proc = proc
+
+        # Watchdog timer: kills the process group if the skill exceeds
+        # skill_timeout.  Without this, the ``for line in proc.stdout``
+        # loop below blocks indefinitely if the subprocess hangs without
+        # closing its stdout pipe — ``proc.wait(timeout=...)`` is never
+        # reached because the iterator never finishes.
+        def _watchdog():
+            nonlocal timed_out
+            timed_out = True
+            _kill_process_group(proc)
+
+        timer = threading.Timer(skill_timeout, _watchdog)
+        timer.daemon = True
+        timer.start()
+
+        # Stream stdout line-by-line, appending each to pending.md
+        # so /live shows real-time progress.  Open the file handle once
+        # to avoid repeated open/close race with archive_pending.
+        pending_fh = None
+        try:
+            pending_fh = open(pending_path, "a")
+        except OSError as e:
+            debug_log(f"[run] cannot open pending.md for streaming: {e}")
+        try:
+            for line in proc.stdout:
+                stripped = line.rstrip("\n")
+                stdout_lines.append(stripped)
+                print(stripped)
+                if pending_fh is not None:
+                    try:
+                        pending_fh.write(f"{stripped}\n")
+                        pending_fh.flush()
+                    except OSError:
+                        pending_fh = None
+        finally:
+            if pending_fh is not None:
+                pending_fh.close()
+            timer.cancel()
+
+        proc.wait(timeout=30)
+        if timed_out:
+            # Watchdog killed the process — treat as timeout
+            raise subprocess.TimeoutExpired(skill_cmd, skill_timeout)
+        exit_code = proc.returncode
+        skill_stdout = "\n".join(stdout_lines)
+        # Read stderr from file after process exits.
+        stderr_fh.close()
+        stderr_fh = None
+        try:
+            with open(stderr_file) as f:
+                skill_stderr = f.read()
+        except OSError:
+            skill_stderr = ""
+        if skill_stderr.strip():
+            print(skill_stderr, file=sys.stderr)
         debug_log(
             f"[run] skill exec: exit_code={exit_code} "
             f"stdout_len={len(skill_stdout)} stderr_len={len(skill_stderr)}"
@@ -1513,34 +2212,46 @@ def _run_skill_mission(
                 debug_log(f"[run] skill stdout: {skill_stdout[:2000]}")
             if skill_stderr:
                 debug_log(f"[run] skill stderr: {skill_stderr[:2000]}")
-        if skill_stdout:
-            print(skill_stdout)
-        if skill_stderr:
-            print(skill_stderr, file=sys.stderr)
     except subprocess.TimeoutExpired:
-        log("error", "Skill runner timed out (10min)")
-        debug_log("[run] skill exec: TIMEOUT (600s)")
+        _kill_process_group(proc)
+        timed_out = True
+        log("error", f"Skill runner timed out ({skill_timeout}s)")
+        debug_log(f"[run] skill exec: TIMEOUT ({skill_timeout}s)")
         exit_code = 1
+        skill_stdout = "\n".join(stdout_lines)
+        skill_stderr = ""
     except Exception as e:
-        log("error", f"Skill runner failed: {e}")
+        if proc is not None:
+            _kill_process_group(proc)
+        log("error", f"Skill runner failed: {e}\n{traceback.format_exc()}")
         debug_log(f"[run] skill exec: EXCEPTION {e}")
         exit_code = 1
+        skill_stdout = "\n".join(stdout_lines)
+        skill_stderr = ""
     finally:
+        if proc is not None and proc.stdout is not None:
+            try:
+                proc.stdout.close()
+            except OSError:
+                pass
+        if stderr_fh is not None:
+            stderr_fh.close()
+        _sig.claude_proc = None
         _reset_terminal()
         # Restore koan repo branch if it was changed by the skill.
         _restore_koan_branch(koan_root, koan_branch_before)
 
-    # Write output to temp files for post-mission processing
-    fd_out, stdout_file = tempfile.mkstemp(prefix="koan-out-")
-    fd_err, stderr_file = tempfile.mkstemp(prefix="koan-err-")
+    # Write stdout to its temp file for post-mission processing.
+    # stderr is already in stderr_file from the subprocess redirect.
+    # Wrap in try/finally so temp files are cleaned up even if the write
+    # or post-mission processing raises an unexpected exception (consistent
+    # with the contemplative and regular mission paths).
     try:
-        os.write(fd_out, skill_stdout.encode('utf-8'))
-        os.write(fd_err, skill_stderr.encode('utf-8'))
-    finally:
-        os.close(fd_out)
-        os.close(fd_err)
+        with open(stdout_file, 'wb') as f:
+            f.write(skill_stdout.encode('utf-8'))
 
-    try:
+        _skill_prefix = f"Run {run_num}"
+        set_status(koan_root, f"{_skill_prefix} — finalizing")
         from app.mission_runner import run_post_mission
         run_post_mission(
             instance_dir=instance,
@@ -1553,11 +2264,14 @@ def _run_skill_mission(
             mission_title=mission_title,
             autonomous_mode=autonomous_mode or "implement",
             start_time=mission_start,
+            status_callback=lambda step: set_status(
+                koan_root, f"{_skill_prefix} — {step}"
+            ),
         )
     except Exception as e:
         log("error", f"Post-mission error: {e}")
-
-    _cleanup_temp(stdout_file, stderr_file)
+    finally:
+        _cleanup_temp(stdout_file, stderr_file)
     duration = int(time.time()) - mission_start
     debug_log(f"[run] skill exec: done in {duration}s, exit_code={exit_code}")
     return exit_code
@@ -1568,7 +2282,7 @@ def _cleanup_temp(*files):
     for f in files:
         try:
             Path(f).unlink(missing_ok=True)
-        except Exception:
+        except OSError:
             pass
 
 
@@ -1593,7 +2307,7 @@ def main():
         except KeyboardInterrupt:
             break
         except SystemExit as e:
-            if e.code == 42:
+            if e.code == RESTART_EXIT_CODE:
                 # Restart signal
                 crash_count = 0
                 print("[koan] Restarting run loop...")

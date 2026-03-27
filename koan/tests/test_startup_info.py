@@ -35,7 +35,7 @@ class TestGetProvider:
     def test_defaults_to_claude(self, monkeypatch):
         monkeypatch.delenv("KOAN_CLI_PROVIDER", raising=False)
         monkeypatch.delenv("CLI_PROVIDER", raising=False)
-        with patch("app.utils.load_config", side_effect=Exception("no config")):
+        with patch("app.utils.load_config", side_effect=OSError("no config")):
             assert _get_provider(Path("/tmp")) == "claude"
 
 
@@ -60,7 +60,7 @@ class TestGetProjectsSummary:
             assert _get_projects_summary(Path("/tmp")) == "none configured"
 
     def test_handles_exception(self):
-        with patch("app.utils.get_known_projects", side_effect=Exception):
+        with patch("app.utils.get_known_projects", side_effect=OSError):
             assert _get_projects_summary(Path("/tmp")) == "unavailable"
 
 
@@ -77,12 +77,12 @@ class TestGetSkillsSummary:
         with patch("app.skills.build_registry") as mock_reg:
             registry = mock_reg.return_value
             registry.list_by_scope.return_value = [None] * 29
-            registry.all_skills.return_value = [None] * 32
+            registry.list_all.return_value = [None] * 32
             result = _get_skills_summary(Path("/tmp"), Path("/tmp/instance"))
             assert "29 core + 3 extra" in result
 
     def test_handles_exception(self):
-        with patch("app.skills.build_registry", side_effect=Exception):
+        with patch("app.skills.build_registry", side_effect=ImportError):
             assert _get_skills_summary(Path("/tmp"), Path("/tmp/instance")) == "unavailable"
 
 
