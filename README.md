@@ -162,6 +162,7 @@ Communication happens through shared markdown files in `instance/` — atomic wr
 - **Auto-merge** — Configurable per-project merge strategies (squash/merge/rebase)
 - **Git sync awareness** — Tracks branch state, detects merges, reports sync status
 - **GitHub integration** — Draft PRs, issue creation, PR reviews, rebasing — all via `gh` CLI
+- **PR review comment forwarding** — When reviewers leave comments on Koan-created PRs, the check loop auto-creates missions to address them (fingerprint-deduped, bot-filtered)
 - **GitHub @mention triggers** — Koan responds to @mentions on issues and PRs
 
 ### Communication

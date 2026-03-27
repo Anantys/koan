@@ -475,10 +475,20 @@ Use this before `/plan` when the idea is architecturally complex, when you want 
 - **Usage:** `/check <pr-or-issue-url>`
 - **Aliases:** `/inspect`
 
+The check loop also **auto-forwards unresolved human review comments** on Kōan-created PRs. When a reviewer leaves comments, `/check` detects them and creates a mission to address the feedback — no explicit @mention required. Fingerprint-based deduplication (SHA-256 of sorted comment IDs) prevents re-dispatching the same set of comments across repeated checks. Bot comments (Codecov, Dependabot, etc.) are filtered out automatically.
+
+Configure this behavior in `config.yaml`:
+
+```yaml
+review_dispatch:
+  include_drafts: true   # Also dispatch for draft PRs (default: true)
+```
+
 <details>
 <summary>Use cases</summary>
 
 - `/check https://github.com/org/repo/pull/42` — Let Kōan decide what a PR needs
+- Reviewer leaves comments on a PR → next `/check` run creates a mission to address them
 </details>
 
 **`/gh_request`** — Route a natural-language GitHub request to the appropriate action.
