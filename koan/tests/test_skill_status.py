@@ -185,7 +185,7 @@ class TestHandleStatus:
         with patch("skills.core.status.handler._needs_ollama", return_value=False):
             result = _handle_status(ctx)
         assert "Kōan Status" in result
-        assert "🟢 Mode: Working" in result
+        assert "🟢 Mode: Active" in result
 
     def test_paused_status(self, koan_root, instance_dir):
         (koan_root / ".koan-pause").touch()

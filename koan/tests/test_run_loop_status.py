@@ -104,7 +104,7 @@ class TestStatusFileLifecycle:
             "# Missions\n\n## Pending\n\n## In Progress\n\n"
         )
         status = _call_status_handler(tmp_path)
-        assert "Working" in status
+        assert "Active" in status
         # No "Loop:" line when status file doesn't exist
         assert "Loop:" not in status
 
@@ -238,7 +238,7 @@ class TestStatusHandlerIntegration:
         (tmp_path / ".koan-status").write_text("Run 3/20 — executing mission on koan")
 
         status = _call_status_handler(tmp_path)
-        assert "Working" in status
+        assert "Active" in status
         assert "Run 3/20" in status
         assert "executing mission" in status
         assert "fix the bug" in status
@@ -254,7 +254,7 @@ class TestStatusHandlerIntegration:
         (tmp_path / ".koan-status").write_text("Idle — sleeping 300s (14:35)")
 
         status = _call_status_handler(tmp_path)
-        assert "Working" in status
+        assert "Active" in status
         assert "Idle" in status
         assert "sleeping" in status
 
@@ -268,6 +268,6 @@ class TestStatusHandlerIntegration:
         (tmp_path / ".koan-status").write_text("Run 7/20 — preparing")
 
         status = _call_status_handler(tmp_path)
-        assert "Working" in status
+        assert "Active" in status
         assert "preparing" in status
         assert "audit security" in status

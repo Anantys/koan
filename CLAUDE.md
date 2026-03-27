@@ -77,6 +77,7 @@ Communication between processes happens through shared files in `instance/` with
 - **`pause_manager.py`** — Pause state management (`.koan-pause` / `.koan-pause-reason` files). Supports time-bounded pauses with auto-resume (e.g., `/pause 2h`)
 - **`restart_manager.py`** — File-based restart signaling between bridge and run loop (`.koan-restart`)
 - **`focus_manager.py`** — Focus mode management (`.koan-focus` JSON); skips contemplative sessions when active
+- **`passive_manager.py`** — Passive mode management (`.koan-passive` JSON); read-only mode that blocks all execution while keeping loop alive
 
 **CLI provider abstraction** (`koan/app/provider/`):
 - **`provider/base.py`** — `CLIProvider` base class + tool name constants
@@ -113,7 +114,7 @@ Communication between processes happens through shared files in `instance/` with
 Extensible command plugin system. Each skill lives in `skills/<scope>/<skill-name>/` with a `SKILL.md` (YAML frontmatter defining commands, aliases, metadata) and an optional `handler.py`.
 
 - **`skills.py`** — Registry that discovers SKILL.md files, parses frontmatter (custom lite YAML parser, no PyYAML), maps commands/aliases to skills, and dispatches execution.
-- **Core skills** live in `koan/skills/core/` (audit, cancel, chat, check, claudemd, delete_project, focus, idea, implement, journal, language, list, live, magic, mission, plan, pr, priority, projects, quota, rebase, recreate, recurring, refactor, reflect, review, shutdown, sparring, start, status, update, verbose)
+- **Core skills** live in `koan/skills/core/` (audit, cancel, chat, check, claudemd, delete_project, focus, idea, implement, journal, language, list, live, magic, mission, passive, plan, pr, priority, projects, quota, rebase, recreate, recurring, refactor, reflect, review, shutdown, sparring, start, status, update, verbose)
 - **Custom skills** loaded from `instance/skills/<scope>/` — each scope directory can be a cloned Git repo for team sharing.
 - **Handler pattern**: `def handle(ctx: SkillContext) -> Optional[str]` — return string for Telegram reply, empty string for "already handled", None for no message.
 - **`worker: true`** flag in SKILL.md marks blocking skills (Claude calls, API requests) that run in a background thread.

@@ -429,7 +429,7 @@ class TestMakeResult:
             "action", "project_name", "project_path", "mission_title",
             "autonomous_mode", "focus_area", "available_pct", "decision_reason",
             "display_lines", "recurring_injected", "focus_remaining",
-            "schedule_mode", "error", "tracker_error",
+            "passive_remaining", "schedule_mode", "error", "tracker_error",
         }
         assert set(result.keys()) == expected_keys
 

@@ -73,7 +73,7 @@ class TestHandleStatus:
         from skills.core.status.handler import _handle_status
         ctx = _make_ctx("status", instance, tmp_path)
         result = _handle_status(ctx)
-        assert "Working" in result
+        assert "Active" in result
         assert "Paused" not in result
 
     def test_paused_mode_generic(self, tmp_path):

@@ -1,6 +1,7 @@
 """Tests for passive_manager.py — passive mode state management."""
 
 import json
+import os
 import time
 
 import pytest
@@ -270,3 +271,123 @@ class TestCheckPassive:
         result = check_passive(str(tmp_path))
         assert result is not None
         assert passive_file.exists()
+
+
+class TestPassiveSkillHandler:
+    """Test the /passive and /active skill handlers."""
+
+    def _make_ctx(self, tmp_path, command_name="passive", args=""):
+        class FakeCtx:
+            pass
+
+        ctx = FakeCtx()
+        ctx.koan_root = tmp_path
+        ctx.instance_dir = tmp_path / "instance"
+        ctx.command_name = command_name
+        ctx.args = args
+        return ctx
+
+    def test_passive_activates_indefinite(self, tmp_path):
+        from skills.core.passive.handler import handle
+
+        ctx = self._make_ctx(tmp_path)
+        result = handle(ctx)
+        assert "Passive mode ON" in result
+        assert (tmp_path / ".koan-passive").exists()
+
+    def test_passive_with_duration(self, tmp_path):
+        from skills.core.passive.handler import handle
+
+        ctx = self._make_ctx(tmp_path, args="4h")
+        result = handle(ctx)
+        assert "Passive mode ON" in result
+        assert "4h00m" in result
+
+    def test_passive_with_invalid_duration(self, tmp_path):
+        from skills.core.passive.handler import handle
+
+        ctx = self._make_ctx(tmp_path, args="xyz")
+        result = handle(ctx)
+        assert "Invalid duration" in result
+        assert not (tmp_path / ".koan-passive").exists()
+
+    def test_passive_already_passive_no_args(self, tmp_path):
+        from app.passive_manager import create_passive
+        from skills.core.passive.handler import handle
+
+        create_passive(str(tmp_path))
+        ctx = self._make_ctx(tmp_path)
+        result = handle(ctx)
+        assert "Already" in result
+
+    def test_passive_already_passive_with_duration_overrides(self, tmp_path):
+        from app.passive_manager import create_passive, get_passive_state
+        from skills.core.passive.handler import handle
+
+        create_passive(str(tmp_path))
+        ctx = self._make_ctx(tmp_path, args="2h")
+        result = handle(ctx)
+        assert "Passive mode ON" in result
+        state = get_passive_state(str(tmp_path))
+        assert state.duration == 7200
+
+    def test_active_deactivates(self, tmp_path):
+        from app.passive_manager import create_passive
+        from skills.core.passive.handler import handle
+
+        create_passive(str(tmp_path))
+        ctx = self._make_ctx(tmp_path, command_name="active")
+        result = handle(ctx)
+        assert "Back to work" in result
+        assert not (tmp_path / ".koan-passive").exists()
+
+    def test_active_when_not_passive(self, tmp_path):
+        from skills.core.passive.handler import handle
+
+        ctx = self._make_ctx(tmp_path, command_name="active")
+        result = handle(ctx)
+        assert "Already active" in result
+
+
+class TestStatusHandlerPassiveIntegration:
+    """Test passive mode in /status output."""
+
+    def _make_ctx(self, tmp_path):
+        class FakeCtx:
+            pass
+
+        ctx = FakeCtx()
+        ctx.koan_root = tmp_path
+        ctx.instance_dir = tmp_path / "instance"
+        ctx.command_name = "status"
+        ctx.args = ""
+        os.makedirs(ctx.instance_dir, exist_ok=True)
+        return ctx
+
+    def test_status_shows_passive_when_active(self, tmp_path):
+        from app.passive_manager import create_passive
+        from skills.core.status.handler import _handle_status
+
+        create_passive(str(tmp_path))
+        ctx = self._make_ctx(tmp_path)
+        result = _handle_status(ctx)
+        assert "Passive" in result
+        assert "read-only" in result
+
+    def test_status_shows_active_when_not_passive(self, tmp_path):
+        from skills.core.status.handler import _handle_status
+
+        ctx = self._make_ctx(tmp_path)
+        result = _handle_status(ctx)
+        assert "Active" in result
+        assert "Passive" not in result
+
+    def test_status_shows_timed_passive(self, tmp_path):
+        from app.passive_manager import create_passive
+        from skills.core.status.handler import _handle_status
+
+        create_passive(str(tmp_path), duration=7200)
+        ctx = self._make_ctx(tmp_path)
+        result = _handle_status(ctx)
+        assert "Passive" in result
+        assert "remaining" in result

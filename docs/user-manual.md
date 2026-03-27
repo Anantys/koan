@@ -260,6 +260,21 @@ Kōan can manage multiple projects simultaneously. It rotates between them based
 - `/unfocus` — "OK, back to normal"
 </details>
 
+**`/passive`** — Enter passive (read-only) mode. The agent loop keeps running (heartbeat, GitHub notification polling, Telegram commands) but never executes missions or autonomous work. Missions accumulate as Pending.
+
+- **Usage:** `/passive [duration]` — no duration = indefinite
+- **Examples:** `/passive`, `/passive 4h`, `/passive 2h30m`
+
+**`/active`** — Exit passive mode and resume normal execution. Queued missions drain naturally.
+
+<details>
+<summary>Use cases</summary>
+
+- `/passive` — "I'm at the desk, don't touch anything"
+- `/passive 4h` — "Hands off for the next 4 hours"
+- `/active` — "I'm done, you can work again"
+</details>
+
 ---
 
 ## Intermediate — Productivity Workflows
@@ -1218,6 +1233,8 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/projects` | `/proj` | B | List configured projects |
 | `/focus [duration]` | — | B | Lock agent to one project |
 | `/unfocus` | — | B | Exit focus mode |
+| `/passive [duration]` | — | B | Enter read-only passive mode |
+| `/active` | — | B | Exit passive mode, resume execution |
 | `/brainstorm <topic>` | — | I | Decompose topic into linked sub-issues + master issue |
 | `/plan <desc>` | — | I | Create a structured implementation plan |
 | `/deepplan <idea\|issue-url>` | `/deeplan` | I | Spec-first design: explore approaches, post spec, queue /plan |

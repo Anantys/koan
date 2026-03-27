@@ -1788,13 +1788,13 @@ class TestPauseCommand:
         assert "max runs" in status.lower()
 
     def test_status_shows_working_when_active(self, tmp_path):
-        """Status shows Working when no pause/stop."""
+        """Status shows Active when no pause/stop/passive."""
         (tmp_path / "instance").mkdir()
         (tmp_path / "instance" / "missions.md").write_text(
             "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n"
         )
         status = _call_status_handler(tmp_path)
-        assert "Working" in status
+        assert "Active" in status
 
     def test_status_shows_stopping(self, tmp_path):
         """Status shows Stopping when stop file exists."""
@@ -2031,7 +2031,7 @@ class TestPauseAwareness:
             "# Missions\n\n## Pending\n\n## In Progress\n\n"
         )
         status = _call_status_handler(tmp_path)
-        assert "Working" in status
+        assert "Active" in status
 
     @patch("app.awake.save_conversation_message")
     @patch("app.awake.load_recent_history", return_value=[])
