@@ -28,6 +28,27 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 
+def _extract_issue_numbers(text: str) -> set[int]:
+    """Extract GitHub issue/PR numbers (#NNN) from a string."""
+    return {int(m) for m in re.findall(r"#(\d+)", text)}
+
+
+def _normalize_tokens(text: str) -> set[str]:
+    """Extract meaningful lowercase tokens from text for fuzzy matching.
+
+    Strips common noise words to improve overlap detection between
+    topic descriptions and PR titles.
+    """
+    _STOP_WORDS = {
+        "a", "an", "the", "is", "are", "was", "were", "be", "been",
+        "for", "and", "or", "but", "in", "on", "at", "to", "of",
+        "with", "from", "by", "add", "feat", "fix", "implement",
+        "update", "refactor", "test", "github",
+    }
+    tokens = set(re.findall(r"[a-z]{3,}", text.lower()))
+    return tokens - _STOP_WORDS
+
+
 class DeepResearch:
     """Analyzes project state to suggest meaningful DEEP mode work."""
 
@@ -36,6 +57,7 @@ class DeepResearch:
         self.project_name = project_name
         self.project_path = project_path
         self.memory_dir = instance_dir / "memory" / "projects" / project_name
+        self._pending_prs: list[dict] | None = None
 
     def get_priorities(self) -> dict:
         """Parse priorities.md into structured data."""
@@ -105,7 +127,13 @@ class DeepResearch:
             return []
 
     def get_pending_prs(self) -> list[dict]:
-        """Fetch open PRs that might need attention."""
+        """Fetch open PRs that might need attention.
+
+        Results are cached for the lifetime of this DeepResearch instance
+        to avoid redundant gh API calls within a single analysis run.
+        """
+        if self._pending_prs is not None:
+            return self._pending_prs
         try:
             from app.github import run_gh
             output = run_gh(
@@ -114,10 +142,84 @@ class DeepResearch:
                 "--json", "number,title,createdAt,headRefName",
                 cwd=self.project_path,
             )
-            return json.loads(output)
+            self._pending_prs = json.loads(output)
         except Exception as e:
             print(f"[deep_research] PR fetch failed: {e}", file=sys.stderr)
-            return []
+            self._pending_prs = []
+        return self._pending_prs
+
+    def _build_pr_coverage(self) -> dict:
+        """Build a coverage map from open PRs.
+
+        Returns:
+            Dict with keys:
+            - issue_numbers: set of int — issue numbers referenced in PR titles/branches
+            - pr_tokens: dict mapping PR number to normalized token set
+            - prs: list of PR dicts (for display)
+        """
+        prs = self.get_pending_prs()
+        covered_issues: set[int] = set()
+        pr_tokens: dict[int, set[str]] = {}
+
+        for pr in prs:
+            title = pr.get("title", "")
+            branch = pr.get("headRefName", "")
+            number = pr.get("number", 0)
+
+            # Extract issue numbers from title and branch
+            covered_issues |= _extract_issue_numbers(title)
+            covered_issues |= _extract_issue_numbers(branch)
+
+            # Also extract issue numbers from branch patterns like "implement-1042"
+            for m in re.findall(r"(?:implement|fix|issue)[/-](\d+)", branch):
+                covered_issues.add(int(m))
+
+            # Build token set for fuzzy matching
+            pr_tokens[number] = _normalize_tokens(title) | _normalize_tokens(branch)
+
+        return {
+            "issue_numbers": covered_issues,
+            "pr_tokens": pr_tokens,
+            "prs": prs,
+        }
+
+    def _topic_has_open_pr(self, topic: str, coverage: dict) -> int | None:
+        """Check if a topic is already covered by an open PR.
+
+        Returns the PR number if covered, None otherwise.
+
+        Matching strategy:
+        1. Exact issue number match (strongest signal)
+        2. Significant token overlap (>= 50% of topic tokens match a PR)
+        """
+        # 1. Issue number match
+        topic_issues = _extract_issue_numbers(topic)
+        overlap = topic_issues & coverage["issue_numbers"]
+        if overlap:
+            # Find which PR covers this issue
+            for pr in coverage["prs"]:
+                pr_title = pr.get("title", "")
+                pr_branch = pr.get("headRefName", "")
+                pr_issues = _extract_issue_numbers(pr_title) | _extract_issue_numbers(pr_branch)
+                for m in re.findall(r"(?:implement|fix|issue)[/-](\d+)", pr_branch):
+                    pr_issues.add(int(m))
+                if pr_issues & topic_issues:
+                    return pr.get("number")
+
+        # 2. Token overlap (fuzzy match)
+        topic_tokens = _normalize_tokens(topic)
+        if len(topic_tokens) < 2:
+            return None  # Too few tokens for reliable matching
+
+        for pr_num, pr_toks in coverage["pr_tokens"].items():
+            if not pr_toks:
+                continue
+            common = topic_tokens & pr_toks
+            # Require >= 50% of topic tokens to match
+            if len(common) >= max(2, len(topic_tokens) * 0.5):
+                return pr_num
+
+        return None
 
     def get_recent_journal_topics(self, days: int = 7) -> list[str]:
         """Extract topics from recent journal entries to avoid repetition."""
@@ -244,6 +346,22 @@ class DeepResearch:
                 "priority": 3,
             })
 
+        # Filter out topics already covered by open PRs
+        coverage = self._build_pr_coverage()
+        filtered = []
+        for suggestion in suggestions:
+            pr_num = self._topic_has_open_pr(suggestion["topic"], coverage)
+            if pr_num is not None:
+                # Skip entirely — there's already a PR for this
+                print(
+                    f"[deep_research] Skipping '{suggestion['topic'][:60]}' "
+                    f"— covered by PR #{pr_num}",
+                    file=sys.stderr,
+                )
+                continue
+            filtered.append(suggestion)
+        suggestions = filtered
+
         # Apply PR merge feedback to adjust priorities
         feedback = self.get_pr_feedback()
         boosts = feedback.get("category_boosts", {})
@@ -327,6 +445,20 @@ class DeepResearch:
             lines.append(alignment)
             lines.append("")
 
+        # In-flight work (open PRs) — helps avoid duplicate work
+        pending_prs = self.get_pending_prs()
+        if pending_prs:
+            lines.append("### In-Flight Work (open PRs)")
+            lines.append("")
+            lines.append("These PRs are already open — avoid duplicating this work:")
+            for pr in pending_prs[:8]:  # Cap at 8 to keep prompt lean
+                title = pr.get("title", "")
+                number = pr.get("number", "")
+                lines.append(f"- PR #{number}: {title}")
+            if len(pending_prs) > 8:
+                lines.append(f"- ... and {len(pending_prs) - 8} more")
+            lines.append("")
+
         if do_not_touch:
             lines.append("### Avoid These Areas")
             lines.append("")
@@ -344,11 +476,16 @@ class DeepResearch:
     def to_json(self) -> str:
         """Return all analysis as JSON."""
         feedback = self.get_pr_feedback()
+        pending_prs = self.get_pending_prs()
         return json.dumps({
             "priorities": self.get_priorities(),
             "suggestions": self.suggest_topics(),
             "do_not_touch": self.get_do_not_touch(),
             "open_issues": self.get_open_issues(),
+            "pending_prs": [
+                {"number": pr.get("number"), "title": pr.get("title")}
+                for pr in pending_prs
+            ],
             "recent_topics": self.get_recent_journal_topics(),
             "pr_feedback": {
                 "alignment_summary": feedback.get("alignment_summary", ""),
