@@ -2266,6 +2266,41 @@ class TestErrorReplyRetryQueue:
             assert entry["comment_id"] == "999"
             assert entry["attempts"] == 1
 
+    def test_error_reply_queued_when_get_comment_raises(self):
+        """Regression: NameError when get_comment_from_notification raises.
+
+        If get_comment_from_notification raises an OSError (or similar),
+        comment_id and comment_api_url were unbound, causing NameError in
+        the except block. The fix initializes them before the try block.
+        """
+        import app.loop_manager as lm
+
+        notif = {
+            "id": "2",
+            "updated_at": "2026-03-27T10:00:00Z",
+            "subject": {"url": "https://api.github.com/repos/o/r/issues/5"},
+            "repository": {"full_name": "o/r"},
+        }
+
+        with lm._pending_error_replies_lock:
+            lm._pending_error_replies.clear()
+
+        with patch("app.github_command_handler.resolve_project_from_notification",
+                    return_value=("proj", "o", "r")), \
+             patch("app.github_command_handler.extract_issue_number_from_notification",
+                    return_value=5), \
+             patch("app.github_notifications.get_comment_from_notification",
+                    side_effect=OSError("network timeout")):
+            # Before the fix, this raised NameError: name 'comment_id' is not defined
+            lm._post_error_for_notification(notif, "dispatch failed")
+
+        with lm._pending_error_replies_lock:
+            assert len(lm._pending_error_replies) == 1
+            entry = lm._pending_error_replies[0]
+            assert entry["comment_id"] == ""
+            assert entry["comment_api_url"] == ""
+            assert entry["error"] == "dispatch failed"
+
     def test_retry_succeeds_clears_queue(self):
         """Successful retry removes entry from the queue."""
         import app.loop_manager as lm

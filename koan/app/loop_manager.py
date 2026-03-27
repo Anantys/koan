@@ -868,6 +868,8 @@ def _post_error_for_notification(notif: dict, error: str) -> None:
 
     _, owner, repo = project_info
 
+    comment_id = ""
+    comment_api_url = ""
     try:
         comment = get_comment_from_notification(notif)
         if not comment:

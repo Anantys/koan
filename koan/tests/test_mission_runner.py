@@ -2266,6 +2266,23 @@ class TestPipelineTracker:
         assert result is None
         assert tracker.steps["timed_out"]["status"] == "timeout"
 
+    def test_skipped_status_for_unreliable_quota_check(self):
+        """Regression: quota_check used 'warning' status which is not in VALID_STATUSES.
+
+        The unreliable quota check path in run_post_mission must use 'skipped'
+        (a valid status) instead of 'warning' (which raises ValueError).
+        """
+        from app.mission_runner import _PipelineTracker
+
+        tracker = _PipelineTracker()
+        # This must not raise — 'skipped' is valid
+        tracker.record("quota_check", "skipped", "unreliable — log files unreadable")
+        assert tracker.steps["quota_check"]["status"] == "skipped"
+
+        # Confirm 'warning' is still invalid
+        with pytest.raises(ValueError, match="Invalid status"):
+            tracker.record("other", "warning", "not a valid status")
+
 
 class TestPipelineStepsInResult:
     """Test that run_post_mission includes pipeline_steps in result."""

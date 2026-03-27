@@ -802,7 +802,7 @@ def run_post_mission(
         if quota_result is QUOTA_CHECK_UNRELIABLE:
             log(f"⚠️  Quota check unreliable for {project_name} — "
                 "could not read log files, skipping quota detection")
-            tracker.record("quota_check", "warning", "unreliable — log files unreadable")
+            tracker.record("quota_check", "skipped", "unreliable — log files unreadable")
         elif quota_result is not None:
             result["quota_exhausted"] = True
             result["quota_info"] = quota_result
