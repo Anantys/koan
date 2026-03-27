@@ -1325,3 +1325,107 @@ class TestExpandComboSkill:
         content = missions_md.read_text()
         assert "/review https://github.com/owner/repo/pull/42" in content
         assert "[project:" not in content
+
+
+# ---------------------------------------------------------------------------
+# Auto-discovery fallback
+# ---------------------------------------------------------------------------
+
+class TestAutoDiscovery:
+    """Tests for convention-based runner module auto-discovery."""
+
+    KOAN_ROOT = "/home/user/koan"
+    INSTANCE = "/home/user/koan/instance"
+    PROJECT = "myproject"
+    PROJECT_PATH = "/home/user/workspace/myproject"
+
+    def _build(self, command, args=""):
+        return build_skill_command(
+            command=command,
+            args=args,
+            project_name=self.PROJECT,
+            project_path=self.PROJECT_PATH,
+            koan_root=self.KOAN_ROOT,
+            instance_dir=self.INSTANCE,
+        )
+
+    def test_audit_discoverable(self):
+        """audit_runner.py exists in skills/core/audit/ — should be found."""
+        from app.skill_dispatch import _discover_runner_module
+        result = _discover_runner_module("audit")
+        assert result == "skills.core.audit.audit_runner"
+
+    def test_nonexistent_skill_returns_none(self):
+        """A command with no runner module returns None."""
+        from app.skill_dispatch import _discover_runner_module
+        result = _discover_runner_module("nonexistent_skill_xyz")
+        assert result is None
+
+    def test_fallback_builds_command_for_known_runner(self):
+        """When _SKILL_RUNNERS lacks an entry but runner exists, fallback works."""
+        import app.skill_dispatch as sd
+
+        # Temporarily remove "audit" from _SKILL_RUNNERS to simulate stale cache
+        original = sd._SKILL_RUNNERS.copy()
+        original_builders = None
+        try:
+            del sd._SKILL_RUNNERS["audit"]
+            cmd = self._build("audit")
+            assert cmd is not None
+            assert "skills.core.audit.audit_runner" in " ".join(cmd)
+            assert "--project-path" in cmd
+            assert "--project-name" in cmd
+            assert "--instance-dir" in cmd
+        finally:
+            sd._SKILL_RUNNERS.update(original)
+
+
+# ---------------------------------------------------------------------------
+# Timestamp stripping in dispatch
+# ---------------------------------------------------------------------------
+
+class TestTimestampStripping:
+    """Lifecycle timestamps should not leak into skill runner args."""
+
+    def test_dispatch_strips_queued_timestamp(self):
+        """⏳ timestamps should not appear in dispatched command args."""
+        cmd = dispatch_skill_mission(
+            "[project:koan] /audit ⏳(2026-03-26T20:21)",
+            "koan", "/tmp/project", "/tmp/koan", "/tmp/instance",
+        )
+        assert cmd is not None
+        # The timestamp should not appear in any argument
+        for arg in cmd:
+            assert "⏳" not in arg
+
+    def test_dispatch_strips_started_timestamp(self):
+        """▶ timestamps should not appear in dispatched command args."""
+        cmd = dispatch_skill_mission(
+            "/plan Add dark mode ▶(2026-03-26T20:30)",
+            "koan", "/tmp/project", "/tmp/koan", "/tmp/instance",
+        )
+        assert cmd is not None
+        for arg in cmd:
+            assert "▶" not in arg
+
+    def test_dispatch_strips_github_marker(self):
+        """📬 GitHub origin marker should not appear in dispatched command args."""
+        url = "https://github.com/owner/repo/pull/42"
+        cmd = dispatch_skill_mission(
+            f"[project:koan] /rebase {url} 📬",
+            "koan", "/tmp/project", "/tmp/koan", "/tmp/instance",
+        )
+        assert cmd is not None
+        for arg in cmd:
+            assert "📬" not in arg
+
+    def test_dispatch_preserves_real_args(self):
+        """Real arguments survive timestamp stripping."""
+        cmd = dispatch_skill_mission(
+            "[project:koan] /plan Add dark mode ⏳(2026-03-26T20:21)",
+            "koan", "/tmp/project", "/tmp/koan", "/tmp/instance",
+        )
+        assert cmd is not None
+        assert "--idea" in cmd
+        idea_idx = cmd.index("--idea")
+        assert cmd[idea_idx + 1] == "Add dark mode"
