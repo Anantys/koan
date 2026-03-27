@@ -446,6 +446,49 @@ def batch_count_open_prs(repos: list, author: str) -> Dict[str, int]:
         return {}
 
 
+def find_bot_comment(
+    owner: str, repo: str, pr_number: int, marker: str,
+) -> Optional[dict]:
+    """Search issue comments on a PR for a comment containing ``marker``.
+
+    Only searches conversation (issue-level) comments, not inline review
+    comments.  Returns the first matching comment, or ``None`` if absent.
+
+    Args:
+        owner: Repository owner.
+        repo: Repository name.
+        pr_number: PR number (int or str).
+        marker: Marker string to search for (e.g. ``SUMMARY_TAG``).
+
+    Returns:
+        Dict with keys ``id``, ``body``, ``user`` from the GitHub API, or
+        ``None`` if no matching comment is found or on any error.
+    """
+    try:
+        raw = run_gh(
+            "api",
+            f"repos/{owner}/{repo}/issues/{pr_number}/comments",
+            "--paginate",
+            "--jq", r'.[] | {id: .id, body: .body, user: .user.login}',
+            timeout=30,
+        )
+    except RuntimeError:
+        return None
+
+    if not raw.strip():
+        return None
+
+    for line in raw.strip().split("\n"):
+        try:
+            comment = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if marker in comment.get("body", ""):
+            return comment
+
+    return None
+
+
 def count_open_prs(repo: str, author: str, cwd: str = None) -> int:
     """Count open pull requests by a specific author in a repository.
 

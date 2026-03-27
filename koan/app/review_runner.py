@@ -23,10 +23,21 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from app.github import run_gh
+from app.github import run_gh, find_bot_comment
 from app.github_url_parser import ISSUE_URL_PATTERN
 from app.prompts import load_prompt_or_skill
 from app.rebase_pr import fetch_pr_context
+from app.review_markers import (
+    SUMMARY_TAG,
+    COMMIT_IDS_START,
+    COMMIT_IDS_END,
+    IN_PROGRESS_START,
+    IN_PROGRESS_END,
+    extract_between_markers,
+    remove_section,
+    wrap_section,
+    replace_section,
+)
 from app.review_schema import validate_review
 
 _ISSUE_URL_RE = re.compile(ISSUE_URL_PATTERN)
@@ -575,8 +586,13 @@ def _format_review_as_markdown(review_data: dict, title: str = "") -> str:
 
 def _post_review_comment(
     owner: str, repo: str, pr_number: str, review_text: str,
+    existing_comment: Optional[dict] = None,
 ) -> bool:
-    """Post the review as a comment on the PR.
+    """Post (or update) the review as a comment on the PR.
+
+    Prepends ``SUMMARY_TAG`` so future runs can locate the comment via
+    ``find_bot_comment``.  When ``existing_comment`` is provided the
+    comment is updated via PATCH instead of creating a new one.
 
     Returns True on success.
     """
@@ -587,16 +603,35 @@ def _post_review_comment(
 
     # If body already starts with a ## heading, don't add another
     if review_text.startswith("## "):
-        body = f"{review_text}\n\n---\n_Automated review by Kōan_"
+        body = f"{SUMMARY_TAG}\n{review_text}\n\n---\n_Automated review by Kōan_"
     else:
-        body = f"## Code Review\n\n{review_text}\n\n---\n_Automated review by Kōan_"
+        body = f"{SUMMARY_TAG}\n## Code Review\n\n{review_text}\n\n---\n_Automated review by Kōan_"
+
+    # Preserve any hidden marker sections from the existing comment
+    # (e.g. COMMIT_IDS block written by a previous run).
+    if existing_comment:
+        existing_body = existing_comment.get("body", "")
+        commits_block = extract_between_markers(
+            existing_body, COMMIT_IDS_START, COMMIT_IDS_END,
+        )
+        if commits_block is not None:
+            body = replace_section(body, COMMIT_IDS_START, COMMIT_IDS_END, commits_block)
 
     try:
-        run_gh(
-            "pr", "comment", pr_number,
-            "--repo", f"{owner}/{repo}",
-            "--body", body,
-        )
+        if existing_comment:
+            comment_id = existing_comment["id"]
+            run_gh(
+                "api",
+                f"repos/{owner}/{repo}/issues/comments/{comment_id}",
+                "-X", "PATCH",
+                "-f", f"body={body}",
+            )
+        else:
+            run_gh(
+                "pr", "comment", pr_number,
+                "--repo", f"{owner}/{repo}",
+                "--body", body,
+            )
         return True
     except Exception as e:
         print(f"[review_runner] failed to post comment: {e}", file=sys.stderr)
@@ -734,6 +769,94 @@ def _resolve_plan_body(plan_url: Optional[str], pr_body: str) -> str:
     return _fetch_plan_body(p_owner, p_repo, p_number)
 
 
+def _fetch_pr_commit_shas(owner: str, repo: str, pr_number: str) -> List[str]:
+    """Return the list of full commit SHAs for a PR (oldest first).
+
+    Returns an empty list on any error so callers can treat absence as
+    "no prior state" rather than crashing.
+    """
+    try:
+        raw = run_gh(
+            "api",
+            f"repos/{owner}/{repo}/pulls/{pr_number}/commits",
+            "--paginate",
+            "--jq", r".[].sha",
+        )
+        if not raw.strip():
+            return []
+        return [line.strip() for line in raw.strip().splitlines() if line.strip()]
+    except RuntimeError:
+        return []
+
+
+def _set_in_progress_marker(
+    owner: str, repo: str, pr_number: str, existing_comment: Optional[dict],
+) -> Optional[dict]:
+    """Post or update the summary comment with an in-progress placeholder.
+
+    Returns the (possibly newly created) comment dict so the caller can
+    track the comment ID for subsequent updates.  Returns ``None`` if the
+    operation fails (non-fatal — review continues regardless).
+    """
+    in_progress_block = wrap_section(
+        "\n⏳ Review in progress…\n", IN_PROGRESS_START, IN_PROGRESS_END,
+    )
+    body = f"{SUMMARY_TAG}\n{in_progress_block}"
+
+    # Preserve existing commit SHA block if present
+    if existing_comment:
+        existing_body = existing_comment.get("body", "")
+        commits_block = extract_between_markers(
+            existing_body, COMMIT_IDS_START, COMMIT_IDS_END,
+        )
+        if commits_block is not None:
+            body = replace_section(body, COMMIT_IDS_START, COMMIT_IDS_END, commits_block)
+
+    try:
+        if existing_comment:
+            comment_id = existing_comment["id"]
+            run_gh(
+                "api",
+                f"repos/{owner}/{repo}/issues/comments/{comment_id}",
+                "-X", "PATCH",
+                "-f", f"body={body}",
+            )
+            # Return updated comment dict with new body
+            return {**existing_comment, "body": body}
+        else:
+            run_gh(
+                "pr", "comment", pr_number,
+                "--repo", f"{owner}/{repo}",
+                "--body", body,
+            )
+            # Fetch the newly created comment so we have its ID
+            created = find_bot_comment(owner, repo, pr_number, SUMMARY_TAG)
+            return created
+    except Exception as e:
+        print(
+            f"[review_runner] failed to post in-progress marker: {e}",
+            file=sys.stderr,
+        )
+        return existing_comment
+
+
+def _patch_comment_body(
+    owner: str, repo: str, comment_id: int, body: str,
+) -> bool:
+    """PATCH a GitHub issue comment body. Returns True on success."""
+    try:
+        run_gh(
+            "api",
+            f"repos/{owner}/{repo}/issues/comments/{comment_id}",
+            "-X", "PATCH",
+            "-f", f"body={body}",
+        )
+        return True
+    except Exception as e:
+        print(f"[review_runner] failed to patch comment {comment_id}: {e}", file=sys.stderr)
+        return False
+
+
 def run_review(
     owner: str,
     repo: str,
@@ -798,71 +921,130 @@ def run_review(
     # Step 1b: Detect and fetch plan body for alignment checking
     plan_body = _resolve_plan_body(plan_url, context.get("body", ""))
 
-    # Step 2: Build review prompt
-    prompt = build_review_prompt(
-        context, skill_dir=skill_dir, architecture=architecture,
-        repliable_comments=repliable_comments, plan_body=plan_body or None,
-    )
+    # Step 1c: Look up any existing bot summary comment (Phase 3)
+    existing_comment = find_bot_comment(owner, repo, pr_number, SUMMARY_TAG)
 
-    # Step 3: Run Claude review (read-only)
-    notify_fn(f"Analyzing code changes on `{context['branch']}`...")
-    raw_output, error = _run_claude_review(prompt, project_path)
-    if not raw_output:
-        detail = f" ({error})" if error else ""
-        return False, f"Claude review failed for PR #{pr_number}{detail}.", None
+    # Step 1d: Fetch current PR commit SHAs (Phase 5 — incremental review)
+    current_shas = _fetch_pr_commit_shas(owner, repo, pr_number)
 
-    # Step 4: Parse structured JSON review (with retry)
-    review_data = _parse_review_json(raw_output)
-    if review_data is None:
-        # Retry once with explicit JSON instruction
-        retry_prompt = (
-            prompt
-            + "\n\nIMPORTANT: Your previous response was not valid JSON. "
-            "You MUST respond with ONLY a valid JSON object matching the "
-            "schema described above. No markdown, no text, just JSON."
+    # Step 1e: Extract previously reviewed SHAs from existing comment (Phase 5)
+    prior_shas: List[str] = []
+    if existing_comment:
+        raw_prior = extract_between_markers(
+            existing_comment.get("body", ""),
+            COMMIT_IDS_START,
+            COMMIT_IDS_END,
         )
-        retry_output, _ = _run_claude_review(retry_prompt, project_path)
-        if retry_output:
-            review_data = _parse_review_json(retry_output)
+        if raw_prior:
+            prior_shas = [s.strip() for s in raw_prior.splitlines() if s.strip()]
 
-    # Step 5: Convert to markdown for posting
-    if review_data is not None:
-        review_body = _format_review_as_markdown(
-            review_data, title=context.get("title", ""),
+    # If all current commits were already reviewed, skip
+    if current_shas and prior_shas and set(current_shas) == set(prior_shas):
+        return (
+            True,
+            f"PR #{pr_number} has no new commits since last review — skipping.",
+            None,
         )
-    else:
-        # Fallback: use regex extraction for non-JSON responses
-        print(
-            "[review_runner] JSON parsing failed, falling back to regex extraction",
-            file=sys.stderr,
-        )
-        review_body = _extract_review_body(raw_output)
 
-    # Step 6: Post review comment
-    notify_fn(f"Posting review on PR #{pr_number}...")
-    posted = _post_review_comment(owner, repo, pr_number, review_body)
+    # Phase 4: Post in-progress marker before doing any heavy work.
+    # Removed in the finally block below regardless of success or failure.
+    live_comment = _set_in_progress_marker(owner, repo, pr_number, existing_comment)
 
-    # Step 7: Post replies to user comments
-    reply_count = 0
-    if review_data and review_data.get("comment_replies") and repliable_comments:
-        reply_count = _post_comment_replies(
-            owner, repo, pr_number,
-            review_data["comment_replies"],
-            repliable_comments,
+    try:
+        # Step 2: Build review prompt
+        prompt = build_review_prompt(
+            context, skill_dir=skill_dir, architecture=architecture,
+            repliable_comments=repliable_comments, plan_body=plan_body or None,
         )
-        if reply_count:
+
+        # Step 3: Run Claude review (read-only)
+        notify_fn(f"Analyzing code changes on `{context['branch']}`...")
+        raw_output, error = _run_claude_review(prompt, project_path)
+        if not raw_output:
+            detail = f" ({error})" if error else ""
+            return False, f"Claude review failed for PR #{pr_number}{detail}.", None
+
+        # Step 4: Parse structured JSON review (with retry)
+        review_data = _parse_review_json(raw_output)
+        if review_data is None:
+            # Retry once with explicit JSON instruction
+            retry_prompt = (
+                prompt
+                + "\n\nIMPORTANT: Your previous response was not valid JSON. "
+                "You MUST respond with ONLY a valid JSON object matching the "
+                "schema described above. No markdown, no text, just JSON."
+            )
+            retry_output, _ = _run_claude_review(retry_prompt, project_path)
+            if retry_output:
+                review_data = _parse_review_json(retry_output)
+
+        # Step 5: Convert to markdown for posting
+        if review_data is not None:
+            review_body = _format_review_as_markdown(
+                review_data, title=context.get("title", ""),
+            )
+        else:
+            # Fallback: use regex extraction for non-JSON responses
             print(
-                f"[review_runner] posted {reply_count} reply(ies) to user comments",
+                "[review_runner] JSON parsing failed, falling back to regex extraction",
                 file=sys.stderr,
             )
+            review_body = _extract_review_body(raw_output)
 
-    if posted:
-        summary = f"Review posted on PR #{pr_number} ({full_repo})."
-        if reply_count:
-            summary += f" Replied to {reply_count} comment(s)."
-        return True, summary, review_data
-    else:
-        return False, f"Review generated but failed to post comment on PR #{pr_number}.", review_data
+        # Step 6: Post (or update) review comment (Phase 3 — idempotent upsert)
+        notify_fn(f"Posting review on PR #{pr_number}...")
+        # Use live_comment (which has the in-progress marker) as the existing
+        # comment so we update it rather than creating a third comment.
+        comment_to_update = live_comment or existing_comment
+        posted = _post_review_comment(owner, repo, pr_number, review_body, comment_to_update)
+
+        # Step 6b: Embed reviewed commit SHAs (Phase 5)
+        # Runs whether we updated an existing comment or created a new one.
+        if posted and current_shas:
+            # Fetch the updated comment body to avoid clobbering the review text
+            updated_comment = find_bot_comment(owner, repo, pr_number, SUMMARY_TAG)
+            if updated_comment:
+                new_body = replace_section(
+                    updated_comment["body"],
+                    COMMIT_IDS_START,
+                    COMMIT_IDS_END,
+                    "\n".join(current_shas),
+                )
+                _patch_comment_body(owner, repo, updated_comment["id"], new_body)
+                # Mark live_comment as settled so finally block skips extra PATCH
+                live_comment = None
+
+        # Step 7: Post replies to user comments
+        reply_count = 0
+        if review_data and review_data.get("comment_replies") and repliable_comments:
+            reply_count = _post_comment_replies(
+                owner, repo, pr_number,
+                review_data["comment_replies"],
+                repliable_comments,
+            )
+            if reply_count:
+                print(
+                    f"[review_runner] posted {reply_count} reply(ies) to user comments",
+                    file=sys.stderr,
+                )
+
+        if posted:
+            summary = f"Review posted on PR #{pr_number} ({full_repo})."
+            if reply_count:
+                summary += f" Replied to {reply_count} comment(s)."
+            return True, summary, review_data
+        else:
+            return False, f"Review generated but failed to post comment on PR #{pr_number}.", review_data
+
+    finally:
+        # Phase 4: Remove in-progress marker regardless of success/failure.
+        # live_comment is set to None above when _post_review_comment already
+        # wrote the final body (so no extra PATCH is needed).
+        if live_comment:
+            settled_body = remove_section(
+                live_comment.get("body", ""), IN_PROGRESS_START, IN_PROGRESS_END,
+            )
+            _patch_comment_body(owner, repo, live_comment["id"], settled_body)
 
 
 # ---------------------------------------------------------------------------
