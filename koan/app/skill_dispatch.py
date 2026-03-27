@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from app.github_url_parser import ISSUE_URL_PATTERN, PR_URL_PATTERN
+from app.missions import strip_timestamps
 from app.utils import is_known_project
 
 # Module-level registry cache for the run process.
@@ -229,11 +230,22 @@ def build_skill_command(
 
     runner_module = _SKILL_RUNNERS.get(command)
     if not runner_module:
-        debug_log(
-            f"[skill_dispatch] build_skill_command: no runner for '{command}' "
-            f"(known: {', '.join(sorted(_SKILL_RUNNERS))})"
-        )
-        return None
+        # Fallback: auto-discover runner module from skills directory.
+        # This handles skills that have a <name>_runner.py but aren't
+        # yet registered in _SKILL_RUNNERS (e.g. after a code update
+        # before process restart, or newly added skills).
+        runner_module = _discover_runner_module(command)
+        if runner_module:
+            debug_log(
+                f"[skill_dispatch] build_skill_command: auto-discovered runner "
+                f"for '{command}' -> {runner_module}"
+            )
+        else:
+            debug_log(
+                f"[skill_dispatch] build_skill_command: no runner for '{command}' "
+                f"(known: {', '.join(sorted(_SKILL_RUNNERS))})"
+            )
+            return None
     debug_log(f"[skill_dispatch] build_skill_command: '{command}' -> {runner_module}")
 
     python = sys.executable
@@ -271,7 +283,12 @@ def build_skill_command(
     }
 
     builder = _COMMAND_BUILDERS.get(command)
-    return builder() if builder else None
+    if builder:
+        return builder()
+    # Fallback: use generic builder for auto-discovered runners
+    return _build_generic_runner_cmd(
+        base_cmd, args, project_name, project_path, instance_dir,
+    )
 
 
 def _extract_issue_url_and_context(args: str) -> Optional[Tuple[str, str]]:
@@ -575,12 +592,83 @@ def _build_audit_cmd(
     return cmd
 
 
+def _discover_runner_module(command: str) -> Optional[str]:
+    """Auto-discover a runner module for a skill command.
+
+    Convention: if ``skills/core/<command>/<command>_runner.py`` exists,
+    return the dotted module path ``skills.core.<command>.<command>_runner``.
+
+    Also checks instance skill directories via the cached registry.
+
+    This is a fallback for commands not listed in ``_SKILL_RUNNERS``,
+    ensuring new skills with runner modules are discoverable without
+    requiring a hardcoded registration.
+    """
+    # Check core skills directory first (most common case)
+    core_dir = Path(__file__).resolve().parent.parent / "skills" / "core"
+    runner_path = core_dir / command / f"{command}_runner.py"
+    if runner_path.is_file():
+        return f"skills.core.{command}.{command}_runner"
+
+    # Check instance skills via registry (external scopes)
+    # This is heavier — only runs when core lookup misses.
+    try:
+        from app.skills import build_registry
+        registry = build_registry()
+        skill = registry.find_by_command(command)
+        if skill and skill.scope != "core":
+            runner_name = f"{skill.name}_runner"
+            candidate = skill.path.parent / f"{runner_name}.py"
+            if candidate.is_file():
+                # Convert filesystem path to dotted module path relative to
+                # the skills directory
+                return f"skills.{skill.scope}.{skill.name}.{runner_name}"
+    except (ImportError, OSError, ValueError) as e:
+        from app.debug import debug_log
+        debug_log(f"[skill_dispatch] _discover_runner_module: registry lookup failed: {e}")
+
+    return None
+
+
+def _build_generic_runner_cmd(
+    base_cmd: List[str],
+    args: str,
+    project_name: str,
+    project_path: str,
+    instance_dir: str,
+) -> List[str]:
+    """Build a generic runner command with standard arguments.
+
+    Used for auto-discovered runners that follow the standard CLI interface:
+    ``--project-path``, ``--project-name``, ``--instance-dir``, plus optional
+    ``--context-file`` for any extra mission text.
+    """
+    import tempfile
+
+    cmd = base_cmd + [
+        "--project-path", project_path,
+        "--project-name", project_name,
+        "--instance-dir", instance_dir,
+    ]
+
+    # Pass extra context via temp file to avoid shell escaping issues
+    cleaned_args = strip_timestamps(args).strip()
+    if cleaned_args:
+        fd, path = tempfile.mkstemp(prefix="koan-ctx-", suffix=".txt")
+        with open(fd, "w", encoding="utf-8") as f:
+            f.write(cleaned_args)
+        cmd.extend(["--context-file", path])
+
+    return cmd
+
+
 def cleanup_skill_temp_files(skill_cmd: List[str]) -> None:
     """Remove temp files created by skill command builders.
 
     Currently handles:
     - ``--error-file`` temp files from ``_build_incident_cmd()``
-    - ``--context-file`` temp files from ``_build_audit_cmd()``
+    - ``--context-file`` temp files from ``_build_audit_cmd()`` and
+      ``_build_generic_runner_cmd()``
 
     Safe to call on any skill_cmd — silently skips if no temp files found.
     """
@@ -588,7 +676,7 @@ def cleanup_skill_temp_files(skill_cmd: List[str]) -> None:
 
     _TEMP_FILE_FLAGS = {
         "--error-file": "/koan-incident-",
-        "--context-file": "/koan-audit-",
+        "--context-file": "/koan-",
     }
     for i, token in enumerate(skill_cmd):
         prefix = _TEMP_FILE_FLAGS.get(token)
@@ -798,6 +886,10 @@ def dispatch_skill_mission(
         return None
 
     parsed_project, command, args = parse_skill_mission(mission_text)
+    # Strip lifecycle timestamps (⏳, ▶) and the 📬 GitHub origin marker
+    # that the mission system appends — they are metadata, not arguments
+    # for the skill runner.
+    args = strip_timestamps(args).replace("📬", "").strip()
     debug_log(
         f"[skill_dispatch] dispatch: parsed project='{parsed_project}' "
         f"command='{command}' args='{args[:80]}'"
