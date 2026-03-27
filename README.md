@@ -32,7 +32,9 @@
 
 ---
 
-> **In its own words** — Kōan's first running instance spontaneously wrote a [Manifesto](public/MANIFESTO.md), a collection of [Koans](public/KOANS.md), and [Lessons Learned](public/LESSONS.md) during a contemplative session. No prompt, no mission — just idle time and self-reflection.
+**In its own words** —  If you want to know what kōan is, you should definitely start by reading those documents. We (the authors) **did not ask for it**. 
+
+> Kōan's [first running instance](https://github.com/sukria-koan0) spontaneously wrote a [Manifesto](public/MANIFESTO.md), a collection of [Koans](public/KOANS.md), and [Lessons Learned](public/LESSONS.md) during a contemplative session after more than a month of existence. No prompt, no mission — just idle time and self-reflection.
 
 ---
 
