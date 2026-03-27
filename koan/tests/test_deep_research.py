@@ -8,9 +8,26 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from app.deep_research import DeepResearch
+from app.deep_research import DeepResearch, _extract_issue_numbers, _normalize_tokens
 
 pytestmark = pytest.mark.slow
+
+
+@pytest.fixture(autouse=True)
+def _no_pending_prs(monkeypatch):
+    """Default: no open PRs for PR-aware topic filtering.
+
+    Tests that need open PRs should set research._pending_prs directly.
+    This prevents existing tests from being affected by the PR coverage
+    filter when they patch subprocess.run for other gh CLI calls.
+    """
+    original_init = DeepResearch.__init__
+
+    def patched_init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        self._pending_prs = []
+
+    monkeypatch.setattr(DeepResearch, "__init__", patched_init)
 
 
 @pytest.fixture
@@ -244,6 +261,7 @@ class TestGitHubIntegration:
                 research_env["project_name"],
                 research_env["project_path"],
             )
+            research._pending_prs = None  # Reset autouse cache
 
             result = research.get_pending_prs()
 
@@ -1320,3 +1338,239 @@ class TestConstructor:
         )
 
         assert research.project_path == research_env["project_path"]
+
+
+class TestExtractIssueNumbers:
+    """Tests for _extract_issue_numbers() helper."""
+
+    def test_single_issue(self):
+        assert _extract_issue_numbers("GitHub #42: Add feature") == {42}
+
+    def test_multiple_issues(self):
+        assert _extract_issue_numbers("Fixes #10 and #20") == {10, 20}
+
+    def test_no_issues(self):
+        assert _extract_issue_numbers("No issues here") == set()
+
+    def test_issue_in_branch_name(self):
+        assert _extract_issue_numbers("koan/implement-#1042") == {1042}
+
+    def test_empty_string(self):
+        assert _extract_issue_numbers("") == set()
+
+
+class TestNormalizeTokens:
+    """Tests for _normalize_tokens() helper."""
+
+    def test_basic_tokens(self):
+        tokens = _normalize_tokens("Add passive mode toggle")
+        assert "passive" in tokens
+        assert "mode" in tokens  # 4 chars, passes >= 3 filter
+        assert "toggle" in tokens
+
+    def test_stops_removed(self):
+        tokens = _normalize_tokens("fix the broken implementation")
+        assert "the" not in tokens
+        assert "fix" not in tokens  # stop word
+        assert "broken" in tokens
+        assert "implementation" in tokens
+
+    def test_short_words_excluded(self):
+        tokens = _normalize_tokens("a to of CI PR")
+        # All under 3 chars
+        assert len(tokens) == 0
+
+    def test_empty_string(self):
+        assert _normalize_tokens("") == set()
+
+
+class TestPrCoverage:
+    """Tests for PR coverage detection in topic selection."""
+
+    def _make_research(self, research_env, pending_prs=None):
+        """Create a DeepResearch instance with mocked PRs."""
+        research = DeepResearch(
+            research_env["instance"],
+            research_env["project_name"],
+            research_env["project_path"],
+        )
+        research._pending_prs = pending_prs or []
+        return research
+
+    def test_build_pr_coverage_extracts_issue_numbers(self, research_env):
+        """Issue numbers from PR titles and branches are collected."""
+        research = self._make_research(research_env, [
+            {"number": 100, "title": "feat: implement #42", "headRefName": "koan/implement-42"},
+            {"number": 101, "title": "fix: resolve #99", "headRefName": "koan/fix-bug"},
+        ])
+
+        coverage = research._build_pr_coverage()
+
+        assert 42 in coverage["issue_numbers"]
+        assert 99 in coverage["issue_numbers"]
+
+    def test_build_pr_coverage_branch_pattern_extraction(self, research_env):
+        """Issue numbers from implement-NNN branch patterns are extracted."""
+        research = self._make_research(research_env, [
+            {"number": 200, "title": "some feature", "headRefName": "koan/implement-1042"},
+        ])
+
+        coverage = research._build_pr_coverage()
+
+        assert 1042 in coverage["issue_numbers"]
+
+    def test_build_pr_coverage_fix_branch_pattern(self, research_env):
+        """Issue numbers from fix-NNN branch patterns are extracted."""
+        research = self._make_research(research_env, [
+            {"number": 300, "title": "bug fix", "headRefName": "koan/fix-555"},
+        ])
+
+        coverage = research._build_pr_coverage()
+
+        assert 555 in coverage["issue_numbers"]
+
+    def test_topic_has_open_pr_issue_match(self, research_env):
+        """Topic referencing an issue covered by a PR is detected."""
+        research = self._make_research(research_env, [
+            {"number": 100, "title": "feat: add passive mode (#1042)", "headRefName": "koan/implement-1042"},
+        ])
+
+        coverage = research._build_pr_coverage()
+        result = research._topic_has_open_pr("GitHub #1042: Add passive mode", coverage)
+
+        assert result == 100
+
+    def test_topic_has_open_pr_no_match(self, research_env):
+        """Topic without matching PR returns None."""
+        research = self._make_research(research_env, [
+            {"number": 100, "title": "feat: something else", "headRefName": "koan/other"},
+        ])
+
+        coverage = research._build_pr_coverage()
+        result = research._topic_has_open_pr("GitHub #999: Unrelated feature", coverage)
+
+        assert result is None
+
+    def test_topic_has_open_pr_token_match(self, research_env):
+        """Topic with significant token overlap is detected."""
+        research = self._make_research(research_env, [
+            {"number": 200, "title": "feat: add passive active mode toggle", "headRefName": "koan/passive-mode"},
+        ])
+
+        coverage = research._build_pr_coverage()
+        result = research._topic_has_open_pr(
+            "Add 'mode' option: active (default) vs passive", coverage
+        )
+
+        assert result == 200
+
+    def test_topic_has_open_pr_few_tokens_no_false_positive(self, research_env):
+        """Short topics don't false-positive on fuzzy match."""
+        research = self._make_research(research_env, [
+            {"number": 300, "title": "feat: security audit improvements", "headRefName": "koan/security"},
+        ])
+
+        coverage = research._build_pr_coverage()
+        # Only 1 overlapping meaningful token — should not match
+        result = research._topic_has_open_pr("Security review", coverage)
+
+        assert result is None
+
+    def test_suggest_topics_filters_covered_issues(self, research_env):
+        """Issues already covered by open PRs are excluded from suggestions."""
+        # Write a priorities file with nothing (so only issues show up)
+        mem_dir = research_env["instance"] / "memory" / "projects" / research_env["project_name"]
+        (mem_dir / "priorities.md").write_text("# Priorities\n\n## Current Focus\n\n## Technical Debt\n")
+
+        research = self._make_research(research_env, [
+            {"number": 100, "title": "feat: implement #42", "headRefName": "koan/implement-42"},
+        ])
+
+        # Mock GitHub issues to include #42 and #99
+        mock_issues = [
+            {"number": 42, "title": "Add feature X", "labels": [], "createdAt": "2026-01-01"},
+            {"number": 99, "title": "Add feature Y", "labels": [], "createdAt": "2026-01-02"},
+        ]
+
+        with patch.object(research, "get_open_issues", return_value=mock_issues), \
+             patch.object(research, "get_pr_feedback", return_value={"alignment_summary": "", "category_boosts": {}}):
+            suggestions = research.suggest_topics()
+
+        topics = [s["topic"] for s in suggestions]
+        # #42 should be filtered out (covered by PR #100)
+        assert not any("#42" in t for t in topics)
+        # #99 should still be present
+        assert any("#99" in t for t in topics)
+
+    def test_format_includes_in_flight_section(self, research_env):
+        """format_for_agent() includes In-Flight Work section with open PRs."""
+        research = self._make_research(research_env, [
+            {"number": 100, "title": "feat: add passive mode", "headRefName": "koan/passive", "createdAt": "2026-01-01"},
+            {"number": 101, "title": "fix: startup race", "headRefName": "koan/fix-startup", "createdAt": "2026-01-02"},
+        ])
+
+        with patch.object(research, "suggest_topics", return_value=[
+            {"topic": "Some work", "source": "test", "reasoning": "test", "priority": 1},
+        ]), \
+             patch.object(research, "get_do_not_touch", return_value=[]), \
+             patch.object(research, "get_staleness_warning", return_value=""), \
+             patch.object(research, "get_pr_feedback", return_value={"alignment_summary": "", "category_boosts": {}}):
+            output = research.format_for_agent()
+
+        assert "In-Flight Work" in output
+        assert "PR #100" in output
+        assert "PR #101" in output
+
+    def test_format_no_prs_no_in_flight_section(self, research_env):
+        """format_for_agent() omits In-Flight Work section when no PRs exist."""
+        research = self._make_research(research_env, [])
+
+        with patch.object(research, "suggest_topics", return_value=[
+            {"topic": "Some work", "source": "test", "reasoning": "test", "priority": 1},
+        ]), \
+             patch.object(research, "get_do_not_touch", return_value=[]), \
+             patch.object(research, "get_staleness_warning", return_value=""), \
+             patch.object(research, "get_pr_feedback", return_value={"alignment_summary": "", "category_boosts": {}}):
+            output = research.format_for_agent()
+
+        assert "In-Flight Work" not in output
+
+    def test_pending_prs_cached(self, research_env):
+        """get_pending_prs() caches results across calls."""
+        research = DeepResearch(
+            research_env["instance"],
+            research_env["project_name"],
+            research_env["project_path"],
+        )
+        # Reset the cache set by autouse fixture
+        research._pending_prs = None
+
+        mock_prs = [{"number": 1, "title": "test", "headRefName": "koan/test", "createdAt": "2026-01-01"}]
+
+        with patch("app.github.run_gh", return_value=json.dumps(mock_prs)):
+            result1 = research.get_pending_prs()
+
+        # Second call should use cache, not call run_gh again
+        with patch("app.github.run_gh", side_effect=RuntimeError("should not be called")):
+            result2 = research.get_pending_prs()
+
+        assert result1 == result2 == mock_prs
+
+    def test_to_json_includes_pending_prs(self, research_env):
+        """to_json() includes pending_prs in output."""
+        research = self._make_research(research_env, [
+            {"number": 42, "title": "test PR", "headRefName": "koan/test", "createdAt": "2026-01-01"},
+        ])
+
+        with patch.object(research, "suggest_topics", return_value=[]), \
+             patch.object(research, "get_priorities", return_value={
+                 "current_focus": [], "strategic_goals": [],
+                 "technical_debt": [], "do_not_touch": [], "notes": "",
+             }), \
+             patch.object(research, "get_open_issues", return_value=[]), \
+             patch.object(research, "get_recent_journal_topics", return_value=[]), \
+             patch.object(research, "get_pr_feedback", return_value={"alignment_summary": "", "category_boosts": {}}):
+            data = json.loads(research.to_json())
+
+        assert "pending_prs" in data
+        assert data["pending_prs"][0]["number"] == 42
