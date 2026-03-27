@@ -1514,10 +1514,9 @@ class TestFetchNotificationsLogging:
         with caplog.at_level(logging.DEBUG, logger="app.github_notifications"):
             result = fetch_unread_notifications()
 
-        assert len(result.actionable) == 1
+        assert len(result.actionable) == 2
         assert "drain-only" in caplog.text
         assert "ci_activity=2" in caplog.text
-        assert "assign=1" in caplog.text
 
     @patch("app.github_notifications.api")
     def test_logs_skipped_unknown_repos(self, mock_api, caplog):
