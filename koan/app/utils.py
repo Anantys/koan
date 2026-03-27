@@ -616,6 +616,108 @@ def append_to_outbox(outbox_path: Path, content: str, priority=None):
 
 
 # ---------------------------------------------------------------------------
+# Diff filtering utilities
+# ---------------------------------------------------------------------------
+
+
+def filter_diff_by_ignore(
+    diff: str,
+    glob_patterns: list,
+    regex_patterns: list,
+) -> "tuple[str, list[str]]":
+    """Remove file hunks from a unified diff based on ignore patterns.
+
+    Splits the unified diff at 'diff --git' boundaries and removes any
+    file block whose path matches a glob or regex pattern.
+
+    Args:
+        diff: Unified diff string (as returned by GitHub).
+        glob_patterns: List of glob patterns. Patterns without '/' are matched
+            against the basename only (so '*.lock' matches at any depth).
+            Patterns with '/' are matched against the full path.
+        regex_patterns: List of regex patterns matched against the full path.
+            Malformed patterns are skipped with a warning.
+
+    Returns:
+        (filtered_diff, skipped_files) tuple. filtered_diff is the diff with
+        ignored file blocks removed. skipped_files is the list of file paths
+        that were removed (for logging). Returns original diff unchanged if
+        the diff cannot be split into file blocks (safety net).
+    """
+    import fnmatch
+    import os
+    import re as _re
+
+    if not diff:
+        return diff, []
+
+    if not glob_patterns and not regex_patterns:
+        return diff, []
+
+    # Compile regex patterns once; log and skip malformed ones
+    compiled_regexes = []
+    for pat in regex_patterns:
+        try:
+            compiled_regexes.append(_re.compile(pat))
+        except _re.error as e:
+            print(
+                f"[utils] filter_diff_by_ignore: skipping malformed regex {pat!r}: {e}",
+                file=sys.stderr,
+            )
+
+    # Split diff into file blocks. Each block starts with 'diff --git'.
+    # Re-join the delimiter with the block that follows it.
+    raw_blocks = _re.split(r'(?=^diff --git )', diff, flags=_re.MULTILINE)
+
+    # If splitting yields <=1 block, the format is unexpected — return unchanged
+    if len(raw_blocks) <= 1:
+        return diff, []
+
+    def _should_ignore(path: str) -> bool:
+        # Glob matching
+        for pat in glob_patterns:
+            if "/" in pat:
+                if fnmatch.fnmatch(path, pat):
+                    return True
+            else:
+                # Match against basename for patterns without slash
+                if fnmatch.fnmatch(os.path.basename(path), pat):
+                    return True
+                # Also try full path for patterns like '*.generated'
+                if fnmatch.fnmatch(path, pat):
+                    return True
+        # Regex matching against full path
+        for rx in compiled_regexes:
+            if rx.search(path):
+                return True
+        return False
+
+    kept_blocks = []
+    skipped_files = []
+    _diff_git_re = _re.compile(r'^diff --git a/(.+) b/(.+)$', _re.MULTILINE)
+
+    for block in raw_blocks:
+        if not block.strip():
+            # Preserve any leading whitespace/preamble before the first block
+            kept_blocks.append(block)
+            continue
+
+        match = _diff_git_re.search(block)
+        if not match:
+            kept_blocks.append(block)
+            continue
+
+        # Use the b/ path as canonical (post-rename / current name)
+        file_path = match.group(2)
+        if _should_ignore(file_path):
+            skipped_files.append(file_path)
+        else:
+            kept_blocks.append(block)
+
+    return "".join(kept_blocks), skipped_files
+
+
+# ---------------------------------------------------------------------------
 # Backward-compatible re-exports
 # ---------------------------------------------------------------------------
 # These preserve existing `from app.utils import X` patterns.
