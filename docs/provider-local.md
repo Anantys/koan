@@ -118,6 +118,44 @@ curl http://localhost:11434/v1/chat/completions \
   -d '{"model": "qwen2.5-coder:14b", "messages": [{"role": "user", "content": "Hello"}]}'
 ```
 
+## Ollama Launch Provider (Recommended)
+
+If you have Ollama v0.15.0+, the `ollama-launch` provider is the simplest
+way to run Koan with local models. Ollama handles server lifecycle and
+environment setup automatically:
+
+```yaml
+# config.yaml
+cli_provider: "ollama-launch"
+
+ollama_launch:
+  model: "qwen3-coder"
+```
+
+Or via environment:
+
+```bash
+KOAN_CLI_PROVIDER=ollama-launch
+KOAN_OLLAMA_LAUNCH_MODEL=qwen3-coder
+```
+
+Then start Koan normally with `make start` — no need for `make ollama`.
+
+**Advantages over `local` provider:**
+- No manual `ollama serve` — Ollama auto-starts the server
+- No env-var setup (ANTHROPIC_BASE_URL etc.)
+- `OLLAMA_NO_CLOUD=1` set by default for privacy
+- Version validation on startup
+
+**Model management via Telegram:**
+
+```
+/ollama list       — List locally available models
+/ollama pull NAME  — Download a new model
+/ollama remove NAME — Delete a local model
+/ollama status     — Server health check
+```
+
 ## Per-Project Configuration
 
 Use local LLM for specific projects (e.g., small libraries) while
@@ -160,11 +198,11 @@ that work best with Koan's agentic loop:
 
 | Model | Size | Tool Use | Notes |
 |-------|------|----------|-------|
-| `qwen2.5-coder:14b` | 14B | Good | Best balance of size and capability |
-| `qwen2.5-coder:7b` | 7B | Fair | Lighter, faster, less reliable tool use |
+| `qwen3-coder` | 14B+ | Excellent | Best choice for agentic coding workflows |
+| `qwen2.5-coder:14b` | 14B | Good | Solid balance of size and capability |
+| `glm-4.7` | 30B | Good | Lightweight deployment, strong reasoning |
 | `deepseek-coder-v2:16b` | 16B | Good | Strong coding, good function calling |
-| `codellama:34b` | 34B | Fair | Needs more RAM, variable tool use |
-| `mistral:7b` | 7B | Basic | Fast but limited tool use |
+| `qwen2.5-coder:7b` | 7B | Fair | Lighter, faster, less reliable tool use |
 
 **Hardware requirements vary by model size:**
 
