@@ -432,6 +432,8 @@ def _build_review_cmd(
     cmd = base_cmd + [url_match.group(0), "--project-path", project_path]
     if "--architecture" in args:
         cmd.append("--architecture")
+    if "--errors" in args:
+        cmd.append("--errors")
     # Pass --plan-url if explicitly provided
     plan_url_match = re.search(
         r'--plan-url\s+(https://github\.com/[^\s]+)', args,
