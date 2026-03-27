@@ -783,6 +783,7 @@ class TestMainCli:
             skill_dir=Path(__file__).resolve().parent.parent / "skills" / "core" / "review",
             architecture=False,
             plan_url=None,
+            project_config=None,
         )
 
     @patch("app.review_runner.run_review")
@@ -1798,3 +1799,145 @@ class TestReviewConcurrencyConfig:
 
         assert cfg["enabled"] is True
         assert cfg["github_workers"] == 4
+
+
+# ---------------------------------------------------------------------------
+# run_review with project_config (review_ignore filtering)
+# ---------------------------------------------------------------------------
+
+_MULTI_FILE_DIFF = (
+    "diff --git a/src/app.py b/src/app.py\n"
+    "index abc..def 100644\n"
+    "--- a/src/app.py\n"
+    "+++ b/src/app.py\n"
+    "@@ -1 +1,2 @@\n"
+    " x = 1\n"
+    "+y = 2\n"
+    "diff --git a/vendor/lodash.js b/vendor/lodash.js\n"
+    "index 111..222 100644\n"
+    "--- a/vendor/lodash.js\n"
+    "+++ b/vendor/lodash.js\n"
+    "@@ -1 +1,2 @@\n"
+    " // vendored\n"
+    "+// updated\n"
+    "diff --git a/package-lock.json b/package-lock.json\n"
+    "index 333..444 100644\n"
+    "--- a/package-lock.json\n"
+    "+++ b/package-lock.json\n"
+    "@@ -1 +1 @@\n"
+    "-{}\n"
+    '+{"v": 2}\n'
+)
+
+
+class TestRunReviewWithIgnoreFilter:
+    """Tests that project_config.review_ignore is applied in run_review()."""
+
+    def _make_pr_context(self, diff=None):
+        return {
+            "title": "Test PR",
+            "body": "",
+            "branch": "feature",
+            "base": "main",
+            "state": "OPEN",
+            "author": "dev",
+            "url": "https://github.com/owner/repo/pull/1",
+            "diff": diff or _MULTI_FILE_DIFF,
+            "review_comments": "",
+            "reviews": "",
+            "issue_comments": "",
+        }
+
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    def test_review_ignore_glob_filters_diff_before_prompt(
+        self, mock_fetch, mock_claude, mock_gh, mock_repliable, review_skill_dir,
+    ):
+        """Files matching review_ignore.glob are stripped from the diff before Claude."""
+        mock_fetch.return_value = self._make_pr_context()
+        mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
+
+        project_config = {"review_ignore": {"glob": ["vendor/**", "*.json"]}}
+
+        run_review(
+            "owner", "repo", "1", "/tmp/project",
+            notify_fn=MagicMock(),
+            skill_dir=review_skill_dir,
+            project_config=project_config,
+        )
+
+        # The prompt passed to Claude should not contain vendor or lock files
+        call_args = mock_claude.call_args
+        prompt_sent = call_args[0][0]  # first positional arg
+        assert "vendor/lodash.js" not in prompt_sent
+        assert "package-lock.json" not in prompt_sent
+        assert "src/app.py" in prompt_sent
+
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    def test_all_files_ignored_returns_nothing_to_review(
+        self, mock_fetch, mock_claude, mock_repliable, review_skill_dir,
+    ):
+        """When all files are ignored the review returns early with 'nothing to review'."""
+        mock_fetch.return_value = self._make_pr_context()
+
+        project_config = {"review_ignore": {"glob": ["**"]}}
+
+        success, summary, _ = run_review(
+            "owner", "repo", "1", "/tmp/project",
+            notify_fn=MagicMock(),
+            skill_dir=review_skill_dir,
+            project_config=project_config,
+        )
+
+        assert success is False
+        assert "nothing to review" in summary.lower()
+        mock_claude.assert_not_called()
+
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    def test_no_project_config_no_filtering(
+        self, mock_fetch, mock_claude, mock_gh, mock_repliable, review_skill_dir,
+    ):
+        """Without project_config, the full diff reaches Claude unchanged."""
+        mock_fetch.return_value = self._make_pr_context()
+        mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
+
+        run_review(
+            "owner", "repo", "1", "/tmp/project",
+            notify_fn=MagicMock(),
+            skill_dir=review_skill_dir,
+            project_config=None,
+        )
+
+        prompt_sent = mock_claude.call_args[0][0]
+        assert "vendor/lodash.js" in prompt_sent
+        assert "package-lock.json" in prompt_sent
+
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    def test_empty_ignore_patterns_no_filtering(
+        self, mock_fetch, mock_claude, mock_gh, mock_repliable, review_skill_dir,
+    ):
+        """project_config with empty review_ignore lists leaves diff unchanged."""
+        mock_fetch.return_value = self._make_pr_context()
+        mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
+
+        project_config = {"review_ignore": {"glob": [], "regex": []}}
+
+        run_review(
+            "owner", "repo", "1", "/tmp/project",
+            notify_fn=MagicMock(),
+            skill_dir=review_skill_dir,
+            project_config=project_config,
+        )
+
+        prompt_sent = mock_claude.call_args[0][0]
+        assert "vendor/lodash.js" in prompt_sent

@@ -13,6 +13,7 @@ from app.projects_config import (
     get_project_exploration,
     get_project_max_open_prs,
     get_project_models,
+    get_project_review_ignore,
     get_project_submit_to_repository,
     get_project_tools,
     resolve_base_branch,
@@ -1438,3 +1439,111 @@ class TestGetProjectSubmitToRepository:
         }
         result = get_project_submit_to_repository(config, "app")
         assert result == {"repo": "up/stream"}
+
+
+# ---------------------------------------------------------------------------
+# get_project_review_ignore
+# ---------------------------------------------------------------------------
+
+
+class TestGetProjectReviewIgnore:
+    """Tests for get_project_review_ignore()."""
+
+    def test_returns_empty_when_not_configured(self):
+        config = {"projects": {"myapp": {"path": "/tmp/myapp"}}}
+        result = get_project_review_ignore(config, "myapp")
+        assert result == {"glob": [], "regex": []}
+
+    def test_returns_empty_for_absent_project(self):
+        config = {"projects": {}}
+        result = get_project_review_ignore(config, "nonexistent")
+        assert result == {"glob": [], "regex": []}
+
+    def test_defaults_only(self):
+        config = {
+            "defaults": {
+                "review_ignore": {
+                    "glob": ["vendor/**", "*.lock"],
+                    "regex": [r".*\.pb\.go$"],
+                }
+            },
+            "projects": {"myapp": {"path": "/tmp/myapp"}},
+        }
+        result = get_project_review_ignore(config, "myapp")
+        assert result["glob"] == ["vendor/**", "*.lock"]
+        assert result["regex"] == [r".*\.pb\.go$"]
+
+    def test_project_override_merges_with_defaults(self):
+        """Project-level keys override the same keys in defaults (shallow dict merge).
+
+        get_project_config does {**defaults_review_ignore, **project_review_ignore},
+        so project's glob overrides default's glob, while default's regex is preserved
+        when the project doesn't set regex.
+        """
+        config = {
+            "defaults": {
+                "review_ignore": {
+                    "glob": ["vendor/**"],
+                    "regex": [r".*\.pb\.go$"],
+                }
+            },
+            "projects": {
+                "myapp": {
+                    "path": "/tmp/myapp",
+                    "review_ignore": {
+                        "glob": ["generated/**"],
+                    },
+                }
+            },
+        }
+        result = get_project_review_ignore(config, "myapp")
+        # Project-level glob replaces default glob
+        assert result["glob"] == ["generated/**"]
+        # No regex at project level — default regex is preserved by shallow merge
+        assert result["regex"] == [r".*\.pb\.go$"]
+
+    def test_partial_config_glob_only(self):
+        config = {
+            "projects": {
+                "myapp": {
+                    "path": "/tmp/myapp",
+                    "review_ignore": {"glob": ["*.min.js"]},
+                }
+            }
+        }
+        result = get_project_review_ignore(config, "myapp")
+        assert result["glob"] == ["*.min.js"]
+        assert result["regex"] == []
+
+    def test_partial_config_regex_only(self):
+        config = {
+            "projects": {
+                "myapp": {
+                    "path": "/tmp/myapp",
+                    "review_ignore": {"regex": [r"^docs/"]},
+                }
+            }
+        }
+        result = get_project_review_ignore(config, "myapp")
+        assert result["glob"] == []
+        assert result["regex"] == [r"^docs/"]
+
+    def test_invalid_review_ignore_type_returns_empty(self):
+        config = {
+            "projects": {
+                "myapp": {
+                    "path": "/tmp/myapp",
+                    "review_ignore": "not-a-dict",
+                }
+            }
+        }
+        result = get_project_review_ignore(config, "myapp")
+        assert result == {"glob": [], "regex": []}
+
+    def test_none_project_config_uses_defaults(self):
+        config = {
+            "defaults": {"review_ignore": {"glob": ["vendor/**"]}},
+            "projects": {"app": None},
+        }
+        result = get_project_review_ignore(config, "app")
+        assert result["glob"] == ["vendor/**"]

@@ -900,3 +900,127 @@ class TestGetContemplativeChance:
         (config_dir / "config.yaml").write_text("contemplative_chance: 0\n")
         from app.utils import get_contemplative_chance
         assert get_contemplative_chance() == 0
+
+
+# ---------------------------------------------------------------------------
+# filter_diff_by_ignore
+# ---------------------------------------------------------------------------
+
+_FIXTURE_DIFF = """\
+diff --git a/src/main.py b/src/main.py
+index abc..def 100644
+--- a/src/main.py
++++ b/src/main.py
+@@ -1,3 +1,4 @@
+ import os
++import sys
+ def main():
+     pass
+diff --git a/vendor/lib.js b/vendor/lib.js
+index 111..222 100644
+--- a/vendor/lib.js
++++ b/vendor/lib.js
+@@ -1,2 +1,3 @@
+ // vendored
++// updated
+diff --git a/package-lock.json b/package-lock.json
+index 333..444 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -1 +1,2 @@
+ {}
++{"lock": true}
+"""
+
+
+class TestFilterDiffByIgnore:
+    """Tests for filter_diff_by_ignore()."""
+
+    def _import(self):
+        from app.utils import filter_diff_by_ignore
+        return filter_diff_by_ignore
+
+    def test_no_patterns_returns_original(self):
+        fn = self._import()
+        result, skipped = fn(_FIXTURE_DIFF, [], [])
+        assert result == _FIXTURE_DIFF
+        assert skipped == []
+
+    def test_empty_diff_returns_empty(self):
+        fn = self._import()
+        result, skipped = fn("", ["*.lock"], [])
+        assert result == ""
+        assert skipped == []
+
+    def test_glob_pattern_without_slash_matches_basename(self):
+        """*.lock matches package-lock.json at any depth."""
+        fn = self._import()
+        result, skipped = fn(_FIXTURE_DIFF, ["*.json"], [])
+        assert "package-lock.json" not in result
+        assert "package-lock.json" in skipped
+
+    def test_glob_pattern_with_slash_matches_full_path(self):
+        """vendor/** matches vendor/lib.js."""
+        fn = self._import()
+        result, skipped = fn(_FIXTURE_DIFF, ["vendor/**"], [])
+        assert "vendor/lib.js" not in result
+        assert "vendor/lib.js" in skipped
+        assert "src/main.py" in result
+
+    def test_regex_pattern_matches_full_path(self):
+        fn = self._import()
+        result, skipped = fn(_FIXTURE_DIFF, [], [r"^vendor/"])
+        assert "vendor/lib.js" not in result
+        assert "vendor/lib.js" in skipped
+
+    def test_multiple_patterns_remove_multiple_files(self):
+        fn = self._import()
+        result, skipped = fn(_FIXTURE_DIFF, ["vendor/**", "*.json"], [])
+        assert "vendor/lib.js" in skipped
+        assert "package-lock.json" in skipped
+        assert "src/main.py" in result
+
+    def test_all_files_ignored_returns_empty_diff(self):
+        fn = self._import()
+        result, skipped = fn(_FIXTURE_DIFF, ["**"], [])
+        # All 3 files should be removed
+        assert len(skipped) == 3
+        assert result.strip() == ""
+
+    def test_no_matching_patterns_preserves_all(self):
+        fn = self._import()
+        result, skipped = fn(_FIXTURE_DIFF, ["*.rb"], [r"^nonexistent/"])
+        assert result == _FIXTURE_DIFF
+        assert skipped == []
+
+    def test_malformed_regex_is_skipped_without_exception(self):
+        fn = self._import()
+        # Should not raise — bad pattern is logged and skipped
+        result, skipped = fn(_FIXTURE_DIFF, [], [r"[invalid(regex"])
+        # No crash; all files preserved
+        assert "src/main.py" in result
+        assert skipped == []
+
+    def test_non_matching_regex_preserves_all(self):
+        fn = self._import()
+        result, skipped = fn(_FIXTURE_DIFF, [], [r"^generated/"])
+        assert result == _FIXTURE_DIFF
+        assert skipped == []
+
+    def test_binary_file_hunk_handled_correctly(self):
+        """Binary file entries still start with diff --git, must be handled."""
+        binary_diff = (
+            "diff --git a/src/main.py b/src/main.py\n"
+            "index abc..def 100644\n"
+            "--- a/src/main.py\n"
+            "+++ b/src/main.py\n"
+            "@@ -1 +1 @@\n"
+            " x\n"
+            "diff --git a/image.png b/image.png\n"
+            "index 000..111 100644\n"
+            "Binary files a/image.png and b/image.png differ\n"
+        )
+        fn = self._import()
+        result, skipped = fn(binary_diff, ["*.png"], [])
+        assert "image.png" in skipped
+        assert "src/main.py" in result

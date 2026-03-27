@@ -279,6 +279,12 @@ projects:
     cli_provider: copilot    # Per-project provider override
     models:
       mission: opus
+    review_ignore:           # Exclude generated/vendored files from /review diffs
+      glob:
+        - "vendor/**"
+        - "*.lock"
+      regex:
+        - '.*\.pb\.go$'
 ```
 
 ### Renaming a Project

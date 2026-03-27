@@ -743,6 +743,7 @@ def run_review(
     skill_dir: Optional[Path] = None,
     architecture: bool = False,
     plan_url: Optional[str] = None,
+    project_config: Optional[dict] = None,
 ) -> Tuple[bool, str, Optional[dict]]:
     """Execute a read-only code review on a PR.
 
@@ -756,6 +757,9 @@ def run_review(
         architecture: If True, use architecture-focused review prompt.
         plan_url: Optional explicit GitHub issue URL for the plan to check
             alignment against. When None, auto-detection from PR body is used.
+        project_config: Optional merged project config dict (from projects.yaml).
+            When provided, review_ignore patterns are applied to filter the diff
+            before building the Claude prompt. When None, no filtering is done.
 
     Returns:
         (success, summary, review_data) tuple. review_data is the validated
@@ -791,6 +795,26 @@ def run_review(
         except Exception as e:
             return False, f"Failed to fetch PR context: {e}", None
         repliable_comments = fetch_repliable_comments(owner, repo, pr_number, parallel=False)
+
+    # Step 1a: Apply review_ignore filters to the diff (if configured)
+    if project_config is not None:
+        from app.utils import filter_diff_by_ignore
+
+        _review_ignore = project_config.get("review_ignore", {}) or {}
+        _glob_pats = _review_ignore.get("glob", []) or [] if isinstance(_review_ignore, dict) else []
+        _regex_pats = _review_ignore.get("regex", []) or [] if isinstance(_review_ignore, dict) else []
+        if _glob_pats or _regex_pats:
+            filtered_diff, skipped = filter_diff_by_ignore(
+                context.get("diff", ""),
+                _glob_pats,
+                _regex_pats,
+            )
+            if skipped:
+                print(
+                    f"[review_runner] Ignoring {len(skipped)} file(s): {skipped}",
+                    file=sys.stderr,
+                )
+            context = {**context, "diff": filtered_diff}
 
     if not context.get("diff"):
         return False, f"PR #{pr_number} has no diff — nothing to review.", None
@@ -905,11 +929,27 @@ def main(argv=None):
 
     skill_dir = Path(__file__).resolve().parent.parent / "skills" / "core" / "review"
 
+    # Load project config for review_ignore filtering (best-effort)
+    project_config = None
+    try:
+        import os
+        koan_root = os.environ.get("KOAN_ROOT", "")
+        if koan_root:
+            from app.projects_config import load_projects_config, get_project_config
+            from app.utils import project_name_for_path
+            projects_cfg = load_projects_config(koan_root)
+            if projects_cfg:
+                project_name = project_name_for_path(cli_args.project_path)
+                project_config = get_project_config(projects_cfg, project_name)
+    except Exception as e:
+        print(f"[review_runner] Could not load project config for review_ignore: {e}", file=sys.stderr)
+
     success, summary, _review_data = run_review(
         owner, repo, pr_number, cli_args.project_path,
         skill_dir=skill_dir,
         architecture=cli_args.architecture,
         plan_url=cli_args.plan_url,
+        project_config=project_config,
     )
     print(summary)
     return 0 if success else 1

@@ -83,6 +83,32 @@ defaults:
   # Default: 0 (unlimited)
   max_open_prs: 10
 
+  # Review ignore patterns — exclude files from /review PR diffs.
+  # Applied before building the Claude prompt, reducing token spend on
+  # generated code, lock files, and vendor directories.
+  #
+  # glob: patterns are matched against the full file path from the diff.
+  #   - Patterns without '/' match the basename at any depth:
+  #       "*.lock" matches "package-lock.json", "subdir/yarn.lock"
+  #   - Patterns with '/' match the full path:
+  #       "vendor/**" matches "vendor/lodash.js" but not "src/vendor.js"
+  # regex: patterns are matched against the full file path (Python re.search).
+  #   A pattern like ".*\.pb\.go$" matches "api/types.pb.go".
+  #
+  # Project-level lists override (replace) the defaults-level lists
+  # for the same key. To extend defaults, repeat them in the project entry.
+  #
+  # When all files are filtered out, the review returns "nothing to review"
+  # without calling Claude — saving quota entirely.
+  #
+  # review_ignore:
+  #   glob:
+  #     - "vendor/**"         # all files under vendor/
+  #     - "*.lock"            # lock files at any depth (yarn.lock, etc.)
+  #     - "*.min.js"          # minified JS bundles
+  #   regex:
+  #     - '.*\.pb\.go$'       # protobuf-generated Go files (full path regex)
+
 projects:
   # Example: your main project (minimal config — inherits all defaults)
   myapp:
