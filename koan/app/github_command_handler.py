@@ -773,6 +773,116 @@ def _try_reply(
     return True
 
 
+# Mapping from notification reason to the command to queue.
+# These are "implicit command" notifications — no @mention comment needed.
+_ASSIGNMENT_REASON_TO_COMMAND = {
+    "review_requested": "review",
+    "assign": "implement",
+}
+
+
+def _try_assignment_notification(
+    notification: dict,
+    registry: SkillRegistry,
+    config: dict,
+) -> bool:
+    """Handle assignment-based notifications (review_requested, assign).
+
+    When the bot is assigned as a PR reviewer or assigned to an issue,
+    queue the appropriate mission without requiring an @mention comment.
+
+    - review_requested → /review <PR URL>
+    - assign → /implement <issue URL>
+
+    Returns True if a mission was queued.
+    """
+    import os
+    from pathlib import Path
+
+    reason = notification.get("reason", "")
+    command_name = _ASSIGNMENT_REASON_TO_COMMAND.get(reason)
+    if not command_name:
+        return False
+
+    # Validate the command is registered and github_enabled
+    skill = validate_command(command_name, registry)
+    if not skill:
+        log.debug(
+            "GitHub assign: command '%s' not github_enabled, skipping %s notification",
+            command_name, reason,
+        )
+        return False
+
+    # Check staleness
+    if is_notification_stale(notification):
+        log.debug("GitHub assign: skipping stale %s notification", reason)
+        mark_notification_read(str(notification.get("id", "")))
+        return False
+
+    # Resolve project
+    project_info = resolve_project_from_notification(notification)
+    if not project_info:
+        repo_name = notification.get("repository", {}).get("full_name", "?")
+        log.debug("GitHub assign: repo %s not in projects.yaml", repo_name)
+        mark_notification_read(str(notification.get("id", "")))
+        return False
+
+    project_name, owner, repo = project_info
+
+    # Build web URL from subject
+    subject_url = notification.get("subject", {}).get("url", "")
+    web_url = api_url_to_web_url(subject_url) if subject_url else ""
+    if not web_url:
+        log.debug("GitHub assign: no subject URL in %s notification", reason)
+        mark_notification_read(str(notification.get("id", "")))
+        return False
+
+    koan_root = os.environ.get("KOAN_ROOT", "")
+    if not koan_root:
+        log.error("GitHub assign: KOAN_ROOT not set")
+        return False
+
+    from app.missions import list_pending
+    from app.utils import insert_pending_mission
+
+    missions_path = Path(koan_root) / "instance" / "missions.md"
+
+    # Deduplicate: skip if a mission for the same URL is already pending.
+    # This prevents duplicate missions when both an assignment notification
+    # and an @mention comment arrive for the same PR/issue.
+    try:
+        content = missions_path.read_text() if missions_path.exists() else ""
+        pending = list_pending(content)
+        url_lower = web_url.lower()
+        for line in pending:
+            if url_lower in line.lower():
+                log.debug(
+                    "GitHub assign: mission for %s already pending, skipping",
+                    web_url,
+                )
+                mark_notification_read(str(notification.get("id", "")))
+                return True  # Already handled — not an error
+    except OSError:
+        pass  # If we can't read, proceed with insertion (worst case: a dup)
+
+    # Build and insert mission
+    mission_entry = f"- [project:{project_name}] /{command_name} {web_url} 📬"
+    log.info(
+        "GitHub assign: queuing /%s from %s notification on %s/%s",
+        command_name, reason, owner, repo,
+    )
+
+    try:
+        insert_pending_mission(missions_path, mission_entry)
+    except OSError as e:
+        log.warning("GitHub assign: failed to insert mission: %s", e)
+        mark_notification_read(str(notification.get("id", "")))
+        return False
+
+    mark_notification_read(str(notification.get("id", "")))
+    return True
+
+
 def process_single_notification(
     notification: dict,
     registry: SkillRegistry,
@@ -799,7 +909,12 @@ def process_single_notification(
     # Early exit checks + fetch comment (single API call)
     comment = _fetch_and_filter_comment(notification, bot_username, max_age_hours)
     if not comment:
-        # No @mention found — try subscription path for subscribed/author notifications
+        # No @mention found — try assignment path (review_requested, assign)
+        if _try_assignment_notification(
+            notification, registry, config,
+        ):
+            return True, None
+        # Try subscription path for subscribed/author notifications
         if _try_subscription_notification(
             notification, config, projects_config, bot_username,
         ):
@@ -969,6 +1084,11 @@ def process_single_notification(
 
     # Mark notification as read
     mark_notification_read(str(notification.get("id", "")))
+
+    # Annotate notification with parsed command/author for downstream consumers
+    # (e.g. _notify_mission_from_mention in loop_manager).
+    notification["_koan_command"] = command_name
+    notification["_koan_author"] = comment_author
 
     log.info("GitHub: created mission from @%s: %s", comment_author, command_name)
     return True, None

@@ -43,6 +43,17 @@ def run(koan_root: str, instance_dir: str) -> List[CheckResult]:
                     severity="ok",
                     message="config.yaml is valid",
                 ))
+
+            # Config drift detection — check for new template keys
+            from app.config_validator import detect_config_drift
+            missing_keys = detect_config_drift(koan_root, user_config=config)
+            if missing_keys:
+                results.append(CheckResult(
+                    name="config_drift",
+                    severity="info",
+                    message=f"Config drift: {len(missing_keys)} key(s) in template not in your config: {', '.join(missing_keys)}",
+                    hint="See instance.example/config.yaml for documentation on new features",
+                ))
         except Exception as e:
             results.append(CheckResult(
                 name="config_yaml",

@@ -1514,10 +1514,9 @@ class TestFetchNotificationsLogging:
         with caplog.at_level(logging.DEBUG, logger="app.github_notifications"):
             result = fetch_unread_notifications()
 
-        assert len(result.actionable) == 1
+        assert len(result.actionable) == 2
         assert "drain-only" in caplog.text
         assert "ci_activity=2" in caplog.text
-        assert "assign=1" in caplog.text
 
     @patch("app.github_notifications.api")
     def test_logs_skipped_unknown_repos(self, mock_api, caplog):
@@ -1759,6 +1758,35 @@ class TestNotifyMissionFromMention:
         _notify_mission_from_mention(notif)
         msg = mock_send.call_args[0][0]
         assert "https://" not in msg
+
+    @patch("app.notify.send_telegram", return_value=True)
+    def test_includes_command_and_author(self, mock_send):
+        from app.loop_manager import _notify_mission_from_mention
+
+        notif = {
+            "repository": {"full_name": "sukria/koan"},
+            "subject": {"title": "Fix auth bug", "type": "PullRequest"},
+            "_koan_command": "rebase",
+            "_koan_author": "atoomic",
+        }
+        _notify_mission_from_mention(notif)
+        msg = mock_send.call_args[0][0]
+        assert "@atoomic" in msg
+        assert "/rebase" in msg
+        assert "mission queued" in msg
+
+    @patch("app.notify.send_telegram", return_value=True)
+    def test_fallback_when_no_command_or_author(self, mock_send):
+        from app.loop_manager import _notify_mission_from_mention
+
+        notif = {
+            "repository": {"full_name": "sukria/koan"},
+            "subject": {"title": "Fix auth bug", "type": "PullRequest"},
+        }
+        _notify_mission_from_mention(notif)
+        msg = mock_send.call_args[0][0]
+        assert "@mention" in msg
+        assert "mission queued" in msg
 
 
 # --- Test configurable check interval ---

@@ -169,6 +169,70 @@ class TestFormatProgress:
         assert "```\n10:00 — Step 1\n---\n10:05 — Step 2\n```" in result
 
 
+class TestGetInProgressMissions:
+    """Tests for _get_in_progress_missions — fallback when pending.md is absent."""
+
+    def test_no_missions_file(self, tmp_path):
+        mod = _load_handler()
+        result = mod._get_in_progress_missions(tmp_path)
+        assert result == []
+
+    def test_empty_missions_file(self, tmp_path):
+        mod = _load_handler()
+        (tmp_path / "missions.md").write_text(
+            "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n"
+        )
+        result = mod._get_in_progress_missions(tmp_path)
+        assert result == []
+
+    def test_single_in_progress_mission(self, tmp_path):
+        mod = _load_handler()
+        (tmp_path / "missions.md").write_text(
+            "# Missions\n\n## Pending\n\n## In Progress\n\n"
+            "- [project:myapp] /audit security check ▶(2026-03-26T10:00)\n\n"
+            "## Done\n"
+        )
+        result = mod._get_in_progress_missions(tmp_path)
+        assert len(result) == 1
+        project, text = result[0]
+        assert project == "myapp"
+        assert "/audit" in text
+
+    def test_multiple_in_progress_missions(self, tmp_path):
+        mod = _load_handler()
+        (tmp_path / "missions.md").write_text(
+            "# Missions\n\n## Pending\n\n## In Progress\n\n"
+            "- [project:alpha] /review code ▶(2026-03-26T10:00)\n"
+            "- [project:beta] fix the login bug ▶(2026-03-26T10:05)\n\n"
+            "## Done\n"
+        )
+        result = mod._get_in_progress_missions(tmp_path)
+        assert len(result) == 2
+        assert result[0][0] == "alpha"
+        assert result[1][0] == "beta"
+
+
+class TestFormatNoOutput:
+    """Tests for _format_no_output — message when mission runs but has no output."""
+
+    def test_single_mission(self):
+        mod = _load_handler()
+        result = mod._format_no_output([("myapp", "/audit security")])
+        assert "Mission [myapp] running: /audit security" in result
+        assert "No output available yet." in result
+
+    def test_multiple_missions(self):
+        mod = _load_handler()
+        result = mod._format_no_output([
+            ("alpha", "/review code"),
+            ("beta", "fix bug"),
+        ])
+        assert "Missions running:" in result
+        assert "[alpha] /review code" in result
+        assert "[beta] fix bug" in result
+        assert "No output available yet." in result
+
+
 class TestHandleLive:
     """Tests for handle() — the /live command entry point."""
 
@@ -184,6 +248,58 @@ class TestHandleLive:
         ctx = _make_ctx(tmp_path)
         result = mod.handle(ctx)
         assert result == "No mission running."
+
+    def test_in_progress_mission_no_output(self, tmp_path):
+        """When a mission is in progress but pending.md doesn't exist yet."""
+        mod = _load_handler()
+        (tmp_path / "journal").mkdir()
+        (tmp_path / "missions.md").write_text(
+            "# Missions\n\n## Pending\n\n## In Progress\n\n"
+            "- [project:koan] /audit full security audit ▶(2026-03-26T10:00)\n\n"
+            "## Done\n"
+        )
+        ctx = _make_ctx(tmp_path)
+        result = mod.handle(ctx)
+        assert "No mission running." not in result
+        assert "koan" in result
+        assert "/audit" in result
+        assert "No output available yet." in result
+
+    def test_in_progress_mission_empty_pending(self, tmp_path):
+        """When a mission is in progress but pending.md is empty."""
+        mod = _load_handler()
+        pending = tmp_path / "journal" / "pending.md"
+        pending.parent.mkdir(parents=True)
+        pending.write_text("")
+        (tmp_path / "missions.md").write_text(
+            "# Missions\n\n## Pending\n\n## In Progress\n\n"
+            "- [project:myapp] implement feature X ▶(2026-03-26T10:00)\n\n"
+            "## Done\n"
+        )
+        ctx = _make_ctx(tmp_path)
+        result = mod.handle(ctx)
+        assert "No mission running." not in result
+        assert "myapp" in result
+        assert "No output available yet." in result
+
+    def test_pending_output_takes_priority_over_missions_check(self, tmp_path):
+        """When pending.md has content, it should be shown (not the fallback)."""
+        mod = _load_handler()
+        pending = tmp_path / "journal" / "pending.md"
+        pending.parent.mkdir(parents=True)
+        pending.write_text(
+            "# Mission: fix bug\nProject: koan\n\n---\n"
+            "10:00 — Investigating\n"
+        )
+        (tmp_path / "missions.md").write_text(
+            "# Missions\n\n## Pending\n\n## In Progress\n\n"
+            "- [project:koan] fix bug ▶(2026-03-26T10:00)\n\n"
+            "## Done\n"
+        )
+        ctx = _make_ctx(tmp_path)
+        result = mod.handle(ctx)
+        assert "Investigating" in result
+        assert "No output available yet." not in result
 
     def test_shows_progress_when_running(self, tmp_path):
         mod = _load_handler()

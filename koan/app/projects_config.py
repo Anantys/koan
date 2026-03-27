@@ -133,14 +133,29 @@ def get_projects_from_config(config: dict) -> List[Tuple[str, str]]:
     return sorted(result, key=lambda x: x[0].lower())
 
 
+def _find_project_entry(projects: dict, project_name: str) -> dict:
+    """Case-insensitive lookup of a project entry in the projects dict."""
+    # Fast path: exact match
+    entry = projects.get(project_name)
+    if entry is not None:
+        return entry
+    # Slow path: case-insensitive scan
+    lower = project_name.lower()
+    for key, value in projects.items():
+        if key.lower() == lower:
+            return value
+    return {}
+
+
 def get_project_config(config: dict, project_name: str) -> dict:
     """Get merged config for a project (defaults + project overrides).
 
     Deep-merges per-section: project-level keys override default-level keys.
     Unknown sections are passed through as-is.
+    Project name lookup is case-insensitive.
     """
     defaults = config.get("defaults", {}) or {}
-    project = config.get("projects", {}).get(project_name, {}) or {}
+    project = _find_project_entry(config.get("projects", {}), project_name) or {}
 
     merged = {}
     # Start with all default keys
@@ -207,7 +222,7 @@ def resolve_base_branch(
 
                 # Check if the project explicitly sets base_branch
                 projects = config.get("projects", {}) or {}
-                proj_cfg = projects.get(project_name, {}) or {}
+                proj_cfg = _find_project_entry(projects, project_name) or {}
                 proj_am = proj_cfg.get("git_auto_merge", {}) or {}
                 if proj_am.get("base_branch"):
                     project_explicit = True

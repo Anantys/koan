@@ -174,10 +174,11 @@ class SessionRegistry:
         return [s for s in self.get_all() if s.status == "running"]
 
     def get_by_project(self, project_name: str) -> List[Session]:
-        """Get active sessions for a specific project."""
+        """Get active sessions for a specific project (case-insensitive)."""
+        lower = project_name.lower()
         return [
             s for s in self.get_active()
-            if s.project_name == project_name
+            if s.project_name.lower() == lower
         ]
 
     def clear_completed(self):

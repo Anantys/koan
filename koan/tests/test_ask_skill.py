@@ -336,3 +336,143 @@ class TestBuildMissionFromCommandAsk:
         # Falls back to normal behaviour: PR URL from subject
         assert "https://github.com/sukria/koan/pull/42" in mission
         assert "📬" in mission
+
+
+# ---------------------------------------------------------------------------
+# ask_runner tests
+# ---------------------------------------------------------------------------
+
+
+class TestAskRunnerAutoDiscovery:
+    """Verify skill_dispatch auto-discovers ask_runner."""
+
+    def test_discover_runner_module(self):
+        from app.skill_dispatch import _discover_runner_module
+        module = _discover_runner_module("ask")
+        assert module == "skills.core.ask.ask_runner"
+
+
+class TestAskRunnerCli:
+    """Test ask_runner main() argument parsing."""
+
+    def test_missing_context_file_exits_1(self, tmp_path):
+        from skills.core.ask.ask_runner import main
+        with pytest.raises(SystemExit) as exc_info:
+            main([
+                "--project-path", str(tmp_path),
+                "--project-name", "test",
+                "--instance-dir", str(tmp_path),
+            ])
+        assert exc_info.value.code == 1
+
+    def test_empty_context_file_exits_1(self, tmp_path):
+        ctx_file = tmp_path / "url.txt"
+        ctx_file.write_text("")
+        from skills.core.ask.ask_runner import main
+        with pytest.raises(SystemExit) as exc_info:
+            main([
+                "--project-path", str(tmp_path),
+                "--project-name", "test",
+                "--instance-dir", str(tmp_path),
+                "--context-file", str(ctx_file),
+            ])
+        assert exc_info.value.code == 1
+
+
+class TestRunAskFlow:
+    """Test run_ask function with mocked GitHub dependencies."""
+
+    @patch("app.github_reply.post_reply", return_value=True)
+    @patch("app.github_reply.clean_reply", return_value="Here is my answer.")
+    @patch("app.cli_provider.run_command", return_value="Here is my answer.")
+    @patch("app.github_reply.fetch_thread_context", return_value={
+        "title": "Test PR", "body": "Fix", "comments": [], "is_pr": True, "diff_summary": "",
+    })
+    @patch("app.github.api")
+    def test_successful_run(
+        self, mock_api, _fetch_ctx, _run_cmd, _clean, mock_post, tmp_path,
+    ):
+        import json as _json
+        from skills.core.ask.ask_runner import run_ask
+
+        mock_api.return_value = _json.dumps({
+            "body": "Why does this test fail?",
+            "user": {"login": "atoomic"},
+        })
+
+        success, summary = run_ask(
+            comment_url="https://github.com/sukria/koan/issues/42#issuecomment-123456",
+            project_path=str(tmp_path),
+            project_name="koan",
+            instance_dir=str(tmp_path),
+        )
+
+        assert success is True
+        assert "Reply posted" in summary
+        assert "sukria/koan#42" in summary
+        mock_post.assert_called_once_with("sukria", "koan", "42", "Here is my answer.")
+
+    def test_invalid_url(self, tmp_path):
+        from skills.core.ask.ask_runner import run_ask
+
+        success, summary = run_ask(
+            comment_url="not a url",
+            project_path=str(tmp_path),
+            project_name="koan",
+            instance_dir=str(tmp_path),
+        )
+        assert success is False
+
+    def test_url_without_fragment(self, tmp_path):
+        from skills.core.ask.ask_runner import run_ask
+
+        success, summary = run_ask(
+            comment_url="https://github.com/sukria/koan/issues/42",
+            project_path=str(tmp_path),
+            project_name="koan",
+            instance_dir=str(tmp_path),
+        )
+        assert success is False
+        assert "fragment" in summary.lower()
+
+    @patch("app.github_reply.fetch_thread_context", return_value={
+        "title": "", "body": "", "comments": [], "is_pr": False, "diff_summary": "",
+    })
+    @patch("app.github.api", side_effect=RuntimeError("not found"))
+    def test_comment_not_found(self, _api, _fetch, tmp_path):
+        from skills.core.ask.ask_runner import run_ask
+
+        success, summary = run_ask(
+            comment_url="https://github.com/sukria/koan/issues/42#issuecomment-999",
+            project_path=str(tmp_path),
+            project_name="koan",
+            instance_dir=str(tmp_path),
+        )
+        assert success is False
+        assert "comment" in summary.lower() or "available" in summary.lower()
+
+
+class TestAskSkillDispatchIntegration:
+    """Test that /ask missions are dispatched correctly through skill_dispatch."""
+
+    def test_dispatch_builds_command(self):
+        """Verify dispatch_skill_mission returns a command for /ask missions."""
+        from app.skill_dispatch import dispatch_skill_mission
+        import tempfile, os
+
+        url = "https://github.com/sukria/koan/issues/42#issuecomment-123"
+        mission = f"[project:koan] /ask {url}"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cmd = dispatch_skill_mission(
+                mission_text=mission,
+                project_name="koan",
+                project_path=tmpdir,
+                koan_root=tmpdir,
+                instance_dir=tmpdir,
+            )
+
+        assert cmd is not None, "dispatch_skill_mission should return a command for /ask"
+        assert any("ask_runner" in c for c in cmd), f"Command should use ask_runner: {cmd}"
+        assert "--project-path" in cmd
+        assert "--context-file" in cmd

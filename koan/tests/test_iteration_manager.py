@@ -74,9 +74,9 @@ PROJECTS_LIST = [("koan", "/path/to/koan"), ("backend", "/path/to/backend"), ("w
 class TestResolveProjectPath:
 
     def test_finds_existing_project(self):
-        assert _resolve_project_path("koan", PROJECTS_LIST) == "/path/to/koan"
-        assert _resolve_project_path("backend", PROJECTS_LIST) == "/path/to/backend"
-        assert _resolve_project_path("webapp", PROJECTS_LIST) == "/path/to/webapp"
+        assert _resolve_project_path("koan", PROJECTS_LIST) == ("koan", "/path/to/koan")
+        assert _resolve_project_path("backend", PROJECTS_LIST) == ("backend", "/path/to/backend")
+        assert _resolve_project_path("webapp", PROJECTS_LIST) == ("webapp", "/path/to/webapp")
 
     def test_returns_none_for_unknown(self):
         assert _resolve_project_path("unknown", PROJECTS_LIST) is None
@@ -85,7 +85,13 @@ class TestResolveProjectPath:
         assert _resolve_project_path("koan", []) is None
 
     def test_single_project(self):
-        assert _resolve_project_path("only", [("only", "/single/path")]) == "/single/path"
+        assert _resolve_project_path("only", [("only", "/single/path")]) == ("only", "/single/path")
+
+    def test_case_insensitive_match(self):
+        """Project name matching should be case-insensitive."""
+        assert _resolve_project_path("Koan", PROJECTS_LIST) == ("koan", "/path/to/koan")
+        assert _resolve_project_path("BACKEND", PROJECTS_LIST) == ("backend", "/path/to/backend")
+        assert _resolve_project_path("WebApp", PROJECTS_LIST) == ("webapp", "/path/to/webapp")
 
 
 class TestGetProjectByIndex:

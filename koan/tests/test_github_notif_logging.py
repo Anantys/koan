@@ -41,7 +41,7 @@ class TestFetchNotificationsLogging:
         from app.github_notifications import fetch_unread_notifications
 
         notifications = [
-            {"reason": "assign", "repository": {"full_name": "o/r"}},
+            {"reason": "state_change", "repository": {"full_name": "o/r"}},
         ]
         mock_api.return_value = json.dumps(notifications)
 
@@ -49,7 +49,7 @@ class TestFetchNotificationsLogging:
             result = fetch_unread_notifications()
 
         assert "drain-only" in caplog.text
-        assert "assign=1" in caplog.text
+        assert "state_change=1" in caplog.text
         assert len(result.drain) == 1
 
     @patch("app.github_notifications.api")
@@ -76,7 +76,7 @@ class TestFetchNotificationsLogging:
 
         notifications = [
             {"reason": "mention", "repository": {"full_name": "o/r"}},
-            {"reason": "assign", "repository": {"full_name": "o/r"}},
+            {"reason": "state_change", "repository": {"full_name": "o/r"}},
         ]
         mock_api.return_value = json.dumps(notifications)
 

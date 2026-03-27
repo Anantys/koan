@@ -15,6 +15,7 @@ from typing import Optional
 
 from app.git_utils import run_git
 from app.projects_config import (
+    _find_project_entry,
     get_project_auto_merge,
     get_project_submit_to_repository,
     load_projects_config,
@@ -132,7 +133,7 @@ def prepare_project_branch(
             # auto-detection for repos whose default branch differs (e.g.
             # "master" repos when defaults say "main").
             projects = config.get("projects", {}) or {}
-            proj_cfg = projects.get(project_name, {}) or {}
+            proj_cfg = _find_project_entry(projects, project_name) or {}
             proj_am = proj_cfg.get("git_auto_merge", {}) or {}
             if proj_am.get("base_branch"):
                 config_explicit = True

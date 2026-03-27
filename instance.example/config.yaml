@@ -32,6 +32,11 @@
 max_runs_per_day: 20
 interval_seconds: 300
 
+# Startup delay — seconds to wait before the first mission after boot.
+# Gives you time to send /pause before any mission runs.
+# Set to 0 to disable. Skipped automatically if already paused at startup.
+# startup_delay: 30
+
 # Auto-pause — automatically pause after max_runs or idle timeout.
 # When false, Kōan keeps running indefinitely (quota and error pauses still apply).
 # Useful when you have scheduled recurring tasks that must fire reliably.

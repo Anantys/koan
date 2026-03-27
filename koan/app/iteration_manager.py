@@ -144,6 +144,20 @@ def _inject_recurring(instance_dir: Path):
         return []
 
 
+def _drain_ci_queue(instance_dir: Path):
+    """Drain one CI queue entry (non-blocking).
+
+    Returns:
+        status message string, or None if queue is empty / still pending.
+    """
+    try:
+        from app.ci_queue_runner import drain_one
+        return drain_one(str(instance_dir))
+    except (ImportError, OSError, ValueError) as e:
+        _log_iteration("error", f"CI queue drain error: {e}")
+        return None
+
+
 def _fallback_mission_extract(instance_dir: Path, projects_str: str,
                               context_msg: str):
     """Attempt direct mission extraction when the picker fails or returns empty.
@@ -221,15 +235,16 @@ def _projects_to_str(projects: List[Tuple[str, str]]) -> str:
 
 def _resolve_project_path(
     project_name: str, projects: List[Tuple[str, str]],
-) -> Optional[str]:
-    """Find the path for a project name.
+) -> Optional[Tuple[str, str]]:
+    """Find the canonical name and path for a project name (case-insensitive).
 
     Returns:
-        Path string or None if not found
+        (canonical_name, path) tuple or None if not found
     """
+    lower = project_name.lower()
     for name, path in projects:
-        if name == project_name:
-            return path
+        if name.lower() == lower:
+            return (name, path)
     return None
 
 
@@ -748,6 +763,9 @@ def plan_iteration(
     # Step 3: Inject recurring missions
     recurring_injected = _inject_recurring(instance)
 
+    # Step 3b: Drain CI queue (one entry per iteration, non-blocking)
+    ci_drain_msg = _drain_ci_queue(instance)
+
     # Step 4: Pick mission
     mission_project, mission_title = _pick_mission(
         instance, projects_str, run_num, autonomous_mode, last_project,
@@ -782,9 +800,14 @@ def plan_iteration(
 
     # Step 5: Resolve project
     if mission_project and mission_title:
-        # Mission picked — resolve project path
-        project_name = mission_project
-        project_path = _resolve_project_path(project_name, projects)
+        # Mission picked — resolve project path (case-insensitive)
+        resolved = _resolve_project_path(mission_project, projects)
+
+        if resolved is None:
+            project_name = mission_project
+            project_path = None
+        else:
+            project_name, project_path = resolved
 
         if project_path is None:
             known = _get_known_project_names(projects)

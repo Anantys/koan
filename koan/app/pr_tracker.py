@@ -15,6 +15,7 @@ from typing import Dict, List, Optional
 
 from app.github import get_gh_username, run_gh
 from app.projects_config import (
+    _find_project_entry,
     get_project_auto_merge,
     get_project_config,
     get_projects_from_config,
@@ -182,7 +183,7 @@ def fetch_pr_checks(
         return []
 
     proj_cfg = get_project_config(config, project_name)
-    project_path = (config.get("projects", {}).get(project_name) or {}).get("path", "")
+    project_path = (_find_project_entry(config.get("projects", {}), project_name) or {}).get("path", "")
     github_url = proj_cfg.get("github_url", "")
     if not project_path or not github_url:
         return []
@@ -230,7 +231,7 @@ def merge_pr(
         return {"ok": False, "error": f"Invalid merge strategy: {strategy}", "url": ""}
 
     proj_cfg = get_project_config(config, project_name)
-    project_path = (config.get("projects", {}).get(project_name) or {}).get("path", "")
+    project_path = (_find_project_entry(config.get("projects", {}), project_name) or {}).get("path", "")
     github_url = proj_cfg.get("github_url", "")
     if not project_path or not github_url:
         return {"ok": False, "error": "Project path or GitHub URL not configured", "url": ""}

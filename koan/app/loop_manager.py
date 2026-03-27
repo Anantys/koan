@@ -99,7 +99,7 @@ def validate_projects(
 
 
 def lookup_project(project_name: str, projects: list) -> Optional[str]:
-    """Find project path by name.
+    """Find project path by name (case-insensitive).
 
     Args:
         project_name: Name to look up.
@@ -108,8 +108,9 @@ def lookup_project(project_name: str, projects: list) -> Optional[str]:
     Returns:
         Project path if found, None otherwise.
     """
+    lower = project_name.lower()
     for name, path in projects:
-        if name == project_name:
+        if name.lower() == lower:
             return path
     return None
 
@@ -740,7 +741,7 @@ def process_github_notifications(
                 _github_log(f"Notification error for {repo}: {error[:100]}", "warning")
                 _post_error_for_notification(notif, error)
 
-        # Drain non-actionable notifications (ci_activity, review_requested,
+        # Drain non-actionable notifications (ci_activity, state_change,
         # etc.) to prevent accumulation that blocks future @mention detection.
         # When old notifications pile up on a thread, new @mentions may update
         # the existing notification instead of creating a fresh "mention" one.
@@ -779,7 +780,7 @@ _MAX_DRAIN_PER_CYCLE = 30
 def _drain_notifications(notifications: list) -> int:
     """Mark non-actionable notifications as read to prevent accumulation.
 
-    Non-actionable notifications (ci_activity, review_requested, state_change,
+    Non-actionable notifications (ci_activity, state_change,
     etc.) pile up on threads the bot owns. When they stay unread, new @mentions
     on those threads may update the existing notification instead of creating a
     fresh "mention"-reason notification, causing @mentions to be missed.
@@ -826,8 +827,16 @@ def _notify_mission_from_mention(notif: dict) -> None:
         subject_type = notif.get("subject", {}).get("type", "?").lower()
         subject_api_url = notif.get("subject", {}).get("url", "")
         thread_url = api_url_to_web_url(subject_api_url) if subject_api_url else ""
+
+        # Use annotated command/author from process_single_notification
+        command_name = notif.get("_koan_command", "")
+        author = notif.get("_koan_author", "")
+
+        # Build descriptive title: "📬 GitHub @user → /rebase mission queued"
+        author_part = f"@{author}" if author else "@mention"
+        command_part = f" /{command_name}" if command_name else ""
         msg = (
-            f"📬 GitHub @mention → mission queued\n"
+            f"📬 GitHub {author_part} →{command_part} mission queued\n"
             f"{repo_name} ({subject_type}): {subject_title}"
         )
         if thread_url:

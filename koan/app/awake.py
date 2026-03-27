@@ -353,6 +353,9 @@ def handle_chat(text: str):
                 save_conversation_message(CONVERSATION_HISTORY_FILE, "assistant", error_msg)
             else:
                 log("chat", "Empty response from Claude.")
+                empty_msg = "⚠️ I didn't get a response — please try again."
+                send_telegram(empty_msg)
+                save_conversation_message(CONVERSATION_HISTORY_FILE, "assistant", empty_msg)
         except subprocess.TimeoutExpired:
             log("error", f"Claude timed out ({CHAT_TIMEOUT}s). Retrying with lite context...")
             # Brief backoff before retry to let API pressure ease

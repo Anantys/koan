@@ -225,9 +225,11 @@ _CODE_BLOCK_RE = re.compile(r'```.*?```|`[^`]+`', re.DOTALL)
 # "subscribed" — when the bot watches a repo, @mentions on threads with
 # existing unread notifications may keep the subscribed reason instead
 # of updating to mention (GitHub API race condition / caching).
+# "assign" — the bot was assigned to an issue; triggers /implement mission.
 _ACTIONABLE_REASONS = {
     "mention", "author", "comment",
     "review_requested", "team_mention", "subscribed",
+    "assign",
 }
 
 

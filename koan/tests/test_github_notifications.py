@@ -276,18 +276,19 @@ class TestFetchUnreadNotifications:
             {"reason": "review_requested", "repository": {"full_name": "o/r"}},
             {"reason": "subscribed", "repository": {"full_name": "o/r"}},
             {"reason": "team_mention", "repository": {"full_name": "o/r"}},
-            {"reason": "ci_activity", "repository": {"full_name": "o/r"}},
             {"reason": "assign", "repository": {"full_name": "o/r"}},
+            {"reason": "ci_activity", "repository": {"full_name": "o/r"}},
+            {"reason": "state_change", "repository": {"full_name": "o/r"}},
         ]
         mock_api.return_value = json.dumps(notifications)
 
         result = fetch_unread_notifications()
-        assert len(result.actionable) == 6
-        assert len(result.drain) == 2  # ci_activity, assign
+        assert len(result.actionable) == 7
+        assert len(result.drain) == 2  # ci_activity, state_change
         actionable_reasons = {n["reason"] for n in result.actionable}
         assert actionable_reasons == {
             "mention", "author", "comment",
-            "review_requested", "subscribed", "team_mention",
+            "review_requested", "subscribed", "team_mention", "assign",
         }
 
     @patch("app.github_notifications.api")

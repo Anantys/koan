@@ -73,11 +73,14 @@ def discover_workspace(koan_root: str, projects: list) -> list:
 
 
 def validate_config(koan_root: str):
-    """Validate config.yaml keys and types, warn on typos or bad values."""
+    """Validate config.yaml keys and types, warn on typos or bad values.
+
+    Also detects config drift (keys in the template but missing from user config).
+    """
     from app.utils import load_config
     from app.config_validator import validate_and_warn
     config = load_config()
-    validate_and_warn(config)
+    validate_and_warn(config, koan_root=koan_root)
 
 
 def run_sanity_checks(instance: str):

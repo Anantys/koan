@@ -455,6 +455,28 @@ class TestCreateIssues:
         create_issues(findings, "/path/proj")
         assert mock_create.call_args[1]["repo"] is None
 
+    @patch("app.github.resolve_target_repo", return_value="upstream/repo")
+    @patch("app.github.issue_create")
+    def test_notify_fn_receives_issue_url(self, mock_create, mock_repo):
+        mock_create.side_effect = [
+            "https://github.com/o/r/issues/1\n",
+            "https://github.com/o/r/issues/2\n",
+        ]
+        findings = [
+            AuditFinding(title="fix A", severity="high", location="a.py:1", problem="p1"),
+            AuditFinding(title="fix B", severity="low", location="b.py:2", problem="p2"),
+        ]
+        notify = MagicMock()
+        create_issues(findings, "/path/proj", notify_fn=notify)
+
+        # Should get 4 calls: "Creating issue" + URL for each finding
+        assert notify.call_count == 4
+        # Odd calls are "Creating issue ...", even calls are the URL
+        url_calls = [c.args[0] for c in notify.call_args_list if "github.com" in c.args[0]]
+        assert len(url_calls) == 2
+        assert "https://github.com/o/r/issues/1" in url_calls[0]
+        assert "https://github.com/o/r/issues/2" in url_calls[1]
+
     @patch("app.github.resolve_target_repo", return_value=None)
     @patch("app.github.issue_create", side_effect=RuntimeError("API error"))
     def test_continues_on_failure(self, mock_create, mock_repo):

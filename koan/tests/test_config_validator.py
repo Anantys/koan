@@ -4,7 +4,7 @@ import pytest
 
 from app.config_validator import (
     validate_config, validate_and_warn, _check_type, _check_schedule_overlap,
-    _suggest_typo,
+    _suggest_typo, detect_config_drift, _collect_keys, _find_commented_keys,
 )
 
 
@@ -330,3 +330,206 @@ class TestValidateAndWarn:
         assert messages == []
         out = capsys.readouterr().out
         assert "[config]" not in out
+
+    def test_drift_detection_with_koan_root(self, tmp_path, capsys):
+        """validate_and_warn with koan_root triggers drift detection."""
+        import yaml
+
+        template = {"max_runs_per_day": 20, "auto_update": {"enabled": True}}
+        user = {"max_runs_per_day": 20}
+
+        (tmp_path / "instance.example").mkdir()
+        (tmp_path / "instance.example" / "config.yaml").write_text(yaml.dump(template))
+
+        # Write user config file (no commented keys) so comment detection works
+        (tmp_path / "instance").mkdir()
+        (tmp_path / "instance" / "config.yaml").write_text(yaml.dump(user))
+
+        messages = validate_and_warn(user, koan_root=str(tmp_path))
+        assert len(messages) == 1
+        assert "Config drift" in messages[0]
+        assert "auto_update" in messages[0]
+
+    def test_no_drift_without_koan_root(self, capsys):
+        """Without koan_root, no drift detection is performed."""
+        messages = validate_and_warn({"max_runs_per_day": 20})
+        assert messages == []
+
+
+# ---------------------------------------------------------------------------
+# _collect_keys
+# ---------------------------------------------------------------------------
+
+class TestCollectKeys:
+    def test_flat_dict(self):
+        assert _collect_keys({"a": 1, "b": 2}) == {"a", "b"}
+
+    def test_nested_dict(self):
+        keys = _collect_keys({"a": {"b": 1, "c": 2}})
+        assert keys == {"a", "a.b", "a.c"}
+
+    def test_deeply_nested(self):
+        keys = _collect_keys({"a": {"b": {"c": 1}}})
+        assert keys == {"a", "a.b", "a.b.c"}
+
+    def test_empty_dict(self):
+        assert _collect_keys({}) == set()
+
+
+# ---------------------------------------------------------------------------
+# detect_config_drift
+# ---------------------------------------------------------------------------
+
+class TestDetectConfigDrift:
+    def _setup_configs(self, tmp_path, template_config, user_config=None,
+                        user_config_text=None):
+        """Helper to create template and optional user config files.
+
+        Args:
+            user_config: Dict to dump as YAML for instance/config.yaml.
+            user_config_text: Raw text to write as instance/config.yaml
+                (for testing commented-out keys). Takes precedence over user_config.
+        """
+        import yaml
+
+        (tmp_path / "instance.example").mkdir(exist_ok=True)
+        (tmp_path / "instance.example" / "config.yaml").write_text(
+            yaml.dump(template_config)
+        )
+
+        if user_config_text is not None:
+            (tmp_path / "instance").mkdir(exist_ok=True)
+            (tmp_path / "instance" / "config.yaml").write_text(user_config_text)
+        elif user_config is not None:
+            (tmp_path / "instance").mkdir(exist_ok=True)
+            (tmp_path / "instance" / "config.yaml").write_text(
+                yaml.dump(user_config)
+            )
+
+    def test_no_drift_identical_configs(self, tmp_path):
+        config = {"max_runs_per_day": 20, "debug": False}
+        self._setup_configs(tmp_path, config)
+        missing = detect_config_drift(str(tmp_path), user_config=config)
+        assert missing == []
+
+    def test_detects_missing_top_level_key(self, tmp_path):
+        template = {"max_runs_per_day": 20, "debug": False, "fast_reply": True}
+        user = {"max_runs_per_day": 20}
+        self._setup_configs(tmp_path, template)
+        missing = detect_config_drift(str(tmp_path), user_config=user)
+        assert "debug" in missing
+        assert "fast_reply" in missing
+
+    def test_detects_missing_nested_section(self, tmp_path):
+        template = {"max_runs_per_day": 20, "auto_update": {"enabled": True, "notify": False}}
+        user = {"max_runs_per_day": 20}
+        self._setup_configs(tmp_path, template)
+        missing = detect_config_drift(str(tmp_path), user_config=user)
+        # Parent section is missing — children should be filtered out
+        assert "auto_update" in missing
+        assert "auto_update.enabled" not in missing
+        assert "auto_update.notify" not in missing
+
+    def test_detects_missing_nested_key_when_section_exists(self, tmp_path):
+        template = {"budget": {"warn_at_percent": 70, "stop_at_percent": 85}}
+        user = {"budget": {"warn_at_percent": 70}}
+        self._setup_configs(tmp_path, template)
+        missing = detect_config_drift(str(tmp_path), user_config=user)
+        assert "budget.stop_at_percent" in missing
+        assert "budget" not in missing
+
+    def test_ignores_user_only_keys(self, tmp_path):
+        """Keys in user config but not in template are not reported."""
+        template = {"max_runs_per_day": 20}
+        user = {"max_runs_per_day": 20, "custom_setting": "hello"}
+        self._setup_configs(tmp_path, template)
+        missing = detect_config_drift(str(tmp_path), user_config=user)
+        assert missing == []
+
+    def test_missing_template_returns_empty(self, tmp_path):
+        missing = detect_config_drift(str(tmp_path), user_config={"a": 1})
+        assert missing == []
+
+    def test_loads_user_config_from_file(self, tmp_path):
+        """When user_config is None, loads from instance/config.yaml."""
+        template = {"max_runs_per_day": 20, "debug": False}
+        user = {"max_runs_per_day": 20}
+        self._setup_configs(tmp_path, template, user_config=user)
+        missing = detect_config_drift(str(tmp_path))
+        assert "debug" in missing
+
+    def test_missing_user_config_file_returns_empty(self, tmp_path):
+        template = {"a": 1}
+        self._setup_configs(tmp_path, template)
+        # No instance/config.yaml created
+        missing = detect_config_drift(str(tmp_path))
+        assert missing == []
+
+    def test_empty_template_returns_empty(self, tmp_path):
+        self._setup_configs(tmp_path, {})
+        missing = detect_config_drift(str(tmp_path), user_config={"a": 1})
+        assert missing == []
+
+    def test_results_are_sorted(self, tmp_path):
+        template = {"z_key": 1, "a_key": 2, "m_key": 3}
+        self._setup_configs(tmp_path, template)
+        missing = detect_config_drift(str(tmp_path), user_config={})
+        assert missing == ["a_key", "m_key", "z_key"]
+
+    def test_real_world_scenario(self, tmp_path):
+        """Simulate a user who installed months ago and missed new features."""
+        template = {
+            "max_runs_per_day": 20,
+            "interval_seconds": 300,
+            "fast_reply": False,
+            "auto_update": {"enabled": False, "check_interval": 10, "notify": True},
+            "dashboard": {"enabled": False, "port": 5001},
+        }
+        user = {
+            "max_runs_per_day": 20,
+            "interval_seconds": 300,
+        }
+        self._setup_configs(tmp_path, template)
+        missing = detect_config_drift(str(tmp_path), user_config=user)
+        assert "fast_reply" in missing
+        assert "auto_update" in missing
+        assert "dashboard" in missing
+        # Children of missing parents should be filtered
+        assert "auto_update.enabled" not in missing
+        assert "dashboard.port" not in missing
+
+    def test_commented_key_excluded_from_drift(self, tmp_path):
+        """A key commented out in user config should not be reported as drift."""
+        template = {"max_runs_per_day": 20, "debug": False, "fast_reply": True}
+        user_text = "max_runs_per_day: 20\n# debug: false\n"
+        self._setup_configs(tmp_path, template, user_config_text=user_text)
+        user = {"max_runs_per_day": 20}
+        missing = detect_config_drift(str(tmp_path), user_config=user)
+        assert "debug" not in missing
+        assert "fast_reply" in missing
+
+    def test_commented_nested_key_excluded(self, tmp_path):
+        """A nested key commented out should not be reported."""
+        template = {"budget": {"warn_at_percent": 70, "stop_at_percent": 85}}
+        user_text = "budget:\n  warn_at_percent: 70\n  # stop_at_percent: 85\n"
+        self._setup_configs(tmp_path, template, user_config_text=user_text)
+        user = {"budget": {"warn_at_percent": 70}}
+        missing = detect_config_drift(str(tmp_path), user_config=user)
+        assert missing == []
+
+    def test_commented_section_excludes_children(self, tmp_path):
+        """A whole section commented out should not report the section or children."""
+        template = {"auto_update": {"enabled": True, "notify": False}}
+        user_text = "# auto_update:\n#   enabled: true\n#   notify: false\n"
+        self._setup_configs(tmp_path, template, user_config_text=user_text)
+        user = {}
+        missing = detect_config_drift(str(tmp_path), user_config=user)
+        assert missing == []
+
+    def test_no_user_config_file_skips_comment_check(self, tmp_path):
+        """When user_config is passed but no file exists, comment check is skipped gracefully."""
+        template = {"debug": False}
+        self._setup_configs(tmp_path, template)
+        # No instance/config.yaml — pass user_config directly
+        missing = detect_config_drift(str(tmp_path), user_config={})
+        assert "debug" in missing

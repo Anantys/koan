@@ -791,6 +791,30 @@ class TestHandleChat:
         # Must save the error message to conversation history
         assert mock_save.call_count >= 2  # user msg + error msg
 
+    @patch("app.awake.save_conversation_message")
+    @patch("app.awake.load_recent_history", return_value=[])
+    @patch("app.awake.format_conversation_history", return_value="")
+    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.awake.get_chat_tools", return_value="")
+    @patch("app.awake.send_telegram")
+    @patch("app.awake.subprocess.run")
+    def test_empty_response_sends_fallback(self, mock_run, mock_send, mock_tools,
+                                           mock_tools_desc, mock_fmt, mock_hist,
+                                           mock_save, tmp_path):
+        """Empty Claude response (exit 0, blank stdout) must still reply to the user."""
+        mock_run.return_value = MagicMock(stdout="", returncode=0, stderr="")
+        with patch("app.awake.INSTANCE_DIR", tmp_path), \
+             patch("app.awake.KOAN_ROOT", tmp_path), \
+             patch("app.awake.PROJECT_PATH", ""), \
+             patch("app.awake.CONVERSATION_HISTORY_FILE", tmp_path / "history.jsonl"), \
+             patch("app.awake.SOUL", ""), \
+             patch("app.awake.SUMMARY", ""):
+            handle_chat("hello")
+        # User must receive a reply — not silence
+        mock_send.assert_called_once()
+        # Must persist the fallback to conversation history
+        assert mock_save.call_count >= 2  # user msg + fallback msg
+
 
 # ---------------------------------------------------------------------------
 # flush_outbox

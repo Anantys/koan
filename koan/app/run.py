@@ -50,6 +50,7 @@ from app.signals import (
     CYCLE_FILE,
     PAUSE_FILE,
     PROJECT_FILE,
+    RESTART_FILE,
     SHUTDOWN_FILE,
     ABORT_FILE,
     STATUS_FILE,
@@ -483,6 +484,60 @@ def _notify_mission_end(
 
 
 # ---------------------------------------------------------------------------
+# Startup delay (#1039)
+# ---------------------------------------------------------------------------
+
+DEFAULT_STARTUP_DELAY = 30  # seconds
+
+
+def _startup_delay(koan_root: str) -> None:
+    """Wait before the first iteration so /pause can be processed.
+
+    When ``make start`` launches koan, the first mission can be picked up
+    before the Telegram bridge has time to process a /pause command.  This
+    interruptible delay (default 30 s, configurable via ``startup_delay``
+    in config.yaml) closes the race window.
+
+    The delay is skipped when:
+    - The agent is already paused (.koan-pause exists).
+    - ``startup_delay`` is set to ``0``.
+
+    The delay is interrupted early if any lifecycle signal appears
+    (.koan-pause, .koan-stop, .koan-shutdown, .koan-restart).
+    """
+    from app.utils import load_config
+
+    delay = load_config().get("startup_delay", DEFAULT_STARTUP_DELAY)
+    if delay <= 0:
+        return
+
+    # Already paused — skip directly into the main loop's pause handler
+    if Path(koan_root, PAUSE_FILE).exists():
+        log("koan", "Already paused at startup — skipping startup delay.")
+        return
+
+    log(
+        "koan",
+        f"Startup delay: waiting {delay}s before first mission "
+        f"(send /pause now if needed).",
+    )
+
+    tick = 2  # check signals every 2 s
+    elapsed = 0
+    while elapsed < delay:
+        time.sleep(min(tick, delay - elapsed))
+        elapsed += tick
+
+        # Any lifecycle signal → break out
+        for sig in (PAUSE_FILE, STOP_FILE, SHUTDOWN_FILE, RESTART_FILE):
+            if Path(koan_root, sig).exists():
+                log("koan", f"Signal detected during startup delay ({sig}), proceeding.")
+                return
+
+    log("koan", "Startup delay complete — entering main loop.")
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -664,6 +719,12 @@ def main_loop():
         max_runs, interval, branch_prefix = run_startup(koan_root, instance, projects)
 
         git_sync_interval = int(os.environ.get("KOAN_GIT_SYNC_INTERVAL", "5"))
+
+        # --- Startup delay (#1039) ---
+        # Give the user a window to send /pause before the first mission runs.
+        # Without this, a mission can be picked up immediately after startup,
+        # racing with the Telegram bridge processing of /pause.
+        _startup_delay(koan_root)
 
         while True:
             # --- Stop check ---

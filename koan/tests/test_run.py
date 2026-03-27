@@ -18,6 +18,18 @@ pytestmark = pytest.mark.slow
 # Fixtures
 # ---------------------------------------------------------------------------
 
+@pytest.fixture(autouse=True)
+def _skip_startup_delay():
+    """Disable _startup_delay for all tests in this module.
+
+    The startup delay sleeps for 30 s by default, which causes timeouts
+    in tests that invoke main_loop().  Tests for the delay itself live
+    in test_startup_delay.py.
+    """
+    with patch("app.run._startup_delay"):
+        yield
+
+
 @pytest.fixture
 def koan_root(tmp_path):
     """Create a minimal koan root with instance directory."""
