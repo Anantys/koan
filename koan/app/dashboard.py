@@ -1264,6 +1264,152 @@ def api_status():
 
 
 # ---------------------------------------------------------------------------
+# Agent introspection — memory, skills, soul, config
+# ---------------------------------------------------------------------------
+
+# Simple 30-second TTL cache for skills registry (file I/O per SKILL.md is
+# non-trivial when many custom skills are installed).
+_agent_skills_cache: dict = {}
+_AGENT_SKILLS_CACHE_TTL = 30  # seconds
+
+_SENSITIVE_KEY_RE = re.compile(
+    r'(?m)^(\s*(?:token|password|api_key|secret|private_key)\s*:\s*)\S+',
+    re.IGNORECASE,
+)
+
+
+def _mask_sensitive(yaml_text: str) -> str:
+    """Replace sensitive YAML values with <redacted>."""
+    return _SENSITIVE_KEY_RE.sub(r'\1<redacted>', yaml_text)
+
+
+def _read_capped(path: Path, cap: int = 10_000) -> dict:
+    """Read a file, capping at `cap` chars and flagging truncation."""
+    if not path.exists():
+        return {"content": None, "path": str(path.relative_to(KOAN_ROOT)), "truncated": False}
+    text = path.read_text(errors="replace")
+    truncated = len(text) > cap
+    return {
+        "content": text[:cap],
+        "path": str(path.relative_to(KOAN_ROOT)),
+        "truncated": truncated,
+        "total_chars": len(text) if truncated else None,
+    }
+
+
+@app.route("/agent")
+def agent_page():
+    """Agent introspection page — memory, skills, soul, config."""
+    return render_template("agent.html")
+
+
+@app.route("/api/agent/soul")
+def api_agent_soul():
+    """Return soul.md content."""
+    soul_path = INSTANCE_DIR / "soul.md"
+    data = _read_capped(soul_path)
+    return jsonify(data)
+
+
+@app.route("/api/agent/memory")
+def api_agent_memory():
+    """Return a structured tree of memory files."""
+    memory_dir = INSTANCE_DIR / "memory"
+
+    if not memory_dir.exists():
+        return jsonify({"summary": None, "global": [], "projects": {}})
+
+    summary = _read_capped(memory_dir / "summary.md")
+
+    # Global context files under memory/global/
+    global_files = []
+    global_dir = memory_dir / "global"
+    if global_dir.is_dir():
+        for f in sorted(global_dir.iterdir()):
+            if f.is_file() and f.suffix in (".md", ".txt"):
+                global_files.append({**_read_capped(f), "name": f.name})
+
+    # Per-project files under memory/projects/{name}/
+    projects: dict = {}
+    projects_dir = memory_dir / "projects"
+    if projects_dir.is_dir():
+        for proj_dir in sorted(projects_dir.iterdir()):
+            if not proj_dir.is_dir():
+                continue
+            files = []
+            for f in sorted(proj_dir.iterdir()):
+                if f.is_file() and f.suffix in (".md", ".txt"):
+                    files.append({**_read_capped(f), "name": f.name})
+            if files:
+                projects[proj_dir.name] = files
+
+    return jsonify({"summary": summary, "global": global_files, "projects": projects})
+
+
+@app.route("/api/agent/skills")
+def api_agent_skills():
+    """Return skill registry metadata."""
+    from app.skills import build_registry
+
+    now = time.time()
+    if "ts" in _agent_skills_cache and now - _agent_skills_cache["ts"] < _AGENT_SKILLS_CACHE_TTL:
+        return jsonify(_agent_skills_cache["data"])
+
+    extra_dirs = []
+    instance_skills = INSTANCE_DIR / "skills"
+    if instance_skills.is_dir():
+        extra_dirs.append(instance_skills)
+
+    registry = build_registry(extra_dirs)
+
+    skills_list = []
+    for skill in registry.list_all():
+        commands = []
+        for cmd in skill.commands:
+            commands.append({
+                "name": cmd.name,
+                "aliases": list(cmd.aliases) if cmd.aliases else [],
+                "description": cmd.description or "",
+            })
+        skills_list.append({
+            "name": skill.name,
+            "scope": skill.scope,
+            "group": skill.group,
+            "description": skill.description or "",
+            "commands": commands,
+            "audience": skill.audience,
+            "worker": skill.worker,
+            "github_enabled": skill.github_enabled,
+        })
+
+    data = {
+        "scopes": registry.scopes(),
+        "groups": registry.groups(),
+        "skills": skills_list,
+    }
+    _agent_skills_cache["ts"] = now
+    _agent_skills_cache["data"] = data
+    return jsonify(data)
+
+
+@app.route("/api/agent/config")
+def api_agent_config():
+    """Return config.yaml and projects.yaml contents (sensitive values masked)."""
+    config_path = KOAN_ROOT / "instance" / "config.yaml"
+    projects_path = KOAN_ROOT / "projects.yaml"
+
+    def read_yaml(path: Path):
+        if not path.exists():
+            return None
+        return _mask_sensitive(path.read_text(errors="replace"))
+
+    return jsonify({
+        "config_yaml": read_yaml(config_path),
+        "projects_yaml": read_yaml(projects_path),
+    })
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 

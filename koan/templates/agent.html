@@ -1,0 +1,290 @@
+{% extends "base.html" %}
+{% block title %}Kōan — Agent{% endblock %}
+{% block content %}
+<h1>Agent</h1>
+<p style="color: var(--text-muted); margin-bottom: 1.5rem;">Read-only introspection of the agent's internal state.</p>
+
+<!-- Soul -->
+<div class="card" id="section-soul">
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:0.75rem;">
+        <h2 style="margin:0;">Soul</h2>
+        <button class="btn-small" id="soul-reload">Reload</button>
+    </div>
+    <div id="soul-content" style="color: var(--text-muted);">Loading…</div>
+</div>
+
+<!-- Memory -->
+<div class="card" id="section-memory">
+    <h2 style="margin-bottom:0.75rem;">Memory</h2>
+    <div id="memory-content" style="color: var(--text-muted);">Loading…</div>
+</div>
+
+<!-- Skills -->
+<div class="card" id="section-skills">
+    <div style="display:flex; align-items:center; gap:0.75rem; flex-wrap:wrap; margin-bottom:0.75rem;">
+        <h2 style="margin:0;">Skills</h2>
+        <select id="skills-group-filter" style="font-size:0.85rem; padding:0.2rem 0.4rem;">
+            <option value="">All groups</option>
+        </select>
+        <input type="search" id="skills-search" placeholder="Search name / description…"
+               style="font-size:0.85rem; padding:0.2rem 0.5rem; flex:1; min-width:140px;">
+    </div>
+    <div id="skills-content" style="color: var(--text-muted);">Loading…</div>
+</div>
+
+<!-- Config -->
+<div class="card" id="section-config">
+    <h2 style="margin-bottom:0.75rem;">Config</h2>
+    <div id="config-content" style="color: var(--text-muted);">Loading…</div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+    /* ------------------------------------------------------------------ */
+    /* Soul                                                                  */
+    /* ------------------------------------------------------------------ */
+    function loadSoul() {
+        document.getElementById('soul-content').textContent = 'Loading…';
+        fetch('/api/agent/soul')
+            .then(r => r.json())
+            .then(data => {
+                const el = document.getElementById('soul-content');
+                if (data.content === null) {
+                    el.innerHTML = '<span style="color:var(--text-muted)">No soul.md found. Copy from <code>instance.example/soul.md</code>.</span>';
+                    return;
+                }
+                const warn = data.truncated
+                    ? `<div class="badge badge-orange" style="margin-bottom:0.5rem;">Showing first 10,000 of ${data.total_chars.toLocaleString()} characters</div>`
+                    : '';
+                el.innerHTML = warn + '<pre style="white-space:pre-wrap;margin:0;">' + escHtml(data.content) + '</pre>';
+            })
+            .catch(() => { document.getElementById('soul-content').textContent = 'Error loading soul.'; });
+    }
+
+    document.getElementById('soul-reload').addEventListener('click', loadSoul);
+    loadSoul();
+
+    /* ------------------------------------------------------------------ */
+    /* Memory                                                               */
+    /* ------------------------------------------------------------------ */
+    function loadMemory() {
+        const el = document.getElementById('memory-content');
+        el.textContent = 'Loading…';
+        fetch('/api/agent/memory')
+            .then(r => r.json())
+            .then(data => {
+                if (!data.summary && data.global.length === 0 && Object.keys(data.projects).length === 0) {
+                    el.innerHTML = '<span style="color:var(--text-muted)">No memory files yet.</span>';
+                    return;
+                }
+                el.innerHTML = '';
+
+                // Summary
+                if (data.summary) {
+                    el.appendChild(buildFileAccordion('Summary (memory/summary.md)', data.summary));
+                }
+
+                // Global files
+                if (data.global.length > 0) {
+                    const section = document.createElement('div');
+                    section.style.marginTop = '0.75rem';
+                    const header = document.createElement('div');
+                    header.className = 'journal-project';
+                    header.textContent = 'Global Files';
+                    section.appendChild(header);
+                    data.global.forEach(f => section.appendChild(buildFileAccordion(f.name, f)));
+                    el.appendChild(section);
+                }
+
+                // Per-project files
+                const projNames = Object.keys(data.projects);
+                if (projNames.length > 0) {
+                    const section = document.createElement('div');
+                    section.style.marginTop = '0.75rem';
+                    projNames.forEach(proj => {
+                        const projHeader = document.createElement('div');
+                        projHeader.className = 'journal-date';
+                        projHeader.textContent = proj;
+                        section.appendChild(projHeader);
+                        data.projects[proj].forEach(f => section.appendChild(buildFileAccordion(f.name, f)));
+                    });
+                    el.appendChild(section);
+                }
+            })
+            .catch(() => { el.textContent = 'Error loading memory.'; });
+    }
+
+    function buildFileAccordion(label, fileData) {
+        const wrapper = document.createElement('details');
+        wrapper.style.marginBottom = '0.4rem';
+
+        const summary = document.createElement('summary');
+        summary.style.cursor = 'pointer';
+        summary.style.fontWeight = '500';
+        summary.textContent = label;
+        if (fileData.truncated) {
+            const badge = document.createElement('span');
+            badge.className = 'badge badge-orange';
+            badge.style.marginLeft = '0.5rem';
+            badge.textContent = `truncated (${fileData.total_chars.toLocaleString()} chars)`;
+            summary.appendChild(badge);
+        }
+        wrapper.appendChild(summary);
+
+        const pre = document.createElement('pre');
+        pre.style.cssText = 'white-space:pre-wrap;margin:0.5rem 0 0 1rem;font-size:0.82rem;';
+        pre.textContent = fileData.content || '(empty)';
+        wrapper.appendChild(pre);
+
+        return wrapper;
+    }
+
+    loadMemory();
+
+    /* ------------------------------------------------------------------ */
+    /* Skills                                                               */
+    /* ------------------------------------------------------------------ */
+    let _allSkills = [];
+
+    function loadSkills() {
+        const el = document.getElementById('skills-content');
+        el.textContent = 'Loading…';
+        fetch('/api/agent/skills')
+            .then(r => r.json())
+            .then(data => {
+                _allSkills = data.skills;
+
+                // Populate group filter
+                const gf = document.getElementById('skills-group-filter');
+                data.groups.forEach(g => {
+                    const opt = document.createElement('option');
+                    opt.value = g;
+                    opt.textContent = g;
+                    gf.appendChild(opt);
+                });
+
+                renderSkillsTable(_allSkills);
+            })
+            .catch(() => { el.textContent = 'Error loading skills.'; });
+    }
+
+    function renderSkillsTable(skills) {
+        const el = document.getElementById('skills-content');
+        if (skills.length === 0) {
+            el.innerHTML = '<span style="color:var(--text-muted)">No skills match.</span>';
+            return;
+        }
+        const wrapper = document.createElement('div');
+        wrapper.style.cssText = 'max-height:520px;overflow-y:auto;';
+
+        const table = document.createElement('table');
+        table.style.cssText = 'width:100%;border-collapse:collapse;font-size:0.83rem;';
+        table.innerHTML = `<thead><tr>
+            <th style="text-align:left;padding:0.3rem 0.5rem;border-bottom:1px solid var(--border)">Name</th>
+            <th style="text-align:left;padding:0.3rem 0.5rem;border-bottom:1px solid var(--border)">Scope</th>
+            <th style="text-align:left;padding:0.3rem 0.5rem;border-bottom:1px solid var(--border)">Group</th>
+            <th style="text-align:left;padding:0.3rem 0.5rem;border-bottom:1px solid var(--border)">Description</th>
+            <th style="text-align:left;padding:0.3rem 0.5rem;border-bottom:1px solid var(--border)">Commands</th>
+            <th style="text-align:left;padding:0.3rem 0.5rem;border-bottom:1px solid var(--border)">Audience</th>
+            <th style="text-align:center;padding:0.3rem 0.5rem;border-bottom:1px solid var(--border)">Worker</th>
+            <th style="text-align:center;padding:0.3rem 0.5rem;border-bottom:1px solid var(--border)">GitHub</th>
+        </tr></thead>`;
+
+        const tbody = document.createElement('tbody');
+        skills.forEach((s, i) => {
+            const tr = document.createElement('tr');
+            tr.style.background = i % 2 === 0 ? '' : 'var(--bg-subtle, rgba(0,0,0,0.03))';
+            const cmds = s.commands.map(c => {
+                const aliases = c.aliases && c.aliases.length ? ` (${c.aliases.join(', ')})` : '';
+                return `/${c.name}${aliases}`;
+            }).join('<br>');
+            tr.innerHTML = `
+                <td style="padding:0.3rem 0.5rem;font-weight:500;">${escHtml(s.name)}</td>
+                <td style="padding:0.3rem 0.5rem;"><span class="badge badge-blue">${escHtml(s.scope)}</span></td>
+                <td style="padding:0.3rem 0.5rem;">${escHtml(s.group || '')}</td>
+                <td style="padding:0.3rem 0.5rem;color:var(--text-muted);">${escHtml(s.description)}</td>
+                <td style="padding:0.3rem 0.5rem;font-family:monospace;font-size:0.78rem;">${cmds}</td>
+                <td style="padding:0.3rem 0.5rem;">${escHtml(s.audience || '')}</td>
+                <td style="padding:0.3rem 0.5rem;text-align:center;">${s.worker ? '✓' : ''}</td>
+                <td style="padding:0.3rem 0.5rem;text-align:center;">${s.github_enabled ? '✓' : ''}</td>
+            `;
+            tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+        wrapper.appendChild(table);
+        el.innerHTML = `<div style="margin-bottom:0.4rem;color:var(--text-muted);font-size:0.82rem;">${skills.length} skill(s)</div>`;
+        el.appendChild(wrapper);
+    }
+
+    function filterSkills() {
+        const group = document.getElementById('skills-group-filter').value;
+        const q = document.getElementById('skills-search').value.toLowerCase();
+        const filtered = _allSkills.filter(s => {
+            if (group && s.group !== group) return false;
+            if (q && !s.name.toLowerCase().includes(q) && !(s.description || '').toLowerCase().includes(q)) return false;
+            return true;
+        });
+        renderSkillsTable(filtered);
+    }
+
+    document.getElementById('skills-group-filter').addEventListener('change', filterSkills);
+    document.getElementById('skills-search').addEventListener('input', filterSkills);
+    loadSkills();
+
+    /* ------------------------------------------------------------------ */
+    /* Config                                                               */
+    /* ------------------------------------------------------------------ */
+    function loadConfig() {
+        const el = document.getElementById('config-content');
+        el.textContent = 'Loading…';
+        fetch('/api/agent/config')
+            .then(r => r.json())
+            .then(data => {
+                el.innerHTML = '';
+
+                function configBlock(label, content) {
+                    const div = document.createElement('div');
+                    div.style.marginBottom = '1rem';
+                    const h = document.createElement('div');
+                    h.style.cssText = 'font-weight:600;margin-bottom:0.3rem;';
+                    h.textContent = label;
+                    div.appendChild(h);
+                    if (content === null) {
+                        const note = document.createElement('span');
+                        note.style.color = 'var(--text-muted)';
+                        note.textContent = label.includes('projects') ?
+                            'projects.yaml not found; project config comes from KOAN_PROJECTS env var.' :
+                            `${label} not found.`;
+                        div.appendChild(note);
+                    } else {
+                        const pre = document.createElement('pre');
+                        pre.style.cssText = 'white-space:pre-wrap;font-size:0.82rem;margin:0;';
+                        pre.textContent = content;
+                        div.appendChild(pre);
+                    }
+                    return div;
+                }
+
+                el.appendChild(configBlock('config.yaml', data.config_yaml));
+                el.appendChild(configBlock('projects.yaml', data.projects_yaml));
+            })
+            .catch(() => { el.textContent = 'Error loading config.'; });
+    }
+
+    loadConfig();
+
+    /* ------------------------------------------------------------------ */
+    /* Shared utilities                                                     */
+    /* ------------------------------------------------------------------ */
+    function escHtml(str) {
+        return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+    }
+})();
+</script>
+{% endblock %}
