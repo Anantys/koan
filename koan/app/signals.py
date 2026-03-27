@@ -30,6 +30,7 @@ RUN_HEARTBEAT_FILE = ".koan-run-heartbeat"
 # -- Mode flags ----------------------------------------------------------------
 
 FOCUS_FILE = ".koan-focus"
+PASSIVE_FILE = ".koan-passive"
 VERBOSE_FILE = ".koan-verbose"
 
 # -- Project tracking ----------------------------------------------------------
