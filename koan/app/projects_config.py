@@ -362,6 +362,35 @@ def get_project_github_natural_language(config: dict, project_name: str) -> Opti
     return bool(value)
 
 
+def get_project_review_ignore(config: dict, project_name: str) -> dict:
+    """Get review ignore patterns for a project from projects.yaml.
+
+    Controls which files are excluded from PR review diffs. Patterns are
+    applied before building the Claude prompt, reducing token spend on
+    generated code, lock files, and vendor directories.
+
+    Returns a dict with keys: glob (list of glob patterns), regex (list of
+    regex patterns). Both keys are always present; values default to [].
+
+    Project-level lists replace (not append to) default-level lists,
+    consistent with how other list-type config keys (tools, models) work.
+    """
+    project_cfg = get_project_config(config, project_name)
+    review_ignore = project_cfg.get("review_ignore", {}) or {}
+    if not isinstance(review_ignore, dict):
+        return {"glob": [], "regex": []}
+
+    globs = review_ignore.get("glob", [])
+    if not isinstance(globs, list):
+        globs = []
+
+    regexes = review_ignore.get("regex", [])
+    if not isinstance(regexes, list):
+        regexes = []
+
+    return {"glob": [str(p) for p in globs], "regex": [str(p) for p in regexes]}
+
+
 def get_project_submit_to_repository(config: dict, project_name: str) -> dict:
     """Get submit_to_repository config for a project from projects.yaml.
 
