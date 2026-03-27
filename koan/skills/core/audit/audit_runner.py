@@ -259,7 +259,10 @@ def create_issues(
                 repo=target_repo,
                 cwd=project_path,
             )
-            issue_urls.append(url.strip())
+            url = url.strip()
+            issue_urls.append(url)
+            if notify_fn and url:
+                notify_fn(f"  \U0001f517 {url}")
         except Exception as e:
             print(
                 f"[audit] Failed to create issue '{title}': {e}",
