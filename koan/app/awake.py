@@ -15,7 +15,6 @@ Module layout:
 - awake.py (this file) — main loop, chat, outbox, message classification
 """
 
-import fcntl
 import os
 import re
 import subprocess
@@ -48,11 +47,10 @@ from app.command_handlers import (
     handle_mission,
     set_callbacks,
 )
-from app.format_outbox import format_message, load_soul, load_human_prefs, load_memory_context, fallback_format
 from app.health_check import write_heartbeat
 from app.language_preference import get_language_instruction
-from app.notify import TypingIndicator, reset_flood_state, send_telegram, NotificationPriority, NOTIFICATION_SUPPRESSED
-from app.outbox_scanner import scan_and_log
+from app.notify import TypingIndicator, reset_flood_state, send_telegram
+from app.outbox_manager import OutboxManager, parse_outbox_priority
 from app.shutdown_manager import is_shutdown_requested, clear_shutdown
 from app.config import (
     get_chat_tools,
@@ -71,19 +69,16 @@ from app.utils import (
 )
 
 
-def _get_last_message_id() -> int:
-    """Get the message_id from the last send_telegram() call.
+# ---------------------------------------------------------------------------
+# Outbox manager — singleton instance, created at module load
+# ---------------------------------------------------------------------------
 
-    Returns 0 if the provider doesn't support message ID tracking
-    or if no message was sent.
-    """
-    try:
-        from app.messaging import get_messaging_provider
-        provider = get_messaging_provider()
-        ids = provider.get_last_message_ids()
-        return ids[-1] if ids else 0
-    except (SystemExit, Exception):
-        return 0
+_outbox_mgr = OutboxManager(OUTBOX_FILE, INSTANCE_DIR, CONVERSATION_HISTORY_FILE)
+
+
+def _get_last_message_id() -> int:
+    """Get the message_id from the last send_telegram() call."""
+    return OutboxManager._get_last_message_id()
 
 
 def check_config():
@@ -408,253 +403,57 @@ def handle_chat(text: str):
 
 
 # ---------------------------------------------------------------------------
-# Outbox
+# Outbox — delegated to OutboxManager (backward-compatible wrappers)
+#
+# These wrappers create a fresh OutboxManager from the current module-level
+# values (OUTBOX_FILE, INSTANCE_DIR, etc.) so that test patches on those
+# names propagate correctly.  In production, the main loop uses
+# _outbox_mgr.flush_async() which goes through the singleton directly.
 # ---------------------------------------------------------------------------
+
+
+def _make_outbox_mgr() -> OutboxManager:
+    """Create an OutboxManager from the current (possibly patched) module values."""
+    return OutboxManager(OUTBOX_FILE, INSTANCE_DIR, CONVERSATION_HISTORY_FILE)
+
 
 def _staging_path():
     """Return path of the outbox staging file (crash-recovery backup)."""
-    return OUTBOX_FILE.parent / "outbox-sending.md"
+    return _make_outbox_mgr().staging_path
 
 
-# Pre-compiled regex for outbox priority header parsing
-_OUTBOX_PRIORITY_RE = re.compile(r'^\[priority:(urgent|action|warning|info)\]\n?', re.MULTILINE)
-
-_OUTBOX_PRIORITY_MAP = {
-    "urgent": NotificationPriority.URGENT,
-    "action": NotificationPriority.ACTION,
-    "warning": NotificationPriority.WARNING,
-    "info": NotificationPriority.INFO,
-}
-
-
-def _parse_outbox_priority(content: str) -> tuple:
-    """Parse the priority header from outbox content and strip it.
-
-    Scans the content for any [priority:name] headers (from append_to_outbox),
-    returns the highest-priority value found (most urgent wins) and the content
-    with all priority headers removed for clean formatting.
-
-    Legacy outbox entries (no header) default to ACTION.
-
-    Args:
-        content: Raw outbox content, possibly containing [priority:name] headers
-
-    Returns:
-        Tuple of (NotificationPriority, cleaned_content_str)
-    """
-    matches = _OUTBOX_PRIORITY_RE.findall(content)
-    if not matches:
-        return NotificationPriority.ACTION, content
-
-    # Find the highest-priority level across all blocks.
-    # Initialize with the first match (not ACTION) so info/warning are preserved.
-    max_priority = _OUTBOX_PRIORITY_MAP.get(matches[0], NotificationPriority.ACTION)
-    for name in matches[1:]:
-        p = _OUTBOX_PRIORITY_MAP.get(name, NotificationPriority.ACTION)
-        if p.value > max_priority.value:
-            max_priority = p
-
-    # Strip all priority headers from the content
-    cleaned = _OUTBOX_PRIORITY_RE.sub("", content).strip()
-    return max_priority, cleaned
+# Keep _parse_outbox_priority importable from awake for backward compat
+_parse_outbox_priority = parse_outbox_priority
 
 
 def _recover_staged_outbox():
-    """Recover content from a staging file left by a previous crash.
-
-    If outbox-sending.md exists, a previous flush_outbox() was interrupted
-    between truncation and send completion. Re-queue the content so it gets
-    retried on the next cycle.
-    """
-    staging = _staging_path()
-    if not staging.exists():
-        return
-    try:
-        content = staging.read_text().strip()
-        if content:
-            log("outbox", "Recovering staged outbox content from interrupted flush")
-            _requeue_outbox(content)
-        staging.unlink(missing_ok=True)
-    except Exception as e:
-        log("error", f"Staged outbox recovery failed: {e}")
+    """Recover content from a staging file left by a previous crash."""
+    _make_outbox_mgr().recover_staged()
 
 
 def flush_outbox():
-    """Relay messages from the run loop outbox. Uses file locking for concurrency.
-
-    ALL outbox messages are formatted via Claude before sending to Telegram.
-    This ensures consistent personality, French language, and conversational tone
-    regardless of the message source (Claude session, run.py, retrospective).
-
-    The lock is held only during read+clear (microseconds), not during the slow
-    Claude formatting call. This prevents blocking writers (run.py, retrospective)
-    and eliminates the race where content appended during formatting was lost on
-    truncate.
-
-    Crash safety: content is written to a staging file (outbox-sending.md) before
-    truncation. If the process crashes between truncation and send, the next cycle
-    recovers the content from the staging file.
-    """
-    # Recover from any previous interrupted flush
-    _recover_staged_outbox()
-
-    if not OUTBOX_FILE.exists():
-        return
-
-    # Phase 1: Read, stage, and clear under lock (fast — microseconds)
-    content = None
-    staging = _staging_path()
-    try:
-        with open(OUTBOX_FILE, "r+") as f:
-            fcntl.flock(f, fcntl.LOCK_EX)
-            try:
-                content = f.read().strip()
-                if content:
-                    # Write staging file before truncation for crash recovery
-                    staging.write_text(content)
-                    f.seek(0)
-                    f.truncate()
-                    f.flush()
-            finally:
-                fcntl.flock(f, fcntl.LOCK_UN)
-    except Exception as e:
-        log("error", f"Outbox read error: {e}")
-        return
-
-    if not content:
-        return
-
-    # Phase 2: Scan, format, and send (slow — outside lock)
-    scan_result = scan_and_log(content)
-    if scan_result.blocked:
-        quarantine = INSTANCE_DIR / "outbox-quarantine.md"
-        try:
-            with open(quarantine, "a") as qf:
-                from datetime import datetime as _dt
-                qf.write(f"\n---\n[{_dt.now().isoformat()}] BLOCKED: {scan_result.reason}\n")
-                qf.write(content[:500])
-                qf.write("\n")
-        except OSError as e:
-            log("error", f"Quarantine write error: {e}")
-        log("outbox", f"Outbox BLOCKED by scanner: {scan_result.reason}")
-        staging.unlink(missing_ok=True)
-        return
-
-    # Parse optional [priority:name] headers and strip them from content for formatting
-    priority, clean_content = _parse_outbox_priority(content)
-
-    formatted = _format_outbox_message(clean_content)
-    formatted = _expand_outbox_github_refs(formatted, clean_content)
-    result = send_telegram(formatted, priority=priority)
-    if result is NOTIFICATION_SUPPRESSED:
-        preview = formatted[:150].replace("\n", " ")
-        if len(formatted) > 150:
-            preview += "..."
-        log("outbox", f"Outbox suppressed (priority below threshold): {preview}")
-        staging.unlink(missing_ok=True)
-    elif result:
-        msg_id = _get_last_message_id()
-        save_conversation_message(
-            CONVERSATION_HISTORY_FILE, "assistant", formatted,
-            message_id=msg_id, message_type="notification",
-        )
-        preview = formatted[:150].replace("\n", " ")
-        if len(formatted) > 150:
-            preview += "..."
-        log("outbox", f"Outbox flushed: {preview}")
-        staging.unlink(missing_ok=True)
-    else:
-        log("error", "Outbox send failed — re-queuing for retry")
-        _requeue_outbox(content)
-        staging.unlink(missing_ok=True)
+    """Relay messages from the run loop outbox."""
+    _make_outbox_mgr().flush()
 
 
 def _requeue_outbox(content: str):
-    """Re-append content to outbox.md after a failed send attempt.
-
-    If re-appending to outbox.md itself fails, writes the content to
-    outbox-failed.md so it is never silently lost.
-    """
-    try:
-        with open(OUTBOX_FILE, "a", encoding="utf-8") as f:
-            fcntl.flock(f, fcntl.LOCK_EX)
-            try:
-                f.write(content + "\n")
-                f.flush()
-            finally:
-                fcntl.flock(f, fcntl.LOCK_UN)
-    except Exception as e:
-        log("error", f"Failed to re-queue outbox message: {e}")
-        _write_outbox_failed(content, e)
+    """Re-append content to outbox.md after a failed send attempt."""
+    _make_outbox_mgr().requeue(content)
 
 
 def _write_outbox_failed(content: str, original_error: Exception):
     """Last-resort persistence: write lost outbox content to outbox-failed.md."""
-    failed_file = OUTBOX_FILE.parent / "outbox-failed.md"
-    try:
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        entry = f"<!-- lost {timestamp} — {original_error} -->\n{content}\n"
-        with open(failed_file, "a", encoding="utf-8") as f:
-            fcntl.flock(f, fcntl.LOCK_EX)
-            try:
-                f.write(entry)
-                f.flush()
-            finally:
-                fcntl.flock(f, fcntl.LOCK_UN)
-        log("warn", f"Lost outbox content saved to {failed_file.name}")
-    except Exception as e2:
-        log("error", f"Failed to write outbox-failed.md: {e2} — content lost: {content[:120]}")
+    _make_outbox_mgr()._write_failed(content, original_error)
 
 
 def _expand_outbox_github_refs(formatted: str, raw_content: str) -> str:
-    """Expand bare #123 GitHub refs in an outbox message to full URLs.
-
-    Uses the raw (pre-formatted) content to detect the project context,
-    then applies expansion to the formatted output so links are clickable
-    in Telegram.
-    """
-    from app.text_utils import expand_github_refs, extract_project_from_message
-
-    project_name = extract_project_from_message(raw_content)
-    if not project_name:
-        project_name = extract_project_from_message(formatted)
-    if not project_name:
-        return formatted
-
-    try:
-        from app.projects_merged import get_github_url
-        github_url = get_github_url(project_name)
-    except Exception as e:
-        log("error", f"GitHub URL lookup failed for {project_name}: {e}")
-        return formatted
-
-    if not github_url:
-        return formatted
-
-    return expand_github_refs(formatted, github_url)
+    """Expand bare #123 GitHub refs in an outbox message to full URLs."""
+    return OutboxManager._expand_github_refs(formatted, raw_content)
 
 
 def _format_outbox_message(raw_content: str) -> str:
-    """Format outbox content via Claude with full personality context.
-
-    Args:
-        raw_content: Raw message text from outbox.md
-
-    Returns:
-        Formatted message ready for Telegram
-    """
-    try:
-        soul = load_soul(INSTANCE_DIR)
-        prefs = load_human_prefs(INSTANCE_DIR)
-        memory = load_memory_context(INSTANCE_DIR)
-        return format_message(raw_content, soul, prefs, memory)
-    except (OSError, subprocess.SubprocessError, ValueError) as e:
-        log("error", f"Format error, sending fallback: {e}")
-        return fallback_format(raw_content)
-    except Exception as e:
-        # Catch-all for unexpected errors (file corruption, import issues, etc.)
-        log("error", f"Unexpected format error, sending fallback: {e}")
-        return fallback_format(raw_content)
+    """Format outbox content via Claude with full personality context."""
+    return _make_outbox_mgr()._format_message(raw_content)
 
 
 # ---------------------------------------------------------------------------
@@ -677,35 +476,13 @@ def _run_in_worker(fn, *args):
 
 
 # ---------------------------------------------------------------------------
-# Outbox flush thread — formats via Claude in background to keep polling fast
+# Outbox flush thread — delegated to OutboxManager
 # ---------------------------------------------------------------------------
-
-_outbox_thread: Optional[threading.Thread] = None
-_outbox_lock = threading.Lock()
 
 
 def _flush_outbox_async():
-    """Run flush_outbox() in a background thread if not already running.
-
-    flush_outbox() calls Claude CLI for message formatting (up to 30s).
-    Running it synchronously in the main loop blocks Telegram polling,
-    making the bridge unresponsive to commands like /list during busy
-    periods (e.g. rebase missions producing frequent outbox messages).
-    """
-    global _outbox_thread
-    with _outbox_lock:
-        if _outbox_thread is not None and _outbox_thread.is_alive():
-            return  # Previous flush still running — skip this cycle
-        _outbox_thread = threading.Thread(target=_flush_outbox_safe, daemon=True)
-        _outbox_thread.start()
-
-
-def _flush_outbox_safe():
-    """Wrapper that catches exceptions so the thread exits cleanly."""
-    try:
-        flush_outbox()
-    except Exception as e:
-        log("error", f"Background flush_outbox failed: {e}")
+    """Run flush_outbox() in a background thread if not already running."""
+    _outbox_mgr.flush_async()
 
 
 # Inject callbacks into command_handlers to break circular dependency
@@ -940,7 +717,10 @@ def main():
                 if was_restart:
                     _ensure_runner_alive()
 
-            _flush_outbox_async()
+            try:
+                _flush_outbox_async()
+            except Exception as e:
+                log("error", f"flush_outbox failed: {e}")
 
             try:
                 write_heartbeat(str(KOAN_ROOT))
