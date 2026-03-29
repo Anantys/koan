@@ -76,8 +76,8 @@ def _resolve_project_path() -> str:
         projects = get_known_projects()
         if projects:
             return projects[0][1]
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[chat] project path resolution failed: {e}", file=sys.stderr)
     return ""
 
 
@@ -339,8 +339,8 @@ def main():
                         try:
                             from app.notify import send_telegram
                             send_telegram("⚠️ Something went wrong — try again?")
-                        except Exception:
-                            pass
+                        except Exception as notify_err:
+                            print(f"[chat] notification also failed: {notify_err}", file=sys.stderr)
 
             time.sleep(INBOX_POLL_INTERVAL)
     except KeyboardInterrupt:

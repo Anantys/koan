@@ -432,9 +432,9 @@ class TestHandleChatGuard:
 
     _COMMON_PATCHES = [
         patch("app.awake.save_conversation_message"),
-        patch("app.awake.load_recent_history", return_value=[]),
-        patch("app.awake.format_conversation_history", return_value=""),
-        patch("app.awake.get_tools_description", return_value=""),
+        patch("app.conversation_history.load_recent_history", return_value=[]),
+        patch("app.conversation_history.format_conversation_history", return_value=""),
+        patch("app.config.get_tools_description", return_value=""),
         patch("app.awake.get_chat_tools", return_value=""),
         patch("app.awake.send_telegram", return_value=True),
         patch("app.awake.subprocess.run"),
@@ -452,9 +452,9 @@ class TestHandleChatGuard:
         ]
 
     @patch("app.awake.save_conversation_message")
-    @patch("app.awake.load_recent_history", return_value=[])
-    @patch("app.awake.format_conversation_history", return_value="")
-    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.conversation_history.load_recent_history", return_value=[])
+    @patch("app.conversation_history.format_conversation_history", return_value="")
+    @patch("app.config.get_tools_description", return_value="")
     @patch("app.awake.get_chat_tools", return_value="")
     @patch("app.awake.send_telegram", return_value=True)
     @patch("app.awake.subprocess.run")
@@ -480,9 +480,9 @@ class TestHandleChatGuard:
         assert guard_calls, "Expected at least one log('guard', ...) call"
 
     @patch("app.awake.save_conversation_message")
-    @patch("app.awake.load_recent_history", return_value=[])
-    @patch("app.awake.format_conversation_history", return_value="")
-    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.conversation_history.load_recent_history", return_value=[])
+    @patch("app.conversation_history.format_conversation_history", return_value="")
+    @patch("app.config.get_tools_description", return_value="")
     @patch("app.awake.get_chat_tools", return_value="")
     @patch("app.awake.send_telegram", return_value=True)
     @patch("app.awake.subprocess.run")
@@ -512,9 +512,9 @@ class TestHandleChatGuard:
         assert "API key" in content
 
     @patch("app.awake.save_conversation_message")
-    @patch("app.awake.load_recent_history", return_value=[])
-    @patch("app.awake.format_conversation_history", return_value="")
-    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.conversation_history.load_recent_history", return_value=[])
+    @patch("app.conversation_history.format_conversation_history", return_value="")
+    @patch("app.config.get_tools_description", return_value="")
     @patch("app.awake.get_chat_tools", return_value="")
     @patch("app.awake.send_telegram", return_value=True)
     @patch("app.awake.subprocess.run")
@@ -543,9 +543,9 @@ class TestHandleChatGuard:
         mock_run.assert_called()
 
     @patch("app.awake.save_conversation_message")
-    @patch("app.awake.load_recent_history", return_value=[])
-    @patch("app.awake.format_conversation_history", return_value="")
-    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.conversation_history.load_recent_history", return_value=[])
+    @patch("app.conversation_history.format_conversation_history", return_value="")
+    @patch("app.config.get_tools_description", return_value="")
     @patch("app.awake.get_chat_tools", return_value="")
     @patch("app.awake.send_telegram", return_value=True)
     @patch("app.awake.subprocess.run")
@@ -573,9 +573,9 @@ class TestHandleChatGuard:
         assert not quarantine_file.exists(), "No quarantine file when guard is disabled"
 
     @patch("app.awake.save_conversation_message")
-    @patch("app.awake.load_recent_history", return_value=[])
-    @patch("app.awake.format_conversation_history", return_value="")
-    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.conversation_history.load_recent_history", return_value=[])
+    @patch("app.conversation_history.format_conversation_history", return_value="")
+    @patch("app.config.get_tools_description", return_value="")
     @patch("app.awake.get_chat_tools", return_value="")
     @patch("app.awake.send_telegram", return_value=True)
     @patch("app.awake.subprocess.run")
