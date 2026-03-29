@@ -229,6 +229,51 @@ class TestFormatOutput:
 
 
 # ---------------------------------------------------------------------------
+# _get_branches_info (merged branch filtering)
+# ---------------------------------------------------------------------------
+
+class TestGetBranchesInfoFiltering:
+    """Branches fully merged into origin/main (0 commits ahead) are excluded."""
+
+    def test_merged_branches_excluded(self):
+        """Branches with 0 commits ahead of origin/main should not appear."""
+        from skills.core.branches.handler import _get_branches_info
+
+        call_count = {"rev-list": 0}
+
+        def fake_run_git(*args, cwd=None, timeout=None):
+            cmd = args[0] if args else ""
+            if cmd == "branch":
+                return 0, "  koan/merged-branch\n  koan/active-branch\n", ""
+            if cmd == "for-each-ref":
+                return 0, "", ""
+            if cmd == "rev-list":
+                branch = args[-1] if len(args) > 2 else ""
+                call_count["rev-list"] += 1
+                if "merged-branch" in branch:
+                    return 0, "0", ""  # merged: 0 commits ahead
+                return 0, "3", ""  # active: 3 commits ahead
+            if cmd == "log":
+                if "%cr" in args:
+                    return 0, "2 days ago", ""
+                if "%ct" in args:
+                    return 0, "1000000", ""
+            if cmd == "diff":
+                return 0, "1 file changed, 5 insertions(+)", ""
+            return 0, "", ""
+
+        with patch("app.git_utils.run_git", side_effect=fake_run_git), \
+             patch("app.config.get_branch_prefix", return_value="koan/"), \
+             patch("skills.core.branches.handler._check_conflicts", return_value=False):
+            result = _get_branches_info("/fake/path")
+
+        branch_names = [b["branch"] for b in result]
+        assert "koan/active-branch" in branch_names
+        assert "koan/merged-branch" not in branch_names
+        assert len(result) == 1
+
+
+# ---------------------------------------------------------------------------
 # handle (integration with mocks)
 # ---------------------------------------------------------------------------
 

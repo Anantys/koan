@@ -148,6 +148,10 @@ def _get_branches_info(project_path: str) -> List[Dict]:
         else:
             info["timestamp"] = 0
 
+        # Skip branches fully merged into origin/main (0 commits ahead)
+        if info["commits"] == 0:
+            continue
+
         # Diff stat (additions + deletions)
         rc, stat, _ = run_git(
             "diff", "--shortstat", f"origin/main...{branch}",
