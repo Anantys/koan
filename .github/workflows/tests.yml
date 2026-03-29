@@ -52,7 +52,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r koan/requirements.txt
-          pip install pytest pytest-split
+          pip install pytest pytest-split pytest-cov
 
       - name: Run tests (${{ matrix.group.name }})
         if: ${{ !inputs.group || matrix.group.name == inputs.group }}
@@ -64,7 +64,7 @@ jobs:
           KOAN_TELEGRAM_CHAT_ID: "123456789"
         run: |
           if [ -n "${{ matrix.group.split_group }}" ]; then
-            pytest tests/ -m "${{ matrix.group.marker }}" --splits 3 --group ${{ matrix.group.split_group }} -v
+            pytest tests/ -m "${{ matrix.group.marker }}" --splits 3 --group ${{ matrix.group.split_group }} -v --cov=app --cov-report=term
           else
-            pytest tests/ -m "${{ matrix.group.marker }}" -v
+            pytest tests/ -m "${{ matrix.group.marker }}" -v --cov=app --cov-report=term
           fi

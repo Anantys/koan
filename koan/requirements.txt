@@ -3,6 +3,7 @@ flask>=3.0
 pyyaml>=6.0
 ruamel.yaml>=0.18
 pytest-timeout>=2.1
+pytest-cov>=6.0
 
 # Optional: Slack provider (install with: pip install slack-sdk)
 # slack-sdk>=3.27

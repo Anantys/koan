@@ -14,3 +14,17 @@ markers = [
     "slow: marks tests as slow (run in dedicated CI groups)",
 ]
 timeout = 60
+
+[tool.coverage.run]
+source = ["app"]
+omit = ["*/tests/*", "*/test_*"]
+parallel = true
+
+[tool.coverage.report]
+show_missing = false
+precision = 1
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.",
+    "if TYPE_CHECKING:",
+]

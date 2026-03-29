@@ -18,7 +18,8 @@ make run            # Start main agent loop (foreground)
 make awake          # Start Telegram bridge (foreground)
 make ollama         # Start full Ollama stack (ollama serve + awake + run)
 make dashboard      # Start Flask web dashboard (port 5001)
-make test           # Run full test suite (pytest)
+make test           # Run full test suite (pytest + coverage summary)
+make coverage       # Run tests with detailed coverage report (HTML in htmlcov/)
 make say m="..."    # Send test message as if from Telegram
 make rename-project old=X new=Y [apply=1]  # Rename a project everywhere (dry-run by default)
 make clean          # Remove venv

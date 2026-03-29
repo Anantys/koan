@@ -2,7 +2,7 @@
 export
 
 .PHONY: install onboard setup start stop status restart
-.PHONY: clean say migrate test sync-instance rename-project
+.PHONY: clean say migrate test coverage sync-instance rename-project
 .PHONY: awake run errand-run errand-awake dashboard
 .PHONY: ollama logs ssh-forward
 .PHONY: install-systemctl-service uninstall-systemctl-service
@@ -50,8 +50,12 @@ say: setup
 	@cd koan && KOAN_ROOT=$(PWD) PYTHONPATH=. ../$(PYTHON) -c "from app.awake import handle_message; handle_message('$(m)')"
 
 test: setup
-	$(VENV)/bin/pip install -q pytest 2>/dev/null
-	cd koan && KOAN_ROOT=/tmp/test-koan PYTHONPATH=. ../$(PYTHON) -m pytest tests/ -v
+	$(VENV)/bin/pip install -q pytest pytest-cov 2>/dev/null
+	cd koan && KOAN_ROOT=/tmp/test-koan PYTHONPATH=. ../$(PYTHON) -m pytest tests/ -v --cov=app --cov-report=term
+
+coverage: setup
+	$(VENV)/bin/pip install -q pytest pytest-cov 2>/dev/null
+	cd koan && KOAN_ROOT=/tmp/test-koan PYTHONPATH=. ../$(PYTHON) -m pytest tests/ -v --cov=app --cov-report=term-missing --cov-report=html:htmlcov
 
 migrate: setup
 	cd koan && KOAN_ROOT=$(PWD) PYTHONPATH=. ../$(PYTHON) app/migrate_memory.py
