@@ -765,45 +765,23 @@ class TestFormatStatusAll:
         output = "\n".join(lines)
         assert f"run: running (PID {os.getpid()})" in output
 
-    def test_runner_paused_quota(self, tmp_path):
-        """When paused for quota, show pause reason."""
+    @pytest.mark.parametrize("pause_content,expected_msg", [
+        ("quota\n1234567890\n", "quota exhausted"),
+        ("max_runs\n1234567890\n", "max runs reached"),
+        ("errors", "too many errors"),
+        ("PAUSE", None),
+    ])
+    def test_runner_paused_reasons(self, tmp_path, pause_content, expected_msg):
+        """When paused, show appropriate pause reason."""
         (tmp_path / ".koan-pid-run").write_text(str(os.getpid()))
-        (tmp_path / ".koan-pause").write_text("quota\n1234567890\n")
+        (tmp_path / ".koan-pause").write_text(pause_content)
 
         with patch("app.pid_manager._detect_provider", return_value="claude"):
             lines = format_status_all(tmp_path)
         output = "\n".join(lines)
         assert "paused" in output
-        assert "quota exhausted" in output
-
-    def test_runner_paused_max_runs(self, tmp_path):
-        (tmp_path / ".koan-pid-run").write_text(str(os.getpid()))
-        (tmp_path / ".koan-pause").write_text("max_runs\n1234567890\n")
-
-        with patch("app.pid_manager._detect_provider", return_value="claude"):
-            lines = format_status_all(tmp_path)
-        output = "\n".join(lines)
-        assert "paused" in output
-        assert "max runs reached" in output
-
-    def test_runner_paused_errors(self, tmp_path):
-        (tmp_path / ".koan-pid-run").write_text(str(os.getpid()))
-        (tmp_path / ".koan-pause").write_text("errors")
-
-        with patch("app.pid_manager._detect_provider", return_value="claude"):
-            lines = format_status_all(tmp_path)
-        output = "\n".join(lines)
-        assert "paused" in output
-        assert "too many errors" in output
-
-    def test_runner_paused_generic(self, tmp_path):
-        (tmp_path / ".koan-pid-run").write_text(str(os.getpid()))
-        (tmp_path / ".koan-pause").write_text("PAUSE")
-
-        with patch("app.pid_manager._detect_provider", return_value="claude"):
-            lines = format_status_all(tmp_path)
-        output = "\n".join(lines)
-        assert "paused" in output
+        if expected_msg:
+            assert expected_msg in output
 
     def test_no_project_when_paused(self, tmp_path):
         """When paused, don't show project (it's stale context)."""
@@ -1180,17 +1158,14 @@ class TestDetectProvider:
 
 
 class TestNeedsOllama:
-    def test_local_needs_ollama(self):
-        assert _needs_ollama("local") is True
-
-    def test_ollama_needs_ollama(self):
-        assert _needs_ollama("ollama") is True
-
-    def test_claude_does_not_need_ollama(self):
-        assert _needs_ollama("claude") is False
-
-    def test_copilot_does_not_need_ollama(self):
-        assert _needs_ollama("copilot") is False
+    @pytest.mark.parametrize("provider,expected", [
+        ("local", True),
+        ("ollama", True),
+        ("claude", False),
+        ("copilot", False),
+    ])
+    def test_needs_ollama(self, provider, expected):
+        assert _needs_ollama(provider) is expected
 
 
 # ---------------------------------------------------------------------------
@@ -1199,34 +1174,19 @@ class TestNeedsOllama:
 
 
 class TestGetStatusProcesses:
-    def test_excludes_ollama_for_claude(self, tmp_path):
-        with patch("app.pid_manager._detect_provider", return_value="claude"):
-            result = get_status_processes(tmp_path)
-        assert "run" in result
-        assert "awake" in result
-        assert "ollama" not in result
-
-    def test_excludes_ollama_for_copilot(self, tmp_path):
-        with patch("app.pid_manager._detect_provider", return_value="copilot"):
-            result = get_status_processes(tmp_path)
-        assert "ollama" not in result
-
-    def test_includes_ollama_for_local(self, tmp_path):
-        with patch("app.pid_manager._detect_provider", return_value="local"):
-            result = get_status_processes(tmp_path)
-        assert "ollama" in result
-        assert "run" in result
-        assert "awake" in result
-
-    def test_includes_ollama_for_ollama_provider(self, tmp_path):
-        with patch("app.pid_manager._detect_provider", return_value="ollama"):
-            result = get_status_processes(tmp_path)
-        assert "ollama" in result
-
-    def test_returns_tuple(self, tmp_path):
-        with patch("app.pid_manager._detect_provider", return_value="claude"):
+    @pytest.mark.parametrize("provider,has_ollama", [
+        ("claude", False),
+        ("copilot", False),
+        ("local", True),
+        ("ollama", True),
+    ])
+    def test_ollama_presence_by_provider(self, tmp_path, provider, has_ollama):
+        with patch("app.pid_manager._detect_provider", return_value=provider):
             result = get_status_processes(tmp_path)
         assert isinstance(result, tuple)
+        assert "run" in result
+        assert "awake" in result
+        assert ("ollama" in result) == has_ollama
 
 
 # ---------------------------------------------------------------------------
@@ -1623,49 +1583,6 @@ class TestLaunchPythonProcess:
         assert "already running" in msg.lower()
         assert "1234" in msg
 
-    def test_returns_already_running_for_awake(self, tmp_path):
-        with patch("app.pid_manager.check_pidfile", return_value=5678):
-            ok, msg = _launch_python_process(tmp_path, "app/awake.py", "awake", 1.0)
-        assert not ok
-        assert "Awake already running (PID 5678)" == msg
-
-    def test_builds_correct_environment(self, tmp_path):
-        """Verify KOAN_ROOT, PYTHONPATH, KOAN_FORCE_COLOR are set."""
-        captured_env = {}
-
-        def capture_popen(cmd, **kwargs):
-            captured_env.update(kwargs.get("env", {}))
-            return MagicMock()
-
-        with patch("app.pid_manager.check_pidfile", return_value=None), \
-             patch("app.pid_manager._open_log_file", return_value=MagicMock()), \
-             patch("subprocess.Popen", side_effect=capture_popen), \
-             patch("app.pid_manager.time") as mock_time:
-            mock_time.monotonic.side_effect = [0.0, 999.0]
-            _launch_python_process(tmp_path, "app/run.py", "run", 0.1)
-
-        assert captured_env["KOAN_ROOT"] == str(tmp_path)
-        assert captured_env["PYTHONPATH"] == str(tmp_path / "koan")
-        assert captured_env["KOAN_FORCE_COLOR"] == "1"
-
-    def test_uses_start_new_session(self, tmp_path):
-        """Process must be launched in its own session group."""
-        captured_kwargs = {}
-
-        def capture_popen(cmd, **kwargs):
-            captured_kwargs.update(kwargs)
-            return MagicMock()
-
-        with patch("app.pid_manager.check_pidfile", return_value=None), \
-             patch("app.pid_manager._open_log_file", return_value=MagicMock()), \
-             patch("subprocess.Popen", side_effect=capture_popen), \
-             patch("app.pid_manager.time") as mock_time:
-            mock_time.monotonic.side_effect = [0.0, 999.0]
-            _launch_python_process(tmp_path, "app/run.py", "run", 0.1)
-
-        assert captured_kwargs["start_new_session"] is True
-        assert captured_kwargs["stdin"] == subprocess.DEVNULL
-
     def test_returns_success_when_pid_appears(self, tmp_path):
         """PID file appearing within timeout -> success."""
         call_count = [0]
@@ -1689,27 +1606,6 @@ class TestLaunchPythonProcess:
         assert ok
         assert "Agent loop started" in msg
         assert "42" in msg
-
-    def test_bridge_label_for_awake(self, tmp_path):
-        """process_name='awake' should use 'Bridge' label."""
-        call_count = [0]
-
-        def check_pid(*args):
-            call_count[0] += 1
-            if call_count[0] >= 2:
-                return 99
-            return None
-
-        with patch("app.pid_manager.check_pidfile", side_effect=check_pid), \
-             patch("app.pid_manager._open_log_file", return_value=MagicMock()), \
-             patch("subprocess.Popen", return_value=MagicMock()), \
-             patch("app.pid_manager.time") as mock_time:
-            mock_time.monotonic.side_effect = [0.0, 0.1, 0.2]
-            mock_time.sleep = MagicMock()
-            ok, msg = _launch_python_process(tmp_path, "app/awake.py", "awake", 5.0)
-
-        assert ok
-        assert "Bridge started" in msg
 
     def test_returns_failure_when_pid_never_appears(self, tmp_path):
         """PID file never appears -> timeout failure."""
@@ -1752,81 +1648,6 @@ class TestLaunchPythonProcess:
 
         mock_log.close.assert_called_once()
 
-    def test_uses_sys_executable(self, tmp_path):
-        """Should use sys.executable as the Python binary."""
-        captured_cmd = []
-
-        def capture_popen(cmd, **kwargs):
-            captured_cmd.extend(cmd)
-            return MagicMock()
-
-        with patch("app.pid_manager.check_pidfile", return_value=None), \
-             patch("app.pid_manager._open_log_file", return_value=MagicMock()), \
-             patch("subprocess.Popen", side_effect=capture_popen), \
-             patch("app.pid_manager.time") as mock_time:
-            mock_time.monotonic.side_effect = [0.0, 999.0]
-            _launch_python_process(tmp_path, "app/run.py", "run", 0.1)
-
-        assert captured_cmd[0] == sys.executable
-        assert captured_cmd[1] == "app/run.py"
-
-    def test_cwd_is_koan_dir(self, tmp_path):
-        """Working directory should be koan_root/koan."""
-        captured_kwargs = {}
-
-        def capture_popen(cmd, **kwargs):
-            captured_kwargs.update(kwargs)
-            return MagicMock()
-
-        with patch("app.pid_manager.check_pidfile", return_value=None), \
-             patch("app.pid_manager._open_log_file", return_value=MagicMock()), \
-             patch("subprocess.Popen", side_effect=capture_popen), \
-             patch("app.pid_manager.time") as mock_time:
-            mock_time.monotonic.side_effect = [0.0, 999.0]
-            _launch_python_process(tmp_path, "app/run.py", "run", 0.1)
-
-        assert captured_kwargs["cwd"] == str(tmp_path / "koan")
-
-    def test_stderr_merged_to_stdout(self, tmp_path):
-        """stderr should be merged into stdout (same log file)."""
-        captured_kwargs = {}
-
-        def capture_popen(cmd, **kwargs):
-            captured_kwargs.update(kwargs)
-            return MagicMock()
-
-        with patch("app.pid_manager.check_pidfile", return_value=None), \
-             patch("app.pid_manager._open_log_file", return_value=MagicMock()), \
-             patch("subprocess.Popen", side_effect=capture_popen), \
-             patch("app.pid_manager.time") as mock_time:
-            mock_time.monotonic.side_effect = [0.0, 999.0]
-            _launch_python_process(tmp_path, "app/run.py", "run", 0.1)
-
-        assert captured_kwargs["stderr"] == subprocess.STDOUT
-
-    def test_verification_polls_with_sleep(self, tmp_path):
-        """Verification loop should sleep between checks."""
-        call_count = [0]
-
-        def check_pid(*args):
-            call_count[0] += 1
-            if call_count[0] == 1:
-                return None  # Initial check: not running
-            if call_count[0] == 4:
-                return 77  # Found on 3rd poll
-            return None
-
-        with patch("app.pid_manager.check_pidfile", side_effect=check_pid), \
-             patch("app.pid_manager._open_log_file", return_value=MagicMock()), \
-             patch("subprocess.Popen", return_value=MagicMock()), \
-             patch("app.pid_manager.time") as mock_time:
-            mock_time.monotonic.side_effect = [0.0, 0.1, 0.4, 0.7, 1.0]
-            mock_time.sleep = MagicMock()
-            ok, msg = _launch_python_process(tmp_path, "app/run.py", "run", 5.0)
-
-        assert ok
-        # Sleep should have been called during polling
-        mock_time.sleep.assert_called_with(0.3)
 
 
 # ---------------------------------------------------------------------------

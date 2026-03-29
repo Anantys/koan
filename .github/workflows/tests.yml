@@ -52,7 +52,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r koan/requirements.txt
-          pip install pytest pytest-split
+          pip install pytest pytest-split pytest-cov
 
       - name: Run tests (${{ matrix.group.name }})
         if: ${{ !inputs.group || matrix.group.name == inputs.group }}
@@ -64,7 +64,84 @@ jobs:
           KOAN_TELEGRAM_CHAT_ID: "123456789"
         run: |
           if [ -n "${{ matrix.group.split_group }}" ]; then
-            pytest tests/ -m "${{ matrix.group.marker }}" --splits 3 --group ${{ matrix.group.split_group }} -v
+            pytest tests/ -m "${{ matrix.group.marker }}" --splits 3 --group ${{ matrix.group.split_group }} -v \
+              --cov=app --cov-report=term-missing
           else
-            pytest tests/ -m "${{ matrix.group.marker }}" -v
+            pytest tests/ -m "${{ matrix.group.marker }}" -v \
+              --cov=app --cov-report=term-missing
           fi
+
+      - name: Upload coverage data
+        if: ${{ !inputs.group || matrix.group.name == inputs.group }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.group.name }}
+          path: koan/.coverage
+          include-hidden-files: true
+
+  check-coverage:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    name: check-coverage
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python 3.14
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+          allow-prereleases: true
+
+      - name: Install coverage
+        run: pip install coverage
+
+      - name: Download all coverage artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: coverage-*
+          path: coverage-parts
+
+      - name: Combine coverage and check baselines
+        working-directory: koan
+        env:
+          KOAN_ROOT: ${{ github.workspace }}/koan
+        run: |
+          # Collect all .coverage files and rename for combine
+          i=0
+          for f in ../coverage-parts/coverage-*/.coverage; do
+            cp "$f" ".coverage.$i"
+            i=$((i + 1))
+          done
+
+          coverage combine
+          TOTAL_COV=$(coverage report --format=total 2>/dev/null || coverage report | grep '^TOTAL' | awk '{print $NF}' | tr -d '%')
+          echo "Total coverage: ${TOTAL_COV}%"
+
+          # Read baselines
+          BASELINE_COV=$(cat ../coverage-baseline.txt | tr -d '[:space:]')
+          echo "Baseline coverage: ${BASELINE_COV}%"
+
+          # Allow 0.5% tolerance on coverage
+          python3 -c "
+          import sys
+          actual = float('${TOTAL_COV}')
+          baseline = float('${BASELINE_COV}')
+          tolerance = 0.5
+          if actual < baseline - tolerance:
+              print(f'FAIL: Coverage {actual}% is below baseline {baseline}% (tolerance {tolerance}%)')
+              sys.exit(1)
+          print(f'OK: Coverage {actual}% meets baseline {baseline}% (tolerance {tolerance}%)')
+          "
+
+      - name: Check test count baseline
+        run: |
+          BASELINE_COUNT=$(cat test-count-baseline.txt | tr -d '[:space:]')
+          echo "Test count baseline: ${BASELINE_COUNT}"
+
+          # Sum test counts from all matrix job logs
+          # The test count check is best-effort from the coverage report;
+          # the authoritative count comes from running all tests.
+          # For now, this is informational — the hard enforcement is on coverage.
+          echo "INFO: Test count baseline is ${BASELINE_COUNT}. Monitor via PR review."
