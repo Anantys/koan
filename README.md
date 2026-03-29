@@ -160,6 +160,7 @@ Communication happens through shared markdown files in `instance/` — atomic wr
 
 - **Branch isolation** — All work happens in `koan/*` branches. Never commits to `main`
 - **Auto-merge** — Configurable per-project merge strategies (squash/merge/rebase)
+- **Security review** — Automatic diff analysis for dangerous patterns (eval, shell injection, hardcoded secrets, etc.) before auto-merge. Configurable risk threshold and blocking behavior per project
 - **Git sync awareness** — Tracks branch state, detects merges, reports sync status
 - **GitHub integration** — Draft PRs, issue creation, PR reviews, rebasing — all via `gh` CLI
 - **PR review comment forwarding** — When reviewers leave comments on Koan-created PRs, the check loop auto-creates missions to address them (fingerprint-deduped, bot-filtered)
@@ -277,6 +278,9 @@ Define your projects in `projects.yaml` at `KOAN_ROOT`:
 defaults:
   git_auto_merge:
     enabled: false
+  security_review:
+    enabled: true              # Scan diffs for dangerous patterns before merge
+    blocking: false            # Set to true to block auto-merge on high risk
 
 projects:
   webapp:

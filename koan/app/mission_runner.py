@@ -691,6 +691,33 @@ def _fire_post_mission_hook(
         return {"_fire_post_mission_hook": str(e)}
 
 
+def check_security_review(
+    instance_dir: str,
+    project_name: str,
+    project_path: str,
+) -> bool:
+    """Run differential security review on the current branch.
+
+    Analyzes the diff for security-sensitive patterns and blast radius.
+    Configured via security_review section in projects.yaml.
+
+    Args:
+        instance_dir: Path to instance directory.
+        project_name: Current project name.
+        project_path: Path to project directory.
+
+    Returns:
+        True if auto-merge should proceed, False if blocked by review.
+    """
+    try:
+        from app.security_review import check_security_review as _check
+
+        return _check(instance_dir, project_name, project_path)
+    except Exception as e:
+        print(f"[mission_runner] Security review failed: {e}", file=sys.stderr)
+        return True  # Don't block on failures
+
+
 def run_post_mission(
     instance_dir: str,
     project_name: str,
@@ -728,6 +755,7 @@ def run_post_mission(
             usage_updated (bool): Whether usage tracking was updated.
             pending_archived (bool): Whether pending.md was archived.
             reflection_written (bool): Whether a reflection was generated.
+            security_review_passed (bool): Whether security review passed.
             auto_merge_branch (str|None): Branch name if auto-merge attempted.
             quota_exhausted (bool): Whether quota exhaustion was detected.
             quota_info (tuple|None): (reset_display, resume_message) if exhausted.
@@ -737,6 +765,7 @@ def run_post_mission(
         "usage_updated": False,
         "pending_archived": False,
         "reflection_written": False,
+        "security_review_passed": True,
         "auto_merge_branch": None,
         "quota_exhausted": False,
         "quota_info": None,
@@ -901,23 +930,39 @@ def run_post_mission(
             )
             result["reflection_written"] = bool(reflection_result)
 
-            # Auto-merge check (respects quality gate + lint gate + verification)
+            # Differential security review (before auto-merge)
+            _report("security review")
+            security_passed = tracker.run_step(
+                "security_review",
+                check_security_review,
+                instance_dir, project_name, project_path,
+                pipeline_expired=_pipeline_expired,
+            )
+            if security_passed is None:
+                security_passed = True
+            result["security_review_passed"] = security_passed
+
+            # Auto-merge check (respects quality gate + lint gate + verification + security review)
             _report("checking auto-merge")
             lint_blocking = lint_result is not None and not lint_result.passed and _is_lint_blocking(instance_dir, project_name)
             verify_blocking = verify_result is not None and not verify_result.passed
-            merge_result = tracker.run_step(
-                "auto_merge",
-                check_auto_merge,
-                instance_dir, project_name, project_path,
-                quality_report=quality_report,
-                lint_blocked=lint_blocking,
-                verify_blocked=verify_blocking,
-                pipeline_expired=_pipeline_expired,
-            )
-            result["auto_merge_branch"] = merge_result
+            security_blocking = not result.get("security_review_passed", True)
+            if not security_blocking:
+                merge_result = tracker.run_step(
+                    "auto_merge",
+                    check_auto_merge,
+                    instance_dir, project_name, project_path,
+                    quality_report=quality_report,
+                    lint_blocked=lint_blocking,
+                    verify_blocked=verify_blocking,
+                    pipeline_expired=_pipeline_expired,
+                )
+                result["auto_merge_branch"] = merge_result
+            else:
+                tracker.record("auto_merge", "skipped", "blocked by security review")
         else:
             # Non-zero exit — skip success-only steps
-            for step in ("verification", "quality_pipeline", "lint_gate", "reflection", "auto_merge"):
+            for step in ("verification", "quality_pipeline", "lint_gate", "reflection", "security_review", "auto_merge"):
                 tracker.record(step, "skipped", "non-zero exit code")
 
         # 7. Record session outcome for staleness tracking

@@ -377,6 +377,27 @@ def get_project_github_natural_language(config: dict, project_name: str) -> Opti
     return bool(value)
 
 
+def get_project_security_review(config: dict, project_name: str) -> dict:
+    """Get differential security review config for a project from projects.yaml.
+
+    Controls whether a security review is run on mission diffs before auto-merge.
+    Returns a dict with keys: enabled, blocking, severity_threshold.
+
+    - enabled: Whether to run the review (default: False).
+    - blocking: Whether a failed review blocks auto-merge (default: False).
+    - severity_threshold: Maximum acceptable risk level before flagging
+      ("low", "medium", "high", "critical"). Default: "high".
+    """
+    project_cfg = get_project_config(config, project_name)
+    sr = project_cfg.get("security_review", {}) or {}
+
+    return {
+        "enabled": bool(sr.get("enabled", False)),
+        "blocking": bool(sr.get("blocking", False)),
+        "severity_threshold": str(sr.get("severity_threshold", "high")).strip().lower(),
+    }
+
+
 def get_project_submit_to_repository(config: dict, project_name: str) -> dict:
     """Get submit_to_repository config for a project from projects.yaml.
 

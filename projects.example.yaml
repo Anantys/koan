@@ -32,6 +32,21 @@ defaults:
     base_branch: "main"
     strategy: "squash"
 
+  # Security review — scan mission diffs for dangerous patterns before auto-merge.
+  # Detects eval/exec, shell injection, hardcoded secrets, unsafe deserialization,
+  # XSS, wildcard CORS, overly permissive permissions, and more.
+  # Results are logged to the project journal.
+  #
+  # - enabled: Run the review on every mission (default: false)
+  # - blocking: Block auto-merge when risk meets threshold (default: false)
+  # - severity_threshold: Minimum risk level to trigger block
+  #   ("low", "medium", "high", "critical"). Default: "high"
+  #
+  # security_review:
+  #   enabled: true
+  #   blocking: false
+  #   severity_threshold: high
+
   # CLI provider — which AI CLI to use ("claude", "codex", "copilot", "local")
   # Per-project overrides allow different providers for different repos.
   # Can also be set globally in config.yaml or via KOAN_CLI_PROVIDER env var.
@@ -136,6 +151,14 @@ projects:
   # oss-lib:
   #   path: "/Users/yourname/workspace/oss-lib"
   #   max_open_prs: 3                        # Keep max 3 open PRs for this repo
+
+  # Example: a production API with strict security review (blocks auto-merge)
+  # production-api:
+  #   path: "/Users/yourname/workspace/production-api"
+  #   security_review:
+  #     enabled: true
+  #     blocking: true           # Block auto-merge for risky changes
+  #     severity_threshold: medium
 
   # Example: a project using GitHub Copilot instead of Claude
   # copilot-project:
