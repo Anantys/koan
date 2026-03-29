@@ -144,11 +144,34 @@ def has_pending_requests() -> bool:
         return False
 
 
-def process_chat_request(text: str, soul: str, summary: str, project_path: str) -> None:
-    """Process a single chat request: build prompt, call Claude, send response.
+# Exponential backoff delays for chat retries (seconds)
+CHAT_RETRY_BACKOFF = (2, 5, 10)
+CHAT_MAX_ATTEMPTS = 3
 
-    All conversation history writes happen here to avoid races with awake.py.
+
+def _is_mission_active() -> bool:
+    """Check if a mission is currently running by reading .koan-status."""
+    from app.signals import STATUS_FILE
+
+    status_file = KOAN_ROOT / STATUS_FILE
+    try:
+        if not status_file.exists():
+            return False
+        status = status_file.read_text().strip().lower()
+        return "executing mission" in status or "skill dispatch" in status
+    except OSError:
+        return False
+
+
+def process_chat_request(text: str, soul: str, summary: str, project_path: str) -> None:
+    """Process a single chat request with exponential backoff retry.
+
+    Attempts up to CHAT_MAX_ATTEMPTS times with increasing delays.
+    First attempt uses full context; retries use lite context and shorter
+    timeouts. Empty responses (returncode=0, empty stdout) are treated
+    as retryable — this is the main symptom of API contention during missions.
     """
+    import subprocess
     from app.chat_context import build_chat_prompt, clean_chat_response
     from app.cli_exec import run_cli
     from app.cli_provider import build_full_command
@@ -169,123 +192,91 @@ def process_chat_request(text: str, soul: str, summary: str, project_path: str) 
             _log(f"WARNING chat guard: {guard_result.reason} | {text[:100]}")
 
     chat_timeout = int(os.environ.get("KOAN_CHAT_TIMEOUT", "180"))
-
-    prompt = build_chat_prompt(
-        text,
-        instance_dir=INSTANCE_DIR,
-        koan_root=KOAN_ROOT,
-        soul=soul,
-        summary=summary,
-        conversation_history_file=CONVERSATION_HISTORY_FILE,
-        missions_file=MISSIONS_FILE,
-        project_path=project_path,
-    )
-
     chat_tools_list = get_chat_tools().split(",")
     models = get_model_config()
 
-    cmd = build_full_command(
-        prompt=prompt,
-        allowed_tools=chat_tools_list,
-        model=models["chat"],
-        fallback=models["fallback"],
-        max_turns=1,
-    )
-
-    import subprocess
+    mission_active = _is_mission_active()
+    if mission_active:
+        _log("Mission active — chat will use priority retry strategy")
 
     with TypingIndicator():
-        try:
-            result = run_cli(
-                cmd,
-                capture_output=True, text=True, timeout=chat_timeout,
-                cwd=project_path or str(KOAN_ROOT),
+        for attempt in range(CHAT_MAX_ATTEMPTS):
+            # First attempt: full context. Retries: lite context + shorter timeout
+            use_lite = attempt > 0
+            attempt_timeout = chat_timeout if attempt == 0 else chat_timeout // 2
+
+            prompt = build_chat_prompt(
+                text, lite=use_lite,
+                instance_dir=INSTANCE_DIR,
+                koan_root=KOAN_ROOT,
+                soul=soul,
+                summary=summary,
+                conversation_history_file=CONVERSATION_HISTORY_FILE,
+                missions_file=MISSIONS_FILE,
+                project_path=project_path,
             )
-            response = clean_chat_response(result.stdout.strip(), text)
-            if response:
-                send_telegram(response)
-                msg_id = _get_last_message_id()
-                save_conversation_message(
-                    CONVERSATION_HISTORY_FILE, "assistant", response,
-                    message_id=msg_id, message_type="chat",
+
+            cmd = build_full_command(
+                prompt=prompt,
+                allowed_tools=chat_tools_list,
+                model=models["chat"],
+                fallback=models["fallback"],
+                max_turns=1,
+            )
+
+            try:
+                result = run_cli(
+                    cmd,
+                    capture_output=True, text=True, timeout=attempt_timeout,
+                    cwd=project_path or str(KOAN_ROOT),
                 )
-                _log(f"Chat reply: {response[:80]}...")
-            elif result.returncode != 0:
-                _log(f"Claude error: {result.stderr[:200]}")
-                error_msg = "⚠️ Hmm, I couldn't formulate a response. Try again?"
+                response = clean_chat_response(result.stdout.strip(), text)
+
+                if response:
+                    send_telegram(response)
+                    msg_id = _get_last_message_id()
+                    save_conversation_message(
+                        CONVERSATION_HISTORY_FILE, "assistant", response,
+                        message_id=msg_id, message_type="chat",
+                    )
+                    label = f" (attempt {attempt + 1})" if attempt > 0 else ""
+                    _log(f"Chat reply{label}: {response[:80]}...")
+                    return  # Success — exit retry loop
+
+                if result.returncode != 0:
+                    # Non-zero exit with no response — terminal error, don't retry
+                    _log(f"Claude error (rc={result.returncode}): {result.stderr[:200]}")
+                    error_msg = "⚠️ Hmm, I couldn't formulate a response. Try again?"
+                    send_telegram(error_msg)
+                    save_conversation_message(CONVERSATION_HISTORY_FILE, "assistant", error_msg)
+                    return
+
+                # Empty response with rc=0 — likely API contention, retry
+                if attempt < CHAT_MAX_ATTEMPTS - 1:
+                    delay = CHAT_RETRY_BACKOFF[min(attempt, len(CHAT_RETRY_BACKOFF) - 1)]
+                    _log(f"Empty response (attempt {attempt + 1}/{CHAT_MAX_ATTEMPTS}) — retrying in {delay}s")
+                    time.sleep(delay)
+                    continue
+
+            except subprocess.TimeoutExpired:
+                if attempt < CHAT_MAX_ATTEMPTS - 1:
+                    delay = CHAT_RETRY_BACKOFF[min(attempt, len(CHAT_RETRY_BACKOFF) - 1)]
+                    _log(f"Timeout (attempt {attempt + 1}/{CHAT_MAX_ATTEMPTS}) — retrying in {delay}s")
+                    time.sleep(delay)
+                    continue
+
+            except Exception as e:
+                _log(f"Error (attempt {attempt + 1}): {e}")
+                error_msg = "⚠️ Something went wrong — try again?"
                 send_telegram(error_msg)
                 save_conversation_message(CONVERSATION_HISTORY_FILE, "assistant", error_msg)
-            else:
-                _log("Empty response from Claude — retrying with lite context...")
-                _retry_with_lite(text, soul, summary, project_path, chat_timeout, chat_tools_list, models)
-        except subprocess.TimeoutExpired:
-            _log(f"Claude timed out ({chat_timeout}s). Retrying with lite context...")
-            time.sleep(4)
-            _retry_with_lite(text, soul, summary, project_path, chat_timeout, chat_tools_list, models)
-        except Exception as e:
-            _log(f"Claude error: {e}")
-            error_msg = "⚠️ Something went wrong — try again?"
-            send_telegram(error_msg)
-            save_conversation_message(CONVERSATION_HISTORY_FILE, "assistant", error_msg)
+                return
 
-
-def _retry_with_lite(text, soul, summary, project_path, chat_timeout, chat_tools_list, models):
-    """Retry a chat request with reduced context and shorter timeout."""
-    import subprocess
-    from app.chat_context import build_chat_prompt, clean_chat_response
-    from app.cli_exec import run_cli
-    from app.cli_provider import build_full_command
-    from app.conversation_history import save_conversation_message
-    from app.notify import send_telegram
-
-    retry_timeout = chat_timeout // 2
-    lite_prompt = build_chat_prompt(
-        text, lite=True,
-        instance_dir=INSTANCE_DIR,
-        koan_root=KOAN_ROOT,
-        soul=soul,
-        summary=summary,
-        conversation_history_file=CONVERSATION_HISTORY_FILE,
-        missions_file=MISSIONS_FILE,
-        project_path=project_path,
-    )
-    lite_cmd = build_full_command(
-        prompt=lite_prompt,
-        allowed_tools=chat_tools_list,
-        model=models["chat"],
-        fallback=models["fallback"],
-        max_turns=1,
-    )
-    try:
-        result = run_cli(
-            lite_cmd,
-            capture_output=True, text=True, timeout=retry_timeout,
-            cwd=project_path or str(KOAN_ROOT),
-        )
-        response = clean_chat_response(result.stdout.strip(), text)
-        if response:
-            send_telegram(response)
-            msg_id = _get_last_message_id()
-            save_conversation_message(
-                CONVERSATION_HISTORY_FILE, "assistant", response,
-                message_id=msg_id, message_type="chat",
-            )
-            _log(f"Chat reply (lite retry): {response[:80]}...")
-        else:
-            if result.stderr:
-                _log(f"Lite retry stderr: {result.stderr[:500]}")
-            timeout_msg = f"⏱ Timeout after {chat_timeout}s — try a shorter question, or send 'mission: ...' for complex tasks."
-            send_telegram(timeout_msg)
-            save_conversation_message(CONVERSATION_HISTORY_FILE, "assistant", timeout_msg)
-    except subprocess.TimeoutExpired:
-        timeout_msg = f"Timeout after {chat_timeout}s — try a shorter question, or send 'mission: ...' for complex tasks."
+        # All attempts exhausted
+        _log(f"All {CHAT_MAX_ATTEMPTS} attempts failed")
+        timeout_msg = f"⏱ Couldn't get a response after {CHAT_MAX_ATTEMPTS} attempts — try a shorter question, or send 'mission: ...' for complex tasks."
         send_telegram(timeout_msg)
         save_conversation_message(CONVERSATION_HISTORY_FILE, "assistant", timeout_msg)
-    except Exception as e:
-        _log(f"Lite retry error: {e}")
-        error_msg = "⚠️ Something went wrong — try again?"
-        send_telegram(error_msg)
-        save_conversation_message(CONVERSATION_HISTORY_FILE, "assistant", error_msg)
 
 
 def _get_last_message_id() -> int:

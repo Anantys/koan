@@ -1,6 +1,7 @@
 """Tests for the dedicated chat process and inbox/outbox protocol."""
 
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -10,6 +11,8 @@ from app.chat_process import (
     read_and_clear_inbox,
     write_to_inbox,
     has_pending_requests,
+    CHAT_RETRY_BACKOFF,
+    CHAT_MAX_ATTEMPTS,
 )
 
 
@@ -118,3 +121,36 @@ class TestChatRouting:
         assert result is True
         mock_send.assert_called_once()
         assert "Busy" in mock_send.call_args[0][0]
+
+
+class TestRetryConstants:
+    """Verify retry configuration is sensible."""
+
+    def test_backoff_is_increasing(self):
+        for i in range(len(CHAT_RETRY_BACKOFF) - 1):
+            assert CHAT_RETRY_BACKOFF[i] < CHAT_RETRY_BACKOFF[i + 1]
+
+    def test_max_attempts_matches_backoff(self):
+        assert CHAT_MAX_ATTEMPTS == 3
+        assert len(CHAT_RETRY_BACKOFF) == 3
+
+
+class TestMissionAwareness:
+    """Test that the chat process detects active missions."""
+
+    def test_detects_active_mission(self, tmp_path, monkeypatch):
+        from app.chat_process import _is_mission_active
+        monkeypatch.setattr("app.chat_process.KOAN_ROOT", tmp_path)
+        (tmp_path / ".koan-status").write_text("Run 1/5 — executing mission on my-project")
+        assert _is_mission_active() is True
+
+    def test_no_mission_when_idle(self, tmp_path, monkeypatch):
+        from app.chat_process import _is_mission_active
+        monkeypatch.setattr("app.chat_process.KOAN_ROOT", tmp_path)
+        (tmp_path / ".koan-status").write_text("Idle — sleeping 60s")
+        assert _is_mission_active() is False
+
+    def test_no_mission_when_no_status_file(self, tmp_path, monkeypatch):
+        from app.chat_process import _is_mission_active
+        monkeypatch.setattr("app.chat_process.KOAN_ROOT", tmp_path)
+        assert _is_mission_active() is False
