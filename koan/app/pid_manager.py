@@ -254,7 +254,7 @@ def check_pidfile(koan_root: Path, process_name: str) -> Optional[int]:
     return None
 
 
-PROCESS_NAMES = ("run", "awake", "ollama", "dashboard")
+PROCESS_NAMES = ("run", "awake", "chat", "ollama", "dashboard")
 
 # Process startup verification timeouts
 DEFAULT_VERIFY_TIMEOUT = 3.0
@@ -313,7 +313,7 @@ def _launch_python_process(
     while time.monotonic() < deadline:
         new_pid = check_pidfile(koan_root, process_name)
         if new_pid:
-            label = "Agent loop" if process_name == "run" else "Bridge"
+            label = {"run": "Agent loop", "awake": "Bridge", "chat": "Chat"}.get(process_name, process_name.capitalize())
             return True, f"{label} started (PID {new_pid})"
         time.sleep(0.3)
 
@@ -395,6 +395,17 @@ def start_awake(koan_root: Path, verify_timeout: float = DEFAULT_VERIFY_TIMEOUT)
     Returns (success: bool, message: str).
     """
     return _launch_python_process(koan_root, "app/awake.py", "awake", verify_timeout)
+
+
+def start_chat(koan_root: Path, verify_timeout: float = DEFAULT_VERIFY_TIMEOUT) -> tuple:
+    """Start the dedicated chat process (chat_process.py) as a detached subprocess.
+
+    The chat process handles Telegram chat messages independently from
+    the mission runner, preventing API contention during active missions.
+
+    Returns (success: bool, message: str).
+    """
+    return _launch_python_process(koan_root, "app/chat_process.py", "chat", verify_timeout)
 
 
 def start_dashboard(koan_root: Path, verify_timeout: float = DEFAULT_VERIFY_TIMEOUT) -> tuple:
@@ -519,6 +530,13 @@ def format_status_all(koan_root: Path) -> list:
     else:
         lines.append("  awake: not running")
 
+    # --- Chat ---
+    chat_pid = check_pidfile(koan_root, "chat")
+    if chat_pid:
+        lines.append(f"  chat: running (PID {chat_pid})")
+    else:
+        lines.append("  chat: not running")
+
     # --- Ollama (conditional) ---
     if "ollama" in process_names:
         ollama_pid = check_pidfile(koan_root, "ollama")
@@ -606,11 +624,15 @@ def start_all(koan_root: Path, provider: str = None) -> dict:
     ok, msg = start_awake(koan_root)
     results["awake"] = (ok, msg)
 
-    # 3. Start agent loop (run.py)
+    # 3. Start chat process (dedicated chat handler)
+    ok, msg = start_chat(koan_root)
+    results["chat"] = (ok, msg)
+
+    # 4. Start agent loop (run.py)
     ok, msg = start_runner(koan_root)
     results["run"] = (ok, msg)
 
-    # 4. Start dashboard if enabled
+    # 5. Start dashboard if enabled
     if _is_dashboard_enabled():
         ok, msg = start_dashboard(koan_root)
         results["dashboard"] = (ok, msg)
@@ -729,7 +751,7 @@ def stop_processes(koan_root: Path, timeout: float = 5.0) -> dict:
 def _print_stack_results(results: dict) -> int:
     """Print stack start results and return exit code (0=ok, 1=failure)."""
     any_failed = False
-    for name in ("ollama", "awake", "run", "dashboard"):
+    for name in ("ollama", "awake", "chat", "run", "dashboard"):
         if name not in results:
             continue
         ok, msg = results[name]
