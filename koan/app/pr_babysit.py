@@ -198,9 +198,8 @@ def discover_open_prs(projects_config: dict, branch_prefix: str) -> List[Dict[st
         for pr in pr_list:
             head = pr.get("headRefName", "")
             # Only babysit PRs created by this Kōan instance
-            if not head.startswith(prefix + "/") and head != prefix:
-                if not head.startswith(prefix):
-                    continue
+            if not head.startswith(prefix + "/"):
+                continue
             prs.append({
                 "url": pr.get("url", ""),
                 "number": pr.get("number", 0),
@@ -328,6 +327,7 @@ def check_pr_health(
             if tracker_entry.get("last_action") != "notify_ci_cap":
                 actions.append({
                     "type": "notify",
+                    "notify_key": "notify_ci_cap",
                     "reason": (
                         f"CI still failing on PR #{number} after {fix_attempts} fix "
                         f"attempt(s). Manual intervention needed."
@@ -346,6 +346,7 @@ def check_pr_health(
         elif tracker_entry.get("last_action") != "notify_review_cap":
             actions.append({
                 "type": "notify",
+                "notify_key": "notify_review_cap",
                 "reason": (
                     f"PR #{number} still has unresolved review changes after "
                     f"{review_attempts} attempt(s)."
@@ -354,7 +355,9 @@ def check_pr_health(
             })
 
     # 3. New unresolved review comments (comment count increased)
-    if comment_count > prev_comments and review_decision != "APPROVED":
+    # Skip if we already queued a review action from check #2 above
+    has_review_action = any(a["type"] == "review" for a in actions)
+    if not has_review_action and comment_count > prev_comments and review_decision != "APPROVED":
         if review_attempts < max_retries:
             actions.append({
                 "type": "review",
@@ -376,6 +379,7 @@ def check_pr_health(
         elif tracker_entry.get("last_action") != "notify_conflict_cap":
             actions.append({
                 "type": "notify",
+                "notify_key": "notify_conflict_cap",
                 "reason": (
                     f"PR #{number} still has merge conflicts after "
                     f"{rebase_attempts} rebase attempt(s)."
@@ -393,6 +397,7 @@ def check_pr_health(
                 if tracker_entry.get("last_action") != "notify_stale":
                     actions.append({
                         "type": "notify",
+                        "notify_key": "notify_stale",
                         "reason": (
                             f"PR #{number} has had no activity for {age_days} day(s). "
                             f"Consider manual intervention."
@@ -423,13 +428,6 @@ def _mission_already_queued(missions_path: Path, pr_url: str, action_type: str) 
         for line in sections.get(section_name, []):
             if pr_url in line:
                 # PR already has a pending/active mission — skip
-                return True
-            # Also check command type
-            if action_type == "fix" and "/fix" in line and pr_url.split("/")[-1] in line:
-                return True
-            if action_type == "review" and "/review" in line and pr_url.split("/")[-1] in line:
-                return True
-            if action_type == "rebase" and "/rebase" in line and pr_url.split("/")[-1] in line:
                 return True
 
     return False
@@ -496,8 +494,9 @@ def queue_fix_missions(
             # Write to outbox — no mission needed
             outbox_path = instance_dir / "outbox.md"
             append_to_outbox(outbox_path, f"🔍 Babysit: {reason}")
+            notify_key = action.get("notify_key", "notify")
             _update_tracker_entry(instance_dir, pr_url, {
-                "last_action": f"notify_{action_type}",
+                "last_action": notify_key,
                 "last_action_at": _now_iso(),
                 "last_ci_status": pr.get("statusCheckRollup"),
                 "last_review_decision": pr.get("reviewDecision"),

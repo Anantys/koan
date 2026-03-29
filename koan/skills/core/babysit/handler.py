@@ -77,9 +77,8 @@ def _show_status(ctx):
 def _toggle(ctx, enabled: bool):
     """Enable or disable babysitting via config.yaml."""
     try:
-        from app.utils import load_config, atomic_write
+        from app.utils import atomic_write
         import yaml
-        from pathlib import Path
     except ImportError as e:
         return f"❌ Cannot toggle babysit: {e}"
 
@@ -88,7 +87,6 @@ def _toggle(ctx, enabled: bool):
         return "❌ config.yaml not found in instance directory."
 
     try:
-        import yaml
         content = config_path.read_text()
         config = yaml.safe_load(content) or {}
     except Exception as e:
@@ -100,7 +98,6 @@ def _toggle(ctx, enabled: bool):
     config["pr_babysit"] = babysit
 
     try:
-        from app.utils import atomic_write
         atomic_write(config_path, yaml.dump(config, default_flow_style=False, allow_unicode=True))
     except Exception as e:
         return f"❌ Could not update config.yaml: {e}"
