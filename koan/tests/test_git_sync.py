@@ -736,6 +736,171 @@ class TestBuildSyncReport:
                 pytest.fail("Cleaned branch should not appear in unmerged section")
 
 
+class TestRemoteBranchDeletion:
+    """Tests for remote branch deletion in cleanup_merged_branches."""
+
+    def test_deletes_remote_branches_by_default(self):
+        """Successfully deleted local branches also get deleted on remote."""
+        push_calls = []
+
+        def side_effect(cwd, *args):
+            if args[0] == "rev-parse":
+                return "main"
+            if args[0] == "branch" and args[1] == "--list":
+                return "  koan/merged-one\n"
+            if args[0] == "branch" and args[1] == "-d":
+                return f"Deleted branch {args[2]}"
+            if args[0] == "push" and "--delete" in args:
+                push_calls.append(args[-1])
+                return "To origin\n - [deleted] koan/merged-one\n"
+            return ""
+
+        with patch("app.git_sync.run_git", side_effect=side_effect):
+            deleted = _sync().cleanup_merged_branches(["koan/merged-one"])
+
+        assert deleted == ["koan/merged-one"]
+        assert push_calls == ["koan/merged-one"]
+
+    def test_skips_remote_deletion_when_disabled(self):
+        """delete_remote=False skips git push origin --delete."""
+        push_calls = []
+
+        def side_effect(cwd, *args):
+            if args[0] == "rev-parse":
+                return "main"
+            if args[0] == "branch" and args[1] == "--list":
+                return "  koan/merged-one\n"
+            if args[0] == "branch" and args[1] == "-d":
+                return f"Deleted branch {args[2]}"
+            if args[0] == "push":
+                push_calls.append(args)
+            return ""
+
+        with patch("app.git_sync.run_git", side_effect=side_effect):
+            deleted = _sync().cleanup_merged_branches(
+                ["koan/merged-one"], delete_remote=False
+            )
+
+        assert deleted == ["koan/merged-one"]
+        assert push_calls == [], "Expected no remote push when delete_remote=False"
+
+    def test_remote_deletion_failure_does_not_affect_local_result(self):
+        """Remote push failure is tolerated — local deletion still reported."""
+        def side_effect(cwd, *args):
+            if args[0] == "rev-parse":
+                return "main"
+            if args[0] == "branch" and args[1] == "--list":
+                return "  koan/merged-one\n"
+            if args[0] == "branch" and args[1] == "-d":
+                return f"Deleted branch {args[2]}"
+            if args[0] == "push" and "--delete" in args:
+                return ""  # empty = push failed (remote already gone)
+            return ""
+
+        with patch("app.git_sync.run_git", side_effect=side_effect):
+            deleted = _sync().cleanup_merged_branches(["koan/merged-one"])
+
+        assert deleted == ["koan/merged-one"]
+
+    def test_remote_deletion_skips_non_local_deleted(self):
+        """Only tries remote deletion for branches successfully deleted locally."""
+        push_calls = []
+
+        def side_effect(cwd, *args):
+            if args[0] == "rev-parse":
+                return "main"
+            if args[0] == "branch" and args[1] == "--list":
+                return "  koan/stuck\n"
+            if args[0] == "branch" and args[1] == "-d":
+                return ""  # local delete failed
+            if args[0] == "push":
+                push_calls.append(args)
+            return ""
+
+        with patch("app.git_sync.run_git", side_effect=side_effect):
+            deleted = _sync().cleanup_merged_branches(["koan/stuck"])
+
+        assert deleted == []
+        assert push_calls == [], "Should not push delete if local deletion failed"
+
+    def test_github_merged_remote_deletion(self):
+        """Remote branches for github-detected merges are also deleted."""
+        push_calls = []
+
+        def side_effect(cwd, *args):
+            if args[0] == "rev-parse":
+                return "main"
+            if args[0] == "branch" and args[1] == "--list":
+                return "  koan/squash-merged\n"
+            if args[0] == "branch" and args[1] == "-D":
+                return f"Deleted branch {args[2]}"
+            if args[0] == "push" and "--delete" in args:
+                push_calls.append(args[-1])
+                return "To origin\n - [deleted] koan/squash-merged\n"
+            return ""
+
+        with patch("app.git_sync.run_git", side_effect=side_effect):
+            deleted = _sync().cleanup_merged_branches(
+                merged=[], github_merged=["koan/squash-merged"]
+            )
+
+        assert deleted == ["koan/squash-merged"]
+        assert push_calls == ["koan/squash-merged"]
+
+
+class TestBranchCleanupConfig:
+    """Tests for config-controlled branch cleanup in build_sync_report."""
+
+    def test_cleanup_disabled_by_config_skips_deletion(self):
+        """When branch_cleanup.enabled=False, no branches are deleted."""
+        sync = _sync()
+        with patch.object(GitSync, "get_merged_branches", return_value=["koan/old"]), \
+             patch.object(GitSync, "get_github_merged_branches", return_value=[]), \
+             patch.object(GitSync, "get_unmerged_branches", return_value=[]), \
+             patch.object(GitSync, "get_recent_main_commits", return_value=[]), \
+             patch.object(GitSync, "cleanup_merged_branches") as mock_cleanup, \
+             patch("app.git_sync.run_git", return_value=""), \
+             patch("app.git_sync.get_branch_cleanup_config",
+                   return_value={"enabled": False, "delete_remote_branches": True}):
+            sync.build_sync_report()
+
+        mock_cleanup.assert_not_called()
+
+    def test_delete_remote_false_passed_to_cleanup(self):
+        """When delete_remote_branches=False, cleanup is called with delete_remote=False."""
+        sync = _sync()
+        with patch.object(GitSync, "get_merged_branches", return_value=["koan/old"]), \
+             patch.object(GitSync, "get_github_merged_branches", return_value=[]), \
+             patch.object(GitSync, "get_unmerged_branches", return_value=[]), \
+             patch.object(GitSync, "get_recent_main_commits", return_value=[]), \
+             patch.object(GitSync, "cleanup_merged_branches", return_value=[]) as mock_cleanup, \
+             patch("app.git_sync.run_git", return_value=""), \
+             patch("app.git_sync.get_branch_cleanup_config",
+                   return_value={"enabled": True, "delete_remote_branches": False}):
+            sync.build_sync_report()
+
+        mock_cleanup.assert_called_once()
+        _, kwargs = mock_cleanup.call_args
+        assert kwargs.get("delete_remote") is False
+
+    def test_cleanup_enabled_by_default(self):
+        """When no config override, cleanup runs with delete_remote=True."""
+        sync = _sync()
+        with patch.object(GitSync, "get_merged_branches", return_value=["koan/old"]), \
+             patch.object(GitSync, "get_github_merged_branches", return_value=[]), \
+             patch.object(GitSync, "get_unmerged_branches", return_value=[]), \
+             patch.object(GitSync, "get_recent_main_commits", return_value=[]), \
+             patch.object(GitSync, "cleanup_merged_branches", return_value=[]) as mock_cleanup, \
+             patch("app.git_sync.run_git", return_value=""), \
+             patch("app.git_sync.get_branch_cleanup_config",
+                   return_value={"enabled": True, "delete_remote_branches": True}):
+            sync.build_sync_report()
+
+        mock_cleanup.assert_called_once()
+        _, kwargs = mock_cleanup.call_args
+        assert kwargs.get("delete_remote") is True
+
+
 class TestWriteSyncToJournal:
     def test_creates_journal_entry(self, tmp_path):
         """Writes sync report to journal file."""

@@ -594,6 +594,32 @@ def get_auto_merge_config(config: dict, project_name: str) -> dict:
     }
 
 
+def get_branch_cleanup_config() -> dict:
+    """Get branch cleanup configuration from config.yaml.
+
+    Controls automatic deletion of merged local and remote branches during
+    git sync. Cleanup runs every ``git_sync_interval`` iterations for each
+    project.
+
+    Config key: branch_cleanup
+      - enabled (bool): Master switch (default: True)
+      - delete_remote_branches (bool): Also push-delete remote branches
+          after local deletion (default: True). Set to False to only
+          clean up local refs without touching the remote.
+
+    Returns:
+        Dict with keys: enabled (bool), delete_remote_branches (bool).
+    """
+    config = _load_config()
+    cleanup_cfg = config.get("branch_cleanup", {})
+    if not isinstance(cleanup_cfg, dict):
+        cleanup_cfg = {}
+    return {
+        "enabled": bool(cleanup_cfg.get("enabled", True)),
+        "delete_remote_branches": bool(cleanup_cfg.get("delete_remote_branches", True)),
+    }
+
+
 def get_prompt_guard_config() -> dict:
     """Get prompt guard configuration.
 

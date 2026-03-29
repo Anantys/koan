@@ -176,6 +176,18 @@ models:
   fallback: "sonnet"       # Fallback when primary model is overloaded (print mode only)
   review_mode: ""          # Override model for REVIEW mode (cheaper audits)
 
+# Branch cleanup — automatic deletion of merged branches during git sync
+# Every git_sync_interval iterations, Kōan detects merged branches (both
+# regular merges via git ancestry and squash/rebase merges via GitHub API)
+# and deletes them locally. Enable delete_remote_branches to also push-delete
+# the corresponding remote refs (safe: only agent-prefixed branches are touched,
+# the current branch is never deleted, and remote deletion failures are ignored
+# if the remote branch was already removed by GitHub's auto-delete).
+# branch_cleanup:
+#   enabled: true                  # Master switch (default: true)
+#   delete_remote_branches: true   # Also delete remote refs (default: true)
+#                                  # Set false to only clean up local branches
+
 # Git auto-merge configuration
 # Automatically merges koan/* branches based on rules
 git_auto_merge:
