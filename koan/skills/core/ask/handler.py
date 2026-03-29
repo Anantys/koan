@@ -14,6 +14,7 @@ into the mission queue.
 import json
 import logging
 import re
+import subprocess
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -229,14 +230,19 @@ def _generate_reply(
         QUESTION=question,
         AUTHOR=comment_author,
     )
-    raw = run_command(
-        prompt=prompt,
-        project_path=project_path,
-        allowed_tools=["Read", "Glob", "Grep"],
-        model_key="chat",
-        max_turns=1,
-        timeout=120,
-    )
+    try:
+        raw = run_command(
+            prompt=prompt,
+            project_path=project_path,
+            allowed_tools=["Read", "Glob", "Grep"],
+            model_key="chat",
+            max_turns=3,
+            timeout=120,
+        )
+    except (RuntimeError, subprocess.TimeoutExpired) as e:
+        log.warning("ask: reply generation failed: %s", e)
+        return None
     if not raw:
+        log.warning("ask: reply generation returned empty output")
         return None
     return github_reply.clean_reply(raw)

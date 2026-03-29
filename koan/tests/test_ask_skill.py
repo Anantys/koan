@@ -269,6 +269,31 @@ class TestAskHandlerFlow:
         assert "❌" in result
         assert "post" in result.lower()
 
+    @patch("app.utils.resolve_project_path", return_value="/path/to/project")
+    @patch("app.utils.project_name_for_path", return_value="myproject")
+    @patch("app.cli_provider.run_command", side_effect=RuntimeError("CLI failed"))
+    @patch("app.github_reply.fetch_thread_context", return_value={
+        "title": "T", "body": "", "comments": [], "is_pr": False, "diff_summary": ""
+    })
+    @patch("app.github.api")
+    def test_generate_reply_runtime_error_returns_error(
+        self, mock_api, _fetch_ctx, _run_command, _name, _resolve
+    ):
+        """RuntimeError from run_command should be caught, not crash."""
+        import json as _json
+        from skills.core.ask.handler import handle
+
+        mock_api.return_value = _json.dumps({
+            "body": "Why does this fail?",
+            "user": {"login": "user1"},
+        })
+
+        url = "https://github.com/sukria/koan/issues/42#issuecomment-123"
+        ctx = self._make_ctx(url)
+        result = handle(ctx)
+        assert "❌" in result
+        assert "generate" in result.lower() or "failed" in result.lower()
+
 
 # ---------------------------------------------------------------------------
 # build_mission_from_command — ask-specific URL override

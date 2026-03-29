@@ -224,7 +224,7 @@ class TestGenerateReply:
         # Verify read-only tools
         call_args = mock_run.call_args
         assert call_args[1]["allowed_tools"] == ["Read", "Glob", "Grep"]
-        assert call_args[1]["max_turns"] == 1
+        assert call_args[1]["max_turns"] == 3
 
     @patch("app.github_reply.load_prompt", return_value="prompt")
     @patch("app.github_reply.run_command", side_effect=RuntimeError("timeout"))
