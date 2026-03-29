@@ -85,6 +85,7 @@ _SKILL_RUNNERS = {
     "security_audit": "skills.core.security_audit.security_audit_runner",
     "security": "skills.core.security_audit.security_audit_runner",
     "secu": "skills.core.security_audit.security_audit_runner",
+    "ci_check": "app.ci_queue_runner",
 }
 
 # Commands that look like /skills but should be sent to Claude as regular
@@ -292,6 +293,7 @@ def build_skill_command(
         "secu": lambda: _build_audit_cmd(
             base_cmd, args, project_name, project_path, instance_dir,
         ),
+        "ci_check": lambda: _build_pr_url_cmd(base_cmd, args, project_path),
     }
 
     builder = _COMMAND_BUILDERS.get(command)
@@ -714,7 +716,7 @@ def validate_skill_args(command: str, args: str) -> Optional[str]:
     if command not in _SKILL_RUNNERS:
         return None
 
-    if command in ("rebase", "recreate", "review", "squash"):
+    if command in ("rebase", "recreate", "review", "squash", "ci_check"):
         if not _PR_URL_RE.search(args):
             return (
                 f"/{command} requires a PR URL "
