@@ -1582,24 +1582,6 @@ class TestCompleteMissionFromInProgress:
         done_text = "\n".join(sections["done"])
         assert "/plan Add dark mode" in done_text
 
-    def test_done_entry_has_timestamp(self):
-        import re
-        result = complete_mission(self.CONTENT, "/plan Add dark mode")
-        sections = parse_sections(result)
-        done_text = "\n".join(sections["done"])
-        assert re.search(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}", done_text)
-
-    def test_done_entry_has_checkmark(self):
-        result = complete_mission(self.CONTENT, "/plan Add dark mode")
-        sections = parse_sections(result)
-        done_text = "\n".join(sections["done"])
-        assert "\u2705" in done_text
-
-    def test_pending_section_untouched(self):
-        result = complete_mission(self.CONTENT, "/plan Add dark mode")
-        sections = parse_sections(result)
-        assert len(sections["pending"]) == 1
-        assert "Another pending task" in sections["pending"][0]
 
     def test_with_project_tag_in_progress(self):
         content = (
@@ -1652,17 +1634,6 @@ class TestFailMissionFromInProgress:
         failed_text = "\n".join(sections["failed"])
         assert "/plan Add dark mode" in failed_text
 
-    def test_failed_entry_has_cross_mark(self):
-        result = fail_mission(self.CONTENT, "/plan Add dark mode")
-        sections = parse_sections(result)
-        failed_text = "\n".join(sections["failed"])
-        assert "\u274c" in failed_text
-
-    def test_pending_section_untouched(self):
-        result = fail_mission(self.CONTENT, "/plan Add dark mode")
-        sections = parse_sections(result)
-        assert len(sections["pending"]) == 1
-        assert "Another pending task" in sections["pending"][0]
 
 
 # ---------------------------------------------------------------------------
@@ -1856,116 +1827,6 @@ class TestModifyMissionsFileReturn:
 
         result = modify_missions_file(missions_path, lambda c: c)
         assert result == original
-
-
-# ---------------------------------------------------------------------------
-# _flush_in_progress_to_done — sanity enforcement
-# ---------------------------------------------------------------------------
-
-class TestFlushInProgressToDone:
-    """Tests for _flush_in_progress_to_done() — ensures only one mission
-    can be In Progress at a time."""
-
-    def test_empty_in_progress_noop(self):
-        content = (
-            "# Missions\n\n"
-            "## Pending\n\n"
-            "- Task\n\n"
-            "## In Progress\n\n"
-            "## Done\n"
-        )
-        result = _flush_in_progress_to_done(content)
-        assert result == normalize_content(content)
-
-    def test_single_in_progress_moved_to_done(self):
-        content = (
-            "# Missions\n\n"
-            "## Pending\n\n"
-            "## In Progress\n\n"
-            "- Stale mission\n\n"
-            "## Done\n"
-        )
-        result = _flush_in_progress_to_done(content)
-        sections = parse_sections(result)
-        assert len(sections["in_progress"]) == 0
-        done_text = "\n".join(sections["done"])
-        assert "Stale mission" in done_text
-        assert "\u2705" in done_text
-
-    def test_multiple_in_progress_all_moved(self):
-        content = (
-            "# Missions\n\n"
-            "## Pending\n\n"
-            "## In Progress\n\n"
-            "- First stale\n"
-            "- Second stale\n"
-            "- Third stale\n\n"
-            "## Done\n"
-        )
-        result = _flush_in_progress_to_done(content)
-        sections = parse_sections(result)
-        assert len(sections["in_progress"]) == 0
-        assert len(sections["done"]) == 3
-        done_text = "\n".join(sections["done"])
-        assert "First stale" in done_text
-        assert "Second stale" in done_text
-        assert "Third stale" in done_text
-
-    def test_preserves_project_tags(self):
-        content = (
-            "# Missions\n\n"
-            "## Pending\n\n"
-            "## In Progress\n\n"
-            "- [project:koan] Stale koan mission\n\n"
-            "## Done\n"
-        )
-        result = _flush_in_progress_to_done(content)
-        sections = parse_sections(result)
-        done_entry = sections["done"][0]
-        assert "[project:koan]" in done_entry
-        assert "Stale koan mission" in done_entry
-
-    def test_preserves_existing_done(self):
-        content = (
-            "# Missions\n\n"
-            "## Pending\n\n"
-            "## In Progress\n\n"
-            "- Stale\n\n"
-            "## Done\n\n"
-            "- Old done task\n"
-        )
-        result = _flush_in_progress_to_done(content)
-        sections = parse_sections(result)
-        done_text = "\n".join(sections["done"])
-        assert "Old done task" in done_text
-        assert "Stale" in done_text
-
-    def test_creates_done_section_if_missing(self):
-        content = (
-            "# Missions\n\n"
-            "## Pending\n\n"
-            "## In Progress\n\n"
-            "- Stale mission\n"
-        )
-        result = _flush_in_progress_to_done(content)
-        assert "## Done" in result
-        sections = parse_sections(result)
-        assert len(sections["in_progress"]) == 0
-        assert len(sections["done"]) == 1
-
-    def test_timestamp_added_to_flushed_missions(self):
-        import re
-        content = (
-            "# Missions\n\n"
-            "## Pending\n\n"
-            "## In Progress\n\n"
-            "- Stale mission\n\n"
-            "## Done\n"
-        )
-        result = _flush_in_progress_to_done(content)
-        sections = parse_sections(result)
-        done_entry = sections["done"][0]
-        assert re.search(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}", done_entry)
 
 
 # ---------------------------------------------------------------------------

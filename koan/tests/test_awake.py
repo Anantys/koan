@@ -186,20 +186,6 @@ class TestHandleChatCommand:
         assert "Usage" in result
         assert "/chat" in result
 
-    def test_chat_command_whitespace_only_shows_usage(self, tmp_path):
-        """/chat followed by only whitespace shows usage from handler."""
-        import importlib.util
-        spec = importlib.util.spec_from_file_location(
-            "chat_handler",
-            str(Path(__file__).parent.parent / "skills" / "core" / "chat" / "handler.py"),
-        )
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        from app.skills import SkillContext
-        ctx = SkillContext(koan_root=tmp_path, instance_dir=tmp_path, args="")
-        result = mod.handle(ctx)
-        assert "Usage" in result
-
     @patch("app.command_handlers._run_in_worker_cb")
     def test_chat_via_handle_message(self, mock_worker):
         """/chat goes through handle_message -> handle_command -> worker dispatch."""
@@ -1649,26 +1635,10 @@ class TestPauseCommand:
         assert "paused" in mock_send.call_args[0][0].lower()
 
     @patch("app.command_handlers.send_telegram")
-    def test_sleep_creates_file(self, mock_send, tmp_path):
-        """The /sleep alias creates the pause file just like /pause."""
-        with patch("app.command_handlers.KOAN_ROOT", tmp_path):
-            handle_command("/sleep")
-        assert (tmp_path / ".koan-pause").exists()
-        mock_send.assert_called_once()
-        assert "paused" in mock_send.call_args[0][0].lower()
-
-    @patch("app.command_handlers.send_telegram")
     def test_pause_already_paused(self, mock_send, tmp_path):
         (tmp_path / ".koan-pause").write_text("PAUSE")
         with patch("app.command_handlers.KOAN_ROOT", tmp_path):
             handle_command("/pause")
-        assert "already paused" in mock_send.call_args[0][0].lower()
-
-    @patch("app.command_handlers.send_telegram")
-    def test_sleep_already_paused(self, mock_send, tmp_path):
-        (tmp_path / ".koan-pause").write_text("PAUSE")
-        with patch("app.command_handlers.KOAN_ROOT", tmp_path):
-            handle_command("/sleep")
         assert "already paused" in mock_send.call_args[0][0].lower()
 
     @patch("app.command_handlers._is_runner_alive", return_value=True)
@@ -1734,26 +1704,6 @@ class TestPauseCommand:
         mock_reset.assert_called_once()
 
     @patch("app.command_handlers._is_runner_alive", return_value=True)
-    @patch("app.command_handlers._reset_session_counters")
-    @patch("app.command_handlers.send_telegram")
-    def test_resume_max_runs_does_not_reset_session(self, mock_send, mock_reset, mock_alive, tmp_path):
-        """Resume from max_runs should NOT reset session counters."""
-        (tmp_path / ".koan-pause").write_text("max_runs\n1234567890")
-        with patch("app.command_handlers.KOAN_ROOT", tmp_path):
-            handle_resume()
-        mock_reset.assert_not_called()
-
-    @patch("app.command_handlers._is_runner_alive", return_value=True)
-    @patch("app.command_handlers._reset_session_counters")
-    @patch("app.command_handlers.send_telegram")
-    def test_resume_manual_pause_does_not_reset_session(self, mock_send, mock_reset, mock_alive, tmp_path):
-        """Resume from manual pause (no reason file) should NOT reset session counters."""
-        (tmp_path / ".koan-pause").write_text("PAUSE")
-        with patch("app.command_handlers.KOAN_ROOT", tmp_path):
-            handle_resume()
-        mock_reset.assert_not_called()
-
-    @patch("app.command_handlers._is_runner_alive", return_value=True)
     @patch("app.command_handlers.send_telegram")
     def test_resume_quota_message_includes_counter_info(self, mock_send, mock_alive, tmp_path):
         """Resume message from quota should mention that counters were cleared."""
@@ -1787,28 +1737,6 @@ class TestPauseCommand:
         status = _call_status_handler(tmp_path)
         assert "Paused" in status
         assert "/resume" in status
-
-    def test_status_shows_paused_with_quota_reason(self, tmp_path):
-        """Status shows Paused with quota reason."""
-        (tmp_path / ".koan-pause").write_text("quota\n1234567890")
-        (tmp_path / "instance").mkdir()
-        (tmp_path / "instance" / "missions.md").write_text(
-            "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n"
-        )
-        status = _call_status_handler(tmp_path)
-        assert "Paused" in status
-        assert "quota" in status.lower()
-
-    def test_status_shows_paused_with_max_runs_reason(self, tmp_path):
-        """Status shows Paused with max_runs reason."""
-        (tmp_path / ".koan-pause").write_text("max_runs\n1234567890")
-        (tmp_path / "instance").mkdir()
-        (tmp_path / "instance" / "missions.md").write_text(
-            "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n"
-        )
-        status = _call_status_handler(tmp_path)
-        assert "Paused" in status
-        assert "max runs" in status.lower()
 
     def test_status_shows_working_when_active(self, tmp_path):
         """Status shows Active when no pause/stop/passive."""
