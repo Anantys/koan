@@ -12,6 +12,8 @@ actionable, constructive feedback that helps the author improve the code.
 
 {BODY}
 
+{ISSUE_CONTEXT}
+
 ---
 
 ## Current Diff

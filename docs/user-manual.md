@@ -362,6 +362,7 @@ Use this before `/plan` when the idea is architecturally complex, when you want 
 - **GitHub @mention:** `@koan-bot /review` on a PR
 - **Flags:**
   - `--architecture` — Architecture-focused review (SOLID principles, layering, coupling, abstraction boundaries)
+- **Issue tracker enrichment:** When the PR body references JIRA tickets (`PROJ-123`) or cross-repo GitHub issues (`owner/repo#123`), Kōan automatically fetches their summaries and includes them as context in the review. See [Issue Tracker Enrichment](issue-tracker.md) for configuration details.
 
 <details>
 <summary>Use cases</summary>
@@ -885,6 +886,7 @@ Key per-project settings:
 - **`git_auto_merge`** — Auto-merge completed PRs (strategy: squash/merge/rebase)
 - **`authorized_users`** — GitHub users allowed to trigger via @mention
 - **`exploration`** — Enable/disable autonomous exploration
+- **`issue_tracker`** — Override issue tracker type per project (`github` or `jira`); see [Issue Tracker Enrichment](issue-tracker.md)
 
 ### Custom Skills
 
