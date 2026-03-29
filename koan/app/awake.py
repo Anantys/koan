@@ -41,6 +41,7 @@ from app.bridge_state import (
     TOPICS_FILE,
     _get_registry,
 )
+from app.chat_context import build_chat_prompt, clean_chat_response
 from app.cli_provider import build_full_command
 from app.command_handlers import (
     handle_command,
@@ -48,19 +49,15 @@ from app.command_handlers import (
     set_callbacks,
 )
 from app.health_check import write_heartbeat
-from app.language_preference import get_language_instruction
 from app.notify import TypingIndicator, reset_flood_state, send_telegram
 from app.outbox_manager import OutboxManager, parse_outbox_priority
 from app.shutdown_manager import is_shutdown_requested, clear_shutdown
 from app.config import (
     get_chat_tools,
-    get_tools_description,
     get_model_config,
 )
 from app.conversation_history import (
     save_conversation_message,
-    load_recent_history,
-    format_conversation_history,
     compact_history,
 )
 from app.signals import HEARTBEAT_FILE, PAUSE_FILE, STOP_FILE
@@ -145,161 +142,24 @@ def parse_project(text: str) -> Tuple[Optional[str], str]:
 def _build_chat_prompt(text: str, *, lite: bool = False) -> str:
     """Build the prompt for a chat response.
 
-    Args:
-        text: The user's message.
-        lite: If True, strip heavy context (journal, summary) to stay under budget.
+    Delegates to the shared chat_context module (extracted for the
+    dedicated chat process — see #1084).
     """
-    # Load recent conversation history
-    history = load_recent_history(CONVERSATION_HISTORY_FILE, max_messages=10)
-    history_context = format_conversation_history(history)
-
-    journal_context = ""
-    if not lite:
-        # Load today's journal for recent context
-        from app.journal import read_all_journals
-        journal_content = read_all_journals(INSTANCE_DIR, date.today())
-        if journal_content:
-            if len(journal_content) > 2000:
-                journal_context = "...\n" + journal_content[-2000:]
-            else:
-                journal_context = journal_content
-
-    # Load human preferences for personality context
-    prefs_context = ""
-    prefs_path = INSTANCE_DIR / "memory" / "global" / "human-preferences.md"
-    if prefs_path.exists():
-        prefs_context = prefs_path.read_text().strip()
-
-    # Load live progress from pending.md (run in progress)
-    pending_context = ""
-    pending_path = INSTANCE_DIR / "journal" / "pending.md"
-    if pending_path.exists():
-        try:
-            pending_content = pending_path.read_text()
-            # Take last 1500 chars for recent progress
-            if len(pending_content) > 1500:
-                pending_context = "Live progress (pending.md, last entries):\n...\n" + pending_content[-1500:]
-            else:
-                pending_context = "Live progress (pending.md):\n" + pending_content
-        except OSError:
-            pass
-
-    # Load current mission state (live sync with run loop)
-    missions_context = ""
-    if pending_context:
-        missions_context = pending_context
-    elif MISSIONS_FILE.exists():
-        from app.missions import parse_sections
-        try:
-            sections = parse_sections(MISSIONS_FILE.read_text())
-        except OSError:
-            sections = {}
-        in_progress = sections.get("in_progress", [])
-        pending = sections.get("pending", [])
-        if in_progress or pending:
-            parts = []
-            if in_progress:
-                parts.append("In progress: " + "; ".join(in_progress[:3]))
-            if pending:
-                parts.append(f"Pending: {len(pending)} mission(s)")
-            missions_context = "\n".join(parts)
-
-    # Run loop status (CRITICAL for pause awareness)
-    run_loop_status = ""
-    pause_file = KOAN_ROOT / PAUSE_FILE
-    stop_file = KOAN_ROOT / STOP_FILE
-    if pause_file.exists():
-        run_loop_status = "\n\nRun loop status: ⏸️ PAUSED — Missions are NOT being executed"
-    elif stop_file.exists():
-        run_loop_status = "\n\nRun loop status: ⛔ STOP REQUESTED — Finishing current work"
-    else:
-        run_loop_status = "\n\nRun loop status: ▶️ RUNNING"
-
-    # Append run loop status to missions context
-    if missions_context:
-        missions_context += run_loop_status
-    else:
-        missions_context = f"No pending missions.{run_loop_status}"
-
-    # Determine time-of-day for natural tone
-    hour = datetime.now().hour
-    if hour < 7:
-        time_hint = "It's very early morning."
-    elif hour < 12:
-        time_hint = "It's morning."
-    elif hour < 18:
-        time_hint = "It's afternoon."
-    elif hour < 22:
-        time_hint = "It's evening."
-    else:
-        time_hint = "It's late night."
-
-    # Load tools description
-    tools_desc = get_tools_description()
-
-    from app.prompts import load_prompt
-
-    summary_budget = 0 if lite else 1500
-    summary_block = f"Summary of past sessions:\n{SUMMARY[:summary_budget]}" if SUMMARY and summary_budget else ""
-    prefs_block = f"About the human:\n{prefs_context}" if prefs_context else ""
-    journal_block = f"Today's journal (excerpt):\n{journal_context}" if journal_context else ""
-    missions_block = f"Current missions state:\n{missions_context}" if missions_context else ""
-
-    # Load emotional memory for relationship-aware responses
-    emotional_context = ""
-    if not lite:
-        emotional_path = INSTANCE_DIR / "memory" / "global" / "emotional-memory.md"
-        if emotional_path.exists():
-            content = emotional_path.read_text().strip()
-            # Take last 800 chars — enough for tone, not too heavy
-            if len(content) > 800:
-                emotional_context = "...\n" + content[-800:]
-            else:
-                emotional_context = content
-
-    prompt = load_prompt(
-        "chat",
-        SOUL=SOUL,
-        TOOLS_DESC=tools_desc or "",
-        PREFS=prefs_block,
-        SUMMARY=summary_block,
-        JOURNAL=journal_block,
-        MISSIONS=missions_block,
-        HISTORY=history_context or "",
-        TIME_HINT=time_hint,
-        TEXT=text,
+    return build_chat_prompt(
+        text, lite=lite,
+        instance_dir=INSTANCE_DIR,
+        koan_root=KOAN_ROOT,
+        soul=SOUL,
+        summary=SUMMARY,
+        conversation_history_file=CONVERSATION_HISTORY_FILE,
+        missions_file=MISSIONS_FILE,
+        project_path=PROJECT_PATH,
     )
-
-    # Inject language preference override
-    lang_instruction = get_language_instruction()
-    if lang_instruction:
-        prompt += f"\n\n{lang_instruction}"
-
-    # Inject emotional memory before the user message (if available)
-    if emotional_context:
-        prompt = prompt.replace(
-            f"« {text} »",
-            f"Emotional memory (relationship context, use to color your tone):\n{emotional_context}\n\nThe human sends you this message on Telegram:\n\n  « {text} »",
-        )
-
-    # Hard cap: if prompt exceeds 12k chars, force lite mode
-    MAX_PROMPT_CHARS = 12000
-    if len(prompt) > MAX_PROMPT_CHARS and not lite:
-        return _build_chat_prompt(text, lite=True)
-
-    return prompt
 
 
 def _clean_chat_response(text: str, user_message: str = "") -> str:
-    """Clean Claude CLI output for Telegram delivery.
-
-    Strips error artifacts, markdown, truncates for smartphone reading,
-    and expands bare #123 GitHub refs to clickable URLs.
-    """
-    from app.text_utils import clean_cli_response, expand_github_refs_auto
-
-    cleaned = clean_cli_response(text)
-    return expand_github_refs_auto(cleaned, user_message)
+    """Clean Claude CLI output for Telegram delivery."""
+    return clean_chat_response(text, user_message)
 
 
 def handle_chat(text: str):
@@ -566,6 +426,33 @@ def _handle_reaction_update(update: dict):
         log("reaction", f"Reaction {emoji} removed from message {message_id}")
 
 
+def _is_chat_process_running() -> bool:
+    """Check if the dedicated chat process is alive."""
+    from app.pid_manager import check_pidfile
+    return check_pidfile(KOAN_ROOT, "chat") is not None
+
+
+def _route_to_chat_process(text: str) -> bool:
+    """Try to route a chat message to the dedicated chat process.
+
+    Returns True if the message was successfully queued, False if the
+    chat process is not running (caller should fall back to worker thread).
+    """
+    if not _is_chat_process_running():
+        return False
+
+    from app.chat_process import write_to_inbox, has_pending_requests
+
+    # If there are already pending requests, tell the user we're busy
+    if has_pending_requests():
+        send_telegram("⏳ Busy with a previous message. Try again in a moment.")
+        return True
+
+    write_to_inbox(text)
+    log("chat", "Chat routed to dedicated chat process")
+    return True
+
+
 def handle_message(text: str):
     text = text.strip()
     if not text:
@@ -580,7 +467,9 @@ def handle_message(text: str):
     elif is_mission(text):
         handle_mission(text)
     else:
-        _run_in_worker(handle_chat, text)
+        # Try dedicated chat process first, fall back to worker thread
+        if not _route_to_chat_process(text):
+            _run_in_worker(handle_chat, text)
 
 
 def _ensure_runner_alive() -> None:
