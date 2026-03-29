@@ -202,3 +202,46 @@ class TestClassifyCliError:
         )
         result = classify_cli_error(1, stderr=stderr)
         assert result == ErrorCategory.AUTH
+
+    # -- False positive: loose quota patterns in stdout --------------------------
+
+    def test_no_false_positive_rate_limit_in_stdout(self):
+        """Loose patterns like 'rate limit' in stdout must NOT trigger QUOTA.
+
+        When Claude discusses API rate limiting in its response (stdout),
+        classify_cli_error should not confuse that with actual quota exhaustion.
+        Only strict patterns (e.g. 'out of extra usage') should match in stdout.
+        """
+        stdout = (
+            "Here's the plan for implementing rate limiting:\n"
+            "1. Add rate limit middleware to the API gateway\n"
+            "2. Configure per-endpoint rate limit thresholds\n"
+            "3. Return HTTP 429 with Retry-After header when limit exceeded"
+        )
+        result = classify_cli_error(1, stdout=stdout, stderr="Error: process crashed")
+        assert result != ErrorCategory.QUOTA, (
+            "Loose quota patterns in stdout caused false QUOTA classification"
+        )
+
+    def test_no_false_positive_usage_limit_in_stdout(self):
+        """'usage limit' in Claude's response should not trigger QUOTA."""
+        stdout = "You should set a usage limit on the API key to prevent abuse."
+        result = classify_cli_error(1, stdout=stdout, stderr="segfault")
+        assert result != ErrorCategory.QUOTA
+
+    def test_no_false_positive_too_many_requests_in_stdout(self):
+        """'too many requests' in Claude's code output should not trigger QUOTA."""
+        stdout = 'raise HTTPException(status_code=429, detail="too many requests")'
+        result = classify_cli_error(1, stdout=stdout, stderr="killed by signal")
+        assert result != ErrorCategory.QUOTA
+
+    def test_strict_patterns_still_match_in_stdout(self):
+        """Strict patterns like 'out of extra usage' should match even in stdout."""
+        stdout = "Error: out of extra usage quota for this billing period"
+        result = classify_cli_error(1, stdout=stdout)
+        assert result == ErrorCategory.QUOTA
+
+    def test_loose_patterns_match_in_stderr(self):
+        """Loose patterns should still match when they appear in stderr."""
+        result = classify_cli_error(1, stderr="rate limit exceeded")
+        assert result == ErrorCategory.QUOTA
