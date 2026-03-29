@@ -16,6 +16,7 @@ make status         # Show running process status
 make logs           # Watch live output from all processes + agent progress
 make run            # Start main agent loop (foreground)
 make awake          # Start Telegram bridge (foreground)
+make chat           # Start dedicated chat process (foreground)
 make ollama         # Start full Ollama stack (ollama serve + awake + run)
 make dashboard      # Start Flask web dashboard (port 5001)
 make test           # Run full test suite (pytest)
@@ -39,9 +40,10 @@ KOAN_ROOT=/tmp/test-koan .venv/bin/pytest koan/tests/test_missions.py -v
 
 ## Architecture
 
-Two parallel processes run independently:
+Three processes run independently:
 
-- **`awake.py`** (Telegram bridge): Polls Telegram every 3s. Classifies messages as "chat" (instant Claude reply) or "mission" (queued to `missions.md`). Flushes `outbox.md` messages back to Telegram. Command handling is split into `command_handlers.py`, shared state in `bridge_state.py`, colored log output in `bridge_log.py`.
+- **`awake.py`** (Telegram bridge): Polls Telegram every 3s. Classifies messages as "chat" (routed to chat process) or "mission" (queued to `missions.md`). Flushes `outbox.md` messages back to Telegram. Command handling is split into `command_handlers.py`, shared state in `bridge_state.py`, colored log output in `bridge_log.py`. Falls back to inline chat handling when the chat process is not running.
+- **`chat_process.py`** (dedicated chat handler): Watches `instance/chat-inbox.jsonl` for incoming chat requests. Invokes Claude CLI independently from the mission runner to prevent API contention. Uses exponential backoff retry (3 attempts, 2s/5s/10s delays) for resilience during active missions. Sends responses directly via Telegram.
 - **`run.py`** (agent loop): Pure-Python main loop with restart wrapper. Picks pending missions, transitions them through Pending→In Progress→Done/Failed lifecycle, executes via Claude Code CLI or direct skill dispatch. Signal handling uses double-tap CTRL-C protection (`protected_phase` context manager). Writes real-time status to `.koan-status`. Uses `mission_runner.py` (execution pipeline), `loop_manager.py` (sleep/focus/validation), `quota_handler.py` (quota detection), `contemplative_runner.py` (reflection sessions).
 
 Communication between processes happens through shared files in `instance/` with atomic writes (`utils.atomic_write()` using temp file + rename + `fcntl.flock()`). Exclusive process instances enforced via `pid_manager.py` (PID file + `fcntl.flock()`).
@@ -66,14 +68,16 @@ Communication between processes happens through shared files in `instance/` with
 - **`hooks.py`** — Hook system for extensible lifecycle events. Discovers `.py` modules from `instance/hooks/`, registers handlers by event name, fires them sequentially with per-handler error isolation. Events: `session_start`, `session_end`, `pre_mission`, `post_mission`.
 
 **Bridge (Telegram):**
-- **`awake.py`** — Main bridge loop, Telegram polling, outbox flushing
+- **`awake.py`** — Main bridge loop, Telegram polling, outbox flushing. Routes chat to dedicated chat process when available, falls back to inline worker thread.
+- **`chat_process.py`** — Dedicated chat process. Polls `chat-inbox.jsonl`, invokes Claude CLI, sends responses via Telegram. Exponential backoff retry (3 attempts). PID-managed.
+- **`chat_context.py`** — Shared chat prompt building (extracted from awake.py). Used by both awake.py (fallback) and chat_process.py.
 - **`command_handlers.py`** — Telegram command handlers extracted from awake.py; core commands (help, stop, pause, resume, skill) + skill dispatch
 - **`bridge_state.py`** — Shared module-level state for bridge (config, paths, registries); avoids circular imports
 - **`bridge_log.py`** — Colored log output for bridge process (mirrors run.py's `log()`)
 - **`notify.py`** — Telegram notification helper with flood protection
 
 **Process management:**
-- **`pid_manager.py`** — Exclusive PID file enforcement for run, awake, and ollama processes. Provides `start_all()` (unified stack launcher with provider auto-detection), `start_runner()`, `start_awake()`, `start_ollama()`, and `stop_processes()` (graceful SIGTERM with force-kill fallback)
+- **`pid_manager.py`** — Exclusive PID file enforcement for run, awake, chat, ollama, and dashboard processes. Provides `start_all()` (unified stack launcher with provider auto-detection), `start_runner()`, `start_awake()`, `start_chat()`, `start_ollama()`, and `stop_processes()` (graceful SIGTERM with force-kill fallback)
 - **`pause_manager.py`** — Pause state management (`.koan-pause` / `.koan-pause-reason` files). Supports time-bounded pauses with auto-resume (e.g., `/pause 2h`)
 - **`restart_manager.py`** — File-based restart signaling between bridge and run loop (`.koan-restart`)
 - **`focus_manager.py`** — Focus mode management (`.koan-focus` JSON); skips contemplative sessions when active
@@ -127,6 +131,7 @@ Extensible command plugin system. Each skill lives in `skills/<scope>/<skill-nam
 `instance/` (gitignored, copy from `instance.example/`) holds all runtime state:
 - `missions.md` — Task queue
 - `outbox.md` — Bot → Telegram message queue
+- `chat-inbox.jsonl` — Chat message queue (awake → chat process)
 - `config.yaml` — Per-instance configuration (tools, auto-merge rules)
 - `soul.md` — Agent personality definition
 - `memory/` — Global summary + per-project learnings/context
