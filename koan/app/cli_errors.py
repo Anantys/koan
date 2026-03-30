@@ -104,9 +104,14 @@ def classify_cli_error(
     # Check quota first — quota_handler is the authority for quota detection.
     # A 429 could be rate-limiting or quota exhaustion; defer to the
     # specialized detector which has provider-specific patterns.
-    from app.quota_handler import detect_quota_exhaustion
+    #
+    # IMPORTANT: Use the same split-detection strategy as handle_quota_exhaustion
+    # in quota_handler.py.  Loose patterns like "rate limit" and "too many
+    # requests" can appear in Claude's stdout when it discusses API rate
+    # limiting in its response text.  Only strict patterns are safe for stdout.
+    from app.quota_handler import _STRICT_QUOTA_RE, _QUOTA_RE
 
-    if detect_quota_exhaustion(combined):
+    if bool(_QUOTA_RE.search(stderr)) or bool(_STRICT_QUOTA_RE.search(stdout)):
         return ErrorCategory.QUOTA
 
     # Auth errors — Claude is logged out, needs human intervention.
