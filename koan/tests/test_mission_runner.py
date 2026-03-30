@@ -992,6 +992,7 @@ class TestRecordSessionOutcome:
             duration_minutes=15,
             journal_content="journal content",
             mission_title="",
+            last_action="",
         )
 
     @patch("app.session_tracker.record_outcome")

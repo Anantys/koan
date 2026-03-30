@@ -218,6 +218,7 @@ def record_outcome(
     duration_minutes: int,
     journal_content: str,
     mission_title: str = "",
+    last_action: str = "",
 ) -> dict:
     """Record a session outcome to session_outcomes.json.
 
@@ -228,6 +229,7 @@ def record_outcome(
         duration_minutes: Session duration in minutes.
         journal_content: The session's journal/pending content for classification.
         mission_title: The mission title for skill-aware classification.
+        last_action: Last tool action from JSONL session data (e.g. "Edit").
 
     Returns:
         The recorded outcome dict.
@@ -246,6 +248,8 @@ def record_outcome(
         "has_pr": _detect_pr_created(journal_content),
         "has_branch": _detect_branch_pushed(journal_content),
     }
+    if last_action:
+        entry["last_action"] = last_action
 
     outcomes_path = Path(instance_dir) / "session_outcomes.json"
 
