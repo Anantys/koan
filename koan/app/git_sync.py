@@ -344,7 +344,9 @@ class GitSync:
         # Phase 3: delete remote tracking refs for all locally-deleted branches
         if delete_remote:
             for branch in deleted:
-                run_git(self.project_path, "push", "origin", "--delete", branch)
+                result = run_git(self.project_path, "push", "origin", "--delete", branch)
+                if not result:
+                    log.debug("Remote deletion failed (may already be gone): %s", branch)
 
         return deleted
 
