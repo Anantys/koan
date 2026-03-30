@@ -50,6 +50,12 @@ def _get_prefix() -> str:
     return get_branch_prefix()
 
 
+def get_branch_cleanup_config() -> dict:
+    """Get branch cleanup configuration (lazy import to avoid circular deps)."""
+    from app.config import get_branch_cleanup_config as _get_cfg
+    return _get_cfg()
+
+
 def _normalize_branch(line: str, prefix: str = "") -> str:
     """Extract agent branch name from git branch output line.
 
@@ -275,8 +281,9 @@ class GitSync:
         self,
         merged: List[str],
         github_merged: Optional[List[str]] = None,
+        delete_remote: bool = True,
     ) -> List[str]:
-        """Delete local branches that are confirmed merged.
+        """Delete local (and optionally remote) branches that are confirmed merged.
 
         Only deletes branches matching the agent prefix. Never deletes
         the current branch.
@@ -289,14 +296,22 @@ class GitSync:
         squash/rebase merges as ancestors, but GitHub confirms the PR
         was merged).
 
+        When ``delete_remote`` is True (the default), each successfully
+        deleted local branch is also removed from the remote with
+        ``git push origin --delete``. Remote deletion failures are
+        tolerated silently — the remote branch may already be gone if
+        GitHub auto-deleted it after merge.
+
         Args:
             merged: Branch names from get_merged_branches() (git ancestry).
             github_merged: Branch names from get_github_merged_branches()
                 (GitHub API). Branches already in *merged* are skipped
                 (already handled by safe delete).
+            delete_remote: When True, also delete the branch on the remote
+                after successful local deletion.
 
         Returns:
-            List of successfully deleted branch names.
+            List of successfully deleted branch names (local deletions).
         """
         current = self._get_current_branch()
         prefix = _get_prefix()
@@ -326,6 +341,13 @@ class GitSync:
                 deleted.append(branch)
                 log.debug("Cleaned up squash-merged branch: %s", branch)
 
+        # Phase 3: delete remote tracking refs for all locally-deleted branches
+        if delete_remote:
+            for branch in deleted:
+                result = run_git(self.project_path, "push", "origin", "--delete", branch)
+                if not result:
+                    log.debug("Remote deletion failed (may already be gone): %s", branch)
+
         return deleted
 
     def build_sync_report(self) -> str:
@@ -337,8 +359,16 @@ class GitSync:
         unmerged = self.get_unmerged_branches()
         recent = self.get_recent_main_commits(since_hours=12)
 
-        # Auto-cleanup merged local branches (git + GitHub-detected)
-        cleaned = self.cleanup_merged_branches(merged, github_merged)
+        # Auto-cleanup merged branches (config-controlled)
+        cleanup_cfg = get_branch_cleanup_config()
+        if cleanup_cfg["enabled"]:
+            cleaned = self.cleanup_merged_branches(
+                merged,
+                github_merged,
+                delete_remote=cleanup_cfg["delete_remote_branches"],
+            )
+        else:
+            cleaned = []
 
         # Branches cleaned via GitHub detection should be removed from
         # the unmerged list (they were unmerged per git but merged per GitHub)
