@@ -3156,3 +3156,66 @@ class TestAsyncOutboxFlush:
             mgr._thread.join(timeout=2)
 
         assert call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Test: hard text truncation when lite mode still exceeds MAX_PROMPT_CHARS
+# ---------------------------------------------------------------------------
+
+class TestBuildChatPromptHardTruncation:
+    """Tests that _build_chat_prompt truncates user text as last resort."""
+
+    @patch("app.awake.save_conversation_message")
+    @patch("app.awake.load_recent_history", return_value=[])
+    @patch("app.awake.format_conversation_history", return_value="")
+    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.awake.get_chat_tools", return_value="")
+    @patch("app.awake.send_telegram", return_value=True)
+    @patch("app.awake.subprocess.run")
+    def test_truncates_long_message_in_lite_mode(
+        self, mock_run, mock_send, mock_tools, mock_tools_desc, mock_fmt,
+        mock_hist, mock_save, tmp_path
+    ):
+        """When lite=True and prompt still exceeds 12k, user text is truncated."""
+        from app.awake import _build_chat_prompt
+
+        # Create a very long user message that will exceed 12k even in lite mode
+        long_text = "x" * 15000
+
+        with patch("app.awake.INSTANCE_DIR", tmp_path), \
+             patch("app.awake.KOAN_ROOT", tmp_path), \
+             patch("app.awake.MISSIONS_FILE", tmp_path / "missions.md"), \
+             patch("app.awake.SOUL", "test soul"), \
+             patch("app.awake.SUMMARY", ""):
+            prompt = _build_chat_prompt(long_text, lite=True)
+
+        # Prompt must be at or under the cap
+        assert len(prompt) <= 12000, f"Prompt is {len(prompt)} chars, expected <= 12000"
+        # The truncation marker should be present
+        assert "[truncated]" in prompt
+
+    @patch("app.awake.save_conversation_message")
+    @patch("app.awake.load_recent_history", return_value=[])
+    @patch("app.awake.format_conversation_history", return_value="")
+    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.awake.get_chat_tools", return_value="")
+    @patch("app.awake.send_telegram", return_value=True)
+    @patch("app.awake.subprocess.run")
+    def test_short_message_not_truncated(
+        self, mock_run, mock_send, mock_tools, mock_tools_desc, mock_fmt,
+        mock_hist, mock_save, tmp_path
+    ):
+        """Short messages should not be truncated."""
+        from app.awake import _build_chat_prompt
+
+        short_text = "hello, how are you?"
+
+        with patch("app.awake.INSTANCE_DIR", tmp_path), \
+             patch("app.awake.KOAN_ROOT", tmp_path), \
+             patch("app.awake.MISSIONS_FILE", tmp_path / "missions.md"), \
+             patch("app.awake.SOUL", "test soul"), \
+             patch("app.awake.SUMMARY", ""):
+            prompt = _build_chat_prompt(short_text, lite=True)
+
+        assert "[truncated]" not in prompt
+        assert short_text in prompt

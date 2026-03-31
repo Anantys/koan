@@ -287,6 +287,14 @@ def _build_chat_prompt(text: str, *, lite: bool = False) -> str:
     if len(prompt) > MAX_PROMPT_CHARS and not lite:
         return _build_chat_prompt(text, lite=True)
 
+    # Last resort: if lite mode still exceeds the cap, truncate user message
+    if len(prompt) > MAX_PROMPT_CHARS:
+        overflow = len(prompt) - MAX_PROMPT_CHARS
+        max_text_len = max(200, len(text) - overflow - 50)  # 50 chars margin for ellipsis/safety
+        if len(text) > max_text_len:
+            truncated_text = text[:max_text_len] + "… [truncated]"
+            prompt = prompt.replace(text, truncated_text)
+
     return prompt
 
 
