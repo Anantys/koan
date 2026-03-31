@@ -1188,6 +1188,7 @@ class TestRegistryCacheThreadSafety:
         # Reset cache state
         monkeypatch.setattr(sd, "_cached_registry", None)
         monkeypatch.setattr(sd, "_cached_extra_dirs", None)
+        monkeypatch.setattr(sd, "_cached_mtime", 0.0)
 
         build_count = {"n": 0}
         build_lock = threading.Lock()

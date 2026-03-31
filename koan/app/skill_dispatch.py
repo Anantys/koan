@@ -841,11 +841,13 @@ def translate_cli_skill_mission(
     # on every mission check.  Lock protects against concurrent rebuild races
     # when multiple missions start simultaneously.  Mtime check invalidates
     # the cache when skills directories change on disk.
+    # current_mtime is read *inside* the lock so the stale-check and cache
+    # update are fully atomic — no thread can observe a partial update.
     global _cached_registry, _cached_extra_dirs, _cached_mtime
     instance_skills_dir = instance_dir / "skills"
     extra = tuple(p for p in [instance_skills_dir] if p.is_dir())
-    current_mtime = _get_skills_dir_mtime(instance_dir)
     with _registry_lock:
+        current_mtime = _get_skills_dir_mtime(instance_dir)
         if (_cached_registry is None
                 or extra != _cached_extra_dirs
                 or current_mtime > _cached_mtime):
