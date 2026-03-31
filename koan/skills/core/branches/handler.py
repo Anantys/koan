@@ -117,6 +117,7 @@ def _get_branches_info(project_path: str) -> List[Dict]:
                 except ValueError:
                     pass
 
+
     result = []
     for branch in sorted(branches):
         info = {"branch": branch, "has_pr": False}
@@ -150,15 +151,6 @@ def _get_branches_info(project_path: str) -> List[Dict]:
         else:
             info["diffstat"] = (0, 0, 0)
 
-        # Quick conflict check via merge-tree
-        rc, merge_out, _ = run_git(
-            "merge-tree",
-            "$(git merge-base origin/main " + branch + ")",
-            "origin/main", branch,
-            cwd=project_path, timeout=10,
-        )
-        # merge-tree with subcommand doesn't work that way in git,
-        # use a simpler approach
         info["conflicts"] = _check_conflicts(project_path, branch)
 
         result.append(info)
