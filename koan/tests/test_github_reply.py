@@ -400,6 +400,58 @@ class TestFetchThreadContextEdgeCases:
 
 
 # ---------------------------------------------------------------------------
+# fetch_thread_context — bot_username self-reply filtering
+# ---------------------------------------------------------------------------
+
+
+class TestFetchThreadContextBotFiltering:
+    """Tests that bot_username filters out the bot's own comments."""
+
+    @patch("app.github_reply.api")
+    def test_bot_comments_excluded_when_username_provided(self, mock_api):
+        """Comments from the bot are excluded when bot_username is set."""
+        mock_api.side_effect = [
+            json.dumps({"title": "T", "body": "B", "pull_request": None}),
+            json.dumps([
+                {"author": "human", "body": "real question"},
+                {"author": "koan-bot", "body": "my old reply"},
+                {"author": "other-user", "body": "follow-up"},
+            ]),
+        ]
+        ctx = fetch_thread_context("o", "r", "1", bot_username="koan-bot")
+        assert len(ctx["comments"]) == 2
+        authors = {c["author"] for c in ctx["comments"]}
+        assert "koan-bot" not in authors
+
+    @patch("app.github_reply.api")
+    def test_bot_filtering_case_insensitive(self, mock_api):
+        """Bot username filtering is case-insensitive."""
+        mock_api.side_effect = [
+            json.dumps({"title": "T", "body": "B", "pull_request": None}),
+            json.dumps([
+                {"author": "Koan-Bot", "body": "old reply"},
+                {"author": "human", "body": "question"},
+            ]),
+        ]
+        ctx = fetch_thread_context("o", "r", "1", bot_username="koan-bot")
+        assert len(ctx["comments"]) == 1
+        assert ctx["comments"][0]["author"] == "human"
+
+    @patch("app.github_reply.api")
+    def test_no_filtering_without_bot_username(self, mock_api):
+        """Without bot_username, all comments are included."""
+        mock_api.side_effect = [
+            json.dumps({"title": "T", "body": "B", "pull_request": None}),
+            json.dumps([
+                {"author": "koan-bot", "body": "my reply"},
+                {"author": "human", "body": "question"},
+            ]),
+        ]
+        ctx = fetch_thread_context("o", "r", "1")
+        assert len(ctx["comments"]) == 2
+
+
+# ---------------------------------------------------------------------------
 # generate_reply — additional edge cases
 # ---------------------------------------------------------------------------
 

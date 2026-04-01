@@ -32,7 +32,24 @@ from app.review_schema import validate_review
 _ISSUE_URL_RE = re.compile(ISSUE_URL_PATTERN)
 
 
-def _fetch_inline_review_comments(full_repo: str, pr_number: str) -> List[dict]:
+def _resolve_bot_username() -> str:
+    """Read the bot's GitHub nickname from config.yaml.
+
+    Returns empty string if not configured (filtering is then skipped).
+    """
+    try:
+        from app.utils import load_config
+        config = load_config()
+        github = config.get("github") or {}
+        return str(github.get("nickname", "")).strip()
+    except Exception as e:
+        print(f"[review_runner] could not resolve bot username: {e}", file=sys.stderr)
+        return ""
+
+
+def _fetch_inline_review_comments(
+    full_repo: str, pr_number: str, bot_username: str = "",
+) -> List[dict]:
     """Fetch inline review comments (code-level) for a PR."""
     results: List[dict] = []
     try:
@@ -46,6 +63,9 @@ def _fetch_inline_review_comments(full_repo: str, pr_number: str) -> List[dict]:
                 try:
                     item = json.loads(line)
                     if item.get("user_type") == "Bot":
+                        continue
+                    # Skip bot's own comments to prevent self-reply loops
+                    if bot_username and item["user"].lower() == bot_username.lower():
                         continue
                     results.append({
                         "id": item["id"],
@@ -62,7 +82,9 @@ def _fetch_inline_review_comments(full_repo: str, pr_number: str) -> List[dict]:
     return results
 
 
-def _fetch_issue_comments(full_repo: str, pr_number: str) -> List[dict]:
+def _fetch_issue_comments(
+    full_repo: str, pr_number: str, bot_username: str = "",
+) -> List[dict]:
     """Fetch issue-level comments (conversation thread) for a PR."""
     results: List[dict] = []
     try:
@@ -76,6 +98,9 @@ def _fetch_issue_comments(full_repo: str, pr_number: str) -> List[dict]:
                 try:
                     item = json.loads(line)
                     if item.get("user_type") == "Bot":
+                        continue
+                    # Skip bot's own comments to prevent self-reply loops
+                    if bot_username and item["user"].lower() == bot_username.lower():
                         continue
                     results.append({
                         "id": item["id"],
@@ -93,6 +118,7 @@ def _fetch_issue_comments(full_repo: str, pr_number: str) -> List[dict]:
 def fetch_repliable_comments(
     owner: str, repo: str, pr_number: str,
     parallel: bool = True,
+    bot_username: str = "",
 ) -> List[dict]:
     """Fetch PR comments with their IDs for reply targeting.
 
@@ -107,19 +133,21 @@ def fetch_repliable_comments(
         parallel: When True (default), fetch inline and issue comments
             concurrently using two threads. Set to False to force sequential
             fetching (useful in tests or single-threaded contexts).
+        bot_username: If provided, comments from this user are excluded
+            to prevent self-reply loops.
     """
     full_repo = f"{owner}/{repo}"
     comments: List[dict] = []
 
     if parallel:
         with ThreadPoolExecutor(max_workers=2) as pool:
-            f_inline = pool.submit(_fetch_inline_review_comments, full_repo, pr_number)
-            f_issue = pool.submit(_fetch_issue_comments, full_repo, pr_number)
+            f_inline = pool.submit(_fetch_inline_review_comments, full_repo, pr_number, bot_username)
+            f_issue = pool.submit(_fetch_issue_comments, full_repo, pr_number, bot_username)
             comments.extend(f_inline.result())
             comments.extend(f_issue.result())
     else:
-        comments.extend(_fetch_inline_review_comments(full_repo, pr_number))
-        comments.extend(_fetch_issue_comments(full_repo, pr_number))
+        comments.extend(_fetch_inline_review_comments(full_repo, pr_number, bot_username))
+        comments.extend(_fetch_issue_comments(full_repo, pr_number, bot_username))
 
     return comments
 
@@ -772,13 +800,16 @@ def run_review(
 
     full_repo = f"{owner}/{repo}"
 
+    # Resolve bot username to exclude own comments from repliable list
+    bot_username = _resolve_bot_username()
+
     # Step 1: Fetch PR context and repliable comments in parallel
     notify_fn(f"Reviewing PR #{pr_number} ({full_repo})...")
     if concurrency_enabled and github_workers > 1:
         with ThreadPoolExecutor(max_workers=min(2, github_workers)) as pool:
             f_context = pool.submit(fetch_pr_context, owner, repo, pr_number)
             f_comments = pool.submit(
-                fetch_repliable_comments, owner, repo, pr_number, True,
+                fetch_repliable_comments, owner, repo, pr_number, True, bot_username,
             )
             try:
                 context = f_context.result()
@@ -790,7 +821,9 @@ def run_review(
             context = fetch_pr_context(owner, repo, pr_number)
         except Exception as e:
             return False, f"Failed to fetch PR context: {e}", None
-        repliable_comments = fetch_repliable_comments(owner, repo, pr_number, parallel=False)
+        repliable_comments = fetch_repliable_comments(
+            owner, repo, pr_number, parallel=False, bot_username=bot_username,
+        )
 
     if not context.get("diff"):
         return False, f"PR #{pr_number} has no diff — nothing to review.", None

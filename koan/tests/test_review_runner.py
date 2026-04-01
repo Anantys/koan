@@ -1714,8 +1714,8 @@ class TestFetchRepliableCommentsParallel:
 
         comments = fetch_repliable_comments("owner", "repo", "42", parallel=False)
 
-        mock_inline.assert_called_once_with("owner/repo", "42")
-        mock_issue.assert_called_once_with("owner/repo", "42")
+        mock_inline.assert_called_once_with("owner/repo", "42", "")
+        mock_issue.assert_called_once_with("owner/repo", "42", "")
         assert len(comments) == 2
         # Inline results come first in sequential mode
         assert comments[0]["id"] == 1
@@ -1745,6 +1745,68 @@ class TestFetchRepliableCommentsParallel:
 
         comments = fetch_repliable_comments("owner", "repo", "1", parallel=False)
         assert comments == []
+
+
+# ---------------------------------------------------------------------------
+# Self-reply prevention: bot_username filtering
+# ---------------------------------------------------------------------------
+
+class TestSelfReplyPrevention:
+    """Tests that bot's own comments are excluded when bot_username is provided."""
+
+    @patch("app.review_runner.run_gh")
+    def test_inline_comments_exclude_bot_username(self, mock_gh):
+        """_fetch_inline_review_comments filters by bot_username."""
+        from app.review_runner import _fetch_inline_review_comments
+
+        mock_gh.return_value = "\n".join([
+            json.dumps({"id": 1, "user": "human", "body": "fix this", "path": "a.py", "line": 10, "user_type": "User"}),
+            json.dumps({"id": 2, "user": "koan-bot", "body": "done", "path": "a.py", "line": 10, "user_type": "User"}),
+            json.dumps({"id": 3, "user": "other", "body": "lgtm", "path": "b.py", "line": 5, "user_type": "User"}),
+        ])
+
+        result = _fetch_inline_review_comments("owner/repo", "1", bot_username="koan-bot")
+        assert len(result) == 2
+        assert {c["id"] for c in result} == {1, 3}
+
+    @patch("app.review_runner.run_gh")
+    def test_issue_comments_exclude_bot_username(self, mock_gh):
+        """_fetch_issue_comments filters by bot_username."""
+        from app.review_runner import _fetch_issue_comments
+
+        mock_gh.return_value = "\n".join([
+            json.dumps({"id": 10, "user": "human", "body": "question", "user_type": "User"}),
+            json.dumps({"id": 11, "user": "Koan-Bot", "body": "my reply", "user_type": "User"}),
+        ])
+
+        # Case-insensitive match
+        result = _fetch_issue_comments("owner/repo", "1", bot_username="koan-bot")
+        assert len(result) == 1
+        assert result[0]["id"] == 10
+
+    @patch("app.review_runner.run_gh")
+    def test_no_filtering_when_bot_username_empty(self, mock_gh):
+        """Without bot_username, no extra filtering occurs."""
+        from app.review_runner import _fetch_inline_review_comments
+
+        mock_gh.return_value = json.dumps(
+            {"id": 1, "user": "koan-bot", "body": "x", "path": "a.py", "line": 1, "user_type": "User"}
+        )
+
+        result = _fetch_inline_review_comments("owner/repo", "1", bot_username="")
+        assert len(result) == 1
+
+    @patch("app.review_runner._fetch_issue_comments")
+    @patch("app.review_runner._fetch_inline_review_comments")
+    def test_fetch_repliable_passes_bot_username(self, mock_inline, mock_issue):
+        """fetch_repliable_comments forwards bot_username to helpers."""
+        mock_inline.return_value = []
+        mock_issue.return_value = []
+
+        fetch_repliable_comments("o", "r", "1", parallel=False, bot_username="mybot")
+
+        mock_inline.assert_called_once_with("o/r", "1", "mybot")
+        mock_issue.assert_called_once_with("o/r", "1", "mybot")
 
 
 # ---------------------------------------------------------------------------

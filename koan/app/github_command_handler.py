@@ -734,8 +734,8 @@ def _try_reply(
         post_reply,
     )
 
-    # Fetch context and generate reply
-    thread_context = fetch_thread_context(owner, repo, issue_number)
+    # Fetch context and generate reply (exclude bot's own comments to avoid self-reply)
+    thread_context = fetch_thread_context(owner, repo, issue_number, bot_username=bot_username)
     reply_text = generate_reply(
         question=question_text,
         thread_context=thread_context,

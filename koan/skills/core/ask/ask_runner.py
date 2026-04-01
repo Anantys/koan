@@ -15,6 +15,18 @@ from pathlib import Path
 from typing import Tuple
 
 
+def _resolve_bot_username(instance_dir: str) -> str:
+    """Read the bot's GitHub nickname from config.yaml."""
+    try:
+        from app.utils import load_config
+        config = load_config()
+        github = config.get("github") or {}
+        return str(github.get("nickname", "")).strip()
+    except Exception as e:
+        print(f"[ask_runner] could not resolve bot username: {e}", file=sys.stderr)
+    return ""
+
+
 def run_ask(
     comment_url: str,
     project_path: str,
@@ -61,8 +73,11 @@ def run_ask(
 
     print(f"→ Fetching question from {owner}/{repo}#{issue_number} (comment {comment_id})")
 
-    # Fetch thread context
-    thread_context = github_reply.fetch_thread_context(owner, repo, issue_number)
+    # Fetch thread context (exclude bot's own comments to avoid self-reply)
+    bot_username = _resolve_bot_username(instance_dir)
+    thread_context = github_reply.fetch_thread_context(
+        owner, repo, issue_number, bot_username=bot_username,
+    )
 
     # Fetch the question text
     question_text, comment_author = _fetch_question_and_author(
