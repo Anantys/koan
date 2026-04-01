@@ -66,7 +66,7 @@ def drain_one(instance_dir: str) -> Optional[str]:
     Called once per iteration from the run loop. Checks the oldest entry,
     and based on CI status:
     - success: remove from queue, return success message
-    - failure: inject /ci_check mission, remove from queue
+    - failure: notify user via outbox, remove from queue
     - pending: leave in queue (try again next iteration)
     - none: remove from queue (no CI configured)
     - expired: remove from queue (older than 24h)
@@ -90,8 +90,8 @@ def drain_one(instance_dir: str) -> Optional[str]:
 
     if status == "failure":
         ci_queue.remove(instance_dir, pr_url)
-        _inject_ci_fix_mission(instance_dir, pr_url, entry)
-        return f"CI failed for PR #{pr_number} — /ci_check mission queued"
+        _notify_ci_failure(instance_dir, pr_url, entry)
+        return f"CI failed for PR #{pr_number} — notification sent"
 
     if status == "none":
         ci_queue.remove(instance_dir, pr_url)
@@ -101,24 +101,29 @@ def drain_one(instance_dir: str) -> Optional[str]:
     return None
 
 
-def _inject_ci_fix_mission(instance_dir: str, pr_url: str, entry: dict):
-    """Inject a /ci_check mission into the pending queue."""
-    from app.missions import insert_mission
-    from app.utils import modify_missions_file
+def _notify_ci_failure(instance_dir: str, pr_url: str, entry: dict):
+    """Notify user about CI failure via outbox.
 
-    missions_path = Path(instance_dir) / "missions.md"
+    Previous approach injected a /ci_check mission, but the subprocess-based
+    CI fix pipeline was unreliable (100% failure rate across all projects).
+    Now we just notify — the user can /rebase the PR to trigger CI fix.
+    """
+    pr_number = entry.get("pr_number", "?")
     project_path = entry.get("project_path", "")
-
-    # Determine project name from path for the mission tag
     project_name = _project_name_from_path(project_path)
-    tag = f"[project:{project_name}] " if project_name else ""
+    tag = f"[{project_name}] " if project_name else ""
 
-    mission_text = f"- {tag}/ci_check {pr_url}"
+    outbox_path = Path(instance_dir) / "outbox.md"
+    message = f"⚠️ {tag}CI failed on PR #{pr_number}: {pr_url}\nUse `/rebase {pr_url}` to retry with CI fix."
 
-    modify_missions_file(
-        missions_path,
-        lambda content: insert_mission(content, mission_text, urgent=True),
-    )
+    try:
+        from app.utils import atomic_write
+        existing = ""
+        if outbox_path.exists():
+            existing = outbox_path.read_text(encoding="utf-8")
+        atomic_write(outbox_path, existing + message + "\n")
+    except Exception as e:
+        print(f"[ci_queue] Failed to write outbox notification: {e}", file=sys.stderr)
 
 
 def _project_name_from_path(project_path: str) -> str:

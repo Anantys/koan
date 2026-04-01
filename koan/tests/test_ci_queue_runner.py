@@ -1,6 +1,8 @@
-"""Tests for ci_queue_runner — focuses on error handling in run_ci_check_and_fix and main()."""
+"""Tests for ci_queue_runner — CI queue drain, notification, and error handling."""
 
 import json
+import os
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -133,8 +135,8 @@ class TestDrainOneErrorHandling:
         assert "passed" in result.lower()
         mock_remove.assert_called_once_with("/tmp/instance", PR_URL)
 
-    def test_drain_one_failure_injects_mission(self):
-        """On CI failure, a /ci_check mission is injected."""
+    def test_drain_one_failure_sends_notification(self):
+        """On CI failure, a notification is sent via outbox (not a /ci_check mission)."""
         from app.ci_queue_runner import drain_one
 
         entry = {
@@ -152,10 +154,66 @@ class TestDrainOneErrorHandling:
                 return_value=("failure", 456),
             ),
             patch(
-                "app.ci_queue_runner._inject_ci_fix_mission",
-            ) as mock_inject,
+                "app.ci_queue_runner._notify_ci_failure",
+            ) as mock_notify,
         ):
             result = drain_one("/tmp/instance")
 
         assert "failed" in result.lower()
-        mock_inject.assert_called_once_with("/tmp/instance", PR_URL, entry)
+        assert "notification" in result.lower()
+        mock_notify.assert_called_once_with("/tmp/instance", PR_URL, entry)
+
+
+class TestNotifyCiFailure:
+    """Verify _notify_ci_failure writes to outbox instead of missions."""
+
+    def test_writes_outbox_with_pr_info(self, tmp_path):
+        """Notification includes PR number, URL, and rebase suggestion."""
+        from app.ci_queue_runner import _notify_ci_failure
+
+        instance_dir = str(tmp_path)
+        outbox = tmp_path / "outbox.md"
+        outbox.write_text("")
+
+        entry = {
+            "pr_url": PR_URL,
+            "pr_number": 42,
+            "project_path": "/tmp/my-project",
+        }
+
+        _notify_ci_failure(instance_dir, PR_URL, entry)
+
+        content = outbox.read_text()
+        assert "CI failed" in content
+        assert "PR #42" in content
+        assert PR_URL in content
+        assert "/rebase" in content
+
+    def test_includes_project_name(self, tmp_path):
+        """Notification includes project name derived from path."""
+        from app.ci_queue_runner import _notify_ci_failure
+
+        instance_dir = str(tmp_path)
+        outbox = tmp_path / "outbox.md"
+        outbox.write_text("")
+
+        entry = {
+            "pr_url": PR_URL,
+            "pr_number": 42,
+            "project_path": "/home/koan/workspace/YAML-Syck",
+        }
+
+        _notify_ci_failure(instance_dir, PR_URL, entry)
+
+        content = outbox.read_text()
+        assert "YAML-Syck" in content
+
+    def test_no_crash_when_outbox_missing(self, tmp_path):
+        """If outbox doesn't exist yet, the notification creates it."""
+        from app.ci_queue_runner import _notify_ci_failure
+
+        instance_dir = str(tmp_path)
+        entry = {"pr_url": PR_URL, "pr_number": 42, "project_path": ""}
+
+        # Should not raise even without existing outbox
+        _notify_ci_failure(instance_dir, PR_URL, entry)

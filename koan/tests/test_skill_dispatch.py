@@ -227,16 +227,10 @@ class TestBuildSkillCommand:
         cmd = self._build("recreate", "no url here")
         assert cmd is None
 
-    def test_ci_check(self):
+    def test_ci_check_removed(self):
+        """ci_check was removed from skill dispatch — now handled via notification."""
         url = "https://github.com/sukria/koan/pull/42"
         cmd = self._build("ci_check", url)
-        assert cmd is not None
-        assert "app.ci_queue_runner" in cmd
-        assert url in cmd
-        assert "--project-path" in cmd
-
-    def test_ci_check_no_url(self):
-        cmd = self._build("ci_check", "no url here")
         assert cmd is None
 
     def test_ai(self):
@@ -426,19 +420,10 @@ class TestDispatchSkillMission:
         assert "--context" in cmd
         assert "Phase 1 to 3" in cmd
 
-    def test_ci_check_dispatch(self):
-        """ci_check missions injected by ci_queue_runner must dispatch correctly."""
+    def test_ci_check_no_longer_dispatched(self):
+        """ci_check was removed from dispatch — now handled via notification."""
         cmd = self._dispatch("/ci_check https://github.com/sukria/koan/pull/42")
-        assert cmd is not None
-        assert "app.ci_queue_runner" in cmd
-        assert "https://github.com/sukria/koan/pull/42" in cmd
-        assert "--project-path" in cmd
-
-    def test_ci_check_with_project_tag(self):
-        """ci_check missions include [project:X] tags from ci_queue_runner."""
-        cmd = self._dispatch("[project:koan] /ci_check https://github.com/sukria/koan/pull/42")
-        assert cmd is not None
-        assert "app.ci_queue_runner" in cmd
+        assert cmd is None
 
     def test_regular_mission_returns_none(self):
         cmd = self._dispatch("Fix the login bug")
@@ -1039,13 +1024,9 @@ class TestValidateSkillArgs:
         assert err is not None
         assert "/check requires a GitHub URL" in err
 
-    def test_ci_check_valid_url(self):
+    def test_ci_check_returns_none(self):
+        """ci_check removed from skill dispatch — unknown command returns None."""
         assert validate_skill_args("ci_check", "https://github.com/sukria/koan/pull/42") is None
-
-    def test_ci_check_no_url(self):
-        err = validate_skill_args("ci_check", "no url here")
-        assert err is not None
-        assert "/ci_check requires a PR URL" in err
 
     def test_plan_always_valid(self):
         """Plan accepts free text — no arg validation error."""
