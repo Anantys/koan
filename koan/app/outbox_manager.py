@@ -256,8 +256,35 @@ class OutboxManager:
         except Exception as e:
             log("error", f"Background flush_outbox failed: {e}")
 
+    def _is_mission_active(self) -> bool:
+        """Check if a mission is currently running by reading .koan-status.
+
+        Uses a lightweight file read (no missions.py import) to avoid
+        import cycles. The status file is written by run.py and contains
+        text like "Run 1/5 — executing mission on project".
+        """
+        from app.signals import STATUS_FILE
+
+        status_file = self._instance_dir.parent / STATUS_FILE
+        try:
+            if not status_file.exists():
+                return False
+            status = status_file.read_text().strip().lower()
+            return "executing mission" in status or "skill dispatch" in status
+        except OSError:
+            return False
+
     def _format_message(self, raw_content: str) -> str:
-        """Format outbox content via Claude with full personality context."""
+        """Format outbox content via Claude with full personality context.
+
+        When a mission is actively running, skips Claude formatting and
+        uses fallback_format() to reduce API contention (Phase 1 of
+        chat process decoupling — see issue #1084).
+        """
+        if self._is_mission_active():
+            log("outbox", "Mission active — using fallback format to reduce API contention")
+            return fallback_format(raw_content)
+
         try:
             soul = load_soul(self._instance_dir)
             prefs = load_human_prefs(self._instance_dir)
