@@ -162,8 +162,18 @@ def _get_branches_info(project_path: str) -> List[Dict]:
         else:
             info["diffstat"] = (0, 0, 0)
 
-        # Conflict check via merge-tree (two-step: find base, then simulate merge)
-        info["conflicts"] = _check_conflicts(project_path, branch)
+        # Quick conflict check via merge-tree --merge (git 2.38+)
+        rc, merge_out, _ = run_git(
+            "merge-tree", "--merge", "origin/main", branch,
+            cwd=project_path, timeout=10,
+        )
+        if rc == 0:
+            info["conflicts"] = False
+        elif rc == 1:
+            info["conflicts"] = True
+        else:
+            # Fallback for older git versions without --merge support
+            info["conflicts"] = _check_conflicts(project_path, branch)
 
         result.append(info)
 
