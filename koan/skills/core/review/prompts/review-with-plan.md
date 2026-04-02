@@ -15,6 +15,8 @@ structured plan. Your task has two parts:
 
 {BODY}
 
+{ISSUE_CONTEXT}
+
 ---
 
 ## Original Plan
