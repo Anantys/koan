@@ -248,6 +248,22 @@ class TestAttemptCiFixes:
         assert result is False
         assert any("no changes" in a.lower() for a in actions_log)
 
+    def test_build_ci_fix_prompt_loads_without_error(self):
+        """_build_ci_fix_prompt must load ci_fix.md without FileNotFoundError.
+
+        Regression: ci_queue_runner called _build_ci_fix_prompt without a
+        skill_dir, which fell back to system-prompts/ci_fix.md — but that
+        file didn't exist, so every /ci_check mission crashed with
+        FileNotFoundError and never attempted a fix.
+        """
+        from app.rebase_pr import _build_ci_fix_prompt
+
+        context = {"title": "fix: test", "branch": "fix-branch", "base": "main"}
+        prompt = _build_ci_fix_prompt(context, "Error: test failed", "diff content")
+
+        assert "fix-branch" in prompt
+        assert "Error: test failed" in prompt
+
     def test_successful_fix_and_push(self):
         """If Claude fixes and push succeeds, reports success when CI is pending."""
         from app.ci_queue_runner import _attempt_ci_fixes
