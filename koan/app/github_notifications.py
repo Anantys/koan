@@ -631,6 +631,15 @@ def check_already_processed(comment_id: str, bot_username: str,
     if comment_id in _processed_comments:
         return True
 
+    # Check persistent file tracker (survives restarts)
+    koan_root = os.environ.get("KOAN_ROOT", "")
+    if koan_root:
+        from app.github_notification_tracker import is_comment_tracked
+        instance_dir = os.path.join(koan_root, "instance")
+        if is_comment_tracked(instance_dir, comment_id):
+            _processed_comments.add(comment_id)
+            return True
+
     # Check GitHub reactions — any reaction from the bot means processed
     endpoint = _reactions_endpoint(comment_api_url, owner, repo, comment_id)
     try:

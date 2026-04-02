@@ -734,6 +734,74 @@ class TestDashboardConfig:
             assert get_dashboard_port() == 8080
 
 
+# --- get_mcp_configs ---
+
+
+class TestGetMcpConfigs:
+    def test_default_empty(self):
+        from app.config import get_mcp_configs
+
+        with _mock_config({}):
+            with patch("app.config._load_project_overrides", return_value={}):
+                assert get_mcp_configs() == []
+
+    def test_global_list(self):
+        from app.config import get_mcp_configs
+
+        with _mock_config({"mcp": ["/path/to/mcp.json"]}):
+            with patch("app.config._load_project_overrides", return_value={}):
+                assert get_mcp_configs() == ["/path/to/mcp.json"]
+
+    def test_global_multiple(self):
+        from app.config import get_mcp_configs
+
+        configs = ["/path/a.json", "/path/b.json"]
+        with _mock_config({"mcp": configs}):
+            with patch("app.config._load_project_overrides", return_value={}):
+                assert get_mcp_configs() == configs
+
+    def test_non_list_returns_empty(self):
+        from app.config import get_mcp_configs
+
+        with _mock_config({"mcp": "not-a-list"}):
+            with patch("app.config._load_project_overrides", return_value={}):
+                assert get_mcp_configs() == []
+
+    def test_filters_non_string_entries(self):
+        from app.config import get_mcp_configs
+
+        with _mock_config({"mcp": ["/valid.json", 42, "", None]}):
+            with patch("app.config._load_project_overrides", return_value={}):
+                assert get_mcp_configs() == ["/valid.json"]
+
+    def test_project_override_replaces_global(self):
+        from app.config import get_mcp_configs
+
+        with _mock_config({"mcp": ["/global.json"]}):
+            with patch(
+                "app.config._load_project_overrides",
+                return_value={"mcp": ["/project.json"]},
+            ):
+                assert get_mcp_configs("myproject") == ["/project.json"]
+
+    def test_project_override_absent_uses_global(self):
+        from app.config import get_mcp_configs
+
+        with _mock_config({"mcp": ["/global.json"]}):
+            with patch("app.config._load_project_overrides", return_value={}):
+                assert get_mcp_configs("myproject") == ["/global.json"]
+
+    def test_project_override_empty_list_clears_global(self):
+        from app.config import get_mcp_configs
+
+        with _mock_config({"mcp": ["/global.json"]}):
+            with patch(
+                "app.config._load_project_overrides",
+                return_value={"mcp": []},
+            ):
+                assert get_mcp_configs("myproject") == []
+
+
 class TestBackwardCompat:
     """Verify that importing from app.utils still works."""
 

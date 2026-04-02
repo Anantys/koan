@@ -185,7 +185,7 @@ def build_mission_command(
     Returns:
         Complete command list ready for subprocess.
     """
-    from app.config import get_mission_tools, get_model_config
+    from app.config import get_mission_tools, get_model_config, get_mcp_configs
     from app.cli_provider import build_full_command
 
     # Get mission tools (comma-separated list)
@@ -203,6 +203,9 @@ def build_mission_command(
         model = models["review_mode"]
     fallback = models["fallback"]
 
+    # Get MCP server configs
+    mcp_configs = get_mcp_configs(project_name)
+
     # Build provider-specific command
     cmd = build_full_command(
         prompt=prompt,
@@ -210,6 +213,7 @@ def build_mission_command(
         model=model,
         fallback=fallback,
         output_format="json",
+        mcp_configs=mcp_configs,
         plugin_dirs=plugin_dirs,
         system_prompt=system_prompt,
     )

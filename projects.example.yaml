@@ -51,6 +51,11 @@ defaults:
   #   mission: ["Read", "Glob", "Grep", "Edit", "Write", "Bash"]
   #   chat: ["Read", "Glob", "Grep"]
 
+  # MCP server configuration — paths to MCP config JSON files.
+  # Replaces the global mcp list from config.yaml when set.
+  # mcp:
+  #   - "/path/to/project-specific-mcp.json"
+
   # Exploration — controls autonomous work on this project.
   #
   # When enabled, the agent may autonomously:

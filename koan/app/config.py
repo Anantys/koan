@@ -178,6 +178,34 @@ def get_model_config(project_name: str = "") -> dict:
     return result
 
 
+def get_mcp_configs(project_name: str = "") -> List[str]:
+    """Get MCP server config file paths from config.yaml with per-project overrides.
+
+    Resolution order:
+    1. projects.yaml mcp list for the project (replaces global if set)
+    2. config.yaml mcp list
+    3. Empty list (no MCP servers)
+
+    Args:
+        project_name: Optional project name for per-project overrides.
+
+    Returns:
+        List of file paths to MCP config JSON files.
+    """
+    config = _load_config()
+    result = config.get("mcp", [])
+    if not isinstance(result, list):
+        result = []
+
+    # Per-project override replaces global list entirely
+    project_overrides = _load_project_overrides(project_name)
+    project_mcp = project_overrides.get("mcp")
+    if project_mcp is not None:
+        result = project_mcp if isinstance(project_mcp, list) else []
+
+    return [entry for entry in result if isinstance(entry, str) and entry]
+
+
 def _safe_int(value, default: int) -> int:
     """Safely convert a config value to int, returning default on failure."""
     try:

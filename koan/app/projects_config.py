@@ -293,6 +293,19 @@ def get_project_tools(config: dict, project_name: str) -> dict:
     return tools
 
 
+def get_project_mcp(config: dict, project_name: str) -> list:
+    """Get MCP config file paths for a project from projects.yaml.
+
+    Returns a list of file path strings. Only includes entries explicitly
+    set — caller should fall back to global config.yaml mcp list.
+    """
+    project_cfg = get_project_config(config, project_name)
+    mcp = project_cfg.get("mcp", [])
+    if not isinstance(mcp, list):
+        return []
+    return mcp
+
+
 def get_project_exploration(config: dict, project_name: str) -> bool:
     """Get exploration flag for a project from projects.yaml.
 

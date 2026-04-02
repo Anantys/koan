@@ -122,12 +122,86 @@ projects:
 ### MCP (Model Context Protocol) Servers
 
 Claude Code supports MCP servers for extended capabilities (browser,
-databases, APIs):
+databases, APIs). Add MCP config file paths to `config.yaml`:
 
 ```yaml
+# config.yaml — global MCP servers for all projects
 mcp:
   - "/path/to/mcp-config.json"
 ```
+
+Per-project overrides are supported in `projects.yaml` — a project-level
+`mcp` list replaces the global list entirely:
+
+```yaml
+# projects.yaml — project-specific MCP servers
+projects:
+  my-project:
+    path: "/home/user/my-project"
+    mcp:
+      - "/path/to/project-specific-mcp.json"
+```
+
+The MCP config files use the standard Claude Code JSON format (same as
+`~/.claude/mcp.json` or `--mcp-config` flag).
+
+#### Permissions for MCP Tools
+
+When Koan runs as a systemd service (or any non-interactive context),
+Claude CLI cannot prompt for tool approval. MCP tools will be
+**silently denied** unless pre-approved.
+
+> **Note:** `skip_permissions: true` does **not** work when Koan runs
+> as root — Claude CLI rejects `--dangerously-skip-permissions` with
+> root/sudo privileges. You must use the allowlist approach below.
+
+To pre-approve MCP tools, create a `.claude/settings.local.json` file
+**in the target project's root directory** (the `path` from
+`projects.yaml`). This file is loaded by Claude CLI when it runs with
+that project as its working directory.
+
+Example — allowlisting the Atlassian MCP server's Jira tools:
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "mcp__atlassian__getAccessibleAtlassianResources",
+      "mcp__atlassian__getJiraIssue",
+      "mcp__atlassian__searchJiraIssuesUsingJql",
+      "mcp__atlassian__getVisibleJiraProjects",
+      "mcp__atlassian__getJiraIssueTypeMetaWithFields",
+      "mcp__atlassian__getJiraProjectIssueTypesMetadata",
+      "mcp__atlassian__createJiraIssue",
+      "mcp__atlassian__editJiraIssue",
+      "mcp__atlassian__addCommentToJiraIssue",
+      "mcp__atlassian__getTransitionsForJiraIssue",
+      "mcp__atlassian__transitionJiraIssue",
+      "mcp__atlassian__lookupJiraAccountId",
+      "mcp__atlassian__getIssueLinkTypes",
+      "mcp__atlassian__createIssueLink",
+      "mcp__atlassian__getJiraIssueRemoteIssueLinks",
+      "mcp__atlassian__searchAtlassian",
+      "mcp__atlassian__fetchAtlassian",
+      "mcp__atlassian__atlassianUserInfo"
+    ]
+  }
+}
+```
+
+The tool name format is `mcp__<server-name>__<toolName>` where
+`<server-name>` matches the key in your MCP config JSON (e.g.,
+`"atlassian"` in `~/.claude.json`). To find the exact tool names,
+run Claude CLI interactively once — denied tools appear in the JSON
+output under `permission_denials`.
+
+**Setup checklist for each project using MCP:**
+
+1. Add the MCP config path to `projects.yaml` (under the project's
+   `mcp:` key) or globally in `config.yaml`
+2. Create `<project-path>/.claude/settings.local.json` with the
+   tool allowlist
+3. Restart Koan (`systemctl restart koan.service`)
 
 ### Max Turns
 

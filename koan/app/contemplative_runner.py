@@ -55,14 +55,16 @@ def build_contemplative_command(
     )
 
     from app.cli_provider import build_full_command
-    from app.config import get_contemplative_tools
+    from app.config import get_contemplative_tools, get_mcp_configs
 
     tools_str = get_contemplative_tools(project_name=project_name)
     allowed_tools = [t.strip() for t in tools_str.split(",") if t.strip()]
+    mcp_configs = get_mcp_configs(project_name)
 
     cmd = build_full_command(
         prompt=prompt,
         allowed_tools=allowed_tools,
+        mcp_configs=mcp_configs,
         max_turns=10,
     )
     if extra_flags:

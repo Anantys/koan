@@ -474,7 +474,7 @@ def _fetch_and_filter_comment(notification: dict, bot_username: str, max_age_hou
             repo_name,
         )
         need_thread_search = True
-    elif f"@{bot_username}".lower() not in comment.get("body", "").lower():
+    elif f"@{bot_username}".lower() not in (comment.get("body") or "").lower():
         # latest_comment_url shifted to a comment that doesn't mention the bot
         # (e.g., CI bot commented after the @mention, or PR body was returned)
         comment_author = comment.get("user", {}).get("login", "?")
@@ -1081,6 +1081,11 @@ def process_single_notification(
     comment_id = str(comment.get("id", ""))
     comment_api_url = comment.get("url", "")
     add_reaction(owner, repo, comment_id, comment_api_url=comment_api_url)
+
+    # Persist locally so restarts don't re-queue if reaction API failed
+    from app.github_notification_tracker import track_comment
+    instance_dir = str(Path(koan_root) / "instance")
+    track_comment(instance_dir, comment_id)
 
     # Mark notification as read
     mark_notification_read(str(notification.get("id", "")))

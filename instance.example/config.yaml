@@ -150,9 +150,19 @@ tools:
 # Can also be set via KOAN_CLI_PROVIDER env var (overrides this)
 cli_provider: "claude"
 
-# Skip permission prompts — required for MCP tools to work in autonomous mode.
-# Only enable this if you understand the security implications.
+# Skip permission prompts — adds --dangerously-skip-permissions to Claude CLI.
+# WARNING: Does NOT work when Koan runs as root (Claude CLI rejects it).
+# For MCP tools, use .claude/settings.local.json allowlists instead.
+# See docs/provider-claude.md for details.
 # skip_permissions: false
+
+# MCP server configuration — paths to MCP config JSON files.
+# Passed as --mcp-config to the Claude CLI.
+# For autonomous mode, pre-approve MCP tools in the project's
+# .claude/settings.local.json (see docs/provider-claude.md).
+# Per-project overrides available in projects.yaml (replaces global list).
+# mcp:
+#   - "/path/to/mcp-servers.json"
 
 # Local LLM configuration (used when cli_provider: "local")
 # Connects to any OpenAI-compatible API server:
