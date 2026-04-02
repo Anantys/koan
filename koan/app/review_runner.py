@@ -564,18 +564,27 @@ def _format_review_as_markdown(review_data: dict, title: str = "") -> str:
         lines.append(f"### {emoji} {heading}")
         lines.append("")
         for i, item in enumerate(items, 1):
-            loc = f"`{item['file']}`"
-            if item.get("line_start") and item["line_start"] > 0:
-                loc += f", L{item['line_start']}"
+            has_loc = item.get("line_start") and item["line_start"] > 0
+            if has_loc:
+                loc = f"`{item['file']}`, L{item['line_start']}"
                 if item.get("line_end") and item["line_end"] != item["line_start"]:
                     loc += f"-{item['line_end']}"
-            lines.append(f"**{i}. {item['title']}** ({loc})")
+                summary_line = f"<b>{i}. {item['title']}</b> ({loc})"
+            else:
+                summary_line = f"<b>{i}. {item['title']}</b>"
+            lines.append("<details>")
+            lines.append("<summary>")
+            lines.append(summary_line)
+            lines.append("</summary>")
+            lines.append("")
             lines.append(item["comment"])
             if item.get("code_snippet"):
                 lines.append("")
                 lines.append("```")
                 lines.append(item["code_snippet"])
                 lines.append("```")
+            lines.append("")
+            lines.append("</details>")
             lines.append("")
 
     # Checklist

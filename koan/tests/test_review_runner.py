@@ -387,6 +387,9 @@ class TestFormatReviewAsMarkdown:
         assert "`auth.py`" in md
         assert "L42" in md
         assert "### Summary" in md
+        assert "<details>" in md
+        assert "<summary>" in md
+        assert "</details>" in md
 
     def test_lgtm_review(self):
         md = _format_review_as_markdown(LGTM_REVIEW_JSON)
