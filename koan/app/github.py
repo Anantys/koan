@@ -160,6 +160,21 @@ def issue_create(title, body, labels=None, repo=None, cwd=None):
     return run_gh(*args, cwd=cwd, idempotent=False)
 
 
+def issue_edit(number, body, cwd=None):
+    """Update a GitHub issue body via ``gh issue edit``.
+
+    Args:
+        number: Issue number (string or int).
+        body: New body text (markdown).
+        cwd: Working directory (must be inside a git repo).
+    """
+    from app.leak_detector import scan_and_redact
+
+    body = scan_and_redact(body, context="Issue body")
+    return run_gh("issue", "edit", str(number), "--body", body,
+                  cwd=cwd, idempotent=False)
+
+
 def api(endpoint, method="GET", jq=None, input_data=None, cwd=None,
         extra_args=None, timeout=30):
     """Call ``gh api`` for lower-level GitHub API access.

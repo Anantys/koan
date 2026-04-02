@@ -41,3 +41,4 @@ Rules:
 - Each title must be specific and actionable (not "Research X" unless research IS the deliverable).
 - Do NOT include the tag or label in the titles — that's handled externally.
 - Keep issue bodies focused: 10-30 lines each. Enough context to act on, not a novel.
+- When referencing other sub-issues in Dependencies or elsewhere, use the placeholder format `SUB-1`, `SUB-2`, etc. (matching their 1-based position in the issues array). Do NOT use `#1`, `#2` or any `#N` syntax — those will conflict with real GitHub issue numbers. The placeholders will be replaced with correct GitHub issue links after creation.

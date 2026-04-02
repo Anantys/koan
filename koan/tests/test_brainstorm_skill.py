@@ -241,6 +241,8 @@ from skills.core.brainstorm.brainstorm_runner import (
     _parse_decomposition,
     _build_master_body,
     _extract_master_title,
+    _apply_sub_replacements,
+    _replace_sub_placeholders,
 )
 
 
@@ -348,6 +350,72 @@ class TestBuildMasterBody:
     def test_footer(self):
         body = _build_master_body("T", "", [("1", "T", "u")], "o", "r")
         assert "Koan /brainstorm" in body
+
+
+class TestApplySubReplacements:
+    def test_replaces_sub_placeholders(self):
+        mapping = {1: "42", 2: "43", 3: "44"}
+        text = "Depends on SUB-1 and SUB-2. See also SUB-3."
+        result = _apply_sub_replacements(text, mapping)
+        assert result == "Depends on #42 and #43. See also #44."
+
+    def test_leaves_unknown_placeholders(self):
+        mapping = {1: "42"}
+        text = "Depends on SUB-1 and SUB-5."
+        result = _apply_sub_replacements(text, mapping)
+        assert "#42" in result
+        assert "SUB-5" in result
+
+    def test_no_placeholders_unchanged(self):
+        mapping = {1: "42"}
+        text = "No cross-references here."
+        result = _apply_sub_replacements(text, mapping)
+        assert result == text
+
+    def test_multiple_occurrences_of_same_placeholder(self):
+        mapping = {1: "99"}
+        text = "SUB-1 is needed before SUB-1 can be tested."
+        result = _apply_sub_replacements(text, mapping)
+        assert result == "#99 is needed before #99 can be tested."
+
+    def test_preserves_existing_hash_references(self):
+        """Real GitHub #N references in the text should not be touched."""
+        mapping = {1: "42"}
+        text = "This fixes #10. Depends on SUB-1."
+        result = _apply_sub_replacements(text, mapping)
+        assert "#10" in result
+        assert "#42" in result
+
+
+class TestReplaceSubPlaceholders:
+    def test_calls_issue_edit_for_changed_bodies(self):
+        created = [("42", "Title A", "url1"), ("43", "Title B", "url2")]
+        original = [
+            {"title": "Title A", "body": "Depends on SUB-2."},
+            {"title": "Title B", "body": "No deps."},
+        ]
+        with patch("skills.core.brainstorm.brainstorm_runner.issue_edit") as mock_edit:
+            _replace_sub_placeholders(created, original, "/fake")
+            # Only issue 42 had a placeholder that changed
+            mock_edit.assert_called_once_with("42", "Depends on #43.", cwd="/fake")
+
+    def test_skips_edit_when_no_placeholders(self):
+        created = [("10", "T", "u")]
+        original = [{"title": "T", "body": "No placeholders here."}]
+        with patch("skills.core.brainstorm.brainstorm_runner.issue_edit") as mock_edit:
+            _replace_sub_placeholders(created, original, "/fake")
+            mock_edit.assert_not_called()
+
+    def test_handles_edit_failure_gracefully(self):
+        created = [("42", "T", "u"), ("43", "T2", "u2")]
+        original = [
+            {"title": "T", "body": "See SUB-2"},
+            {"title": "T2", "body": "See SUB-1"},
+        ]
+        with patch("skills.core.brainstorm.brainstorm_runner.issue_edit",
+                    side_effect=RuntimeError("API error")):
+            # Should not raise — errors are caught and logged
+            _replace_sub_placeholders(created, original, "/fake")
 
 
 class TestExtractMasterTitle:

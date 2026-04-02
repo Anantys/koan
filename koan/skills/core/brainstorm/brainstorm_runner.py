@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 from typing import Optional, Tuple
 
-from app.github import run_gh, issue_create
+from app.github import run_gh, issue_create, issue_edit
 from app.prompts import load_prompt_or_skill
 
 
@@ -107,6 +107,9 @@ def run_brainstorm(
     if not created_issues:
         return False, "No issues were created."
 
+    # Replace SUB-N placeholders in issue bodies with real GitHub numbers
+    _replace_sub_placeholders(created_issues, issues, project_path)
+
     # Build master issue
     master_title = f"[{tag}] {_extract_master_title(topic)}"
     master_body = _build_master_body(
@@ -134,6 +137,43 @@ def run_brainstorm(
     )
     notify_fn(f"\U0001f3af {summary}")
     return True, summary
+
+
+def _replace_sub_placeholders(created_issues, original_issues, project_path):
+    """Replace SUB-N placeholders in created issue bodies with real #numbers.
+
+    After all sub-issues are created on GitHub, we know each ordinal position's
+    real issue number. This function patches each issue body to replace
+    ``SUB-1``, ``SUB-2``, etc. with ``#42``, ``#43``, etc.
+    """
+    # Build ordinal → real number mapping
+    ordinal_to_number = {}
+    for idx, (number, _title, _url) in enumerate(created_issues, 1):
+        ordinal_to_number[idx] = number
+
+    for idx, (number, _title, _url) in enumerate(created_issues, 1):
+        body = original_issues[idx - 1]["body"]
+        updated = _apply_sub_replacements(body, ordinal_to_number)
+        if updated != body:
+            try:
+                issue_edit(number, updated, cwd=project_path)
+            except (RuntimeError, OSError) as e:
+                print(
+                    f"[brainstorm_runner] Failed to update issue #{number}: {e}",
+                    file=sys.stderr,
+                )
+
+
+def _apply_sub_replacements(text, ordinal_to_number):
+    """Replace all SUB-N placeholders in *text* with #<real_number>."""
+    def _replace(match):
+        idx = int(match.group(1))
+        real = ordinal_to_number.get(idx)
+        if real is not None:
+            return f"#{real}"
+        return match.group(0)  # leave unknown placeholders as-is
+
+    return re.sub(r'SUB-(\d+)', _replace, text)
 
 
 def _generate_tag(topic: str) -> str:
