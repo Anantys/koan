@@ -73,6 +73,20 @@ class TestRunCiCheckAndFixErrorHandling:
         assert success is True
         assert "already passing" in summary
 
+    def test_ci_pending_returns_early(self):
+        """If CI is still pending, return early without attempting fixes."""
+        from app.ci_queue_runner import run_ci_check_and_fix
+
+        fake_context = {"branch": "fix-branch", "base": "main"}
+        with (
+            patch("app.rebase_pr.fetch_pr_context", return_value=fake_context),
+            patch("app.ci_queue_runner.check_ci_status", return_value=("pending", 123)),
+        ):
+            success, summary = run_ci_check_and_fix(PR_URL, PROJECT_PATH)
+
+        assert success is False
+        assert "pending" in summary.lower()
+
     def test_pr_already_merged_returns_success(self):
         """If PR is already merged, skip CI fix."""
         from app.ci_queue_runner import run_ci_check_and_fix

@@ -177,9 +177,12 @@ def run_ci_check_and_fix(pr_url: str, project_path: str) -> Tuple[bool, str]:
         return True, "CI already passing — no fix needed."
 
     if status == "pending":
-        # CI still running — we were called too early. Fetch logs anyway
-        # in case a previous run failed.
-        print("[ci_check] CI still pending, will check for previous failures", file=sys.stderr)
+        # CI still running — don't attempt fixes against stale logs.
+        # drain_one will re-check on the next iteration when CI completes.
+        return False, "CI still pending — will retry when CI completes."
+
+    if status not in ("failure",):
+        return False, f"CI status is '{status}' — nothing to fix."
 
     # Fetch failure logs (non-blocking)
     ci_logs = ""
@@ -187,8 +190,8 @@ def run_ci_check_and_fix(pr_url: str, project_path: str) -> Tuple[bool, str]:
         from app.claude_step import _fetch_failed_logs
         ci_logs = _fetch_failed_logs(run_id, full_repo)
 
-    if status not in ("failure",) and not ci_logs:
-        return False, f"CI status is '{status}' with no failure logs — nothing to fix."
+    if not ci_logs:
+        return False, "CI failed but no failure logs available."
 
     # Check PR state before attempting fix
     from app.rebase_pr import _check_pr_state
