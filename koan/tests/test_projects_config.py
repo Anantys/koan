@@ -12,6 +12,7 @@ from app.projects_config import (
     get_project_cli_provider,
     get_project_exploration,
     get_project_max_open_prs,
+    get_project_max_pending_branches,
     get_project_models,
     get_project_submit_to_repository,
     get_project_tools,
@@ -587,6 +588,79 @@ class TestGetProjectMaxOpenPrs:
             "projects": {"app": None},
         }
         assert get_project_max_open_prs(config, "app") == 8
+
+
+# ---------------------------------------------------------------------------
+# get_project_max_pending_branches
+# ---------------------------------------------------------------------------
+
+
+class TestGetProjectMaxPendingBranches:
+    """Tests for get_project_max_pending_branches() — per-project branch limit."""
+
+    def test_defaults_to_ten_when_key_missing(self):
+        config = {"projects": {"app": {"path": "/app"}}}
+        assert get_project_max_pending_branches(config, "app") == 10
+
+    def test_explicit_zero_returns_zero(self):
+        config = {"projects": {"app": {"path": "/app", "max_pending_branches": 0}}}
+        assert get_project_max_pending_branches(config, "app") == 0
+
+    def test_positive_int_returns_value(self):
+        config = {"projects": {"app": {"path": "/app", "max_pending_branches": 5}}}
+        assert get_project_max_pending_branches(config, "app") == 5
+
+    def test_string_int_coerced(self):
+        config = {"projects": {"app": {"path": "/app", "max_pending_branches": "7"}}}
+        assert get_project_max_pending_branches(config, "app") == 7
+
+    def test_negative_returns_zero(self):
+        config = {"projects": {"app": {"path": "/app", "max_pending_branches": -1}}}
+        assert get_project_max_pending_branches(config, "app") == 0
+
+    def test_none_returns_zero(self):
+        config = {"projects": {"app": {"path": "/app", "max_pending_branches": None}}}
+        assert get_project_max_pending_branches(config, "app") == 0
+
+    def test_invalid_string_returns_zero(self):
+        config = {"projects": {"app": {"path": "/app", "max_pending_branches": "abc"}}}
+        assert get_project_max_pending_branches(config, "app") == 0
+
+    def test_float_coerced_to_int(self):
+        config = {"projects": {"app": {"path": "/app", "max_pending_branches": 3.7}}}
+        assert get_project_max_pending_branches(config, "app") == 3
+
+    def test_defaults_section_applies(self):
+        config = {
+            "defaults": {"max_pending_branches": 15},
+            "projects": {"app": {"path": "/app"}},
+        }
+        assert get_project_max_pending_branches(config, "app") == 15
+
+    def test_project_overrides_defaults(self):
+        config = {
+            "defaults": {"max_pending_branches": 15},
+            "projects": {"app": {"path": "/app", "max_pending_branches": 3}},
+        }
+        assert get_project_max_pending_branches(config, "app") == 3
+
+    def test_unknown_project_returns_default_ten(self):
+        config = {"projects": {"app": {"path": "/app"}}}
+        assert get_project_max_pending_branches(config, "unknown") == 10
+
+    def test_unknown_project_inherits_defaults(self):
+        config = {
+            "defaults": {"max_pending_branches": 20},
+            "projects": {"app": {"path": "/app"}},
+        }
+        assert get_project_max_pending_branches(config, "unknown") == 20
+
+    def test_none_project_config_returns_default(self):
+        config = {
+            "defaults": {"max_pending_branches": 8},
+            "projects": {"app": None},
+        }
+        assert get_project_max_pending_branches(config, "app") == 8
 
 
 # ---------------------------------------------------------------------------

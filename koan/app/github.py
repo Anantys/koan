@@ -9,7 +9,7 @@ import json
 import re
 import subprocess
 import time
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from app.retry import (
     retry_with_backoff,
@@ -459,6 +459,43 @@ def batch_count_open_prs(repos: list, author: str) -> Dict[str, int]:
     except (RuntimeError, subprocess.TimeoutExpired, json.JSONDecodeError,
             OSError, TypeError, KeyError):
         return {}
+
+
+def list_open_pr_branches(repo: str, author: str, cwd: str = None) -> List[str]:
+    """List branch names of open PRs by a specific author in a repository.
+
+    Args:
+        repo: Repository in ``owner/repo`` format.
+        author: GitHub username to filter by. If empty, returns ``[]``.
+        cwd: Optional working directory.
+
+    Returns:
+        Sorted list of branch names (headRefName) for open PRs.
+        Returns empty list on error.
+    """
+    if not author:
+        return []
+
+    try:
+        output = run_gh(
+            "pr", "list",
+            "--repo", repo,
+            "--state", "open",
+            "--author", author,
+            "--json", "headRefName",
+            cwd=cwd, timeout=15,
+        )
+        prs = json.loads(output) if output else []
+        if not isinstance(prs, list):
+            return []
+        return sorted({
+            pr["headRefName"]
+            for pr in prs
+            if isinstance(pr, dict) and pr.get("headRefName")
+        })
+    except (RuntimeError, subprocess.TimeoutExpired, json.JSONDecodeError,
+            TypeError, KeyError):
+        return []
 
 
 def count_open_prs(repo: str, author: str, cwd: str = None) -> int:

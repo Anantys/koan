@@ -458,7 +458,8 @@ def _select_random_exploration_project(
     return random.choice(candidates)
 
 
-FilterResult = namedtuple("FilterResult", ["projects", "pr_limited"])
+FilterResult = namedtuple("FilterResult", ["projects", "pr_limited", "branch_saturated"],
+                         defaults=[[]])
 AutonomousDecision = namedtuple("AutonomousDecision", ["action", "focus_remaining"])
 
 
@@ -468,13 +469,16 @@ def _filter_exploration_projects(
 ) -> FilterResult:
     """Filter projects to only those eligible for exploration.
 
-    Checks two gates in order:
+    Checks three gates in order:
     1. ``exploration`` flag — projects with ``exploration: false`` are excluded.
     2. ``max_open_prs`` limit — projects at or over their PR limit are excluded.
+    3. ``max_pending_branches`` limit — projects at or over their branch limit
+       are excluded.
 
     Returns a FilterResult with:
     - ``projects``: list of (name, path) tuples eligible for exploration
     - ``pr_limited``: list of project names excluded due to PR limit
+    - ``branch_saturated``: list of project names excluded due to branch limit
     """
     from app.projects_config import (
         load_projects_config, get_project_exploration,
@@ -542,46 +546,86 @@ def _filter_exploration_projects(
 
         projects_needing_check[name] = (path, limit, urls_to_check)
 
-    if not projects_needing_check:
-        return FilterResult(projects=filtered, pr_limited=pr_limited)
+    if projects_needing_check:
+        # Phase 2: Batch-fetch PR counts for all repos in one GraphQL call
+        all_repos = []
+        for _, (_, _, urls) in projects_needing_check.items():
+            all_repos.extend(urls)
+        all_repos = list(dict.fromkeys(all_repos))  # deduplicate, preserve order
 
-    # Phase 2: Batch-fetch PR counts for all repos in one GraphQL call
-    all_repos = []
-    for _, (_, _, urls) in projects_needing_check.items():
-        all_repos.extend(urls)
-    all_repos = list(dict.fromkeys(all_repos))  # deduplicate, preserve order
+        batch_results = batch_count_open_prs(all_repos, author)
 
-    batch_results = batch_count_open_prs(all_repos, author)
+        # Phase 3: Evaluate limits using batch results (fall back to sequential on miss)
+        for name, (path, limit, urls_to_check) in projects_needing_check.items():
+            total_open = 0
+            any_error = False
 
-    # Phase 3: Evaluate limits using batch results (fall back to sequential on miss)
-    for name, (path, limit, urls_to_check) in projects_needing_check.items():
-        total_open = 0
-        any_error = False
+            for url in urls_to_check:
+                if url in batch_results:
+                    count = batch_results[url]
+                else:
+                    # Batch missed this repo — fall back to individual query
+                    count = cached_count_open_prs(url, author)
+                if count >= 0:
+                    total_open += count
+                else:
+                    any_error = True
 
-        for url in urls_to_check:
-            if url in batch_results:
-                count = batch_results[url]
+            if any_error and total_open == 0:
+                # All URLs errored — conservative: treat as PR-limited
+                pr_limited.append(name)
+                continue
+
+            if total_open >= limit:
+                _log_iteration("koan",
+                    f"Project '{name}' at PR limit ({total_open}/{limit}) — excluding from exploration")
+                pr_limited.append(name)
             else:
-                # Batch missed this repo — fall back to individual query
-                count = cached_count_open_prs(url, author)
-            if count >= 0:
-                total_open += count
-            else:
-                any_error = True
+                filtered.append((name, path))
 
-        if any_error and total_open == 0:
-            # All URLs errored — conservative: treat as PR-limited
-            pr_limited.append(name)
+    # Gate 3: max_pending_branches limit
+    from app.projects_config import get_project_max_pending_branches
+
+    instance_dir = str(Path(koan_root) / "instance")
+    branch_saturated = []
+    final_filtered = []
+
+    for name, path in filtered:
+        branch_limit = get_project_max_pending_branches(config, name)
+        if branch_limit == 0:
+            final_filtered.append((name, path))
             continue
 
-        if total_open >= limit:
-            _log_iteration("koan",
-                f"Project '{name}' at PR limit ({total_open}/{limit}) — excluding from exploration")
-            pr_limited.append(name)
-        else:
-            filtered.append((name, path))
+        project_cfg = config.get("projects", {}).get(name, {}) or {}
+        urls = set()
+        primary = project_cfg.get("github_url", "")
+        if primary:
+            urls.add(primary)
+        for u in project_cfg.get("github_urls", []):
+            if u:
+                urls.add(u)
 
-    return FilterResult(projects=filtered, pr_limited=pr_limited)
+        try:
+            from app.branch_limiter import count_pending_branches
+            count = count_pending_branches(
+                instance_dir, name, path, list(urls), author,
+            )
+        except Exception as e:
+            _log_iteration("debug",
+                f"Branch count failed for '{name}': {e} — allowing")
+            final_filtered.append((name, path))
+            continue
+
+        if count >= branch_limit:
+            _log_iteration("koan",
+                f"Project '{name}' branch-saturated ({count}/{branch_limit}) "
+                f"— excluding from exploration")
+            branch_saturated.append(name)
+        else:
+            final_filtered.append((name, path))
+
+    return FilterResult(projects=final_filtered, pr_limited=pr_limited,
+                        branch_saturated=branch_saturated)
 
 
 def _check_schedule():
@@ -824,6 +868,57 @@ def plan_iteration(
                 error=f"Unknown project '{project_name}'. Known: {', '.join(known)}",
                 tracker_error=tracker_error,
             )
+
+        # Step 5b: Branch saturation gate — skip mission if project is at limit
+        # Direct skill dispatch (/plan, /implement) bypasses this via skill_dispatch.py
+        try:
+            from app.projects_config import load_projects_config, get_project_max_pending_branches
+            branch_config = load_projects_config(koan_root)
+            if branch_config is not None:
+                branch_limit = get_project_max_pending_branches(branch_config, project_name)
+                if branch_limit > 0:
+                    from app.github import get_gh_username
+                    from app.branch_limiter import count_pending_branches
+
+                    branch_author = get_gh_username()
+                    project_cfg = branch_config.get("projects", {}).get(project_name, {}) or {}
+                    branch_urls = set()
+                    primary = project_cfg.get("github_url", "")
+                    if primary:
+                        branch_urls.add(primary)
+                    for u in project_cfg.get("github_urls", []):
+                        if u:
+                            branch_urls.add(u)
+
+                    instance_dir_str = str(instance)
+                    pending_count = count_pending_branches(
+                        instance_dir_str, project_name, project_path,
+                        list(branch_urls), branch_author,
+                    )
+                    if pending_count >= branch_limit:
+                        _log_iteration("koan",
+                            f"Project '{project_name}' branch-saturated "
+                            f"({pending_count}/{branch_limit}) — skipping mission")
+                        return _make_result(
+                            action="branch_saturated_wait",
+                            project_name=project_name,
+                            project_path=project_path,
+                            mission_title="",
+                            autonomous_mode=autonomous_mode,
+                            focus_area=f"Branch-saturated: {pending_count}/{branch_limit} pending branches",
+                            available_pct=available_pct,
+                            decision_reason=(
+                                f"Project '{project_name}' at branch limit "
+                                f"({pending_count}/{branch_limit}) — mission stays Pending"
+                            ),
+                            display_lines=display_lines,
+                            recurring_injected=recurring_injected,
+                            schedule_mode=schedule_state.mode if schedule_state else "normal",
+                            tracker_error=tracker_error,
+                        )
+        except (ImportError, OSError, ValueError) as e:
+            _log_iteration("debug", f"Branch saturation check failed: {e} — proceeding")
+
     else:
         # No mission — autonomous mode
         mission_title = ""
@@ -851,8 +946,15 @@ def plan_iteration(
                                                      schedule_state=schedule_state)
         exploration_projects = filter_result.projects
         if not exploration_projects:
-            # Determine whether this is exploration-disabled or PR-limited
-            if filter_result.pr_limited:
+            # Determine whether this is exploration-disabled, PR-limited, or branch-saturated
+            if filter_result.branch_saturated:
+                _log_iteration("koan", "All exploration projects branch-saturated — waiting for reviews")
+                wait_action = "branch_saturated_wait"
+                wait_reason = (
+                    f"Branch limit reached for: {', '.join(filter_result.branch_saturated)} "
+                    f"— waiting for reviews/merges"
+                )
+            elif filter_result.pr_limited:
                 _log_iteration("koan", "All exploration projects at PR limit — waiting for reviews")
                 wait_action = "pr_limit_wait"
                 wait_reason = (

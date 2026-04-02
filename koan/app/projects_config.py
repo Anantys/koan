@@ -10,6 +10,7 @@ Provides:
 - get_project_tools(config, name) -> dict: Get tool restrictions for a project
 - get_project_exploration(config, name) -> bool: Get exploration flag for a project
 - get_project_max_open_prs(config, name) -> int: Get max open PRs limit for a project
+- get_project_max_pending_branches(config, name) -> int: Get max pending branches limit
 - get_project_github_authorized_users(config, name) -> list: Get GitHub authorized users
 
 File location: projects.yaml at KOAN_ROOT (next to .env).
@@ -336,6 +337,28 @@ def get_project_max_open_prs(config: dict, project_name: str) -> int:
     """
     project_cfg = get_project_config(config, project_name)
     value = project_cfg.get("max_open_prs", 0)
+
+    # Coerce to int; invalid values map to 0 (unlimited)
+    try:
+        result = int(value)
+    except (TypeError, ValueError):
+        return 0
+
+    # Negative or zero → unlimited
+    return result if result > 0 else 0
+
+
+def get_project_max_pending_branches(config: dict, project_name: str) -> int:
+    """Get max pending branches limit for a project from projects.yaml.
+
+    Controls the maximum number of pending branches (open PRs ∪ local
+    unmerged branches) allowed before mission pickup and exploration are
+    blocked for this project.
+
+    Returns 10 by default. Returns 0 for unlimited (no limit).
+    """
+    project_cfg = get_project_config(config, project_name)
+    value = project_cfg.get("max_pending_branches", 10)
 
     # Coerce to int; invalid values map to 0 (unlimited)
     try:

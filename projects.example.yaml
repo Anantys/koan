@@ -88,6 +88,17 @@ defaults:
   # Default: 0 (unlimited)
   max_open_prs: 10
 
+  # Max pending branches — limit total unreviewed work per project.
+  # Counts the union of local unmerged koan/* branches and open PRs
+  # (deduplicated by branch name). When the limit is reached, both
+  # mission pickup AND exploration are blocked for this project until
+  # existing branches are reviewed/merged.
+  # More comprehensive than max_open_prs (which only gates exploration
+  # and only counts GitHub PRs).
+  # Set to 0 for unlimited.
+  # Default: 10
+  max_pending_branches: 10
+
 projects:
   # Example: your main project (minimal config — inherits all defaults)
   myapp:
@@ -141,6 +152,7 @@ projects:
   # oss-lib:
   #   path: "/Users/yourname/workspace/oss-lib"
   #   max_open_prs: 3                        # Keep max 3 open PRs for this repo
+  #   max_pending_branches: 5                # Cap total unreviewed branches
 
   # Example: a project using GitHub Copilot instead of Claude
   # copilot-project:

@@ -1831,6 +1831,98 @@ projects:
         assert set(repos_arg) == {"owner/koan", "owner/backend"}
 
 
+# === Tests: _filter_exploration_projects with branch saturation ===
+
+
+class TestFilterExplorationProjectsBranchSaturation:
+
+    def setup_method(self):
+        self._batch_patcher = patch("app.github.batch_count_open_prs", return_value={})
+        self._batch_patcher.start()
+
+    def teardown_method(self):
+        self._batch_patcher.stop()
+
+    @patch("app.branch_limiter.count_pending_branches", return_value=5)
+    @patch("app.github.get_gh_username", return_value="koan-bot")
+    def test_under_limit_included(self, mock_user, mock_count, koan_root):
+        """Project under branch limit is included."""
+        (koan_root / "projects.yaml").write_text("""
+projects:
+  koan:
+    path: /path/to/koan
+    max_pending_branches: 10
+""")
+        result = _filter_exploration_projects(
+            [("koan", "/path/to/koan")], str(koan_root),
+        )
+        assert len(result.projects) == 1
+        assert result.branch_saturated == []
+
+    @patch("app.branch_limiter.count_pending_branches", return_value=10)
+    @patch("app.github.get_gh_username", return_value="koan-bot")
+    def test_at_limit_excluded(self, mock_user, mock_count, koan_root):
+        """Project at branch limit is excluded."""
+        (koan_root / "projects.yaml").write_text("""
+projects:
+  koan:
+    path: /path/to/koan
+    max_pending_branches: 10
+""")
+        result = _filter_exploration_projects(
+            [("koan", "/path/to/koan")], str(koan_root),
+        )
+        assert result.projects == []
+        assert result.branch_saturated == ["koan"]
+
+    @patch("app.branch_limiter.count_pending_branches", return_value=15)
+    @patch("app.github.get_gh_username", return_value="koan-bot")
+    def test_over_limit_excluded(self, mock_user, mock_count, koan_root):
+        """Project over branch limit is excluded."""
+        (koan_root / "projects.yaml").write_text("""
+projects:
+  koan:
+    path: /path/to/koan
+    max_pending_branches: 10
+""")
+        result = _filter_exploration_projects(
+            [("koan", "/path/to/koan")], str(koan_root),
+        )
+        assert result.projects == []
+        assert result.branch_saturated == ["koan"]
+
+    @patch("app.github.get_gh_username", return_value="koan-bot")
+    def test_zero_limit_means_unlimited(self, mock_user, koan_root):
+        """max_pending_branches: 0 means unlimited — no branch count check."""
+        (koan_root / "projects.yaml").write_text("""
+projects:
+  koan:
+    path: /path/to/koan
+    max_pending_branches: 0
+""")
+        result = _filter_exploration_projects(
+            [("koan", "/path/to/koan")], str(koan_root),
+        )
+        assert len(result.projects) == 1
+        assert result.branch_saturated == []
+
+    @patch("app.branch_limiter.count_pending_branches", side_effect=Exception("git error"))
+    @patch("app.github.get_gh_username", return_value="koan-bot")
+    def test_error_allows_project(self, mock_user, mock_count, koan_root):
+        """Branch count error → project allowed (fail-open)."""
+        (koan_root / "projects.yaml").write_text("""
+projects:
+  koan:
+    path: /path/to/koan
+    max_pending_branches: 5
+""")
+        result = _filter_exploration_projects(
+            [("koan", "/path/to/koan")], str(koan_root),
+        )
+        assert len(result.projects) == 1
+        assert result.branch_saturated == []
+
+
 # === Tests: _filter_exploration_projects with deep_hours PR limit relaxation ===
 
 
@@ -2243,6 +2335,104 @@ class TestPlanIterationPrLimit:
         )
 
         assert result["action"] == "exploration_wait"
+
+
+# === Tests: plan_iteration with branch saturation ===
+
+
+class TestPlanIterationBranchSaturation:
+
+    @patch("app.pick_mission.pick_mission", return_value="")
+    @patch("app.usage_estimator.cmd_refresh")
+    @patch("app.iteration_manager._filter_exploration_projects")
+    @patch("app.iteration_manager._check_focus", return_value=None)
+    @patch("random.randint", return_value=99)
+    def test_all_branch_saturated_returns_branch_saturated_wait(
+        self, mock_rand, mock_focus, mock_filter, mock_refresh, mock_pick,
+        instance_dir, koan_root, usage_state,
+    ):
+        """When all projects are branch-saturated, action is branch_saturated_wait."""
+        mock_filter.return_value = FilterResult(
+            projects=[], pr_limited=[], branch_saturated=["koan", "backend"],
+        )
+
+        usage_md = instance_dir / "usage.md"
+        usage_md.write_text("Session (5hr) : 30% (reset in 3h)\nWeekly (7 day) : 20% (Resets in 5d)\n")
+
+        result = plan_iteration(
+            instance_dir=str(instance_dir),
+            koan_root=str(koan_root),
+            run_num=2,
+            count=1,
+            projects=PROJECTS_LIST,
+            last_project="koan",
+            usage_state_path=str(usage_state),
+        )
+
+        assert result["action"] == "branch_saturated_wait"
+        assert "Branch limit" in result["decision_reason"]
+
+    @patch("app.branch_limiter.count_pending_branches", return_value=10)
+    @patch("app.pick_mission.pick_mission", return_value="koan:fix a bug")
+    @patch("app.usage_estimator.cmd_refresh")
+    def test_mission_blocked_when_branch_saturated(
+        self, mock_refresh, mock_pick, mock_count,
+        instance_dir, koan_root, usage_state,
+    ):
+        """Mission is skipped when project is branch-saturated."""
+        (koan_root / "projects.yaml").write_text("""
+projects:
+  koan:
+    path: /path/to/koan
+    max_pending_branches: 5
+""")
+
+        usage_md = instance_dir / "usage.md"
+        usage_md.write_text("Session (5hr) : 30% (reset in 3h)\nWeekly (7 day) : 20% (Resets in 5d)\n")
+
+        result = plan_iteration(
+            instance_dir=str(instance_dir),
+            koan_root=str(koan_root),
+            run_num=2,
+            count=1,
+            projects=PROJECTS_LIST,
+            last_project="koan",
+            usage_state_path=str(usage_state),
+        )
+
+        assert result["action"] == "branch_saturated_wait"
+        assert result["project_name"] == "koan"
+
+    @patch("app.branch_limiter.count_pending_branches", return_value=3)
+    @patch("app.pick_mission.pick_mission", return_value="koan:fix a bug")
+    @patch("app.usage_estimator.cmd_refresh")
+    def test_mission_allowed_when_under_limit(
+        self, mock_refresh, mock_pick, mock_count,
+        instance_dir, koan_root, usage_state,
+    ):
+        """Mission proceeds when project is under branch limit."""
+        (koan_root / "projects.yaml").write_text("""
+projects:
+  koan:
+    path: /path/to/koan
+    max_pending_branches: 10
+""")
+
+        usage_md = instance_dir / "usage.md"
+        usage_md.write_text("Session (5hr) : 30% (reset in 3h)\nWeekly (7 day) : 20% (Resets in 5d)\n")
+
+        result = plan_iteration(
+            instance_dir=str(instance_dir),
+            koan_root=str(koan_root),
+            run_num=2,
+            count=1,
+            projects=PROJECTS_LIST,
+            last_project="koan",
+            usage_state_path=str(usage_state),
+        )
+
+        assert result["action"] == "mission"
+        assert result["project_name"] == "koan"
 
 
 # === Tests: CLI interface ===
