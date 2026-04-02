@@ -518,46 +518,43 @@ def find_mention_in_thread(
 
     owner, repo, subject_type, number = match.groups()
 
-    # 1. Search issue comments (the main comment thread on PRs and issues)
-    issue_endpoint = (
-        f"repos/{owner}/{repo}/issues/{number}/comments"
-        "?per_page=30&sort=created&direction=desc"
-    )
-    try:
-        raw = api(issue_endpoint, timeout=30)
-        comments = json.loads(raw) if raw else []
-    except SSOAuthRequired:
-        _record_sso_failure(f"find_mention issue_comments {owner}/{repo}#{number}")
-        comments = []
-    except (RuntimeError, json.JSONDecodeError, subprocess.TimeoutExpired):
-        comments = []
+    # Search comment endpoints for an @mention.  Issue comments always,
+    # review comments only for PRs.
+    endpoints = [
+        (f"repos/{owner}/{repo}/issues/{number}/comments"
+         "?per_page=100&sort=created&direction=desc",
+         f"find_mention issue_comments {owner}/{repo}#{number}"),
+    ]
+    if subject_type == "pulls":
+        endpoints.append(
+            (f"repos/{owner}/{repo}/pulls/{number}/comments"
+             "?per_page=100&sort=created&direction=desc",
+             f"find_mention review_comments {owner}/{repo}#{number}"),
+        )
 
-    if isinstance(comments, list):
+    for endpoint, sso_label in endpoints:
+        try:
+            raw = api(endpoint, timeout=30)
+            comments = json.loads(raw) if raw else []
+        except SSOAuthRequired:
+            _record_sso_failure(sso_label)
+            continue
+        except (RuntimeError, json.JSONDecodeError, subprocess.TimeoutExpired):
+            continue
+
+        if not isinstance(comments, list):
+            continue
+
+        if len(comments) >= 100:
+            log.warning(
+                "Truncated comment list for %s/%s#%s (%d items) — "
+                "mention may be missed",
+                owner, repo, number, len(comments),
+            )
+
         result = _search_comments_for_mention(comments, bot_username, owner, repo)
         if result:
             return result
-
-    # 2. For PRs, also search review comments (inline code comments)
-    if subject_type == "pulls":
-        review_endpoint = (
-            f"repos/{owner}/{repo}/pulls/{number}/comments"
-            "?per_page=30&sort=created&direction=desc"
-        )
-        try:
-            raw = api(review_endpoint, timeout=30)
-            review_comments = json.loads(raw) if raw else []
-        except SSOAuthRequired:
-            _record_sso_failure(f"find_mention review_comments {owner}/{repo}#{number}")
-            review_comments = []
-        except (RuntimeError, json.JSONDecodeError, subprocess.TimeoutExpired):
-            review_comments = []
-
-        if isinstance(review_comments, list):
-            result = _search_comments_for_mention(
-                review_comments, bot_username, owner, repo,
-            )
-            if result:
-                return result
 
     return None
 
