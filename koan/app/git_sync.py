@@ -328,8 +328,49 @@ class GitSync:
 
         return deleted
 
+    def cleanup_remote_branches(self, branches: List[str]) -> List[str]:
+        """Delete remote tracking branches on origin for confirmed-merged branches.
+
+        Only deletes branches matching the agent prefix. Failures are
+        silently skipped (branch may already be gone on remote).
+
+        Args:
+            branches: Branch names to delete from origin.
+
+        Returns:
+            List of successfully deleted remote branch names.
+        """
+        prefix = _get_prefix()
+        deleted = []
+        for branch in branches:
+            if not branch.startswith(prefix):
+                continue
+            result = run_git(
+                self.project_path, "push", "origin", "--delete", branch
+            )
+            if result:
+                deleted.append(branch)
+                log.debug("Deleted remote branch: origin/%s", branch)
+        return deleted
+
+    def _get_remote_branches(self, prefix: str) -> List[str]:
+        """List remote branches matching prefix on origin."""
+        output = run_git(
+            self.project_path, "branch", "-r", "--list", f"origin/{prefix}*"
+        )
+        branches = []
+        for line in output.splitlines():
+            name = line.strip()
+            if name.startswith("origin/"):
+                name = name[len("origin/"):]
+            if name.startswith(prefix):
+                branches.append(name)
+        return branches
+
     def build_sync_report(self) -> str:
         """Build a human-readable git sync report."""
+        from app.config import get_branch_cleanup_config
+
         run_git(self.project_path, "fetch", "--prune")
 
         merged = self.get_merged_branches()
@@ -337,8 +378,26 @@ class GitSync:
         unmerged = self.get_unmerged_branches()
         recent = self.get_recent_main_commits(since_hours=12)
 
-        # Auto-cleanup merged local branches (git + GitHub-detected)
-        cleaned = self.cleanup_merged_branches(merged, github_merged)
+        cleanup_cfg = get_branch_cleanup_config()
+
+        # Auto-cleanup merged branches (local + optionally remote)
+        cleaned = []
+        remote_cleaned = []
+        if cleanup_cfg["enabled"]:
+            cleaned = self.cleanup_merged_branches(merged, github_merged)
+
+            if cleanup_cfg["remote"]:
+                # Find remote branches that are confirmed merged
+                all_confirmed = set(merged or [])
+                all_confirmed.update(github_merged or [])
+                prefix = _get_prefix()
+                remote_branches = set(self._get_remote_branches(prefix))
+                # Only delete remote branches that are confirmed merged
+                to_delete_remote = sorted(all_confirmed & remote_branches)
+                if to_delete_remote:
+                    remote_cleaned = self.cleanup_remote_branches(to_delete_remote)
+        else:
+            cleaned = []
 
         # Branches cleaned via GitHub detection should be removed from
         # the unmerged list (they were unmerged per git but merged per GitHub)
@@ -364,8 +423,15 @@ class GitSync:
                 suffix = " (cleaned up)" if b in (cleaned or []) else ""
                 parts.append(f"  ✓ {b}{suffix}")
 
-        if cleaned:
-            parts.append(f"\nCleaned up {len(cleaned)} merged local branch(es).")
+        if cleaned or remote_cleaned:
+            local_count = len(cleaned) if cleaned else 0
+            remote_count = len(remote_cleaned) if remote_cleaned else 0
+            cleanup_parts = []
+            if local_count:
+                cleanup_parts.append(f"{local_count} local")
+            if remote_count:
+                cleanup_parts.append(f"{remote_count} remote")
+            parts.append(f"\nCleaned up {' + '.join(cleanup_parts)} branch(es).")
 
         if unmerged:
             recent_branches, stale_branches = self._split_branches_by_recency(unmerged)

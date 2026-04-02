@@ -285,6 +285,15 @@ usage:
 #                                    # for intent classification before falling back to error.
 #                                    # Per-project override available in projects.yaml.
 
+# Branch cleanup — auto-delete merged branches during git sync
+# When enabled, branches matching the agent prefix (e.g. koan/*) are deleted
+# after being confirmed merged (via git ancestry or GitHub API).
+# Local branches are cleaned up by default; set remote: true to also delete
+# the corresponding remote tracking branches on origin.
+# branch_cleanup:
+#   enabled: true           # Auto-cleanup merged branches (default: true)
+#   remote: true            # Also delete remote branches (default: true)
+
 # Review concurrency — parallel GitHub API calls during code reviews
 # When enabled, PR context and comment fetching run concurrently using a
 # ThreadPoolExecutor. The LLM call (Claude CLI) is always sequential.

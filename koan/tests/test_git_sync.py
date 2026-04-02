@@ -771,6 +771,170 @@ class TestWriteSyncToJournal:
         assert "New sync" in content
 
 
+class TestCleanupRemoteBranches:
+    """Tests for GitSync.cleanup_remote_branches()."""
+
+    def test_deletes_remote_branches(self):
+        """Successfully deletes remote branches on origin."""
+        def side_effect(cwd, *args):
+            if args[0] == "push" and args[2] == "--delete":
+                return f"deleted branch {args[3]}"
+            return ""
+
+        with patch("app.git_sync._get_prefix", return_value="koan/"):
+            with patch("app.git_sync.run_git", side_effect=side_effect):
+                deleted = _sync().cleanup_remote_branches(
+                    ["koan/merged-one", "koan/merged-two"]
+                )
+        assert deleted == ["koan/merged-one", "koan/merged-two"]
+
+    def test_skips_non_prefixed_branches(self):
+        """Ignores branches that don't match the agent prefix."""
+        with patch("app.git_sync._get_prefix", return_value="koan/"):
+            with patch("app.git_sync.run_git") as mock_git:
+                deleted = _sync().cleanup_remote_branches(
+                    ["feature/unrelated", "main"]
+                )
+        assert deleted == []
+        mock_git.assert_not_called()
+
+    def test_handles_delete_failure(self):
+        """Branch not in result if git push --delete fails."""
+        def side_effect(cwd, *args):
+            if args[0] == "push" and args[3] == "koan/gone":
+                return ""  # failure
+            if args[0] == "push" and args[3] == "koan/exists":
+                return "deleted"
+            return ""
+
+        with patch("app.git_sync._get_prefix", return_value="koan/"):
+            with patch("app.git_sync.run_git", side_effect=side_effect):
+                deleted = _sync().cleanup_remote_branches(
+                    ["koan/gone", "koan/exists"]
+                )
+        assert deleted == ["koan/exists"]
+
+    def test_empty_list(self):
+        """No-op for empty input."""
+        deleted = _sync().cleanup_remote_branches([])
+        assert deleted == []
+
+
+class TestGetRemoteBranches:
+    """Tests for GitSync._get_remote_branches()."""
+
+    def test_parses_remote_branches(self):
+        output = "  origin/koan/fix-bug\n  origin/koan/add-feature\n"
+        with patch("app.git_sync._get_prefix", return_value="koan/"):
+            with patch("app.git_sync.run_git", return_value=output):
+                branches = _sync()._get_remote_branches("koan/")
+        assert branches == ["koan/fix-bug", "koan/add-feature"]
+
+    def test_filters_by_prefix(self):
+        output = "  origin/koan/mine\n  origin/feature/other\n"
+        with patch("app.git_sync._get_prefix", return_value="koan/"):
+            with patch("app.git_sync.run_git", return_value=output):
+                branches = _sync()._get_remote_branches("koan/")
+        assert branches == ["koan/mine"]
+
+    def test_empty_output(self):
+        with patch("app.git_sync._get_prefix", return_value="koan/"):
+            with patch("app.git_sync.run_git", return_value=""):
+                branches = _sync()._get_remote_branches("koan/")
+        assert branches == []
+
+
+class TestBranchCleanupConfig:
+    """Tests for config-gated cleanup behavior in build_sync_report."""
+
+    def test_cleanup_disabled_skips_all_cleanup(self):
+        """When branch_cleanup.enabled=False, no branches are cleaned."""
+        sync = _sync()
+        with patch.object(
+            GitSync, "get_merged_branches", return_value=["koan/done"],
+        ), patch.object(
+            GitSync, "get_github_merged_branches", return_value=[],
+        ), patch.object(
+            GitSync, "get_unmerged_branches", return_value=[],
+        ), patch.object(
+            GitSync, "_split_branches_by_recency", return_value=([], []),
+        ), patch.object(
+            GitSync, "get_recent_main_commits", return_value=[],
+        ), patch.object(
+            GitSync, "cleanup_merged_branches",
+        ) as mock_local, patch.object(
+            GitSync, "cleanup_remote_branches",
+        ) as mock_remote, patch(
+            "app.git_sync.run_git", return_value=""
+        ), patch(
+            "app.config.get_branch_cleanup_config",
+            return_value={"enabled": False, "remote": True},
+        ):
+            report = sync.build_sync_report()
+
+        mock_local.assert_not_called()
+        mock_remote.assert_not_called()
+        assert "cleaned up" not in report.lower()
+
+    def test_remote_disabled_skips_remote_cleanup(self):
+        """When branch_cleanup.remote=False, only local cleanup runs."""
+        sync = _sync()
+        with patch.object(
+            GitSync, "get_merged_branches", return_value=["koan/done"],
+        ), patch.object(
+            GitSync, "get_github_merged_branches", return_value=[],
+        ), patch.object(
+            GitSync, "get_unmerged_branches", return_value=[],
+        ), patch.object(
+            GitSync, "_split_branches_by_recency", return_value=([], []),
+        ), patch.object(
+            GitSync, "get_recent_main_commits", return_value=[],
+        ), patch.object(
+            GitSync, "cleanup_merged_branches", return_value=["koan/done"],
+        ), patch.object(
+            GitSync, "cleanup_remote_branches",
+        ) as mock_remote, patch(
+            "app.git_sync.run_git", return_value=""
+        ), patch(
+            "app.config.get_branch_cleanup_config",
+            return_value={"enabled": True, "remote": False},
+        ):
+            report = sync.build_sync_report()
+
+        mock_remote.assert_not_called()
+        assert "1 local" in report
+
+    def test_remote_cleanup_included_in_report(self):
+        """Report shows both local and remote cleanup counts."""
+        sync = _sync()
+        with patch.object(
+            GitSync, "get_merged_branches", return_value=["koan/done"],
+        ), patch.object(
+            GitSync, "get_github_merged_branches", return_value=[],
+        ), patch.object(
+            GitSync, "get_unmerged_branches", return_value=[],
+        ), patch.object(
+            GitSync, "_split_branches_by_recency", return_value=([], []),
+        ), patch.object(
+            GitSync, "get_recent_main_commits", return_value=[],
+        ), patch.object(
+            GitSync, "cleanup_merged_branches", return_value=["koan/done"],
+        ), patch.object(
+            GitSync, "_get_remote_branches", return_value=["koan/done"],
+        ), patch.object(
+            GitSync, "cleanup_remote_branches", return_value=["koan/done"],
+        ), patch(
+            "app.git_sync.run_git", return_value=""
+        ), patch(
+            "app.config.get_branch_cleanup_config",
+            return_value={"enabled": True, "remote": True},
+        ):
+            report = sync.build_sync_report()
+
+        assert "1 local" in report
+        assert "1 remote" in report
+
+
 class TestGitSyncCLI:
     """Tests for git_sync.py __main__ block."""
 

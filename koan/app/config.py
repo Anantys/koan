@@ -633,3 +633,27 @@ def get_review_concurrency_config() -> dict:
         "enabled": bool(review_cfg.get("enabled", True)),
         "github_workers": _safe_int(review_cfg.get("github_workers", 4), 4),
     }
+
+
+def get_branch_cleanup_config() -> dict:
+    """Get branch cleanup configuration from config.yaml.
+
+    Controls automatic deletion of merged branches during git sync.
+
+    Config key: branch_cleanup
+      - enabled (bool): Enable auto-cleanup of merged branches (default: True)
+      - remote (bool): Also delete remote tracking branches (default: True)
+
+    Returns:
+        Dict with keys:
+          - enabled (bool): Whether cleanup runs during sync.
+          - remote (bool): Whether to delete remote branches too.
+    """
+    config = _load_config()
+    cleanup_cfg = config.get("branch_cleanup", {})
+    if not isinstance(cleanup_cfg, dict):
+        cleanup_cfg = {}
+    return {
+        "enabled": bool(cleanup_cfg.get("enabled", True)),
+        "remote": bool(cleanup_cfg.get("remote", True)),
+    }

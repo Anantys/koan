@@ -734,6 +734,36 @@ class TestDashboardConfig:
             assert get_dashboard_port() == 8080
 
 
+class TestBranchCleanupConfig:
+    """Tests for get_branch_cleanup_config()."""
+
+    def test_defaults(self):
+        from app.config import get_branch_cleanup_config
+        with _mock_config({}):
+            cfg = get_branch_cleanup_config()
+        assert cfg == {"enabled": True, "remote": True}
+
+    def test_disabled(self):
+        from app.config import get_branch_cleanup_config
+        with _mock_config({"branch_cleanup": {"enabled": False}}):
+            cfg = get_branch_cleanup_config()
+        assert cfg["enabled"] is False
+        assert cfg["remote"] is True
+
+    def test_remote_disabled(self):
+        from app.config import get_branch_cleanup_config
+        with _mock_config({"branch_cleanup": {"remote": False}}):
+            cfg = get_branch_cleanup_config()
+        assert cfg["enabled"] is True
+        assert cfg["remote"] is False
+
+    def test_non_dict_value(self):
+        from app.config import get_branch_cleanup_config
+        with _mock_config({"branch_cleanup": "yes"}):
+            cfg = get_branch_cleanup_config()
+        assert cfg == {"enabled": True, "remote": True}
+
+
 class TestBackwardCompat:
     """Verify that importing from app.utils still works."""
 
