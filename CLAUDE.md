@@ -133,6 +133,10 @@ Extensible command plugin system. Each skill lives in `skills/<scope>/<skill-nam
 - `journal/` — Daily logs organized as `YYYY-MM-DD/project.md`
 - `hooks/` — User-defined Python hook modules for lifecycle events (see `instance.example/hooks/README.md`)
 
+## Python compatibility
+
+All code must support **Python 3.11+**. Do not use syntax or stdlib features introduced after Python 3.11 (e.g., `type` statements from 3.12, `TypeVar` defaults from 3.13). CI tests against multiple Python versions — if it doesn't run on 3.11, it doesn't ship.
+
 ## Conventions
 
 - Claude always creates **`<prefix>/*` branches** (default `koan/`, configurable via `branch_prefix` in `config.yaml`), never commits to main

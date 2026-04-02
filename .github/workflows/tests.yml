@@ -23,6 +23,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
+        python-version: ["3.11", "3.14"]
         group:
           - name: fast
             marker: "not slow"
@@ -36,15 +37,15 @@ jobs:
             marker: "slow"
             split_group: 3
 
-    name: test (${{ matrix.group.name }})
+    name: test (py${{ matrix.python-version }}, ${{ matrix.group.name }})
 
     steps:
       - uses: actions/checkout@v6
 
-      - name: Set up Python 3.14
+      - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v6
         with:
-          python-version: "3.14"
+          python-version: "${{ matrix.python-version }}"
           allow-prereleases: true
           cache: 'pip'
           cache-dependency-path: koan/requirements.txt
