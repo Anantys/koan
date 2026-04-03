@@ -357,6 +357,42 @@ def _record_cost_event(
         print(f"[mission_runner] Cost tracking failed: {e}", file=sys.stderr)
 
 
+def _log_activity_usage(
+    instance_dir: str,
+    project_name: str,
+    stdout_file: str,
+    autonomous_mode: str,
+    mission_title: str,
+    duration_seconds: int = 0,
+) -> None:
+    """Log activity usage to logs/usage.log (fire-and-forget)."""
+    try:
+        from app.usage_estimator import extract_tokens_detailed
+        from app.activity_usage_logger import log_activity_usage
+
+        detailed = extract_tokens_detailed(Path(stdout_file))
+        if detailed is None:
+            return
+
+        activity_type = "mission" if mission_title else autonomous_mode or "autonomous"
+        description = mission_title or f"autonomous ({autonomous_mode})"
+
+        log_activity_usage(
+            project=project_name or "_global",
+            activity_type=activity_type,
+            description=description,
+            duration_seconds=duration_seconds,
+            input_tokens=detailed["input_tokens"],
+            output_tokens=detailed["output_tokens"],
+            cache_read_tokens=detailed.get("cache_read_input_tokens", 0),
+            cache_creation_tokens=detailed.get("cache_creation_input_tokens", 0),
+            cost_usd=detailed.get("cost_usd", 0.0),
+            model=detailed.get("model", ""),
+        )
+    except Exception as e:
+        print(f"[mission_runner] Activity usage logging failed: {e}", file=sys.stderr)
+
+
 def archive_pending(instance_dir: str, project_name: str, run_num: int) -> bool:
     """Archive pending.md to daily journal if agent didn't clean it up.
 
@@ -780,9 +816,17 @@ def run_post_mission(
 
         # 2. Compute duration (needed for quota early-return, reflection, and outcome tracking)
         if start_time > 0:
-            duration_minutes = (int(datetime.now().timestamp()) - start_time) // 60
+            duration_seconds = int(datetime.now().timestamp()) - start_time
+            duration_minutes = duration_seconds // 60
         else:
+            duration_seconds = 0
             duration_minutes = 0
+
+        # 2b. Log activity usage to logs/usage.log (human-readable, rotated)
+        _log_activity_usage(
+            instance_dir, project_name, stdout_file,
+            autonomous_mode, mission_title, duration_seconds,
+        )
 
         # 3. Check for quota exhaustion
         _report("checking quota")

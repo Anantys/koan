@@ -932,11 +932,22 @@ def _handle_contemplative(
         os.close(fd_out)
         fd_err, stderr_file = tempfile.mkstemp(prefix="koan-contemp-err-")
         os.close(fd_err)
+        contemp_start = int(time.time())
         try:
             run_claude_task(
                 cmd, stdout_file, stderr_file, cwd=koan_root,
                 instance_dir=instance, project_name=project_name, run_num=run_num,
             )
+            # Log contemplative usage before temp files are cleaned up
+            try:
+                from app.mission_runner import _log_activity_usage
+                _log_activity_usage(
+                    instance, project_name, stdout_file,
+                    "contemplative", "",
+                    duration_seconds=int(time.time()) - contemp_start,
+                )
+            except Exception:
+                pass
         finally:
             _cleanup_temp(stdout_file, stderr_file)
     except KeyboardInterrupt:
