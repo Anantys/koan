@@ -23,7 +23,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        python-version: ["3.11", "3.14"]
+        python-version: ${{ github.event_name == 'pull_request' && fromJSON('["3.14"]') || fromJSON('["3.11", "3.14"]') }}
         group:
           - name: fast
             marker: "not slow"
