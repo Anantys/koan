@@ -1369,15 +1369,19 @@ def _run_iteration(
 
     # Check GitHub notifications before planning (converts @mentions to missions
     # so plan_iteration() sees them immediately instead of waiting for sleep)
+    log("koan", "Checking GitHub notifications...")
     from app.loop_manager import process_github_notifications
     try:
         gh_missions = process_github_notifications(koan_root, instance)
         if gh_missions > 0:
             log("github", f"Pre-iteration: {gh_missions} mission(s) created from GitHub notifications")
+        else:
+            log("koan", "No new GitHub notifications")
     except Exception as e:
         log("error", f"Pre-iteration GitHub notification check failed: {e}")
 
     # Plan iteration (delegated to iteration_manager)
+    log("koan", "Planning iteration...")
     last_project = _read_current_project(koan_root)
     plan = plan_iteration(
         instance_dir=instance,
@@ -1476,8 +1480,10 @@ def _run_iteration(
 
     # --- Pre-flight quota check ---
     if action in ("mission", "autonomous"):
+        log("koan", "Running pre-flight quota check...")
         if _run_preflight_check(plan, koan_root, instance, count):
             return False  # quota exhausted pre-flight — not productive
+        log("koan", "Pre-flight OK — quota available")
 
     # --- Execute mission or autonomous run ---
     mission_title = plan["mission_title"]
@@ -1487,6 +1493,7 @@ def _run_iteration(
 
     # --- Dedup guard ---
     if mission_title:
+        log("koan", "Checking mission dedup history...")
         try:
             from app.mission_history import should_skip_mission
             if should_skip_mission(instance, mission_title, max_executions=3):
@@ -1626,6 +1633,7 @@ def _run_iteration(
         log("error", f"Failed to create pending.md: {e}")
 
     # Execute Claude
+    log("koan", "Building CLI command and launching Claude...")
     if mission_title:
         set_status(koan_root, f"Run {run_num}/{max_runs} — executing mission on {project_name}")
     else:
@@ -1691,6 +1699,8 @@ def _run_iteration(
             instance_dir=instance, project_name=project_name, run_num=run_num,
         )
         _debug_log(f"[run] cli: exit_code={claude_exit}")
+        elapsed_min = (int(time.time()) - mission_start) / 60
+        log("koan", f"Claude CLI finished (exit={claude_exit}, {elapsed_min:.1f}min)")
 
         # --- Mission retry on transient CLI errors ---
         # One retry for missions, zero for autonomous (they're lower-priority).
@@ -1710,6 +1720,7 @@ def _run_iteration(
             )
 
         # Verify core files survived the mission (after retry, so result is final)
+        log("koan", "Running core file integrity check...")
         integrity_warnings = check_core_files(koan_root, core_snapshot, project_path)
         if integrity_warnings:
             log_integrity_warnings(integrity_warnings)
@@ -1799,6 +1810,7 @@ def _run_iteration(
             return True  # count as productive so loop continues immediately
 
         # Post-mission pipeline
+        log("koan", "Starting post-mission pipeline...")
         _status_prefix = f"Run {run_num}/{max_runs}"
         set_status(koan_root, f"{_status_prefix} — finalizing")
         try:

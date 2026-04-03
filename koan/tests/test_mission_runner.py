@@ -1030,7 +1030,7 @@ class TestRecordSessionOutcome:
         # Should not raise
         _record_session_outcome(str(tmp_path), "koan", "deep", 30, "text")
         captured = capsys.readouterr()
-        assert "Session outcome recording failed" in captured.err
+        assert "Session outcome recording failed" in (captured.err + captured.out)
 
 
 class TestRunPostMissionDuration:
@@ -1237,7 +1237,7 @@ class TestCheckAutoMergeErrors:
         result = check_auto_merge(str(tmp_path), "koan", str(tmp_path))
         assert result is None
         captured = capsys.readouterr()
-        assert "Auto-merge check failed" in captured.err
+        assert "Auto-merge check failed" in (captured.err + captured.out)
 
     @patch("app.git_sync.run_git", side_effect=Exception("git error"))
     def test_returns_none_on_git_error(self, mock_git, tmp_path, capsys):
@@ -1246,7 +1246,7 @@ class TestCheckAutoMergeErrors:
         result = check_auto_merge(str(tmp_path), "koan", str(tmp_path))
         assert result is None
         captured = capsys.readouterr()
-        assert "Auto-merge check failed" in captured.err
+        assert "Auto-merge check failed" in (captured.err + captured.out)
 
 
 class TestTriggerReflectionErrors:
@@ -1259,7 +1259,7 @@ class TestTriggerReflectionErrors:
         result = trigger_reflection(str(tmp_path), "audit", 60, project_name="koan")
         assert result is False
         captured = capsys.readouterr()
-        assert "Reflection failed" in captured.err
+        assert "Reflection failed" in (captured.err + captured.out)
 
 
 class TestParseClaudeOutputEdgeCases:
@@ -1964,7 +1964,7 @@ class TestTriggerReflectionEdgeCases:
         result = trigger_reflection(str(tmp_path), "audit", 60, project_name="koan")
         assert result is False
         captured = capsys.readouterr()
-        assert "Reflection failed" in captured.err
+        assert "Reflection failed" in (captured.err + captured.out)
 
     @patch("app.post_mission_reflection.write_to_journal")
     @patch("app.post_mission_reflection.run_reflection", return_value="insight")

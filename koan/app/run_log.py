@@ -24,6 +24,7 @@ Usage:
 
 import os
 import sys
+import time
 
 
 # ---------------------------------------------------------------------------
@@ -96,14 +97,19 @@ _CATEGORY_COLORS = {
 # ---------------------------------------------------------------------------
 
 def log(category: str, message: str):
-    """Print a colored log message."""
+    """Print a timestamped, colored log message.
+
+    Format: [HH:MM:SS][category] message
+    """
     if not _COLORS:
         _init_colors()
     color_spec = _CATEGORY_COLORS.get(category, "white")
     parts = color_spec.split("+")
     prefix = "".join(_COLORS.get(p, "") for p in parts)
     reset = _COLORS.get("reset", "")
-    print(f"{prefix}[{category}]{reset} {message}", flush=True)
+    dim = _COLORS.get("dim", "")
+    ts = time.strftime("%H:%M:%S")
+    print(f"{dim}[{ts}]{reset} {prefix}[{category}]{reset} {message}", flush=True)
 
 
 def _styled(text: str, *styles: str) -> str:

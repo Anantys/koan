@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 
 _LOG_FILES = ["run.log", "awake.log"]
-_TAIL_LINES = 10
+_TAIL_LINES = 30
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
@@ -27,7 +27,7 @@ def _tail(path, n=_TAIL_LINES):
 
 
 def handle(ctx):
-    """Handle /logs command — show last 10 lines from each log file."""
+    """Handle /logs command — show last 30 lines from each log file."""
     logs_dir = ctx.koan_root / "logs"
     sections = []
 

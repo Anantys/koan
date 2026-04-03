@@ -54,15 +54,15 @@ class TestTail:
         result = mod._tail(f)
         assert len(result) == 10
 
-    def test_more_than_10_lines(self, tmp_path):
+    def test_more_than_30_lines(self, tmp_path):
         mod = _load_handler()
         f = tmp_path / "long.log"
-        lines = [f"line{i}" for i in range(20)]
+        lines = [f"line{i}" for i in range(50)]
         f.write_text("\n".join(lines) + "\n")
         result = mod._tail(f)
-        assert len(result) == 10
-        assert result[0] == "line10"
-        assert result[-1] == "line19"
+        assert len(result) == 30
+        assert result[0] == "line20"
+        assert result[-1] == "line49"
 
     def test_strips_ansi_codes(self, tmp_path):
         mod = _load_handler()
@@ -138,10 +138,10 @@ class TestHandle:
         (logs_dir / "run.log").write_text(lines + "\n")
         ctx = _make_ctx(tmp_path)
         result = mod.handle(ctx)
-        # Should only show last 10 lines
-        assert "log entry 40" in result
+        # Should only show last 30 lines
+        assert "log entry 20" in result
         assert "log entry 49" in result
-        assert "log entry 39" not in result
+        assert "log entry 19" not in result
 
 
 class TestSkillMetadata:

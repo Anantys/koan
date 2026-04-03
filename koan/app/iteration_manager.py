@@ -33,10 +33,24 @@ from typing import List, Optional, Tuple
 from app.loop_manager import resolve_focus_area
 
 
+# Set to True when running as CLI subprocess (stdout carries JSON).
+_cli_mode = False
+
+
 def _log_iteration(category: str, message: str):
-    """Log iteration events to stderr. Uses stderr to avoid polluting
-    stdout when iteration_manager runs as a subprocess (CLI mode outputs JSON)."""
-    print(f"[{category}] {message}", file=sys.stderr)
+    """Log iteration events via run_log.log() for timestamp+color support.
+
+    Falls back to stderr when in CLI subprocess mode (stdout carries JSON)
+    or when run_log is not available.
+    """
+    if _cli_mode:
+        print(f"[{category}] {message}", file=sys.stderr)
+        return
+    try:
+        from app.run_log import log as _run_log
+        _run_log(category, message)
+    except ImportError:
+        print(f"[{category}] {message}", file=sys.stderr)
 
 
 def _refresh_usage(usage_state: Path, usage_md: Path, count: int):
@@ -960,6 +974,8 @@ def plan_iteration(
 
 def main():
     """CLI entry point for iteration_manager."""
+    global _cli_mode
+    _cli_mode = True
     parser = argparse.ArgumentParser(description="Kōan iteration planner")
     subparsers = parser.add_subparsers(dest="command")
 
