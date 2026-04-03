@@ -2,11 +2,13 @@
 
 Two roles:
 
-1. **drain_one(instance_dir)** — called from the iteration loop.  Makes a
-   single non-blocking ``gh run list`` call for the oldest queue entry.
-   - Pass → remove from queue.
-   - Fail → inject ``/ci_check <url>`` mission and remove from queue.
+1. **drain_one(instance_dir)** — called from the iteration loop.  Reads the
+   ## CI section from missions.md and checks each entry non-blocking.
+   - Pass → remove from ## CI, write outbox success message.
+   - Fail → increment attempt counter, inject ``/ci_check <url>`` mission.
+            If max attempts reached, remove from ## CI, write outbox failure.
    - Pending/running → skip (check again next iteration).
+   - None → remove from ## CI (no CI configured).
 
 2. **CLI entry point** — ``python -m app.ci_queue_runner <pr-url> --project-path <path>``
    Runs the blocking CI check-and-fix for a single PR (used by the
@@ -61,43 +63,82 @@ def check_ci_status(branch: str, full_repo: str) -> Tuple[str, Optional[int]]:
 
 
 def drain_one(instance_dir: str) -> Optional[str]:
-    """Check one CI queue entry (non-blocking). Returns a status message or None.
+    """Check CI entries in ## CI section (non-blocking). Returns a status message or None.
 
-    Called once per iteration from the run loop. Checks the oldest entry,
-    and based on CI status:
-    - success: remove from queue, return success message
-    - failure: inject /ci_check mission, remove from queue
-    - pending: leave in queue (try again next iteration)
-    - none: remove from queue (no CI configured)
-    - expired: remove from queue (older than 24h)
+    Called once per iteration from the run loop. Reads the ## CI section,
+    picks the first (oldest) entry, and based on CI status:
+    - success: remove from ## CI, send outbox notification
+    - failure (under max): increment attempt, inject /ci_check mission
+    - failure (at max): remove from ## CI, send failure outbox notification
+    - pending: leave in ## CI (try again next iteration)
+    - none: remove from ## CI (no CI configured)
+
+    Also migrates legacy .ci-queue.json entries to ## CI on first call.
     """
-    from app import ci_queue
+    from app.missions import get_ci_items
+    from app.utils import modify_missions_file
 
-    entry = ci_queue.peek(instance_dir)
-    if entry is None:
+    missions_path = Path(instance_dir) / "missions.md"
+
+    # One-time migration from legacy JSON queue
+    _maybe_migrate_json_queue(instance_dir, missions_path)
+
+    content = missions_path.read_text() if missions_path.exists() else ""
+    items = get_ci_items(content)
+    if not items:
         return None
 
+    # Process first (oldest) entry
+    entry = items[0]
     pr_url = entry["pr_url"]
     branch = entry["branch"]
     full_repo = entry["full_repo"]
     pr_number = entry.get("pr_number", "?")
+    attempt = entry["attempt"]
+    max_attempts = entry["max_attempts"]
 
-    status, run_id = check_ci_status(branch, full_repo)
+    status, _run_id = check_ci_status(branch, full_repo)
 
     if status == "success":
-        ci_queue.remove(instance_dir, pr_url)
+        modify_missions_file(
+            missions_path,
+            lambda c: __import__("app.missions", fromlist=["remove_ci_item"]).remove_ci_item(c, pr_url),
+        )
+        _write_outbox(
+            instance_dir,
+            f"✅ CI passed for PR #{pr_number} — ready for review: {pr_url}",
+        )
         return f"CI passed for PR #{pr_number} ({branch})"
 
     if status == "failure":
-        ci_queue.remove(instance_dir, pr_url)
-        _inject_ci_fix_mission(instance_dir, pr_url, entry)
-        return f"CI failed for PR #{pr_number} — /ci_check mission queued"
+        if attempt < max_attempts:
+            # Increment attempt counter, inject fix mission
+            modify_missions_file(
+                missions_path,
+                lambda c: __import__("app.missions", fromlist=["update_ci_item_attempt"]).update_ci_item_attempt(c, pr_url),
+            )
+            _inject_ci_fix_mission(instance_dir, pr_url, entry)
+            return f"CI failed for PR #{pr_number} — /ci_check mission queued (attempt {attempt + 1}/{max_attempts})"
+        else:
+            # Max attempts exhausted
+            modify_missions_file(
+                missions_path,
+                lambda c: __import__("app.missions", fromlist=["remove_ci_item"]).remove_ci_item(c, pr_url),
+            )
+            _write_outbox(
+                instance_dir,
+                f"❌ CI still failing after {max_attempts} attempts for PR #{pr_number}: {pr_url}",
+            )
+            return f"CI failed {max_attempts} times for PR #{pr_number} — giving up"
 
     if status == "none":
-        ci_queue.remove(instance_dir, pr_url)
-        return f"No CI runs found for PR #{pr_number} — removed from queue"
+        modify_missions_file(
+            missions_path,
+            lambda c: __import__("app.missions", fromlist=["remove_ci_item"]).remove_ci_item(c, pr_url),
+        )
+        return f"No CI runs found for PR #{pr_number} — removed from ## CI"
 
-    # status == "pending" — leave in queue
+    # status == "pending" — leave in ## CI
     return None
 
 
@@ -107,10 +148,9 @@ def _inject_ci_fix_mission(instance_dir: str, pr_url: str, entry: dict):
     from app.utils import modify_missions_file
 
     missions_path = Path(instance_dir) / "missions.md"
-    project_path = entry.get("project_path", "")
-
-    # Determine project name from path for the mission tag
-    project_name = _project_name_from_path(project_path)
+    project_name = entry.get("project") or _project_name_from_path(
+        entry.get("project_path", "")
+    )
     tag = f"[project:{project_name}] " if project_name else ""
 
     mission_text = f"- {tag}/ci_check {pr_url}"
@@ -128,6 +168,114 @@ def _project_name_from_path(project_path: str) -> str:
     return Path(project_path).name
 
 
+def _write_outbox(instance_dir: str, message: str):
+    """Append a message to outbox.md."""
+    from app.utils import append_to_outbox
+
+    outbox_path = Path(instance_dir) / "outbox.md"
+    try:
+        append_to_outbox(outbox_path, message)
+    except Exception as e:
+        print(f"[ci_queue] Failed to write outbox: {e}", file=sys.stderr)
+
+
+def _maybe_migrate_json_queue(instance_dir: str, missions_path: Path):
+    """One-time migration from .ci-queue.json to ## CI section in missions.md.
+
+    Reads any entries from the legacy JSON queue and adds them to ## CI,
+    then removes the JSON file. Migrated entries start at attempt 0.
+    """
+    import os
+
+    json_path = Path(instance_dir) / ".ci-queue.json"
+    if not json_path.exists():
+        return
+
+    try:
+        import json as _json
+        data = _json.loads(json_path.read_text())
+        entries = data if isinstance(data, list) else []
+    except Exception as e:
+        print(f"[ci_queue] Failed to read legacy JSON queue: {e}", file=sys.stderr)
+        entries = []
+
+    if not entries:
+        try:
+            os.remove(json_path)
+        except OSError:
+            pass
+        return
+
+    from app.missions import add_ci_item
+    from app.utils import load_config, modify_missions_file
+
+    config = load_config()
+    max_attempts = config.get("ci_fix_max_attempts", 5)
+
+    for entry in entries:
+        pr_url = entry.get("pr_url", "")
+        branch = entry.get("branch", "")
+        full_repo = entry.get("full_repo", "")
+        pr_number = entry.get("pr_number", "")
+        project_path = entry.get("project_path", "")
+        project_name = _project_name_from_path(project_path)
+
+        if not pr_url or not branch or not full_repo:
+            continue
+
+        modify_missions_file(
+            missions_path,
+            lambda c, _pn=project_name, _url=pr_url, _num=pr_number, _b=branch, _r=full_repo, _m=max_attempts: add_ci_item(
+                c, _pn, _url, _num, _b, _r, _m
+            ),
+        )
+        print(f"[ci_queue] Migrated {pr_url} from JSON queue to ## CI", file=sys.stderr)
+
+    try:
+        os.remove(json_path)
+        lock_path = Path(instance_dir) / ".ci-queue.lock"
+        if lock_path.exists():
+            os.remove(lock_path)
+    except OSError:
+        pass
+
+
+def _reenqueue_for_monitoring(
+    pr_url: str, branch: str, full_repo: str,
+    pr_number: str, project_path: str,
+):
+    """Re-enqueue a PR for CI monitoring in the ## CI section after pushing a fix.
+
+    This ensures drain_one() picks up the new CI run result during
+    interruptible_sleep, rather than leaving it unmonitored.
+    """
+    import os
+
+    koan_root = os.environ.get("KOAN_ROOT", "")
+    if not koan_root:
+        print("[ci_check] KOAN_ROOT not set, cannot re-enqueue", file=sys.stderr)
+        return
+
+    instance_dir = os.path.join(koan_root, "instance")
+    missions_path = Path(instance_dir) / "missions.md"
+    project_name = _project_name_from_path(project_path)
+
+    from app.missions import add_ci_item
+    from app.utils import load_config, modify_missions_file
+
+    config = load_config()
+    max_attempts = config.get("ci_fix_max_attempts", 5)
+
+    try:
+        modify_missions_file(
+            missions_path,
+            lambda c: add_ci_item(c, project_name, pr_url, pr_number, branch, full_repo, max_attempts),
+        )
+        print(f"[ci_check] Re-enqueued {pr_url} for CI monitoring in ## CI", file=sys.stderr)
+    except Exception as e:
+        print(f"[ci_check] Failed to re-enqueue: {e}", file=sys.stderr)
+
+
 # ── CLI entry point ────────────────────────────────────────────────────
 # Used by /ci_check skill dispatch: runs the blocking CI check-and-fix
 # pipeline for a single PR.
@@ -143,16 +291,29 @@ def run_ci_check_and_fix(pr_url: str, project_path: str) -> Tuple[bool, str]:
     Steps:
     1. Fetch PR context and confirm CI failure (non-blocking)
     2. Checkout the PR branch
-    3. Attempt Claude-based fix (up to MAX_FIX_ATTEMPTS)
+    3. Attempt Claude-based fix (up to max_attempts from ## CI entry)
     4. Force-push fixes and re-check CI
     5. Restore original branch
     """
-    from app.github_url_parser import parse_pr_url
+    import os
 
-    MAX_FIX_ATTEMPTS = 2
+    from app.github_url_parser import parse_pr_url
 
     owner, repo, pr_number = parse_pr_url(pr_url)
     full_repo = f"{owner}/{repo}"
+
+    # Determine max attempts from ## CI entry (respects per-enqueue config)
+    max_fix_attempts = 2  # fallback if not in ## CI
+    koan_root = os.environ.get("KOAN_ROOT", "")
+    if koan_root:
+        missions_path = Path(koan_root) / "instance" / "missions.md"
+        if missions_path.exists():
+            from app.missions import get_ci_items
+            items = get_ci_items(missions_path.read_text())
+            for item in items:
+                if item["pr_url"] == pr_url:
+                    max_fix_attempts = item["max_attempts"]
+                    break
 
     # Fetch minimal PR context needed for CI fix
     from app.rebase_pr import fetch_pr_context
@@ -230,7 +391,7 @@ def run_ci_check_and_fix(pr_url: str, project_path: str) -> Tuple[bool, str]:
             context=context,
             ci_logs=ci_logs,
             actions_log=actions_log,
-            max_attempts=MAX_FIX_ATTEMPTS,
+            max_attempts=max_fix_attempts,
         )
     except Exception as e:
         actions_log.append(f"CI check/fix crashed: {e}")
@@ -329,31 +490,6 @@ def _attempt_ci_fixes(
 
     actions_log.append(f"CI still failing after {max_attempts} fix attempts")
     return False
-
-
-def _reenqueue_for_monitoring(
-    pr_url: str, branch: str, full_repo: str,
-    pr_number: str, project_path: str,
-):
-    """Re-enqueue a PR for CI monitoring after pushing a fix.
-
-    This ensures drain_one() picks up the new CI run result during
-    interruptible_sleep, rather than leaving it unmonitored.
-    """
-    import os
-
-    koan_root = os.environ.get("KOAN_ROOT", "")
-    if not koan_root:
-        print("[ci_check] KOAN_ROOT not set, cannot re-enqueue", file=sys.stderr)
-        return
-
-    instance_dir = os.path.join(koan_root, "instance")
-    try:
-        from app.ci_queue import enqueue
-        enqueue(instance_dir, pr_url, branch, full_repo, pr_number, project_path)
-        print(f"[ci_check] Re-enqueued {pr_url} for CI monitoring", file=sys.stderr)
-    except Exception as e:
-        print(f"[ci_check] Failed to re-enqueue: {e}", file=sys.stderr)
 
 
 def main(argv=None):

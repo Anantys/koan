@@ -26,9 +26,13 @@ _SECTION_MAP = {
     "done": "done",
     "completed": "done",
     "failed": "failed",
+    "ci": "ci",
 }
 
-DEFAULT_SKELETON = "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n\n## Failed\n"
+DEFAULT_SKELETON = "# Missions\n\n## CI\n\n## Pending\n\n## In Progress\n\n## Done\n\n## Failed\n"
+
+# Regex to parse CI item attempt counters: (attempt N/M)
+_CI_ATTEMPT_RE = re.compile(r"\(\s*attempt\s+(\d+)\s*/\s*(\d+)\s*\)")
 
 # Timestamp markers for mission lifecycle tracking
 _QUEUED_MARKER = "⏳"
@@ -208,7 +212,7 @@ def parse_sections(content: str) -> Dict[str, List[str]]:
     (for ### complex missions). Continuation lines (indented text,
     code-fenced blocks) are attached to their parent "- ..." item.
     """
-    sections = {"pending": [], "in_progress": [], "done": [], "failed": []}
+    sections = {"pending": [], "in_progress": [], "done": [], "failed": [], "ci": []}
     current = None
     current_block = []
     in_code_fence = False
@@ -1627,3 +1631,209 @@ def _enforce_quarantine_cap(path: "Path") -> None:
     # Keep the newer half
     half = len(lines) // 2
     path.write_text("".join(lines[half:]))
+
+
+# ── CI section helpers ────────────────────────────────────────────────────────
+# These functions manage the ## CI section in missions.md which tracks
+# in-flight CI monitoring entries. Each entry has the format:
+#   - [project:name] https://github.com/owner/repo/pull/N branch:b repo:owner/repo queued:TIMESTAMP (attempt 0/5)
+
+
+def add_ci_item(
+    content: str,
+    project_name: str,
+    pr_url: str,
+    pr_number: str,
+    branch: str,
+    full_repo: str,
+    max_attempts: int,
+) -> str:
+    """Add or refresh a CI monitoring entry in the ## CI section.
+
+    Deduplicates by pr_url — if already present, resets the attempt counter
+    to 0 (fresh CI run, e.g. after a rebase force-push).
+
+    Returns the updated content string.
+    """
+    from datetime import datetime, timezone
+
+    if not content:
+        content = DEFAULT_SKELETON
+
+    queued = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M")
+    tag = f"[project:{project_name}] " if project_name else ""
+    new_line = (
+        f"- {tag}{pr_url} branch:{branch} repo:{full_repo}"
+        f" queued:{queued} (attempt 0/{max_attempts})"
+    )
+
+    # Remove any existing entry for this PR URL (dedup / reset)
+    content = remove_ci_item(content, pr_url)
+
+    # Ensure ## CI section exists
+    if "## CI" not in content:
+        # Insert before ## Pending (or at top if no ## Pending)
+        if "## Pending" in content:
+            content = content.replace("## Pending", "## CI\n\n## Pending", 1)
+        elif "## En attente" in content:
+            content = content.replace("## En attente", "## CI\n\n## En attente", 1)
+        else:
+            # Fallback: prepend after # Missions header
+            if "# Missions" in content:
+                content = content.replace("# Missions\n", "# Missions\n\n## CI\n", 1)
+            else:
+                content = f"## CI\n\n{content}"
+
+    # Append the new entry to the ## CI section
+    lines = content.splitlines()
+    ci_header_idx = None
+    for i, line in enumerate(lines):
+        if line.strip() == "## CI":
+            ci_header_idx = i
+            break
+
+    if ci_header_idx is None:
+        # Should not happen after the block above, but be safe
+        content += f"\n## CI\n\n{new_line}\n"
+        return normalize_content(content)
+
+    # Find end of CI section (next ## header or EOF)
+    insert_idx = ci_header_idx + 1
+    for j in range(ci_header_idx + 1, len(lines)):
+        if lines[j].strip().startswith("## "):
+            break
+        insert_idx = j + 1
+
+    lines.insert(insert_idx, new_line)
+    return normalize_content("\n".join(lines))
+
+
+def remove_ci_item(content: str, pr_url: str) -> str:
+    """Remove the CI monitoring entry for the given PR URL.
+
+    Returns the updated content string (unchanged if not found).
+    """
+    if not content or "## CI" not in content:
+        return content
+
+    lines = content.splitlines()
+    in_ci = False
+    filtered = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped == "## CI":
+            in_ci = True
+            filtered.append(line)
+            continue
+        if in_ci and stripped.startswith("## "):
+            in_ci = False
+        if in_ci and pr_url in line:
+            continue  # Remove this line
+        filtered.append(line)
+
+    return normalize_content("\n".join(filtered))
+
+
+def get_ci_items(content: str) -> List[dict]:
+    """Parse ## CI section entries into a list of dicts.
+
+    Each dict has keys: project, pr_url, pr_number, branch, full_repo,
+    queued, attempt, max_attempts, raw_line.
+    """
+    if not content:
+        return []
+
+    items = []
+    in_ci = False
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped == "## CI":
+            in_ci = True
+            continue
+        if in_ci and stripped.startswith("## "):
+            break
+        if not in_ci or not stripped.startswith("- "):
+            continue
+
+        item = _parse_ci_line(stripped)
+        if item:
+            items.append(item)
+
+    return items
+
+
+def _parse_ci_line(line: str) -> Optional[dict]:
+    """Parse a single CI entry line. Returns dict or None if unparseable."""
+    # Extract project tag
+    project = ""
+    tag_match = re.search(r"\[project:([^\]]+)\]", line)
+    if tag_match:
+        project = tag_match.group(1)
+
+    # Extract attempt counter
+    attempt_match = _CI_ATTEMPT_RE.search(line)
+    if not attempt_match:
+        return None
+    attempt = int(attempt_match.group(1))
+    max_attempts = int(attempt_match.group(2))
+
+    # Extract URL (first https:// token)
+    url_match = re.search(r"(https://[^\s]+/pull/\d+)", line)
+    if not url_match:
+        return None
+    pr_url = url_match.group(1)
+
+    # Derive pr_number from URL
+    pr_num_match = re.search(r"/pull/(\d+)", pr_url)
+    pr_number = pr_num_match.group(1) if pr_num_match else ""
+
+    # Extract branch:, repo:, queued: fields
+    branch_match = re.search(r"\bbranch:(\S+)", line)
+    repo_match = re.search(r"\brepo:(\S+)", line)
+    queued_match = re.search(r"\bqueued:(\S+)", line)
+
+    return {
+        "project": project,
+        "pr_url": pr_url,
+        "pr_number": pr_number,
+        "branch": branch_match.group(1) if branch_match else "",
+        "full_repo": repo_match.group(1) if repo_match else "",
+        "queued": queued_match.group(1) if queued_match else "",
+        "attempt": attempt,
+        "max_attempts": max_attempts,
+        "raw_line": line,
+    }
+
+
+def update_ci_item_attempt(content: str, pr_url: str) -> str:
+    """Increment the attempt counter for the CI entry matching pr_url.
+
+    Finds the line containing pr_url in the ## CI section and increments
+    the attempt number in-place: (attempt N/M) → (attempt N+1/M).
+    Returns content unchanged if pr_url not found or attempt already at max.
+    """
+    if not content or "## CI" not in content:
+        return content
+
+    lines = content.splitlines()
+    in_ci = False
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped == "## CI":
+            in_ci = True
+            continue
+        if in_ci and stripped.startswith("## "):
+            break
+        if in_ci and pr_url in line:
+            m = _CI_ATTEMPT_RE.search(line)
+            if m:
+                current = int(m.group(1))
+                maximum = int(m.group(2))
+                if current < maximum:
+                    new_line = _CI_ATTEMPT_RE.sub(
+                        f"(attempt {current + 1}/{maximum})", line
+                    )
+                    lines[i] = new_line
+            break
+
+    return normalize_content("\n".join(lines))

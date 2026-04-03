@@ -158,64 +158,88 @@ class TestMainErrorHandling:
 class TestDrainOneErrorHandling:
     """Verify drain_one handles CI status results correctly."""
 
+    def _missions_with_ci_entry(self, attempt=0, max_attempts=5):
+        """Return missions.md content with one CI entry."""
+        return (
+            "# Missions\n\n## CI\n\n"
+            f"- [project:proj] {PR_URL} branch:fix-branch repo:owner/repo"
+            f" queued:2026-04-01T10:00 (attempt {attempt}/{max_attempts})\n\n"
+            "## Pending\n\n## Done\n"
+        )
+
     def test_drain_one_no_entries(self):
-        """When queue is empty, drain_one returns None."""
+        """When ## CI section is empty, drain_one returns None."""
         from app.ci_queue_runner import drain_one
 
-        with patch("app.ci_queue.peek", return_value=None):
+        empty_missions = "# Missions\n\n## CI\n\n## Pending\n\n## Done\n"
+        with (
+            patch("pathlib.Path.exists", return_value=True),
+            patch("pathlib.Path.read_text", return_value=empty_missions),
+            patch("app.ci_queue_runner._maybe_migrate_json_queue"),
+        ):
             result = drain_one("/tmp/instance")
 
         assert result is None
 
     def test_drain_one_success_removes_entry(self):
-        """On CI success, entry is removed from queue."""
+        """On CI success, entry is removed from ## CI section."""
         from app.ci_queue_runner import drain_one
 
-        entry = {
-            "pr_url": PR_URL,
-            "branch": "fix-branch",
-            "full_repo": "owner/repo",
-            "pr_number": 42,
-        }
+        missions_content = self._missions_with_ci_entry()
         with (
-            patch("app.ci_queue.peek", return_value=entry),
-            patch("app.ci_queue.remove") as mock_remove,
-            patch(
-                "app.ci_queue_runner.check_ci_status",
-                return_value=("success", 123),
-            ),
+            patch("pathlib.Path.exists", return_value=True),
+            patch("pathlib.Path.read_text", return_value=missions_content),
+            patch("app.ci_queue_runner._maybe_migrate_json_queue"),
+            patch("app.utils.modify_missions_file") as mock_modify,
+            patch("app.ci_queue_runner.check_ci_status", return_value=("success", 123)),
+            patch("app.ci_queue_runner._write_outbox"),
         ):
             result = drain_one("/tmp/instance")
 
+        assert result is not None
         assert "passed" in result.lower()
-        mock_remove.assert_called_once_with("/tmp/instance", PR_URL)
+        mock_modify.assert_called()
 
     def test_drain_one_failure_injects_mission(self):
-        """On CI failure, a /ci_check mission is injected."""
+        """On CI failure under max attempts, a /ci_check mission is injected."""
         from app.ci_queue_runner import drain_one
 
-        entry = {
-            "pr_url": PR_URL,
-            "branch": "fix-branch",
-            "full_repo": "owner/repo",
-            "pr_number": 42,
-            "project_path": "/tmp/project",
-        }
+        missions_content = self._missions_with_ci_entry(attempt=0, max_attempts=5)
         with (
-            patch("app.ci_queue.peek", return_value=entry),
-            patch("app.ci_queue.remove"),
-            patch(
-                "app.ci_queue_runner.check_ci_status",
-                return_value=("failure", 456),
-            ),
-            patch(
-                "app.ci_queue_runner._inject_ci_fix_mission",
-            ) as mock_inject,
+            patch("pathlib.Path.exists", return_value=True),
+            patch("pathlib.Path.read_text", return_value=missions_content),
+            patch("app.ci_queue_runner._maybe_migrate_json_queue"),
+            patch("app.utils.modify_missions_file"),
+            patch("app.ci_queue_runner.check_ci_status", return_value=("failure", 456)),
+            patch("app.ci_queue_runner._inject_ci_fix_mission") as mock_inject,
         ):
             result = drain_one("/tmp/instance")
 
+        assert result is not None
         assert "failed" in result.lower()
-        mock_inject.assert_called_once_with("/tmp/instance", PR_URL, entry)
+        mock_inject.assert_called_once()
+
+    def test_drain_one_failure_at_max_gives_up(self):
+        """On CI failure at max attempts, entry is removed and failure notified."""
+        from app.ci_queue_runner import drain_one
+
+        missions_content = self._missions_with_ci_entry(attempt=5, max_attempts=5)
+        with (
+            patch("pathlib.Path.exists", return_value=True),
+            patch("pathlib.Path.read_text", return_value=missions_content),
+            patch("app.ci_queue_runner._maybe_migrate_json_queue"),
+            patch("app.utils.modify_missions_file") as mock_modify,
+            patch("app.ci_queue_runner.check_ci_status", return_value=("failure", 456)),
+            patch("app.ci_queue_runner._write_outbox") as mock_outbox,
+        ):
+            result = drain_one("/tmp/instance")
+
+        assert result is not None
+        assert "giving up" in result.lower()
+        mock_modify.assert_called()
+        mock_outbox.assert_called_once()
+        # Failure notification should mention the PR URL
+        assert PR_URL in mock_outbox.call_args[0][1]
 
 
 class TestAttemptCiFixes:
@@ -301,18 +325,17 @@ class TestAttemptCiFixes:
         assert any("re-enqueued" in a.lower() for a in actions_log)
 
     def test_reenqueue_called_on_pending_ci(self):
-        """After pushing a fix, if CI is pending, the PR is re-enqueued for monitoring."""
+        """After pushing a fix, if CI is pending, the PR is re-enqueued in ## CI section."""
         from app.ci_queue_runner import _reenqueue_for_monitoring
 
         with (
             patch.dict("os.environ", {"KOAN_ROOT": "/tmp/test-koan"}),
-            patch("app.ci_queue.enqueue") as mock_enqueue,
+            patch("app.utils.modify_missions_file") as mock_modify,
+            patch("app.utils.load_config", return_value={"ci_fix_max_attempts": 5}),
+            patch("pathlib.Path.exists", return_value=True),
         ):
             _reenqueue_for_monitoring(
                 PR_URL, "fix-branch", "owner/repo", "42", PROJECT_PATH,
             )
 
-        mock_enqueue.assert_called_once_with(
-            "/tmp/test-koan/instance",
-            PR_URL, "fix-branch", "owner/repo", "42", PROJECT_PATH,
-        )
+        mock_modify.assert_called_once()

@@ -95,7 +95,7 @@ class TestParseSections:
 
     def test_empty_content(self):
         result = parse_sections("")
-        assert result == {"pending": [], "in_progress": [], "done": [], "failed": []}
+        assert result == {"pending": [], "in_progress": [], "done": [], "failed": [], "ci": []}
 
     def test_complex_mission(self):
         content = (

@@ -894,8 +894,12 @@ def _enqueue_ci_check(
     context: dict,
     actions_log: List[str],
 ) -> str:
-    """Enqueue an async CI check instead of blocking. Returns CI section for PR comment."""
+    """Enqueue an async CI check in the ## CI section of missions.md.
+
+    Returns CI section text for the PR comment.
+    """
     import os
+    from pathlib import Path
 
     koan_root = os.environ.get("KOAN_ROOT")
     if not koan_root:
@@ -906,12 +910,20 @@ def _enqueue_ci_check(
     pr_url = context.get("url") or f"https://github.com/{full_repo}/pull/{pr_number}"
 
     try:
-        from app.ci_queue import enqueue
-        added = enqueue(instance_dir, pr_url, branch, full_repo, pr_number, project_path)
-        if added:
-            actions_log.append("CI check enqueued (async)")
-        else:
-            actions_log.append("CI check re-enqueued (async)")
+        from app.ci_queue_runner import _project_name_from_path
+        from app.missions import add_ci_item
+        from app.utils import load_config, modify_missions_file
+
+        config = load_config()
+        max_attempts = config.get("ci_fix_max_attempts", 5)
+        project_name = _project_name_from_path(project_path)
+        missions_path = Path(instance_dir) / "missions.md"
+
+        modify_missions_file(
+            missions_path,
+            lambda c: add_ci_item(c, project_name, pr_url, pr_number, branch, full_repo, max_attempts),
+        )
+        actions_log.append("CI check enqueued in ## CI (async)")
         return "CI will be checked asynchronously."
     except Exception as e:
         print(f"[rebase] CI enqueue failed: {e}", file=sys.stderr)
