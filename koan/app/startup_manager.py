@@ -199,7 +199,16 @@ def check_health(koan_root: str, max_age: int = 120):
 
 
 def check_self_reflection(instance: str):
-    """Trigger periodic self-reflection if due."""
+    """Trigger periodic self-reflection if due and enabled in config.
+
+    Controlled by the ``startup_reflection`` config key (default: false).
+    When disabled, reflection is skipped at startup — it can still be
+    triggered manually via the CLI entry point.
+    """
+    from app.config import get_startup_reflection
+    if not get_startup_reflection():
+        return
+
     log("health", "Checking self-reflection trigger...")
     from app.self_reflection import (
         should_reflect, run_reflection, save_reflection, notify_outbox,

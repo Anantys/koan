@@ -233,6 +233,16 @@ def get_start_passive() -> bool:
     return bool(config.get("start_passive", False))
 
 
+def get_startup_reflection() -> bool:
+    """Check if startup_reflection is enabled in config.yaml.
+
+    Returns True if koan should run the self-reflection check on startup.
+    Defaults to False to avoid unexpected Claude CLI calls at boot time.
+    """
+    config = _load_config()
+    return bool(config.get("startup_reflection", False))
+
+
 def get_auto_pause() -> bool:
     """Check if auto-pause is enabled in config.yaml.
 
