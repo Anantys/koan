@@ -29,6 +29,7 @@ from app.claude_step import (
     _get_diffstat,
     _run_git,
     _safe_checkout,
+    check_existing_ci,
     commit_if_changes,
     run_claude,
     run_claude_step,
@@ -217,8 +218,9 @@ def run_rebase(
         2. Checkout the PR branch locally
         3. Rebase onto the upstream target branch
         4. Analyze review comments and apply changes (if feedback exists)
-        5. Force-push to the existing branch (always recycles the PR)
-        6. Comment on the PR with a summary
+        5. Check existing CI — fix failures before pushing
+        6. Force-push to the existing branch (always recycles the PR)
+        7. Comment on the PR with a summary
 
     Args:
         owner: GitHub owner (e.g., "owner")
@@ -354,10 +356,23 @@ def run_rebase(
             )
             _safe_checkout(branch, project_path)
 
-    # ── Step 5: Collect diffstat before push ──────────────────────────
+    # ── Step 5: Pre-push CI check — fix existing failures ──────────────
+    _fix_existing_ci_failures(
+        branch=branch,
+        base=base,
+        full_repo=full_repo,
+        pr_number=pr_number,
+        project_path=project_path,
+        context=context,
+        actions_log=actions_log,
+        notify_fn=notify_fn,
+        skill_dir=skill_dir,
+    )
+
+    # ── Step 6: Collect diffstat before push ──────────────────────────
     diffstat = _get_diffstat(f"{rebase_remote}/{base}", project_path)
 
-    # ── Step 6: Push the result ───────────────────────────────────────
+    # ── Step 7: Push the result ───────────────────────────────────────
     notify_fn(f"Pushing `{branch}`...")
     push_result = _push_with_fallback(
         branch, base, full_repo, pr_number, context, project_path,
@@ -373,7 +388,7 @@ def run_rebase(
             "\n".join(f"- {a}" for a in actions_log)
         )
 
-    # ── Step 7: Enqueue async CI check ─────────────────────────────────
+    # ── Step 8: Enqueue async CI check ─────────────────────────────────
     ci_section = _enqueue_ci_check(
         branch=branch,
         full_repo=full_repo,
@@ -383,7 +398,7 @@ def run_rebase(
         actions_log=actions_log,
     )
 
-    # ── Step 8: Comment on the PR ─────────────────────────────────────
+    # ── Step 9: Comment on the PR ─────────────────────────────────────
     comment_body = _build_rebase_comment(
         pr_number, branch, base, actions_log, context,
         diffstat=diffstat,
@@ -884,6 +899,76 @@ def _force_push(remote: str, branch: str, project_path: str) -> None:
             ["git", "push", remote, branch, "--force"],
             cwd=project_path,
         )
+
+
+def _fix_existing_ci_failures(
+    branch: str,
+    base: str,
+    full_repo: str,
+    pr_number: str,
+    project_path: str,
+    context: dict,
+    actions_log: List[str],
+    notify_fn,
+    skill_dir: Optional[Path] = None,
+) -> bool:
+    """Check the most recent CI run and fix failures before pushing.
+
+    Inspects the last CI run on the branch (from before the rebase).  If it
+    failed, fetches the logs, invokes Claude to apply fixes, and amends the
+    commit so the fix is included in the upcoming force-push.
+
+    Returns True if a fix was applied, False otherwise.
+    """
+    pr_url = context.get("url") or f"https://github.com/{full_repo}/pull/{pr_number}"
+
+    notify_fn(f"Checking existing CI on [{branch}]({pr_url})...")
+    ci_status, run_id, ci_logs = check_existing_ci(branch, full_repo)
+
+    if ci_status != "failure":
+        if ci_status == "success":
+            actions_log.append("Pre-push CI check: previous run passed")
+        elif ci_status == "pending":
+            actions_log.append("Pre-push CI check: previous run still pending")
+        else:
+            actions_log.append("Pre-push CI check: no CI runs found")
+        return False
+
+    notify_fn(f"Previous CI failed — analyzing logs to fix before push...")
+    actions_log.append(f"Pre-push CI check: previous run #{run_id} failed")
+
+    # Build CI fix prompt with current diff
+    rebase_remote = "origin"
+    diff = ""
+    try:
+        diff = _run_git(
+            ["git", "diff", f"{rebase_remote}/{base}..HEAD"],
+            cwd=project_path, timeout=30,
+        )
+    except Exception as e:
+        print(f"[rebase_pr] diff fetch for CI fix failed: {e}", file=sys.stderr)
+    diff = truncate_text(diff, 8000)
+
+    ci_fix_prompt = _build_ci_fix_prompt(
+        context, ci_logs, diff, skill_dir=skill_dir,
+    )
+
+    fixed = run_claude_step(
+        prompt=ci_fix_prompt,
+        project_path=project_path,
+        commit_msg=f"fix: resolve pre-existing CI failures on #{pr_number}",
+        success_label="Applied pre-push CI fix",
+        failure_label="Pre-push CI fix step produced no changes",
+        actions_log=actions_log,
+        max_turns=15,
+    )
+
+    if fixed:
+        actions_log.append("Pre-push CI fix applied")
+    else:
+        actions_log.append("Pre-push CI fix: no changes needed or Claude found nothing to fix")
+
+    return fixed
 
 
 def _enqueue_ci_check(

@@ -425,6 +425,53 @@ def _fetch_failed_logs(run_id: int, full_repo: str, max_chars: int = 8000) -> st
         return f"(Could not fetch logs: {e})"
 
 
+def check_existing_ci(
+    branch: str,
+    full_repo: str,
+) -> Tuple[str, Optional[int], str]:
+    """Check the most recent CI run on a branch without polling.
+
+    Unlike ``wait_for_ci`` which polls until completion, this does a single
+    check to see the current CI state.  Useful for inspecting pre-existing
+    failures before pushing a new version.
+
+    Returns:
+        (status, run_id, logs) where:
+        - status: "success", "failure", "pending", or "none"
+        - run_id: GitHub Actions run ID (None if no runs found)
+        - logs: Failed job logs (empty unless status is "failure")
+    """
+    try:
+        raw = run_gh(
+            "run", "list",
+            "--branch", branch,
+            "--repo", full_repo,
+            "--json", "databaseId,status,conclusion",
+            "--limit", "1",
+        )
+        runs = json.loads(raw) if raw.strip() else []
+    except Exception as e:
+        print(f"[claude_step] CI check error: {e}", file=sys.stderr)
+        return ("none", None, "")
+
+    if not runs:
+        return ("none", None, "")
+
+    run = runs[0]
+    run_id = run.get("databaseId")
+    status = run.get("status", "").lower()
+    conclusion = run.get("conclusion", "").lower()
+
+    if status == "completed":
+        if conclusion == "success":
+            return ("success", run_id, "")
+        logs = _fetch_failed_logs(run_id, full_repo)
+        return ("failure", run_id, logs)
+
+    # Still running or queued
+    return ("pending", run_id, "")
+
+
 def _is_permission_error(error_msg: str) -> bool:
     """Check if an error message indicates a permission/access problem."""
     indicators = [
