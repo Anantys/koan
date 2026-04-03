@@ -432,11 +432,11 @@ class TestDetectSkills:
         instance = tmp_path / "instance"
         instance.mkdir()
         (instance / "soul.md").write_text(
-            "Skills: `atoomic.refactor` and `atoomic.review` are available."
+            "Skills: `team.refactor` and `team.review` are available."
         )
         refactor, review = detect_skills()
-        assert refactor == "atoomic.refactor"
-        assert review == "atoomic.review"
+        assert refactor == "team.refactor"
+        assert review == "team.review"
 
     def test_without_soul(self, tmp_path, monkeypatch):
         monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
@@ -462,11 +462,11 @@ class TestDetectSkills:
         instance = tmp_path / "instance"
         instance.mkdir()
         (instance / "soul.md").write_text(
-            "Use atoomic.refactor and atoomic.review for code quality."
+            "Use team.refactor and team.review for code quality."
         )
         refactor, review = detect_skills()
-        assert refactor == "atoomic.refactor"
-        assert review == "atoomic.review"
+        assert refactor == "team.refactor"
+        assert review == "team.review"
 
     def test_claude_md_at_project_path(self, tmp_path, monkeypatch):
         """Skills detected from CLAUDE.md at project path (highest priority)."""
@@ -487,7 +487,7 @@ class TestDetectSkills:
         instance = tmp_path / "instance"
         instance.mkdir()
         (instance / "soul.md").write_text(
-            "Skills: `atoomic.refactor` and `atoomic.review` are available."
+            "Skills: `team.refactor` and `team.review` are available."
         )
         project = tmp_path / "project"
         project.mkdir()
@@ -497,7 +497,7 @@ class TestDetectSkills:
         refactor, review = detect_skills(str(project))
         assert refactor == "custom.refactor"
         # review falls through to soul.md
-        assert review == "atoomic.review"
+        assert review == "team.review"
 
     def test_no_project_path(self, tmp_path, monkeypatch):
         """Works without project_path, falls back to soul.md only."""
@@ -505,11 +505,11 @@ class TestDetectSkills:
         instance = tmp_path / "instance"
         instance.mkdir()
         (instance / "soul.md").write_text(
-            "Skills: `atoomic.refactor` and `atoomic.review`."
+            "Skills: `team.refactor` and `team.review`."
         )
         refactor, review = detect_skills("")
-        assert refactor == "atoomic.refactor"
-        assert review == "atoomic.review"
+        assert refactor == "team.refactor"
+        assert review == "team.review"
 
 
 # ---------------------------------------------------------------------------
@@ -593,8 +593,8 @@ class TestBuildRefactorPrompt:
         assert "/tmp/project" in prompt
 
     def test_includes_skill_name(self):
-        prompt = build_refactor_prompt("/tmp/project", "atoomic.refactor", skill_dir=PR_SKILL_DIR)
-        assert "atoomic.refactor" in prompt
+        prompt = build_refactor_prompt("/tmp/project", "team.refactor", skill_dir=PR_SKILL_DIR)
+        assert "team.refactor" in prompt
 
     def test_empty_skill_name(self):
         prompt = build_refactor_prompt("/tmp/project", "", skill_dir=PR_SKILL_DIR)
@@ -607,8 +607,8 @@ class TestBuildQualityReviewPrompt:
         assert "/tmp/project" in prompt
 
     def test_includes_skill_name(self):
-        prompt = build_quality_review_prompt("/tmp/project", "atoomic.review", skill_dir=PR_SKILL_DIR)
-        assert "atoomic.review" in prompt
+        prompt = build_quality_review_prompt("/tmp/project", "team.review", skill_dir=PR_SKILL_DIR)
+        assert "team.review" in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -674,7 +674,7 @@ class TestRunPrReview:
         assert success is False
         assert "Failed to fetch" in summary
 
-    @patch("app.pr_review.detect_skills", return_value=("atoomic.refactor", "atoomic.review"))
+    @patch("app.pr_review.detect_skills", return_value=("team.refactor", "team.review"))
     @patch("app.pr_review.detect_test_command", return_value="make test")
     @patch("app.pr_review.run_project_tests")
     @patch("app.pr_review.run_gh")

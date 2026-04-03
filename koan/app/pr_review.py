@@ -28,7 +28,7 @@ from app.github import run_gh
 from app.prompts import load_prompt_or_skill
 from app.rebase_pr import fetch_pr_context, _find_remote_for_repo
 
-# Matches skill names like `atoomic.refactor` or my.review (with or without backticks)
+# Matches skill names like `team.refactor` or my.review (with or without backticks)
 _SKILL_RE = re.compile(r'`?([a-zA-Z0-9_-]+\.(?:refactor|review))\b`?')
 
 
