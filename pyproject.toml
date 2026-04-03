@@ -14,3 +14,11 @@ markers = [
     "slow: marks tests as slow (run in dedicated CI groups)",
 ]
 timeout = 60
+
+[tool.coverage.run]
+source = ["app"]
+omit = ["tests/*", "app/setup_wizard.py"]
+
+[tool.coverage.report]
+show_missing = true
+precision = 1

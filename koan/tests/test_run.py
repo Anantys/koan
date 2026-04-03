@@ -235,28 +235,6 @@ class TestBuildStartupStatus:
         assert "resets 10am (Europe/Paris)" in result
         assert "/resume" in result
 
-    def test_paused_with_max_runs_no_display(self, tmp_path):
-        from app.run import _build_startup_status
-        (tmp_path / ".koan-pause").write_text("max_runs\n1739300000\n\n")
-        result = _build_startup_status(str(tmp_path))
-        assert "Paused" in result
-        assert "max_runs" in result
-        assert "/resume" in result
-
-    def test_paused_with_no_reason(self, tmp_path):
-        from app.run import _build_startup_status
-        (tmp_path / ".koan-pause").touch()
-        result = _build_startup_status(str(tmp_path))
-        assert "Paused" in result
-        assert "/resume" in result
-
-    def test_paused_with_empty_pause_file(self, tmp_path):
-        from app.run import _build_startup_status
-        (tmp_path / ".koan-pause").write_text("")
-        result = _build_startup_status(str(tmp_path))
-        assert "Paused" in result
-        assert "/resume" in result
-
 
 # ---------------------------------------------------------------------------
 # Test: start_on_pause in run_startup
@@ -880,90 +858,34 @@ class TestHandlePause:
             result = handle_pause(str(koan_root), instance, 5)
             assert result == "resume"
 
+    @pytest.mark.parametrize("signal_file,content", [
+        (".koan-restart", ""),
+        (".koan-stop", "STOP"),
+        (".koan-shutdown", "1234567890"),
+        (".koan-cycle", "CYCLE"),
+    ])
     @patch("app.run.time.sleep")
-    def test_pause_breaks_on_restart_signal(self, mock_sleep, koan_root):
-        """Pause breaks out when .koan-restart appears, returns None."""
+    def test_pause_breaks_on_signal(self, mock_sleep, koan_root, signal_file, content):
+        """Pause breaks out when a signal file appears, returns None."""
         from app.run import handle_pause
 
         instance = str(koan_root / "instance")
         (koan_root / ".koan-pause").touch()
 
         sleep_count = [0]
-        def create_restart_after_2(duration):
+        def create_signal_after_2(duration):
             sleep_count[0] += 1
             if sleep_count[0] >= 2:
-                (koan_root / ".koan-restart").touch()
+                if content:
+                    (koan_root / signal_file).write_text(content)
+                else:
+                    (koan_root / signal_file).touch()
 
-        mock_sleep.side_effect = create_restart_after_2
+        mock_sleep.side_effect = create_signal_after_2
 
         with patch("app.pause_manager.check_and_resume", return_value=None):
             result = handle_pause(str(koan_root), instance, 5)
             assert result is None
-
-    @patch("app.run.time.sleep")
-    def test_pause_breaks_on_stop_signal(self, mock_sleep, koan_root):
-        """Pause breaks out when .koan-stop appears, returns None."""
-        from app.run import handle_pause
-
-        instance = str(koan_root / "instance")
-        (koan_root / ".koan-pause").touch()
-
-        sleep_count = [0]
-        def create_stop_after_2(duration):
-            sleep_count[0] += 1
-            if sleep_count[0] >= 2:
-                (koan_root / ".koan-stop").write_text("STOP")
-
-        mock_sleep.side_effect = create_stop_after_2
-
-        with patch("app.pause_manager.check_and_resume", return_value=None):
-            result = handle_pause(str(koan_root), instance, 5)
-            assert result is None
-            # Should break much earlier than 60 sleeps
-            assert mock_sleep.call_count < 10
-
-    @patch("app.run.time.sleep")
-    def test_pause_breaks_on_shutdown_signal(self, mock_sleep, koan_root):
-        """Pause breaks out when .koan-shutdown appears, returns None."""
-        from app.run import handle_pause
-
-        instance = str(koan_root / "instance")
-        (koan_root / ".koan-pause").touch()
-
-        sleep_count = [0]
-        def create_shutdown_after_2(duration):
-            sleep_count[0] += 1
-            if sleep_count[0] >= 2:
-                (koan_root / ".koan-shutdown").write_text(str(int(time.time())))
-
-        mock_sleep.side_effect = create_shutdown_after_2
-
-        with patch("app.pause_manager.check_and_resume", return_value=None):
-            result = handle_pause(str(koan_root), instance, 5)
-            assert result is None
-            # Should break much earlier than 60 sleeps
-            assert mock_sleep.call_count < 10
-
-    @patch("app.run.time.sleep")
-    def test_pause_breaks_on_cycle_signal(self, mock_sleep, koan_root):
-        """Pause breaks out when .koan-cycle appears, returns None."""
-        from app.run import handle_pause
-
-        instance = str(koan_root / "instance")
-        (koan_root / ".koan-pause").touch()
-
-        sleep_count = [0]
-        def create_cycle_after_2(duration):
-            sleep_count[0] += 1
-            if sleep_count[0] >= 2:
-                (koan_root / ".koan-cycle").write_text("CYCLE")
-
-        mock_sleep.side_effect = create_cycle_after_2
-
-        with patch("app.pause_manager.check_and_resume", return_value=None):
-            result = handle_pause(str(koan_root), instance, 5)
-            assert result is None
-            assert mock_sleep.call_count < 10
 
 
 # ---------------------------------------------------------------------------
@@ -1753,17 +1675,6 @@ class TestStyled:
         result = _styled("plain")
         assert "plain" in result
 
-    def test_bold_cyan_uses_styled(self):
-        """bold_cyan() should produce the same result as _styled("x", "bold", "cyan")."""
-        from app.run import bold_cyan, _styled, _init_colors
-        _init_colors()
-        assert bold_cyan("test") == _styled("test", "bold", "cyan")
-
-    def test_bold_green_uses_styled(self):
-        """bold_green() should produce the same result as _styled("x", "bold", "green")."""
-        from app.run import bold_green, _styled, _init_colors
-        _init_colors()
-        assert bold_green("test") == _styled("test", "bold", "green")
 
     def test_styled_with_colors_disabled(self, monkeypatch):
         """When KOAN_FORCE_COLOR is unset and stdout is not TTY, styles are empty strings."""

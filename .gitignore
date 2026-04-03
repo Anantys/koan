@@ -10,6 +10,8 @@ __pycache__/
 .venv/
 venv/
 .coverage
+htmlcov/
+koan/htmlcov/
 
 # Runtime
 .koan-status
