@@ -8,6 +8,7 @@ which sets ``GH_TOKEN`` — this module has no auth logic.
 import json
 import re
 import subprocess
+import sys
 import time
 from typing import Dict, Optional
 
@@ -217,7 +218,8 @@ def fetch_issue_state(owner, repo, issue_number):
         )
         state = result.strip().strip('"')
         return state if state in ("open", "closed") else "open"
-    except Exception:
+    except Exception as e:
+        print(f"[github] fetch_issue_state error: {e}", file=sys.stderr)
         return "open"
 
 
