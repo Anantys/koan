@@ -71,6 +71,13 @@ fast_reply: false
 # e.g., "koan-alice" creates branches like "koan-alice/fix-something"
 # branch_prefix: "koan"
 
+# CI fix max attempts — maximum number of Claude-based fix attempts per PR
+# When CI fails after a rebase/push, Kōan will attempt to fix it up to this
+# many times. Each attempt: fetch failure logs → run Claude → force-push →
+# re-check. The counter is stored in the ## CI section of missions.md, so
+# it's visible in your task queue. Default: 5.
+# ci_fix_max_attempts: 5
+
 # Skill timeout — maximum seconds for heavy skill execution (fix, implement, recreate)
 # These skills invoke Claude with full tool access and can run for a long time.
 # Increase if you see timeouts on complex issues; decrease to save quota.
