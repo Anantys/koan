@@ -345,26 +345,37 @@ class TestCheckHealth:
 # ---------------------------------------------------------------------------
 
 class TestCheckSelfReflection:
+    @patch("app.config.get_startup_reflection", return_value=False)
+    def test_disabled_by_default_skips_reflection(self, mock_cfg):
+        """When startup_reflection is false, self-reflection is never triggered."""
+        from app.startup_manager import check_self_reflection
+        with patch("app.self_reflection.should_reflect") as mock_should:
+            check_self_reflection("/tmp/instance")
+            mock_should.assert_not_called()
+
+    @patch("app.config.get_startup_reflection", return_value=True)
     @patch("app.self_reflection.should_reflect", return_value=False)
-    def test_not_due(self, mock_should, capsys):
+    def test_enabled_but_not_due(self, mock_should, mock_cfg, capsys):
         from app.startup_manager import check_self_reflection
         check_self_reflection("/tmp/instance")
         mock_should.assert_called_once()
 
+    @patch("app.config.get_startup_reflection", return_value=True)
     @patch("app.self_reflection.notify_outbox")
     @patch("app.self_reflection.save_reflection")
     @patch("app.self_reflection.run_reflection", return_value="Some observations")
     @patch("app.self_reflection.should_reflect", return_value=True)
-    def test_triggers_reflection(self, mock_should, mock_run, mock_save, mock_notify):
+    def test_enabled_triggers_reflection(self, mock_should, mock_run, mock_save, mock_notify, mock_cfg):
         from app.startup_manager import check_self_reflection
         check_self_reflection("/tmp/instance")
         mock_run.assert_called_once()
         mock_save.assert_called_once()
         mock_notify.assert_called_once()
 
+    @patch("app.config.get_startup_reflection", return_value=True)
     @patch("app.self_reflection.run_reflection", return_value="")
     @patch("app.self_reflection.should_reflect", return_value=True)
-    def test_empty_observations_skips_save(self, mock_should, mock_run):
+    def test_enabled_empty_observations_skips_save(self, mock_should, mock_run, mock_cfg):
         from app.startup_manager import check_self_reflection
         with patch("app.self_reflection.save_reflection") as mock_save:
             check_self_reflection("/tmp/instance")

@@ -25,6 +25,12 @@
 # autonomous work. Use /active to resume normal execution.
 # start_passive: false
 
+# Startup reflection — run self-reflection check on startup
+# When true, Kōan checks whether periodic self-reflection is due (every N
+# sessions) and, if so, invokes Claude to generate observations. Disabled by
+# default to avoid unexpected Claude CLI calls at boot time.
+# startup_reflection: false
+
 # Budget & Scheduling
 # These are the primary source of truth for run loop configuration.
 # max_runs_per_day: Maximum runs before auto-pause (resets on /resume or quota reset)
