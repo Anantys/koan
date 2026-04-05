@@ -18,14 +18,10 @@ import sys
 from pathlib import Path
 
 
-def fallback_extract(missions_path: Path, projects_str: str) -> tuple:
+def fallback_extract(content: str, projects_str: str) -> tuple:
     """Extract the first pending mission in FIFO order."""
     from app.missions import extract_next_pending
 
-    if not missions_path.exists():
-        return (None, None)
-
-    content = missions_path.read_text()
     line = extract_next_pending(content)
     if not line:
         return (None, None)
@@ -60,10 +56,10 @@ def pick_mission(
     instance = Path(instance_dir)
     missions_path = instance / "missions.md"
 
-    if not missions_path.exists():
+    try:
+        missions_content = missions_path.read_text()
+    except FileNotFoundError:
         return ""
-
-    missions_content = missions_path.read_text()
 
     # Quick check: any pending missions at all?
     from app.missions import count_pending
@@ -71,7 +67,7 @@ def pick_mission(
     if pending_count == 0:
         return ""
 
-    project, title = fallback_extract(missions_path, projects_str)
+    project, title = fallback_extract(missions_content, projects_str)
     if project and title:
         return f"{project}:{title}"
     return ""

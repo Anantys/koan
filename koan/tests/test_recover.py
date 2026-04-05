@@ -32,18 +32,18 @@ class TestRecoverMissions:
 
     def test_no_stale_missions(self, instance_dir):
         """No recovery needed when in-progress is empty."""
-        assert recover_missions(str(instance_dir)) == 0
+        assert recover_missions(str(instance_dir)) == (0, [])
 
     def test_missing_missions_file(self, tmp_path):
         """Returns 0 if missions.md doesn't exist."""
-        assert recover_missions(str(tmp_path / "nonexistent")) == 0
+        assert recover_missions(str(tmp_path / "nonexistent")) == (0, [])
 
     def test_recover_simple_mission(self, instance_dir):
         """Simple - item in 'In Progress' moves back to 'Pending'."""
         missions = instance_dir / "missions.md"
         missions.write_text(_missions(in_progress="- Fix the bug"))
 
-        count = recover_missions(str(instance_dir))
+        count, _ = recover_missions(str(instance_dir))
 
         assert count == 1
         content = missions.read_text()
@@ -62,7 +62,7 @@ class TestRecoverMissions:
             _missions(in_progress="- Task A\n- Task B\n- Task C")
         )
 
-        count = recover_missions(str(instance_dir))
+        count, _ = recover_missions(str(instance_dir))
         assert count == 3
 
         content = missions.read_text()
@@ -77,7 +77,7 @@ class TestRecoverMissions:
             _missions(in_progress="- ~~Already done~~\n- Still active")
         )
 
-        count = recover_missions(str(instance_dir))
+        count, _ = recover_missions(str(instance_dir))
         assert count == 1
 
         content = missions.read_text()
@@ -100,7 +100,7 @@ class TestRecoverMissions:
             )
         )
 
-        count = recover_missions(str(instance_dir))
+        count, _ = recover_missions(str(instance_dir))
         assert count == 1
 
         content = missions.read_text()
@@ -123,7 +123,7 @@ class TestRecoverMissions:
             )
         )
 
-        count = recover_missions(str(instance_dir))
+        count, _ = recover_missions(str(instance_dir))
         assert count == 1
 
         content = missions.read_text()
@@ -147,7 +147,7 @@ class TestRecoverMissions:
             )
         )
 
-        count = recover_missions(str(instance_dir))
+        count, _ = recover_missions(str(instance_dir))
         assert count == 1
 
         content = missions.read_text()
@@ -173,7 +173,7 @@ class TestRecoverMissions:
             )
         )
 
-        count = recover_missions(str(instance_dir))
+        count, _ = recover_missions(str(instance_dir))
         assert count == 0
 
         content = missions.read_text()
@@ -204,7 +204,7 @@ class TestRecoverMissions:
             )
         )
 
-        count = recover_missions(str(instance_dir))
+        count, _ = recover_missions(str(instance_dir))
         # Step 3 follows a blank line — treated as a standalone mission, recovered
         assert count == 1
 
@@ -231,7 +231,7 @@ class TestRecoverMissions:
             )
         )
 
-        count = recover_missions(str(instance_dir))
+        count, _ = recover_missions(str(instance_dir))
         # Both complex missions should stay, nothing recovered
         assert count == 0
 
@@ -258,7 +258,7 @@ class TestRecoverMissions:
             )
         )
 
-        count = recover_missions(str(instance_dir))
+        count, _ = recover_missions(str(instance_dir))
         assert count == 1
 
         content = missions.read_text()
@@ -296,7 +296,7 @@ class TestRecoverMissions:
             "## Done\n\n"
         )
 
-        count = recover_missions(str(instance_dir))
+        count, _ = recover_missions(str(instance_dir))
         assert count == 1
 
     def test_preserves_existing_pending(self, instance_dir):
@@ -317,7 +317,7 @@ class TestRecoverMissions:
         missions = instance_dir / "missions.md"
         missions.write_text("# Random file\n\nSome content\n")
 
-        assert recover_missions(str(instance_dir)) == 0
+        assert recover_missions(str(instance_dir)) == (0, [])
 
     def test_tagged_missions_preserved(self, instance_dir):
         """Project-tagged missions are recovered like any other."""
@@ -326,7 +326,7 @@ class TestRecoverMissions:
             _missions(in_progress="- [project:koan] Fix something")
         )
 
-        count = recover_missions(str(instance_dir))
+        count, _ = recover_missions(str(instance_dir))
         assert count == 1
         content = missions.read_text()
         assert "[project:koan] Fix something" in content
@@ -381,7 +381,7 @@ class TestRecoverAtomicity:
                 return new_content
             mock_modify.side_effect = _call_transform
 
-            count = recover_missions(str(instance_dir))
+            count, _ = recover_missions(str(instance_dir))
             assert count == 1
             mock_modify.assert_called_once()
 
@@ -394,7 +394,7 @@ class TestRecoverAtomicity:
             original_content = missions.read_text()
             mock_modify.side_effect = lambda path, transform: transform(original_content)
 
-            count = recover_missions(str(instance_dir))
+            count, _ = recover_missions(str(instance_dir))
             assert count == 0
             mock_modify.assert_called_once()
 
@@ -413,7 +413,7 @@ class TestRecoverCLI:
 
         with patch.object(sys, "argv", ["app.recover.py", str(instance_dir)]):
             # Can't easily test sys.exit, so just call the main block logic
-            count = recover_missions(str(instance_dir))
+            count, _ = recover_missions(str(instance_dir))
             if count > 0:
                 recover.format_and_send(
                     f"Restart — {count} mission(s) recovered from interrupted run, moved back to Pending."
@@ -594,7 +594,7 @@ class TestRecoveryCounterIntegration:
         missions = instance_dir / "missions.md"
         missions.write_text(_missions(in_progress="- Fix the bug"))
 
-        count = recover_missions(str(instance_dir))
+        count, _ = recover_missions(str(instance_dir))
         assert count == 1
 
         content = missions.read_text()
@@ -605,7 +605,7 @@ class TestRecoveryCounterIntegration:
         missions = instance_dir / "missions.md"
         missions.write_text(_missions(in_progress="- Fix the bug [r:1]"))
 
-        count = recover_missions(str(instance_dir))
+        count, _ = recover_missions(str(instance_dir))
         assert count == 1
 
         content = missions.read_text()
@@ -617,7 +617,7 @@ class TestRecoveryCounterIntegration:
         missions = instance_dir / "missions.md"
         missions.write_text(_missions(in_progress="- Fix the bug [r:abc]"))
 
-        count = recover_missions(str(instance_dir))
+        count, _ = recover_missions(str(instance_dir))
         assert count == 1
 
         content = missions.read_text()
@@ -666,7 +666,7 @@ class TestUnrecoverableEscalation:
         missions = instance_dir / "missions.md"
         missions.write_text(_missions(in_progress=self._stale_at_limit()))
 
-        count = recover_missions(str(instance_dir))
+        count, _ = recover_missions(str(instance_dir))
         assert count == 0  # Not recovered to Pending
 
         content = missions.read_text()
@@ -706,7 +706,7 @@ class TestUnrecoverableEscalation:
         in_prog = f"- Normal task\n{self._stale_at_limit()}"
         missions.write_text(_missions_with_failed(in_progress=in_prog))
 
-        count = recover_missions(str(instance_dir))
+        count, _ = recover_missions(str(instance_dir))
         assert count == 1  # Only 1 recovered
 
         content = missions.read_text()
@@ -832,7 +832,7 @@ class TestRecoverPendingJournalTOCTOU:
 
         with patch.object(Path, "read_text", _disappearing_read_text):
             # This must NOT raise FileNotFoundError
-            count = recover_missions(str(instance_dir))
+            count, _ = recover_missions(str(instance_dir))
 
         # Mission should still be recovered (as "dead", not "partial")
         assert count == 1
@@ -847,7 +847,7 @@ class TestDryRun:
         original = _missions(in_progress="- Fix the bug")
         missions.write_text(original)
 
-        count = recover_missions(str(instance_dir), dry_run=True)
+        count, _ = recover_missions(str(instance_dir), dry_run=True)
 
         assert count == 0
         # File should not have been modified (no missions moved to Pending)

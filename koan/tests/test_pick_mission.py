@@ -10,29 +10,25 @@ from app.pick_mission import pick_mission, fallback_extract
 
 
 class TestFallbackExtract:
-    def test_with_inline_tag(self, tmp_path):
-        missions = tmp_path / "missions.md"
-        missions.write_text("# Missions\n\n## Pending\n\n- [project:koan] fix tests\n\n## In Progress\n\n## Done\n")
-        project, title = fallback_extract(missions, "koan:/path")
+    def test_with_inline_tag(self):
+        content = "# Missions\n\n## Pending\n\n- [project:koan] fix tests\n\n## In Progress\n\n## Done\n"
+        project, title = fallback_extract(content, "koan:/path")
         assert project == "koan"
         assert title == "fix tests"
 
-    def test_without_tag(self, tmp_path):
-        missions = tmp_path / "missions.md"
-        missions.write_text("# Missions\n\n## Pending\n\n- fix tests\n\n## In Progress\n\n## Done\n")
-        project, title = fallback_extract(missions, "koan:/path;anantys:/path2")
+    def test_without_tag(self):
+        content = "# Missions\n\n## Pending\n\n- fix tests\n\n## In Progress\n\n## Done\n"
+        project, title = fallback_extract(content, "koan:/path;anantys:/path2")
         assert project == "koan"
         assert title == "fix tests"
 
-    def test_no_pending(self, tmp_path):
-        missions = tmp_path / "missions.md"
-        missions.write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n")
-        project, title = fallback_extract(missions, "koan:/path")
+    def test_no_pending(self):
+        content = "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n"
+        project, title = fallback_extract(content, "koan:/path")
         assert project is None
 
-    def test_with_subheader_tag(self, tmp_path):
-        missions = tmp_path / "missions.md"
-        missions.write_text(
+    def test_with_subheader_tag(self):
+        content = (
             "# Missions\n\n## Pending\n\n"
             "### projet:anantys-back\n\n"
             "### project:koan\n"
@@ -41,20 +37,18 @@ class TestFallbackExtract:
         )
         # fallback_extract uses extract_next_pending which now respects sub-headers
         # but fallback_extract doesn't pass project_name, so it returns first item
-        project, title = fallback_extract(missions, "koan:/path")
+        project, title = fallback_extract(content, "koan:/path")
         assert project == "koan"
         assert title == "fix rotation bug"
 
-    def test_missing_file(self, tmp_path):
-        missions = tmp_path / "missions.md"
-        project, title = fallback_extract(missions, "koan:/path")
+    def test_empty_content(self):
+        project, title = fallback_extract("", "koan:/path")
         assert project is None
 
-    def test_empty_projects_str_defaults_to_default(self, tmp_path):
+    def test_empty_projects_str_defaults_to_default(self):
         """When projects_str is empty, untagged missions get project='default'."""
-        missions = tmp_path / "missions.md"
-        missions.write_text("# Missions\n\n## Pending\n\n- fix tests\n\n## In Progress\n\n## Done\n")
-        project, title = fallback_extract(missions, "")
+        content = "# Missions\n\n## Pending\n\n- fix tests\n\n## In Progress\n\n## Done\n"
+        project, title = fallback_extract(content, "")
         assert project == "default"
         assert title == "fix tests"
 

@@ -209,7 +209,7 @@ class TestRecoverComplexMissionFallback:
             "- Another stale\n\n"
             "## Done\n\n"
         )
-        count = recover_missions(str(instance_dir))
+        count, _ = recover_missions(str(instance_dir))
         # All lines after ### are part of the complex mission — none recovered
         assert count == 0
 
