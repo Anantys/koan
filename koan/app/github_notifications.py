@@ -434,7 +434,8 @@ def get_comment_from_notification(notification: dict) -> Optional[dict]:
     except SSOAuthRequired:
         _record_sso_failure(f"get_comment endpoint={endpoint[:80]}")
         return None
-    except (RuntimeError, json.JSONDecodeError, subprocess.TimeoutExpired):
+    except (RuntimeError, json.JSONDecodeError, subprocess.TimeoutExpired) as e:
+        log.warning("GitHub API: failed to fetch comment %s: %s", endpoint[:80], e)
         return None
 
 
@@ -539,7 +540,8 @@ def find_mention_in_thread(
         except SSOAuthRequired:
             _record_sso_failure(sso_label)
             continue
-        except (RuntimeError, json.JSONDecodeError, subprocess.TimeoutExpired):
+        except (RuntimeError, json.JSONDecodeError, subprocess.TimeoutExpired) as e:
+            log.warning("GitHub API: failed to fetch %s: %s", endpoint[:80], e)
             continue
 
         if not isinstance(comments, list):

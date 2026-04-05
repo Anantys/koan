@@ -168,7 +168,7 @@ def check_pending_journal(instance_dir: str) -> bool:
 # Main recovery logic
 # ---------------------------------------------------------------------------
 
-def recover_missions(instance_dir: str, dry_run: bool = False) -> int:
+def recover_missions(instance_dir: str, dry_run: bool = False) -> tuple:
     """Move stale in-progress missions back to pending or escalate to failed.
 
     Enhanced recovery with state classification:
@@ -185,11 +185,13 @@ def recover_missions(instance_dir: str, dry_run: bool = False) -> int:
         dry_run: If True, classify and log but do not modify missions.md.
 
     Returns:
-        Number of missions moved back to Pending (excludes escalated ones).
+        Tuple of (count of missions moved to Pending, list of escalated mission lines).
     """
     missions_path = Path(instance_dir) / "missions.md"
-    if not missions_path.exists():
-        return 0
+    try:
+        missions_path.read_text()
+    except FileNotFoundError:
+        return 0, []
 
     from app.missions import find_section_boundaries, normalize_content
     from app.utils import modify_missions_file
@@ -326,7 +328,7 @@ def recover_missions(instance_dir: str, dry_run: bool = False) -> int:
         return normalize_content("\n".join(new_lines) + "\n")
 
     modify_missions_file(missions_path, _recover_transform)
-    return recovered_count
+    return recovered_count, escalated_missions
 
 
 # ---------------------------------------------------------------------------
@@ -343,23 +345,11 @@ if __name__ == "__main__":
 
     instance_dir = args[0]
     has_pending = check_pending_journal(instance_dir)
-    count = recover_missions(instance_dir, dry_run=dry_run)
+    count, escalated_lines = recover_missions(instance_dir, dry_run=dry_run)
 
-    # Notify about escalated missions (needs_input) — read from the log
-    log_path = Path(instance_dir) / "recovery.jsonl"
-    escalated_msgs = []
-    if log_path.exists():
-        try:
-            with open(log_path) as f:
-                for line in f:
-                    try:
-                        ev = json.loads(line)
-                        if ev.get("action") == "escalated":
-                            escalated_msgs.append(ev.get("mission", "?")[:80])
-                    except json.JSONDecodeError:
-                        pass
-        except OSError:
-            pass
+    # Build escalated message list from current run only (not historical log)
+    escalated_msgs = [_strip_recovery_counter(m).strip().lstrip("- ")[:80]
+                      for m in escalated_lines]
 
     if count > 0 or has_pending or escalated_msgs:
         parts = []

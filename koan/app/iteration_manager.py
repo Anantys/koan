@@ -174,17 +174,19 @@ def _fallback_mission_extract(instance_dir: Path, projects_str: str,
         from app.pick_mission import fallback_extract
 
         missions_path = instance_dir / "missions.md"
-        if not missions_path.exists():
+        try:
+            content = missions_path.read_text()
+        except FileNotFoundError:
             return None, None
 
-        pending_count = count_pending(missions_path.read_text())
+        pending_count = count_pending(content)
         if pending_count <= 0:
             return None, None
 
         _log_iteration("error",
             f"{context_msg} — {pending_count} pending mission(s) exist "
             f"— attempting direct extraction")
-        project, title = fallback_extract(missions_path, projects_str)
+        project, title = fallback_extract(content, projects_str)
         if project and title:
             _log_iteration("mission",
                 f"Direct fallback picked: [{project}] {title[:60]}")

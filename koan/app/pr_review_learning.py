@@ -340,8 +340,8 @@ def _reset_failure_count(instance_dir: str) -> None:
     if path.exists():
         try:
             path.unlink()
-        except OSError:
-            pass
+        except OSError as e:
+            log.warning("Failure counter reset failed: %s", e)
 
 
 def _notify_analysis_failures(instance_dir: str, count: int) -> None:
