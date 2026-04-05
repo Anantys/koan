@@ -658,6 +658,11 @@ class TestHandlerCleanFormat:
             lambda url: ("sukria", "koan", "42"),
         )
 
+        monkeypatch.setattr(
+            "app.github_skill_helpers.is_own_pr",
+            lambda owner, repo, pr: (True, "koan/some-branch"),
+        )
+
         from skills.core.rebase.handler import handle
         ctx = self._make_ctx(
             args="https://github.com/sukria/koan/pull/42",

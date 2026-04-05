@@ -14,6 +14,28 @@ from typing import Callable, Optional, Tuple
 
 
 
+def is_own_pr(owner: str, repo: str, pr_number: str) -> Tuple[bool, str]:
+    """Check if a PR was created by this Kōan instance (branch prefix match).
+
+    Returns:
+        Tuple of (is_owned, head_branch). is_owned is True if the PR's
+        head branch starts with this instance's configured branch_prefix.
+    """
+    import json
+    from app.config import get_branch_prefix
+    from app.github import run_gh
+
+    raw = run_gh(
+        "pr", "view", str(pr_number),
+        "--repo", f"{owner}/{repo}",
+        "--json", "headRefName",
+    )
+    data = json.loads(raw)
+    head_branch = data.get("headRefName", "")
+    prefix = get_branch_prefix()
+    return head_branch.startswith(prefix), head_branch
+
+
 def extract_github_url(args: str, url_type: str = "pr-or-issue") -> Optional[Tuple[str, Optional[str]]]:
     """Extract and validate a GitHub URL from command arguments.
 

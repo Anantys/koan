@@ -81,11 +81,19 @@ class TestHandleRouting:
 # ---------------------------------------------------------------------------
 
 class TestMissionQueuing:
+    def _own_pr_patch(self, handler_mod):
+        """Patch is_own_pr on the helper module used by the handler."""
+        return patch(
+            "app.github_skill_helpers.is_own_pr",
+            return_value=(True, "koan/some-branch"),
+        )
+
     def test_valid_url_queues_mission(self, handler, ctx):
         ctx.args = "https://github.com/sukria/koan/pull/42"
         with patch("app.utils.resolve_project_path", return_value="/home/koan"), \
              patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]), \
-             patch("app.utils.insert_pending_mission") as mock_insert:
+             patch("app.utils.insert_pending_mission") as mock_insert, \
+             self._own_pr_patch(handler):
             result = handler.handle(ctx)
             assert "queued" in result.lower()
             assert "#42" in result
@@ -98,7 +106,8 @@ class TestMissionQueuing:
         ctx.args = "https://github.com/sukria/koan/pull/42#discussion_r123"
         with patch("app.utils.resolve_project_path", return_value="/home/koan"), \
              patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]), \
-             patch("app.utils.insert_pending_mission") as mock_insert:
+             patch("app.utils.insert_pending_mission") as mock_insert, \
+             self._own_pr_patch(handler):
             result = handler.handle(ctx)
             assert "queued" in result.lower()
             mock_insert.assert_called_once()
@@ -107,7 +116,8 @@ class TestMissionQueuing:
         ctx.args = "please rebase https://github.com/sukria/koan/pull/99 thanks"
         with patch("app.utils.resolve_project_path", return_value="/home/koan"), \
              patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]), \
-             patch("app.utils.insert_pending_mission") as mock_insert:
+             patch("app.utils.insert_pending_mission") as mock_insert, \
+             self._own_pr_patch(handler):
             result = handler.handle(ctx)
             assert "queued" in result.lower()
             assert "#99" in result
@@ -117,7 +127,8 @@ class TestMissionQueuing:
         ctx.args = "https://github.com/sukria/koan/pull/42"
         with patch("app.utils.resolve_project_path", return_value="/home/koan"), \
              patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]), \
-             patch("app.utils.insert_pending_mission"):
+             patch("app.utils.insert_pending_mission"), \
+             self._own_pr_patch(handler):
             result = handler.handle(ctx)
             assert result == "Rebase queued for PR #42 (sukria/koan)"
 
@@ -126,7 +137,8 @@ class TestMissionQueuing:
         ctx.args = "https://github.com/sukria/koan/pull/42"
         with patch("app.utils.resolve_project_path", return_value="/home/koan"), \
              patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]), \
-             patch("app.utils.insert_pending_mission") as mock_insert:
+             patch("app.utils.insert_pending_mission") as mock_insert, \
+             self._own_pr_patch(handler):
             handler.handle(ctx)
             entry = mock_insert.call_args[0][1]
             assert entry.startswith("- [project:koan]")
@@ -140,7 +152,8 @@ class TestMissionQueuing:
         ctx.args = "https://github.com/other/myrepo/pull/7"
         with patch("app.utils.resolve_project_path", return_value="/some/myrepo"), \
              patch("app.utils.get_known_projects", return_value=[("onlyone", "/other/path")]), \
-             patch("app.utils.insert_pending_mission") as mock_insert:
+             patch("app.utils.insert_pending_mission") as mock_insert, \
+             self._own_pr_patch(handler):
             result = handler.handle(ctx)
             assert "queued" in result.lower()
             entry = mock_insert.call_args[0][1]
@@ -152,10 +165,50 @@ class TestMissionQueuing:
         ctx.args = "https://github.com/sukria/koan/pull/42"
         with patch("app.utils.resolve_project_path", return_value="/home/koan"), \
              patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]), \
-             patch("app.utils.insert_pending_mission") as mock_insert:
+             patch("app.utils.insert_pending_mission") as mock_insert, \
+             self._own_pr_patch(handler):
             handler.handle(ctx)
             missions_path = mock_insert.call_args[0][0]
             assert missions_path == ctx.instance_dir / "missions.md"
+
+
+# ---------------------------------------------------------------------------
+# handle() — PR ownership check
+# ---------------------------------------------------------------------------
+
+class TestPROwnership:
+    def test_rejects_pr_from_other_instance(self, handler, ctx):
+        """Refuse to rebase a PR whose branch wasn't created by this instance."""
+        ctx.args = "https://github.com/sukria/koan/pull/42"
+        with patch("app.utils.resolve_project_path", return_value="/home/koan"), \
+             patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]), \
+             patch("app.github_skill_helpers.is_own_pr", return_value=(False, "other-bot/fix-thing")), \
+             patch("app.utils.insert_pending_mission") as mock_insert:
+            result = handler.handle(ctx)
+            assert "Not my PR" in result
+            assert "other-bot/fix-thing" in result
+            mock_insert.assert_not_called()
+
+    def test_accepts_pr_from_own_instance(self, handler, ctx):
+        """Allow rebase when the PR branch matches our prefix."""
+        ctx.args = "https://github.com/sukria/koan/pull/42"
+        with patch("app.utils.resolve_project_path", return_value="/home/koan"), \
+             patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]), \
+             patch("app.github_skill_helpers.is_own_pr", return_value=(True, "koan/fix-thing")), \
+             patch("app.utils.insert_pending_mission") as mock_insert:
+            result = handler.handle(ctx)
+            assert "queued" in result.lower()
+            mock_insert.assert_called_once()
+
+    def test_ownership_check_failure_returns_error(self, handler, ctx):
+        """If the GitHub API call fails, return an error instead of crashing."""
+        ctx.args = "https://github.com/sukria/koan/pull/42"
+        with patch("app.utils.resolve_project_path", return_value="/home/koan"), \
+             patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]), \
+             patch("app.github_skill_helpers.is_own_pr", side_effect=Exception("API timeout")):
+            result = handler.handle(ctx)
+            assert "\u274c" in result
+            assert "ownership" in result.lower()
 
 
 # ---------------------------------------------------------------------------

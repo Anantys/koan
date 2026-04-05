@@ -139,6 +139,22 @@ def _handle_pr(owner, repo, pr_number, instance_dir, koan_root, notify_fn):
         notify_fn(msg)
         return True, msg
 
+    # Ownership check: only act on PRs from this instance
+    from app.config import get_branch_prefix
+
+    head_branch = pr_data.get("headRefName", "")
+    prefix = get_branch_prefix()
+    is_own = head_branch.startswith(prefix)
+
+    if not is_own:
+        mark_checked(instance_dir, url, updated_at)
+        msg = (
+            f"\u274c PR #{pr_number} — branch `{head_branch}` is not mine. "
+            f"Skipping."
+        )
+        notify_fn(msg)
+        return True, msg
+
     # Build status report
     actions = []
     missions_path = instance_dir / "missions.md"
