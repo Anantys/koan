@@ -398,8 +398,21 @@ class TestRunIssuePlan:
              patch("app.plan_runner.add_comment", side_effect=RuntimeError("no perms")), \
              patch("app.plan_runner._generate_iteration_plan", return_value="## Plan"):
             ok, msg = _run_issue_plan("/project", url, notify, None)
-            assert ok
+            assert not ok
             assert "failed" in msg.lower()
+
+    def test_false_comment_result_is_a_failure_not_a_false_success(self):
+        notify = MagicMock()
+        url = "https://github.com/o/r/issues/1"
+        with patch("app.plan_runner.resolve_issue_ref", return_value=_issue_ref()), \
+             patch("app.plan_runner.fetch_issue", return_value=_issue_content()), \
+             patch("app.plan_runner.add_comment", return_value=False), \
+             patch("app.plan_runner._generate_iteration_plan", return_value="## Plan"):
+            ok, msg = _run_issue_plan("/project", url, notify, None)
+
+        assert not ok
+        assert "failed" in msg.lower()
+        assert not any("Plan posted" in str(call) for call in notify.call_args_list)
 
     def test_sends_reading_notification(self):
         notify = MagicMock()
@@ -487,12 +500,16 @@ class TestRunIssuePlan:
         url = "https://org.atlassian.net/browse/PROJ-9"
         ref = _issue_ref(provider="jira", url=url, key="PROJ-9", repo="o/r")
         content = _issue_content(provider="jira", key="PROJ-9")
-        p_ref, p_fetch, p_add, add = self._patch_tracker(content, ref=ref)
+        p_ref, p_fetch, p_add, _add = self._patch_tracker(content, ref=ref)
+        staged = []
         with p_ref, p_fetch, p_add, \
-             patch("app.plan_runner._generate_iteration_plan", return_value="## Updated Plan\n\n### Phase 1\n- Do X"):
+             patch("app.plan_runner._generate_iteration_plan", return_value="## Updated Plan\n\n### Phase 1\n- Do X"), \
+             patch("app.jira_plan_publish.load_staged_plan", return_value=None), \
+             patch("app.jira_plan_publish.stage_plan", side_effect=lambda _url, body, _instance: staged.append(body)), \
+             patch("app.jira_plan_publish.publish_staged_plan", return_value=(True, "123")):
             ok, _msg = _run_issue_plan("/project", url, notify, None)
             assert ok
-            comment_text = add.call_args.args[1]
+            comment_text = staged[0]
             assert "Koan plan update" in comment_text
             assert "Title: Updated Plan" in comment_text
             assert "### Phase 1" not in comment_text
@@ -512,6 +529,39 @@ class TestRunIssuePlan:
             assert "failed" in msg.lower()
             assert add.called
             assert "plan update failed" in add.call_args.args[1].lower()
+
+    def test_jira_publish_failure_fails_without_false_success(self):
+        notify = MagicMock()
+        url = "https://org.atlassian.net/browse/PROJ-9"
+        ref = _issue_ref(provider="jira", url=url, key="PROJ-9", repo="o/r")
+        with patch("app.plan_runner.resolve_issue_ref", return_value=ref), \
+             patch("app.plan_runner.fetch_issue", return_value=_issue_content(provider="jira", key="PROJ-9")), \
+             patch("app.plan_runner._generate_iteration_plan", return_value="## Plan"), \
+             patch("app.jira_plan_publish.load_staged_plan", return_value=None), \
+             patch("app.jira_plan_publish.stage_plan") as stage, \
+             patch("app.jira_plan_publish.publish_staged_plan", return_value=(False, "verification_failed")):
+            ok, msg = _run_issue_plan("/project", url, notify, None)
+
+        assert not ok
+        assert "could not verify" in msg.lower()
+        stage.assert_called_once()
+        assert not any("✅ Plan posted" in str(call) for call in notify.call_args_list)
+
+    def test_jira_resume_publishes_staged_plan_without_generation(self):
+        notify = MagicMock()
+        url = "https://org.atlassian.net/browse/PROJ-9"
+        ref = _issue_ref(provider="jira", url=url, key="PROJ-9", repo="o/r")
+        with patch("app.plan_runner.resolve_issue_ref", return_value=ref), \
+             patch("app.plan_runner.fetch_issue") as fetch, \
+             patch("app.plan_runner._generate_iteration_plan") as generate, \
+             patch("app.jira_plan_publish.load_staged_plan", return_value="saved plan"), \
+             patch("app.jira_plan_publish.publish_staged_plan", return_value=(True, "321")):
+            ok, msg = _run_issue_plan("/project", url, notify, None)
+
+        assert ok
+        assert "Plan posted" in msg
+        fetch.assert_not_called()
+        generate.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

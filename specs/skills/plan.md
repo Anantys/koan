@@ -4,7 +4,7 @@ title: "Skill Spec — plan"
 description: "Documents the `/plan` skill that deep-thinks an idea (or iterates an existing issue) into a structured tracker-issue plan via a critic→regenerate loop, covered by the deterministic eval harness."
 tags: [skill]
 created: 2026-06-27
-updated: 2026-07-12
+updated: 2026-07-31
 ---
 
 # Skill Spec — `plan`
@@ -59,6 +59,21 @@ See `docs/users/skills.md` for the end-user `/plan` reference and
   into the plan's `### Open Questions` section so humans can resolve them on the
   tracker before `/implement`. The audit is **advisory and fail-open** — auditor
   errors leave the plan unchanged; it never blocks or suppresses posting.
+- Jira issue plans keep a single **current-plan** comment, identified by a trailing
+  `Koan current plan (rev <digest>)` footer whose revision is a digest of the plan
+  body. Jira renders ADF text literally, so the footer is deliberately human-readable
+  rather than an HTML comment. The body is staged on disk before posting and the write
+  is retried three times; it counts as posted only once a read-back returns a comment
+  carrying that revision — Jira's write endpoints report success for writes that never
+  became a visible comment.
+- A failed comment **lookup** must never trigger a write. `jira_list_comments` degrades
+  to `[]` on API failure, which is indistinguishable from "no comments"; the publisher
+  uses `jira_list_comments_checked` so a broken read path cannot stack duplicate plan
+  comments.
+- An unverified publish fails the mission and retains the staged plan, so a later run
+  republishes it without spending a model call to regenerate. The stage is dropped once
+  it expires or three consecutive runs fail, after which the next `/plan` regenerates —
+  a permanently undeliverable plan must not wedge the issue.
 
 ## Evaluation
 

@@ -957,8 +957,17 @@ def jira_add_comment(issue_key: str, body_text: str) -> bool:
     return result is not None
 
 
-def jira_list_comments(issue_key: str) -> List[dict]:
-    """Fetch all comments for a Jira issue (id + extracted plain text body)."""
+class JiraCommentFetchError(RuntimeError):
+    """Raised when Jira's comment listing could not be retrieved."""
+
+
+def _list_comments_result(issue_key: str) -> Tuple[bool, List[dict]]:
+    """Fetch all comments for an issue, reporting whether the API call worked.
+
+    Returns ``(ok, comments)``. ``ok`` is False when Jira did not answer with a
+    usable payload, which callers must not confuse with "the issue has no
+    comments" — both look like an empty list.
+    """
     base_url, auth_header = _jira_auth_from_config()
     all_comments: List[dict] = []
     start_at = 0
@@ -976,8 +985,8 @@ def jira_list_comments(issue_key: str) -> List[dict]:
             f"/rest/api/3/issue/{issue_key}/comment",
             params,
         )
-        if not data or not isinstance(data, dict):
-            break
+        if data is None or not isinstance(data, dict):
+            return False, all_comments
 
         batch = data.get("comments", [])
         if not batch:
@@ -996,7 +1005,31 @@ def jira_list_comments(issue_key: str) -> List[dict]:
         if start_at >= total or len(batch) < max_results:
             break
 
-    return all_comments
+    return True, all_comments
+
+
+def jira_list_comments(issue_key: str) -> List[dict]:
+    """Fetch all comments for a Jira issue (id + extracted plain text body).
+
+    Degrades to ``[]`` when the API call fails. Callers that decide whether to
+    create a comment based on the result want :func:`jira_list_comments_checked`
+    instead — a silent ``[]`` there means posting a duplicate.
+    """
+    return _list_comments_result(issue_key)[1]
+
+
+def jira_list_comments_checked(issue_key: str) -> List[dict]:
+    """Like :func:`jira_list_comments`, but raises instead of degrading to ``[]``.
+
+    Raises:
+        JiraCommentFetchError: the comment listing could not be retrieved.
+    """
+    ok, comments = _list_comments_result(issue_key)
+    if not ok:
+        raise JiraCommentFetchError(
+            f"Could not list comments for {issue_key}"
+        )
+    return comments
 
 
 def jira_edit_comment(issue_key: str, comment_id: str, body_text: str) -> bool:

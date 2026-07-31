@@ -4,7 +4,7 @@ title: "Jira Integration"
 description: "Full reference for controlling Kōan via `@mention` commands in Jira issue comments, including project mapping, ADF parsing, and coexistence with GitHub."
 tags: [messaging]
 created: 2026-05-28
-updated: 2026-07-18
+updated: 2026-07-31
 ---
 
 # Jira Integration
@@ -362,7 +362,7 @@ For PR outcomes, the Jira status comment includes:
 - target branch (if set)
 - concise What/How/Why/Validation summary (when available from the generated PR body)
 
-For Jira `/plan` updates, Koan posts human-readable plan comments (plain text adapted for Jira rendering) and posts an explicit failure status comment when plan generation fails.
+For Jira `/plan` updates, Koan maintains one human-readable **current plan** comment (plain text adapted for Jira rendering), identified by a trailing `Koan current plan (rev <digest>)` footer. Koan stages the plan on disk, retries the Jira write three times, and reports success only after reading back a comment carrying that revision — Jira's write endpoints return success for writes that never produce a visible comment, so an unverified write is treated as a failure. Because a failed comment *lookup* is indistinguishable from an empty issue, Koan never creates a comment on a lookup error; a flaky read path therefore cannot stack duplicates. A publish failure keeps the staged plan for a later retry instead of regenerating it, and the stage is dropped after three consecutive failed runs so a permanently undeliverable plan does not wedge the issue. Koan posts an explicit failure status comment when plan generation itself fails.
 
 ## Security Model
 

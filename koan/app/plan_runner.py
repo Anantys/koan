@@ -23,6 +23,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Optional, Tuple
 
+import app.messaging_level as _messaging
 from app.issue_tracker import (
     UnresolvedJiraProjectError,
     add_comment,
@@ -74,7 +75,7 @@ def run_plan(
         (success, summary) tuple.
     """
     # Progress lines are gated behind messaging.level=debug when we default the
-    # sink; the outcome line always reaches chat via notify_outcome().
+    # sink; the outcome line always reaches chat via _messaging.notify_outcome().
     if notify_fn is None:
         from app.messaging_level import progress_notify
         notify_fn = progress_notify(log_category="plan")
@@ -152,8 +153,7 @@ def _run_new_plan(
     issue_body = f"{plan_body}\n\n---\n{build_koan_footer()}"
 
     if not tracker_is_configured(project_name, project_path):
-        from app.messaging_level import notify_outcome
-        notify_outcome(f"✅ Plan generated inline:\n\n{plan[:3000]}", notify_fn)
+        _messaging.notify_outcome(f"✅ Plan generated inline:\n\n{plan[:3000]}", notify_fn)
         return True, "Plan generated inline (no issue tracker configured)."
 
     provider = tracker_provider(project_name, project_path)
@@ -173,17 +173,48 @@ def _run_new_plan(
         try:
             result_url = create_issue(project_name, project_path, title, issue_body)
         except (RuntimeError, OSError) as e2:
-            from app.messaging_level import notify_outcome
-            notify_outcome(
+            _messaging.notify_outcome(
                 f"⚠️ Plan ready but tracker issue creation failed "
                 f"({e2}):\n\n{plan[:3000]}",
                 notify_fn,
             )
             return True, f"Plan generated but issue creation failed: {e2}"
 
-    from app.messaging_level import notify_outcome
-    notify_outcome(f"✅ Plan created: {result_url}", notify_fn)
+    _messaging.notify_outcome(f"✅ Plan created: {result_url}", notify_fn)
     return True, f"Plan created: {result_url}"
+
+
+def _deliver_jira_plan(
+    issue_url: str,
+    instance_dir: str,
+    notify_fn,
+    comment_body: Optional[str] = None,
+) -> Tuple[bool, str]:
+    """Stage (when given a body) and publish the Jira plan comment.
+
+    Jira's write endpoints report success for writes that never became a
+    visible comment, so delivery is confirmed by reading the comment back.
+    Returns ``(posted, detail)`` — the Jira comment id on success, a failure
+    reason otherwise. The failure notification is emitted here so the resumed
+    and freshly-generated paths report identically.
+    """
+    from app.jira_plan_publish import publish_staged_plan, stage_path_for, stage_plan
+
+    if comment_body is not None:
+        stage_plan(issue_url, comment_body, instance_dir)
+
+    posted, detail = publish_staged_plan(issue_url, instance_dir)
+    if posted:
+        return True, detail
+
+    if detail.startswith("abandoned"):
+        note = "the staged plan was dropped, so the next /plan regenerates it"
+    else:
+        note = f"the plan stays staged for retry at {stage_path_for(issue_url, instance_dir)}"
+    _messaging.notify_outcome(
+        f"❌ Jira did not confirm the plan comment ({detail}); {note}.", notify_fn,
+    )
+    return False, detail
 
 
 def _run_issue_plan(
@@ -208,8 +239,7 @@ def _run_issue_plan(
         )
     except UnresolvedJiraProjectError as e:
         msg = str(e)
-        from app.messaging_level import notify_outcome
-        notify_outcome(f"❌ {msg}", notify_fn)
+        _messaging.notify_outcome(f"❌ {msg}", notify_fn)
         return False, msg
     except Exception as e:
         return False, f"Failed to fetch issue: {str(e)[:300]}"
@@ -217,14 +247,28 @@ def _run_issue_plan(
     notify_fn(f"\U0001f4d6 Reading {ref.provider} issue {ref.label}...")
     print(f"[plan] Fetching tracker issue {issue_url}", flush=True)
 
+    # A prior Jira publish failure already has a generated plan on disk.  Try
+    # delivery before spending another model run generating an equivalent plan.
+    if ref.provider == "jira":
+        from app.jira_plan_publish import load_staged_plan
+
+        if load_staged_plan(issue_url, instance_dir) is not None:
+            posted, detail = _deliver_jira_plan(issue_url, instance_dir, notify_fn)
+            if not posted:
+                return False, f"Jira could not verify the staged plan comment: {detail}"
+            _messaging.notify_outcome(
+                f"✅ Plan posted as comment on {ref.label} (Jira comment {detail}): {issue_url}",
+                notify_fn,
+            )
+            return True, f"Plan posted on {ref.label}: {issue_url}"
+
     try:
         content = fetch_issue(
             issue_url, project_name=project_name, project_path=project_path,
         )
     except UnresolvedJiraProjectError as e:
         msg = str(e)
-        from app.messaging_level import notify_outcome
-        notify_outcome(f"❌ {msg}", notify_fn)
+        _messaging.notify_outcome(f"❌ {msg}", notify_fn)
         return False, msg
     except Exception as e:
         return False, f"Failed to fetch issue: {str(e)[:300]}"
@@ -283,21 +327,29 @@ def _run_issue_plan(
         ref.provider, iteration_title, plan_body,
     )
 
-    try:
-        add_comment(
-            issue_url, comment_body,
-            project_name=project_name,
-            project_path=project_path,
+    if ref.provider == "jira":
+        posted, detail = _deliver_jira_plan(
+            issue_url, instance_dir, notify_fn, comment_body=comment_body,
         )
-    except Exception as e:
-        from app.messaging_level import notify_outcome
-        notify_outcome(f"Plan ready but comment failed ({e}):\n\n{plan[:3000]}", notify_fn)
-        return True, f"Plan generated but comment failed: {e}"
+        if not posted:
+            return False, f"Jira could not verify the plan comment: {detail}"
+        label = f"{label} (Jira comment {detail})"
+    else:
+        try:
+            posted = add_comment(
+                issue_url, comment_body,
+                project_name=project_name,
+                project_path=project_path,
+            )
+            if not posted:
+                raise RuntimeError("tracker declined the comment")
+        except Exception as e:
+            _messaging.notify_outcome(f"Plan ready but comment failed ({e}):\n\n{plan[:3000]}", notify_fn)
+            return False, f"Plan generated but comment failed: {e}"
 
     if title:
         label = f"{label} ({title[:60]})"
-    from app.messaging_level import notify_outcome
-    notify_outcome(f"✅ Plan posted as comment on {label}: {issue_url}", notify_fn)
+    _messaging.notify_outcome(f"✅ Plan posted as comment on {label}: {issue_url}", notify_fn)
     return True, f"Plan posted on {label}: {issue_url}"
 
 

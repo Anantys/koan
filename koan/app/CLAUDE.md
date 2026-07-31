@@ -156,6 +156,7 @@ Config additions in `config.py`: `is_api_enabled()`, `get_api_host()` (default `
 - `memory/` — Global summary + per-project learnings/context + `memory.db` (SQLite FTS5 index)
 - `journal/` — Daily logs organized as `YYYY-MM-DD/project.md`
 - `events/` — One-shot scheduled missions (JSON files consumed by `event_scheduler.py`)
+- `pending-jira-plan-publishes/` — Jira `/plan` comments generated but not yet confirmed delivered (`jira_plan_publish.py`); replayed on the next `/plan` for the same issue so a failed publish never costs a second model run, and dropped after three failed runs or on expiry
 - `hooks/` — User-defined Python hook modules for lifecycle events (see `instance.example/hooks/README.md`)
 - `recovery.jsonl` — Append-only audit log written by `recover.py` each time a stale In Progress mission is processed at startup
 - `.oauth-usage.json` — Cached authoritative usage anchor (session/weekly %, real reset timestamps, and the local token-counter values at poll time) written by `authoritative_usage.py` when the optional OAuth usage source is active (issue #2455). Best-effort; absence/corruption degrades to the local heuristic.

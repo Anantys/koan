@@ -28,6 +28,7 @@ SUBPROCESS_EXEC = "subprocess_exec"
 CONFIG_CHANGE = "config_change"
 AUTH_GRANT = "auth_grant"
 AUTH_DENY = "auth_deny"
+TRACKER_COMMENT_MUTATION = "tracker_comment_mutation"
 
 # ---------------------------------------------------------------------------
 # Secret redaction
