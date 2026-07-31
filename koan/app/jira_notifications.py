@@ -189,6 +189,91 @@ def _adf_to_text(node: Any) -> str:
     return " ".join(parts)
 
 
+def _adf_inline_to_markdown(nodes: Any) -> str:
+    """Render inline ADF text nodes as the Markdown subset Koan emits."""
+    if not isinstance(nodes, list):
+        return ""
+    rendered: List[str] = []
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        if node.get("type") == "hardBreak":
+            rendered.append("\n")
+            continue
+        if node.get("type") == "mention":
+            rendered.append(str(node.get("attrs", {}).get("text", "")))
+            continue
+        if node.get("type") != "text":
+            continue
+        text = str(node.get("text", ""))
+        marks = {mark.get("type"): mark for mark in node.get("marks", [])}
+        if "code" in marks:
+            text = f"`{text}`"
+        if "strong" in marks:
+            text = f"**{text}**"
+        if "em" in marks:
+            text = f"*{text}*"
+        link = marks.get("link")
+        if link:
+            href = str(link.get("attrs", {}).get("href", ""))
+            text = f"[{text}]({href})" if href else text
+        rendered.append(text)
+    return "".join(rendered)
+
+
+def _adf_to_markdown(node: Any) -> str:
+    """Render Jira ADF as Markdown for tracker skill context.
+
+    This is deliberately separate from :func:`_adf_to_text`: mention polling
+    must ignore code, while plan extraction needs headings and code intact.
+    """
+    if not node:
+        return ""
+    if isinstance(node, list):
+        return "\n\n".join(filter(None, (_adf_to_markdown(item) for item in node)))
+    if not isinstance(node, dict):
+        return str(node)
+
+    node_type = node.get("type", "")
+    content = node.get("content", [])
+    if node_type == "text":
+        return _adf_inline_to_markdown([node])
+    if node_type in ("doc", "listItem"):
+        return _adf_to_markdown(content)
+    if node_type == "paragraph":
+        return _adf_inline_to_markdown(content)
+    if node_type == "heading":
+        level = max(1, min(6, int(node.get("attrs", {}).get("level", 1))))
+        return f"{'#' * level} {_adf_inline_to_markdown(content)}".rstrip()
+    if node_type == "codeBlock":
+        language = str(node.get("attrs", {}).get("language", ""))
+        return f"```{language}\n{_adf_inline_to_markdown(content)}\n```"
+    if node_type == "rule":
+        return "---"
+    if node_type == "blockquote":
+        body = _adf_to_markdown(content)
+        return "\n".join(f"> {line}" if line else ">" for line in body.splitlines())
+    if node_type in ("bulletList", "orderedList"):
+        lines: List[str] = []
+        for index, item in enumerate(content, 1):
+            item_body = _adf_to_markdown(item).replace("\n\n", "\n")
+            prefix = "- " if node_type == "bulletList" else f"{index}. "
+            lines.append(prefix + item_body)
+        return "\n".join(lines)
+    if node_type == "table":
+        rows: List[str] = []
+        for index, row in enumerate(content):
+            cells = [
+                _adf_to_markdown(cell).replace("\n", " ")
+                for cell in row.get("content", [])
+            ]
+            rows.append("| " + " | ".join(cells) + " |")
+            if index == 0:
+                rows.append("| " + " | ".join("---" for _ in cells) + " |")
+        return "\n".join(rows)
+    return _adf_to_markdown(content)
+
+
 def _text_to_adf(text: str) -> Dict[str, Any]:
     """Convert plain markdown-ish text to a simple Jira ADF document."""
     lines = (text or "").splitlines() or [""]
@@ -954,9 +1039,9 @@ def fetch_jira_issue(
     fields = data.get("fields", {})
     title = fields.get("summary", "")
 
-    # Description is ADF (Atlassian Document Format) on Jira Cloud
+    # Preserve Markdown structure for plan/implementation skill context.
     desc_node = fields.get("description")
-    body = _adf_to_text(desc_node) if desc_node else ""
+    body = _adf_to_markdown(desc_node) if desc_node else ""
 
     # Fetch all comments (no time filter — we want full context)
     all_comments = []
@@ -989,12 +1074,15 @@ def fetch_jira_issue(
                 or "unknown"
             )
             comment_body_node = comment.get("body")
-            comment_text = _adf_to_text(comment_body_node) if comment_body_node else ""
+            comment_text = _adf_to_markdown(comment_body_node) if comment_body_node else ""
             if comment_text.strip():
-                all_comments.append({
+                entry = {
                     "author": author_name,
                     "body": comment_text,
-                })
+                }
+                if comment.get("updated"):
+                    entry["updated"] = str(comment["updated"])
+                all_comments.append(entry)
 
         total = cdata.get("total", 0)
         start_at += len(batch)

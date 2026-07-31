@@ -78,6 +78,43 @@ def _footer_for(revision: str, part_number: int = 1, part_count: int = 1) -> str
     return f"{_FOOTER_LABEL} (rev {revision})"
 
 
+def _part_header(part_number: int, part_count: int) -> str:
+    return f"{_FOOTER_LABEL} — Part {part_number} of {part_count}"
+
+
+# Readers (notably the `implement` skill, which reassembles a split plan) must
+# recognise exactly what the renderer above emits. Both directions live here so
+# a change to the format cannot silently strand a consumer on the old shape.
+_HEADER_LINE_RE = re.compile(
+    rf"^{re.escape(_FOOTER_LABEL)} — Part \d+ of \d+\s*$", re.MULTILINE,
+)
+_NAVIGATION_LINE_RE = re.compile(
+    r"^\s*(?:Previous|Next) part: https?://\S+\s*$", re.MULTILINE,
+)
+_FOOTER_LINE_RE = re.compile(
+    rf"^{re.escape(_FOOTER_LABEL)} \(rev [0-9a-f]{{16}}(?:, part \d+/\d+)?\)\s*$",
+    re.MULTILINE,
+)
+
+
+def parse_plan_comment(comment_body: str) -> Optional[Tuple[str, int, int]]:
+    """Return ``(revision, part_number, part_count)`` for a Koan plan comment.
+
+    ``None`` when the body is not one. A single-part plan reports ``(rev, 1, 1)``.
+    """
+    match = _FOOTER_RE.search((comment_body or "").rstrip())
+    if not match:
+        return None
+    return match.group(1), int(match.group(2) or 1), int(match.group(3) or 1)
+
+
+def strip_plan_envelope(comment_body: str) -> str:
+    """Drop the part header, navigation links, and footer, keeping plan content."""
+    text = _HEADER_LINE_RE.sub("", comment_body or "", count=1)
+    text = _NAVIGATION_LINE_RE.sub("", text)
+    return _FOOTER_LINE_RE.sub("", text)
+
+
 def _split_comment_body(comment_body: str) -> List[str]:
     """Split an oversized plan at paragraph, then line, then word boundaries."""
     if len(comment_body) <= _PART_BODY_CHARS:
@@ -147,7 +184,7 @@ def _render_comment(
     part_count: int = 1,
     navigation: str = "",
 ) -> str:
-    header = f"{_FOOTER_LABEL} — Part {part_number} of {part_count}\n\n" if part_count > 1 else ""
+    header = f"{_part_header(part_number, part_count)}\n\n" if part_count > 1 else ""
     nav_block = f"\n\n{navigation.strip()}" if navigation.strip() else ""
     rendered = (
         f"{header}{part.rstrip()}{nav_block}\n\n"

@@ -157,6 +157,102 @@ class TestExtractLatestPlan:
         result = _extract_latest_plan(None, comments)
         assert "Plan from comment" in result
 
+    @staticmethod
+    def _published_part(plan, part, count, updated, navigation=""):
+        """A comment exactly as `jira_plan_publish` renders it.
+
+        Built through the real renderer rather than a hand-written string, so a
+        change to the published format fails these tests instead of silently
+        leaving `/implement` unable to recognise its own plans.
+        """
+        from app.jira_plan_publish import _render_comment, _revision
+
+        return {
+            "body": _render_comment(plan, _revision(plan), part, count, navigation),
+            "updated": updated,
+        }
+
+    def test_jira_multipart_plan_is_concatenated_in_part_order(self):
+        plan = "## Summary\nfirst half\nsecond half"
+        stamp = "2026-07-31T12:01:00.000+0000"
+        comments = [
+            self._published_part(plan, 2, 2, stamp, "Previous part: https://j/x?focusedCommentId=1"),
+            self._published_part(plan, 1, 2, stamp, "Next part: https://j/x?focusedCommentId=2"),
+        ]
+        # Each part carries the whole body in this fixture; distinguish by order.
+        comments[0]["body"] = comments[0]["body"].replace("## Summary\nfirst half\n", "")
+        comments[1]["body"] = comments[1]["body"].replace("\nsecond half", "")
+
+        result = _extract_latest_plan("Issue body", comments)
+
+        assert result.index("first half") < result.index("second half")
+        assert "Part 1 of 2" not in result
+        assert "Koan current plan (rev" not in result
+        assert "focusedCommentId" not in result
+
+    def test_jira_multipart_plan_uses_newest_revision_group(self):
+        old, new = "old plan text", "new plan text"
+        comments = [
+            self._published_part(old, 1, 3, "2026-07-30T12:00:00.000+0000"),
+            self._published_part(new, 1, 2, "2026-07-31T12:00:00.000+0000"),
+            self._published_part(new, 2, 2, "2026-07-31T12:01:00.000+0000"),
+        ]
+
+        result = _extract_latest_plan("Issue body", comments)
+
+        assert "new plan text" in result
+        assert "old plan text" not in result
+
+    def test_jira_incomplete_multipart_plan_uses_available_parts(self):
+        comments = [self._published_part("available", 2, 3, "2026-07-31T12:00:00.000+0000")]
+
+        assert _extract_latest_plan("Issue body", comments) == "available"
+
+    def test_single_part_jira_plan_is_not_treated_as_multipart(self):
+        comments = [self._published_part("## Summary\nthe whole plan", 1, 1, "2026-07-31T12:00:00.000+0000")]
+
+        assert "the whole plan" in _extract_latest_plan("Issue body", comments)
+
+    def test_split_plan_survives_the_full_publish_and_fetch_round_trip(self):
+        """Publish → Jira ADF → fetch → reassemble must return the plan intact.
+
+        The publisher and this reader agree on a format; Jira's ADF conversion
+        sits between them. Exercising all three together is what catches a
+        format change that leaves `/implement` silently unable to find a plan.
+        """
+        from app.jira_notifications import _adf_to_markdown, markdown_to_adf
+        from app.jira_plan_publish import _plan_parts, _render_comment, _revision
+
+        plan = (
+            "## Summary\nDo the thing.\n\n#### Phase 1: setup\n\n"
+            "```python\nx = 1\n```\n" + "\n".join(f"- step {i}" for i in range(3000))
+        )
+        parts = _plan_parts(plan)
+        revision = _revision(plan)
+        assert len(parts) > 1, "fixture must be large enough to split"
+
+        comments = []
+        for number, part in enumerate(parts, 1):
+            navigation = (
+                f"Next part: https://j/x?focusedCommentId={number + 1}"
+                if number < len(parts) else ""
+            )
+            rendered = _render_comment(part, revision, number, len(parts), navigation)
+            comments.append({
+                # What Jira stores and hands back through fetch_jira_issue.
+                "body": _adf_to_markdown(markdown_to_adf(rendered)),
+                "updated": f"2026-07-31T12:0{number}:00.000+0000",
+            })
+
+        result = _extract_latest_plan("Issue body", comments)
+
+        assert "## Summary" in result
+        assert "```python" in result and "x = 1" in result
+        assert "step 0" in result and "step 2999" in result
+        assert "Part 1 of" not in result
+        assert "focusedCommentId" not in result
+        assert "Koan current plan (rev" not in result
+
 
 # ---------------------------------------------------------------------------
 # fetch_issue_with_comments (now in github.py)

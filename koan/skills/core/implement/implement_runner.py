@@ -58,6 +58,7 @@ _PLAN_MARKER_RE = re.compile(
     r"^#{2,}\s+(?:Implementation Phases|Phase \d+|Summary|Changes in this iteration)",
     re.MULTILINE | re.IGNORECASE,
 )
+from app.jira_plan_publish import parse_plan_comment, strip_plan_envelope
 
 
 def _build_footer() -> str:
@@ -374,9 +375,8 @@ def _is_plan_content(text: str) -> bool:
 def _extract_latest_plan(body: Optional[str], comments: List[dict]) -> str:
     """Extract the most recent plan from issue body and comments.
 
-    Strategy: scan comments from newest to oldest. The first comment
-    that contains plan markers is the latest plan iteration. If no
-    comment has a plan, fall back to the issue body.
+    Multipart Jira plan comments are assembled first.  Other trackers retain
+    the existing newest-plan-comment behavior.
 
     Args:
         body: Issue body text.
@@ -385,9 +385,17 @@ def _extract_latest_plan(body: Optional[str], comments: List[dict]) -> str:
     Returns:
         The plan text, or empty string if no plan found.
     """
-    # Check comments from newest to oldest
+    multipart_plan = _extract_jira_multipart_plan(comments)
+    if multipart_plan:
+        return multipart_plan
+
+    # Check comments from newest to oldest. Never treat an individual Jira
+    # multipart fragment as a standalone plan when no group was assembled.
     for comment in reversed(comments):
         comment_body = comment.get("body", "")
+        parsed = parse_plan_comment(comment_body or "")
+        if parsed is not None and parsed[2] > 1:
+            continue
         if _is_plan_content(comment_body):
             return comment_body
 
@@ -399,6 +407,40 @@ def _extract_latest_plan(body: Optional[str], comments: List[dict]) -> str:
     # (allows non-standard plan formats). Body may be None for issues
     # with an empty body — GitHub returns body=null in that case.
     return (body or "").strip()
+
+
+def _extract_jira_multipart_plan(comments: List[dict]) -> str:
+    """Return the newest split Jira plan, if the comments contain one.
+
+    Every part of one plan carries the same ``rev`` in its footer, so parts are
+    grouped by revision rather than inferred from ordering — the publisher
+    updates parts in place, which makes Jira's creation order meaningless as a
+    generation order. ``updated`` then picks the newest revision, falling back
+    to received order when Jira omits it. An incomplete group deliberately
+    yields the parts that are present, in numeric order.
+    """
+    groups: dict[str, dict[int, str]] = {}
+    group_scores: dict[str, tuple[str, int]] = {}
+    for index, comment in enumerate(comments):
+        comment_body = str(comment.get("body", "") or "")
+        parsed = parse_plan_comment(comment_body)
+        if parsed is None:
+            continue
+        revision, number, count = parsed
+        if count < 2 or not 1 <= number <= count:
+            continue
+        score = (str(comment.get("updated", "")), index)
+        groups.setdefault(revision, {})[number] = comment_body
+        group_scores[revision] = max(group_scores.get(revision, ("", -1)), score)
+
+    if not group_scores:
+        return ""
+
+    newest = max(group_scores, key=lambda rev: group_scores[rev])
+    parts = groups[newest]
+    return "\n\n".join(
+        strip_plan_envelope(parts[number]).strip() for number in sorted(parts)
+    ).strip()
 
 
 def _plan_hash(plan: str) -> str:

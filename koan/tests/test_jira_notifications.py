@@ -694,6 +694,42 @@ class TestJiraIssueHelpers:
         assert "Details" in body
         assert fetched_comments == [{"author": "Reviewer", "body": "Please fix"}]
 
+    def test_fetch_jira_issue_preserves_rich_adf_and_updated_metadata(self):
+        from contextlib import ExitStack
+
+        from app.jira_notifications import fetch_jira_issue
+
+        issue = {"fields": {"summary": "Plan", "description": None}}
+        comments = {
+            "comments": [{
+                "author": {"displayName": "Koan"},
+                "updated": "2026-07-31T12:00:00.000+0000",
+                "body": {
+                    "type": "doc",
+                    "content": [
+                        {"type": "heading", "attrs": {"level": 2}, "content": [{"type": "text", "text": "Summary"}]},
+                        {"type": "codeBlock", "attrs": {"language": "python"}, "content": [{"type": "text", "text": "print('ok')"}]},
+                    ],
+                },
+            }],
+            "total": 1,
+        }
+
+        def get_side_effect(_base_url, _auth_header, path, _params=None):
+            return issue if path.endswith("/FOO-1") else comments
+
+        with ExitStack() as stack:
+            for cm in self._patch_enabled_config():
+                stack.enter_context(cm)
+            stack.enter_context(patch("app.jira_notifications._jira_get", side_effect=get_side_effect))
+            _title, _body, fetched_comments = fetch_jira_issue("FOO-1")
+
+        assert fetched_comments == [{
+            "author": "Koan",
+            "body": "## Summary\n\n```python\nprint('ok')\n```",
+            "updated": "2026-07-31T12:00:00.000+0000",
+        }]
+
     def test_fetch_jira_issue_api_failure_raises(self):
         from contextlib import ExitStack
 
