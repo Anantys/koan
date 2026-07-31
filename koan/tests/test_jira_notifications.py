@@ -893,3 +893,36 @@ class TestJiraIssueHelpers:
 
         assert result == []
         mock_post.assert_not_called()
+
+
+def test_list_comments_rejects_a_shapeless_response():
+    """A JSON-valid `{}` must not read as "successfully fetched nothing".
+
+    That is the exact signal upsert callers use to decide it is safe to create.
+    """
+    from app.jira_notifications import _list_comments_result
+
+    with (
+        patch("app.jira_notifications._jira_auth_from_config",
+              return_value=("https://test", "Basic token")),
+        patch("app.jira_notifications._jira_get", return_value={}),
+    ):
+        ok, comments = _list_comments_result("FOO-1")
+
+    assert ok is False
+    assert comments == []
+
+
+def test_list_comments_accepts_a_genuinely_empty_page():
+    from app.jira_notifications import _list_comments_result
+
+    with (
+        patch("app.jira_notifications._jira_auth_from_config",
+              return_value=("https://test", "Basic token")),
+        patch("app.jira_notifications._jira_get",
+              return_value={"comments": [], "total": 0}),
+    ):
+        ok, comments = _list_comments_result("FOO-1")
+
+    assert ok is True
+    assert comments == []

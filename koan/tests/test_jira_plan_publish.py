@@ -8,6 +8,7 @@ import pytest
 from app.jira_notifications import JiraCommentFetchError
 from app.jira_plan_publish import (
     _FOOTER_RE,
+    _SUPERSEDED_BODY,
     _MAX_COMMENT_CHARS,
     _MAX_PUBLISH_SESSIONS,
     _PART_BODY_CHARS,
@@ -468,3 +469,73 @@ def test_split_does_not_emit_a_runt_first_part():
     assert all(len(part) > _PART_BODY_CHARS // 2 for part in parts[:-1]), (
         f"runt part in {[len(p) for p in parts]}"
     )
+
+
+def test_failed_orphan_retirement_keeps_the_stage_and_fails(tmp_path):
+    """`/implement` prefers a multipart group, so a stranded one wins.
+
+    Reporting success while an older group survives means the next
+    `/implement` builds the obsolete plan instead of the one just published.
+    """
+    stage_plan(URL, _split_fixture(3), str(tmp_path))
+    comments = []
+
+    def add(_key, rendered):
+        comments.append({"id": str(len(comments) + 1), "body": rendered})
+        return True
+
+    def edit(_key, comment_id, rendered):
+        next(c for c in comments if c["id"] == comment_id)["body"] = rendered
+        return True
+
+    with (
+        patch("app.jira_plan_publish.jira_list_comments_checked", side_effect=lambda _k: comments),
+        patch("app.jira_plan_publish.jira_add_comment", side_effect=add),
+        patch("app.jira_plan_publish.jira_edit_comment", side_effect=edit),
+        patch("app.jira_plan_publish.log_event"),
+    ):
+        publish_staged_plan(URL, str(tmp_path))
+        assert len(comments) == 3
+
+        # Jira accepts the retirement edits but never applies them; ordinary
+        # publish edits still work, so this isolates the cleanup step.
+        retire_calls = []
+
+        def edit_but_drop_retirements(_key, comment_id, rendered):
+            if rendered == _SUPERSEDED_BODY:
+                retire_calls.append(comment_id)
+                return True
+            return edit(_key, comment_id, rendered)
+
+        stage_plan(URL, "a much shorter plan", str(tmp_path))
+        with patch(
+            "app.jira_plan_publish.jira_edit_comment",
+            side_effect=edit_but_drop_retirements,
+        ):
+            ok, reason = publish_staged_plan(URL, str(tmp_path))
+
+    assert ok is False
+    assert reason == "superseded_parts_not_retired"
+    assert retire_calls, "retirement was attempted"
+    assert load_staged_plan(URL, str(tmp_path)) == "a much shorter plan"
+
+
+def test_clear_failure_does_not_claim_the_stage_was_abandoned(tmp_path):
+    stage_plan(URL, "plan", str(tmp_path))
+
+    with (
+        patch("app.jira_plan_publish.jira_list_comments_checked", return_value=[]),
+        patch("app.jira_plan_publish.jira_add_comment", return_value=False),
+        patch("app.jira_plan_publish.time.sleep"),
+        patch("app.jira_plan_publish.log_event"),
+    ):
+        for _ in range(_MAX_PUBLISH_SESSIONS - 1):
+            publish_staged_plan(URL, str(tmp_path))
+
+        with patch("pathlib.Path.unlink", side_effect=OSError("read-only fs")):
+            ok, reason = publish_staged_plan(URL, str(tmp_path))
+
+    assert ok is False
+    # The stage survived, so "abandoned" would be a lie.
+    assert reason == "verification_failed"
+    assert load_staged_plan(URL, str(tmp_path)) == "plan"

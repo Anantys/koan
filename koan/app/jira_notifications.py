@@ -1210,10 +1210,13 @@ def _list_comments_result(issue_key: str) -> Tuple[bool, List[dict]]:
             f"/rest/api/3/issue/{issue_key}/comment",
             params,
         )
-        if data is None or not isinstance(data, dict):
+        # A JSON-valid but shapeless response ({} , or `comments` not a list)
+        # would otherwise read as "successfully fetched nothing" — the exact
+        # signal upsert callers use to decide it is safe to create.
+        if not isinstance(data, dict) or not isinstance(data.get("comments"), list):
             return False, all_comments
 
-        batch = data.get("comments", [])
+        batch = data["comments"]
         if not batch:
             break
 

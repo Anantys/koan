@@ -254,9 +254,32 @@ def _write_stage(issue_url: str, instance_dir: str, payload: dict) -> None:
     atomic_write(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
 
 
-def _clear_staged_plan(issue_url: str, instance_dir: str) -> None:
-    with suppress(OSError):
-        stage_path_for(issue_url, instance_dir).unlink(missing_ok=True)
+def _clear_staged_plan(issue_url: str, instance_dir: str) -> bool:
+    """Delete the stage, reporting whether it is actually gone.
+
+    A swallowed failure here is not cosmetic: the stage surviving means the
+    next `/plan` on this issue resumes and republishes it instead of generating
+    the plan the user just asked for. Callers must not claim the stage was
+    cleared or abandoned unless this returns True.
+    """
+    path = stage_path_for(issue_url, instance_dir)
+    try:
+        path.unlink(missing_ok=True)
+        return True
+    except OSError as exc:
+        issue_key = ""
+        with suppress(Exception):
+            issue_key = parse_jira_url(issue_url)
+        log_event(
+            TRACKER_COMMENT_MUTATION,
+            result="failure",
+            details={
+                "provider": "jira", "issue_key": issue_key,
+                "action": "stage_clear", "error": str(exc)[:180],
+                "stage_path": str(path),
+            },
+        )
+        return False
 
 
 def stage_plan(issue_url: str, comment_body: str, instance_dir: str = "") -> None:
@@ -310,8 +333,10 @@ def _record_failed_session(
 
     sessions = int(data.get("sessions") or 0) + 1
     if sessions >= _MAX_PUBLISH_SESSIONS:
-        _clear_staged_plan(issue_url, instance_dir)
-        return False, f"abandoned_after_{sessions}_failed_runs"
+        # Only report abandonment if the stage is genuinely gone; otherwise the
+        # next run would replay a plan we just told the operator we dropped.
+        if _clear_staged_plan(issue_url, instance_dir):
+            return False, f"abandoned_after_{sessions}_failed_runs"
 
     data["sessions"] = sessions
     _write_stage(issue_url, instance_dir, data)
@@ -403,25 +428,53 @@ def _upsert_part(
     return False, ""
 
 
-def _retire_superseded_parts(issue_key: str, revision: str, part_count: int) -> None:
+def _retire_superseded_parts(issue_key: str, revision: str, part_count: int) -> bool:
     """Blank out plan comments left behind by an earlier, longer plan.
 
     Without this, shrinking a 3-part plan to 2 parts strands part 3 on the issue
-    with stale content and a dangling "previous part" link. Best-effort: Jira
-    exposes no comment delete here, so the body is replaced and its footer
-    dropped so the comment stops being matched as a plan part.
-    """
-    try:
-        comments = jira_list_comments_checked(issue_key)
-    except Exception:
-        return
+    with stale content and a dangling "previous part" link — and because
+    `/implement` looks for multipart groups before single-part plans, that
+    stranded group is what it would implement.
 
-    for comment, rev, part, _count in _find_plan_comments(comments):
-        if rev == revision and part <= part_count:
-            continue
-        with suppress(Exception):
-            if jira_edit_comment(issue_key, str(comment.get("id", "")), _SUPERSEDED_BODY):
-                _audit(issue_key, "retire", "success", 1, comment_id=comment.get("id", ""))
+    Jira exposes no comment delete here, so the body is replaced and its footer
+    dropped, which stops the comment being matched as a plan part. Returns True
+    only once a read-back shows no superseded part remains: Jira's write
+    endpoints report success for writes that never landed, so an unverified
+    retirement must not let the caller declare the publish complete.
+    """
+    def superseded(comments):
+        return [
+            comment for comment, rev, part, _count in _find_plan_comments(comments)
+            if rev != revision or part > part_count
+        ]
+
+    try:
+        orphans = superseded(jira_list_comments_checked(issue_key))
+    except Exception as exc:
+        _audit(issue_key, "retire", "failure", 1, error=str(exc)[:180])
+        return False
+
+    if not orphans:
+        return True
+
+    for comment in orphans:
+        comment_id = str(comment.get("id", ""))
+        try:
+            jira_edit_comment(issue_key, comment_id, _SUPERSEDED_BODY)
+        except Exception as exc:
+            _audit(issue_key, "retire", "failure", 1, comment_id=comment_id, error=str(exc)[:180])
+
+    try:
+        remaining = superseded(jira_list_comments_checked(issue_key))
+    except Exception as exc:
+        _audit(issue_key, "retire", "failure", 1, error=str(exc)[:180])
+        return False
+
+    _audit(
+        issue_key, "retire", "success" if not remaining else "failure", 1,
+        retired=len(orphans) - len(remaining), remaining=len(remaining),
+    )
+    return not remaining
 
 
 def publish_staged_plan(
@@ -479,6 +532,13 @@ def publish_staged_plan(
                 return failure(index + 1, "navigation_failed")
             comment_ids[index] = comment_id
 
-    _retire_superseded_parts(issue_key, revision, part_count)
+    # Keep the stage until cleanup is verified. A stranded older group would be
+    # picked up by `/implement` in preference to this revision, so the publish
+    # is not finished while one survives — the next run resumes and retries.
+    if not _retire_superseded_parts(issue_key, revision, part_count):
+        return _record_failed_session(
+            issue_url, instance_dir, "superseded_parts_not_retired",
+        )
+
     _clear_staged_plan(issue_url, instance_dir)
     return True, ", ".join(comment_ids)
