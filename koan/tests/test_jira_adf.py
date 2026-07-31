@@ -212,3 +212,31 @@ class TestJiraNormalisationPreservesCode:
         assert len(code) == 1
         text = "".join(c.get("text", "") for c in code[0].get("content", []))
         assert text == "<details><summary>x</summary>body</details>"
+
+
+class TestIndentedCodeDoesNotSwallowProse:
+    """Indented code must not interrupt a paragraph or a list continuation.
+
+    Every Jira comment Koan posts now renders through markdown_to_adf, so a
+    greedy indented-code rule turns ordinary wrapped prose into code blocks.
+    """
+
+    def test_indented_continuation_of_a_paragraph_stays_prose(self):
+        doc = markdown_to_adf("Some intro sentence that wraps\n    and continues here.")
+
+        assert _types(doc) == ["paragraph"]
+
+    def test_indented_paragraph_under_a_list_item_is_not_code(self):
+        doc = markdown_to_adf("1. Do the thing\n\n    Explanation for step 1.\n\n2. Next")
+
+        assert "codeBlock" not in _types(doc)
+
+    def test_indented_nested_bullet_stays_a_list(self):
+        doc = markdown_to_adf("- Parent item\n\n    - Child item")
+
+        assert "codeBlock" not in _types(doc)
+
+    def test_a_genuine_indented_code_block_still_renders_as_code(self):
+        doc = markdown_to_adf("Example:\n\n    def f():\n        return 1")
+
+        assert "codeBlock" in _types(doc)

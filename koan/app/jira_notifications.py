@@ -492,7 +492,16 @@ def markdown_to_adf(text: str) -> Dict[str, Any]:
             content.append(node)
             continue
 
-        indented_code = _MD_INDENTED_CODE_RE.match(line)
+        # CommonMark: an indented code block cannot interrupt a paragraph, and
+        # indented text under a list is that item's continuation. Without both
+        # guards, ordinary wrapped prose and nested bullets render as code —
+        # and every Jira comment Koan posts now goes through this renderer.
+        indented_code = (
+            _MD_INDENTED_CODE_RE.match(line)
+            if not paragraph
+            and not (content and content[-1].get("type") in ("bulletList", "orderedList"))
+            else None
+        )
         if indented_code:
             flush_paragraph()
             code_lines: List[str] = []

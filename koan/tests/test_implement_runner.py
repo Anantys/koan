@@ -203,10 +203,28 @@ class TestExtractLatestPlan:
         assert "new plan text" in result
         assert "old plan text" not in result
 
-    def test_jira_incomplete_multipart_plan_uses_available_parts(self):
+    def test_jira_incomplete_multipart_plan_uses_available_parts_but_says_so(self):
+        """A partial plan beats refusing to work — but not silently.
+
+        Implementing a truncated plan believing it is whole is the failure this
+        branch exists to prevent everywhere else.
+        """
         comments = [self._published_part("available", 2, 3, "2026-07-31T12:00:00.000+0000")]
 
-        assert _extract_latest_plan("Issue body", comments) == "available"
+        result = _extract_latest_plan("Issue body", comments)
+
+        assert "available" in result
+        assert "incomplete" in result.lower()
+        assert "1, 3" in result
+
+    def test_jira_complete_multipart_plan_carries_no_warning(self):
+        plan = "whole plan"
+        comments = [
+            self._published_part(plan, 1, 2, "2026-07-31T12:00:00.000+0000"),
+            self._published_part(plan, 2, 2, "2026-07-31T12:01:00.000+0000"),
+        ]
+
+        assert "incomplete" not in _extract_latest_plan("Issue body", comments).lower()
 
     def test_single_part_jira_plan_is_not_treated_as_multipart(self):
         comments = [self._published_part("## Summary\nthe whole plan", 1, 1, "2026-07-31T12:00:00.000+0000")]

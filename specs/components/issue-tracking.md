@@ -59,26 +59,27 @@ issue_cli.py          → CLI entry point (fetch/comment/create) used by prompts
   markdown subset (headings, unordered/ordered lists incl. `- [ ]`/`- [x]`,
   horizontal rules, blockquotes, fenced code, inline `**bold**`/`*em*`/`` `code` ``)
   into native ADF nodes; unmodeled lines degrade to a `paragraph` and empty input
-  yields one empty `paragraph` (matching the `_text_to_adf` fallback). This is the
-  **carve-out to the builder-layer rule below**: it applies to *issue
-  descriptions* only. Jira *comments* (`jira_add_comment`/`jira_edit_comment`)
-  stay on the plainer `_text_to_adf` path so human `/comment` blockquotes are never
-  mangled (FR-009 — no comment regression).
+  yields one empty `paragraph`. Jira *comments* (`jira_add_comment`/
+  `jira_edit_comment`) render through the **same** `markdown_to_adf` path: a plan
+  posted as flattened text loses the headings and code blocks `/implement` needs
+  to read back, so comments and descriptions share one renderer. This supersedes
+  the earlier FR-009 carve-out that pinned comments to `_text_to_adf`.
 - **Native master↔sub linkage is a Jira-only concern expressed through
   `link_issues`.** `brainstorm` links its master tracking issue to each created
   sub-issue via the neutral `link_issues` service; on Jira this creates real
   "Linked issues" relationships, on GitHub it is a no-op (`#N` refs + the master's
   task list already express the relationship). Linking is best-effort — a failed
   link is logged and skipped, never aborting issue creation.
-- **Jira-bound comment text is markdown-degraded at the builder layer, not the
-  transport layer.** `tracker_comment_format._flatten_github_alerts()` folds GitHub
-  `> [!TYPE]` alert blocks into plain `TYPE: text` before Jira output; it runs
-  inside `_strip_markdown_for_jira()` (plan comments) and the Jira branches of
-  `build_pr_comment_success/_failure` (PR comments). `jira_add_comment()` stays a
-  raw ADF poster so human `/comment` blockquotes are never mangled. The fold is
-  fence-aware (alert syntax inside a fenced code block is left verbatim) and
-  stops each block's body run at the next opener (adjacent blocks degrade
-  independently instead of merging).
+- **GitHub-only markdown extensions are folded at the transport layer, inside the
+  renderer.** `tracker_comment_format.flatten_github_markdown_for_jira()` runs from
+  `markdown_to_adf`, so every Jira-bound comment gets the same treatment however it
+  was built: `> [!TYPE]` alert blocks fold to plain `TYPE: text`, and GitHub
+  `<details>` wrappers are removed with their `<summary>` rendered as a visible
+  label. Both folds are **fence-aware** — alert syntax and `<details>` markup
+  inside a fenced code block are left verbatim, because there they are example
+  text the plan is trying to convey, not wrappers. Alert folding stops each
+  block's body run at the next opener (adjacent blocks degrade independently
+  instead of merging).
 
 ## Integration points
 

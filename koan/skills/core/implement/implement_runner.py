@@ -416,10 +416,15 @@ def _extract_jira_multipart_plan(comments: List[dict]) -> str:
     grouped by revision rather than inferred from ordering — the publisher
     updates parts in place, which makes Jira's creation order meaningless as a
     generation order. ``updated`` then picks the newest revision, falling back
-    to received order when Jira omits it. An incomplete group deliberately
-    yields the parts that are present, in numeric order.
+    to received order when Jira omits it.
+
+    An incomplete group still yields the parts that are present — a partial plan
+    beats refusing to work — but never silently: the footer carries the expected
+    count, so a gap is announced in the returned text and the log rather than
+    letting the agent implement a truncated plan believing it is whole.
     """
     groups: dict[str, dict[int, str]] = {}
+    group_counts: dict[str, int] = {}
     group_scores: dict[str, tuple[str, int]] = {}
     for index, comment in enumerate(comments):
         comment_body = str(comment.get("body", "") or "")
@@ -431,6 +436,7 @@ def _extract_jira_multipart_plan(comments: List[dict]) -> str:
             continue
         score = (str(comment.get("updated", "")), index)
         groups.setdefault(revision, {})[number] = comment_body
+        group_counts[revision] = max(group_counts.get(revision, 0), count)
         group_scores[revision] = max(group_scores.get(revision, ("", -1)), score)
 
     if not group_scores:
@@ -438,9 +444,24 @@ def _extract_jira_multipart_plan(comments: List[dict]) -> str:
 
     newest = max(group_scores, key=lambda rev: group_scores[rev])
     parts = groups[newest]
-    return "\n\n".join(
+    assembled = "\n\n".join(
         strip_plan_envelope(parts[number]).strip() for number in sorted(parts)
     ).strip()
+
+    expected = group_counts[newest]
+    missing = [n for n in range(1, expected + 1) if n not in parts]
+    if missing:
+        gap = ", ".join(str(n) for n in missing)
+        logger.warning(
+            "Jira plan rev %s is missing part(s) %s of %d — implementing a partial plan",
+            newest, gap, expected,
+        )
+        assembled = (
+            f"> **Warning — this plan is incomplete.** Part(s) {gap} of {expected} "
+            f"were not found on the issue; the sections below are what is available.\n\n"
+            f"{assembled}"
+        )
+    return assembled
 
 
 def _plan_hash(plan: str) -> str:

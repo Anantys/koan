@@ -122,11 +122,17 @@ def _split_comment_body(comment_body: str) -> List[str]:
 
     parts: List[str] = []
     remaining = comment_body
+    # Only accept a boundary in the back half of the window. Preferring the
+    # coarsest separator outright collapses on real plans: a File Map table is a
+    # long blank-line-free run, so the last "\n\n" can sit near the very start
+    # and would emit an absurd 40-character "Part 1 of N" plus a needless extra
+    # publish. Below the floor, fall through to a finer separator.
+    floor = _PART_BODY_CHARS // 2
     while len(remaining) > _PART_BODY_CHARS:
         cut = _PART_BODY_CHARS
         for separator in ("\n\n", "\n", " "):
             candidate = remaining.rfind(separator, 0, cut)
-            if candidate > 0:
+            if candidate > floor:
                 cut = candidate + len(separator)
                 break
         parts.append(remaining[:cut])
