@@ -74,6 +74,14 @@ See `docs/users/skills.md` for the end-user `/plan` reference and
   republishes it without spending a model call to regenerate. The stage is dropped once
   it expires or three consecutive runs fail, after which the next `/plan` regenerates —
   a permanently undeliverable plan must not wedge the issue.
+- A plan exceeding one Jira comment is split at paragraph (then line, then word)
+  boundaries into sequential parts, each footered `(rev <digest>, part N/M)` and
+  verified independently. Parts are located by **part number, not revision**, so a new
+  revision updates the comments in place instead of posting a second set; parts left
+  over when a plan shrinks are retired. Jira's public REST API exposes no
+  reply-to-comment operation, so parts carry `?focusedCommentId=` previous/next links
+  rather than being threaded — those links are attached in a second pass, once every
+  part has an id.
 
 ## Evaluation
 
