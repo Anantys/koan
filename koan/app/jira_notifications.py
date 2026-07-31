@@ -1224,18 +1224,12 @@ def _list_comments_result(issue_key: str) -> Tuple[bool, List[dict]]:
     return True, all_comments
 
 
-def jira_list_comments(issue_key: str) -> List[dict]:
+def jira_list_comments_checked(issue_key: str) -> List[dict]:
     """Fetch all comments for a Jira issue (id + extracted plain text body).
 
-    Degrades to ``[]`` when the API call fails. Callers that decide whether to
-    create a comment based on the result want :func:`jira_list_comments_checked`
-    instead — a silent ``[]`` there means posting a duplicate.
-    """
-    return _list_comments_result(issue_key)[1]
-
-
-def jira_list_comments_checked(issue_key: str) -> List[dict]:
-    """Like :func:`jira_list_comments`, but raises instead of degrading to ``[]``.
+    Raises rather than degrading to ``[]``: an empty list is indistinguishable
+    from a failed read, and a caller that creates on "nothing found" would
+    stack duplicate comments. There is deliberately no lenient variant.
 
     Raises:
         JiraCommentFetchError: the comment listing could not be retrieved.

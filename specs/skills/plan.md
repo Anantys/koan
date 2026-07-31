@@ -66,10 +66,11 @@ See `docs/users/skills.md` for the end-user `/plan` reference and
   is retried three times; it counts as posted only once a read-back returns a comment
   carrying that revision — Jira's write endpoints report success for writes that never
   became a visible comment.
-- A failed comment **lookup** must never trigger a write. `jira_list_comments` degrades
-  to `[]` on API failure, which is indistinguishable from "no comments"; the publisher
-  uses `jira_list_comments_checked` so a broken read path cannot stack duplicate plan
-  comments.
+- A failed comment **lookup** must never trigger a write. An empty comment list is
+  indistinguishable from a failed read, so every upsert path reads through
+  `jira_list_comments_checked`, which raises instead of degrading to `[]`. There is
+  deliberately no lenient variant — a broken read path must not be able to stack
+  duplicate plan comments.
 - An unverified publish fails the mission and retains the staged plan, so a later run
   republishes it without spending a model call to regenerate. The stage is dropped once
   it expires or three consecutive runs fail, after which the next `/plan` regenerates —

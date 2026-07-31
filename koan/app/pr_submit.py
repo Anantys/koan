@@ -249,9 +249,16 @@ def submit_draft_pr(
                 try:
                     from app.jira_outcome_publish import upsert_jira_comment
 
-                    upsert_jira_comment(
+                    ok, reason = upsert_jira_comment(
                         issue_key, skill_name or "mission", body,
                     )
+                    if not ok:
+                        # The upsert declines to write when it cannot first read
+                        # the existing comment, so a quiet failure here means no
+                        # status was posted at all — say so.
+                        logger.warning(
+                            "Jira comment upsert failed for %s: %s", issue_key, reason,
+                        )
                     return
                 except Exception as e:
                     logger.debug("Failed to upsert Jira comment: %s", e)

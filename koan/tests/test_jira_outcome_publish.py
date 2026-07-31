@@ -8,7 +8,7 @@ class TestPublishJiraMissionOutcome:
         from app.jira_outcome_publish import publish_jira_mission_outcome
 
         with (
-            patch("app.jira_outcome_publish.jira_list_comments") as mock_list,
+            patch("app.jira_outcome_publish.jira_list_comments_checked") as mock_list,
             patch("app.jira_outcome_publish.jira_add_comment") as mock_add,
         ):
             result = publish_jira_mission_outcome(
@@ -26,7 +26,7 @@ class TestPublishJiraMissionOutcome:
         from app.jira_outcome_publish import publish_jira_mission_outcome
 
         with (
-            patch("app.jira_outcome_publish.jira_list_comments", return_value=[]),
+            patch("app.jira_outcome_publish.jira_list_comments_checked", return_value=[]),
             patch("app.jira_outcome_publish.jira_add_comment", return_value=True) as mock_add,
             patch("app.jira_outcome_publish._fetch_pr_details", return_value=("", "")),
         ):
@@ -52,7 +52,7 @@ class TestPublishJiraMissionOutcome:
 
         pr_body = "## Summary\n\n- Reworked parser\n\n## Why\n\nFixes the crash"
         with (
-            patch("app.jira_outcome_publish.jira_list_comments", return_value=[]),
+            patch("app.jira_outcome_publish.jira_list_comments_checked", return_value=[]),
             patch("app.jira_outcome_publish.jira_add_comment", return_value=True) as mock_add,
             patch("app.jira_outcome_publish._fetch_pr_details",
                   return_value=("fix: crash", pr_body)) as mock_fetch,
@@ -75,7 +75,7 @@ class TestPublishJiraMissionOutcome:
         marker = _marker_for("PROJ-42", "fix")
         existing = [{"id": "99", "body": f"old\n\n{marker}"}]
         with (
-            patch("app.jira_outcome_publish.jira_list_comments", return_value=existing),
+            patch("app.jira_outcome_publish.jira_list_comments_checked", return_value=existing),
             patch("app.jira_outcome_publish.jira_edit_comment", return_value=True) as mock_edit,
             patch("app.jira_outcome_publish.jira_add_comment", return_value=True) as mock_add,
             patch("app.jira_outcome_publish._fetch_pr_details", return_value=("", "")),
@@ -95,7 +95,7 @@ class TestPublishJiraMissionOutcome:
         from app.jira_outcome_publish import publish_jira_mission_outcome
 
         with (
-            patch("app.jira_outcome_publish.jira_list_comments", return_value=[]),
+            patch("app.jira_outcome_publish.jira_list_comments_checked", return_value=[]),
             patch("app.jira_outcome_publish.jira_add_comment", return_value=True) as mock_add,
         ):
             result = publish_jira_mission_outcome(
@@ -115,7 +115,7 @@ class TestPublishJiraMissionOutcome:
         from app.jira_outcome_publish import publish_jira_mission_outcome
 
         with (
-            patch("app.jira_outcome_publish.jira_list_comments") as mock_list,
+            patch("app.jira_outcome_publish.jira_list_comments_checked") as mock_list,
             patch("app.jira_outcome_publish.jira_add_comment") as mock_add,
         ):
             result = publish_jira_mission_outcome(
@@ -136,7 +136,7 @@ class TestPublishJiraMissionOutcome:
         marker = _marker_for("PROJ-42", "fix")
         existing = [{"id": "7", "body": f"old\n\n{marker}"}]
         with (
-            patch("app.jira_outcome_publish.jira_list_comments", return_value=existing),
+            patch("app.jira_outcome_publish.jira_list_comments_checked", return_value=existing),
             patch("app.jira_outcome_publish.jira_edit_comment", return_value=False),
             patch("app.jira_outcome_publish._fetch_pr_details", return_value=("", "")),
         ):
@@ -243,7 +243,7 @@ class TestUpsertJiraComment:
         from app.jira_outcome_publish import upsert_jira_comment
 
         with (
-            patch("app.jira_outcome_publish.jira_list_comments", return_value=[]),
+            patch("app.jira_outcome_publish.jira_list_comments_checked", return_value=[]),
             patch("app.jira_outcome_publish.jira_add_comment", return_value=True) as mock_add,
         ):
             ok, mode = upsert_jira_comment("PROJ-1", "fix", "hello world")
@@ -254,3 +254,29 @@ class TestUpsertJiraComment:
         body = mock_add.call_args.args[1]
         assert body.startswith("hello world")
         assert "koan-jira-outcome:" in body
+
+
+def test_lookup_failure_never_creates_a_duplicate_status_comment():
+    """A broken read path must not look like "no status comment yet".
+
+    jira_list_comments degrades to [] on API error, which is indistinguishable
+    from an issue with no comments; creating on that signal stacks duplicates.
+    """
+    from app.jira_outcome_publish import upsert_jira_comment
+
+    # Patch the transport, not the module-local import name: patching the
+    # latter would only exist post-fix and so could never fail pre-fix.
+    with (
+        patch(
+            "app.jira_notifications._list_comments_result",
+            return_value=(False, []),
+        ),
+        patch("app.jira_outcome_publish.jira_add_comment") as add_comment,
+        patch("app.jira_outcome_publish.jira_edit_comment") as edit_comment,
+    ):
+        ok, reason = upsert_jira_comment("FOO-1", "implement", "body")
+
+    assert ok is False
+    assert reason == "lookup_failed"
+    add_comment.assert_not_called()
+    edit_comment.assert_not_called()

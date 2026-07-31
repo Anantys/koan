@@ -8,7 +8,11 @@ import re
 from typing import Dict, Optional, Tuple
 
 from app.github_url_parser import search_jira_url
-from app.jira_notifications import jira_add_comment, jira_edit_comment, jira_list_comments
+from app.jira_notifications import (
+    jira_add_comment,
+    jira_edit_comment,
+    jira_list_comments_checked,
+)
 from app.run_log import log_safe as _log_runner
 from app.tracker_comment_format import build_pr_comment_failure, build_pr_comment_success
 
@@ -87,7 +91,13 @@ def _upsert_status_comment(
 ) -> Tuple[bool, str]:
     marker = _marker_for(issue_key, command_name)
     status_body = _build_status_comment(issue_key, command_name, body_text)
-    comments = jira_list_comments(issue_key)
+    try:
+        comments = jira_list_comments_checked(issue_key)
+    except Exception as e:
+        # A failed lookup is indistinguishable from "no status comment yet".
+        # Creating on that signal is how one outcome becomes a pile of them.
+        _log_runner("jira", f"Comment lookup failed for {issue_key}: {e}")
+        return False, "lookup_failed"
     existing = next((c for c in comments if marker in (c.get("body") or "")), None)
 
     if existing:
