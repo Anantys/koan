@@ -69,9 +69,36 @@ class TestMarkdownToAdfBlocks:
         assert block["type"] == "codeBlock"
         assert "attrs" not in block
 
+    def test_indented_code_block(self):
+        doc = markdown_to_adf("Repository implementation:\n\n      return value();")
+        assert _types(doc) == ["paragraph", "codeBlock"]
+        assert doc["content"][1]["content"][0]["text"] == "return value();"
+
     def test_paragraph_fallback_for_plain_text(self):
         doc = markdown_to_adf("just a sentence with no structure")
         assert _types(doc) == ["paragraph"]
+
+    def test_gfm_table_becomes_native_adf_table(self):
+        doc = markdown_to_adf(
+            "| Action | File |\n| --- | --- |\n| Modify | `app.py` |"
+        )
+        table = doc["content"][0]
+        assert table["type"] == "table"
+        assert table["content"][0]["content"][0]["type"] == "tableHeader"
+        assert table["content"][1]["content"][1]["type"] == "tableCell"
+
+    def test_github_details_are_expanded_without_html(self):
+        doc = markdown_to_adf(
+            "<details><summary>Test code</summary>\n\n```python\nassert True\n```\n</details>"
+        )
+        assert "codeBlock" in _types(doc)
+        text = " ".join(
+            child.get("text", "")
+            for node in doc["content"]
+            for child in node.get("content", [])
+        )
+        assert "Test code" in text
+        assert "<details>" not in text
 
 
 class TestMarkdownToAdfInline:
@@ -119,6 +146,12 @@ class TestMarkdownToAdfInline:
         # a properly flanked _word_ is still emphasis
         doc = markdown_to_adf("this is _emphasized_ text")
         assert "em" in _marks(doc["content"][0])
+
+    def test_link_mark(self):
+        doc = markdown_to_adf("Read [the docs](https://example.com/docs).")
+        link = next(node for node in doc["content"][0]["content"] if node.get("marks"))
+        assert link["text"] == "the docs"
+        assert link["marks"] == [{"type": "link", "attrs": {"href": "https://example.com/docs"}}]
 
 
 class TestMarkdownToAdfEdgeCases:

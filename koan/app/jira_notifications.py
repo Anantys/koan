@@ -222,14 +222,77 @@ _MD_OLIST_RE = re.compile(r"^\s*\d+\.\s+(.*)$")
 _MD_RULE_RE = re.compile(r"^\s*([-*_])\1{2,}\s*$")
 _MD_FENCE_RE = re.compile(r"^\s*```(.*)$")
 _MD_QUOTE_RE = re.compile(r"^\s*>\s?(.*)$")
+_MD_INDENTED_CODE_RE = re.compile(r"^(?: {4}|\t)(.*)$")
+_MD_TABLE_DELIMITER_CELL_RE = re.compile(r"^:?-{3,}:?$")
 _MD_INLINE_RE = re.compile(
-    r"(?P<code>`[^`]+`)"
+    r"(?P<link>\[(?P<link_text>[^\]]+)\]\((?P<link_url>[^\s)]+)(?:\s+\"[^\"]*\")?\))"
+    r"|(?P<code>`[^`]+`)"
     r"|(?P<bold>\*\*[^*]+\*\*)"
     # Underscore emphasis must be flanked by non-word boundaries so intra-word
     # underscores (snake_case identifiers, file paths like ``my_module.py``) are
     # left literal — matching CommonMark. Asterisk emphasis stays intra-word.
     r"|(?P<em>\*[^*\s][^*]*\*|(?<!\w)_[^_\s][^_]*_(?!\w))"
 )
+
+
+def _normalise_jira_markdown(text: str) -> str:
+    """Convert GitHub-only markdown extensions into Jira-readable Markdown.
+
+    Jira's ADF schema has no collapsible ``details`` node and does not
+    understand GitHub alert syntax.  Keep the useful content, but remove only
+    those wrappers before the standard Markdown parser sees the text.
+    """
+    from app.tracker_comment_format import flatten_github_markdown_for_jira
+
+    return flatten_github_markdown_for_jira(text or "")
+
+
+def _split_table_row(line: str) -> List[str]:
+    """Split a simple GFM table row, preserving escaped pipe characters."""
+    stripped = line.strip()
+    if stripped.startswith("|"):
+        stripped = stripped[1:]
+    if stripped.endswith("|") and not stripped.endswith("\\|"):
+        stripped = stripped[:-1]
+
+    cells: List[str] = []
+    current: List[str] = []
+    escaped = False
+    for char in stripped:
+        if char == "|" and not escaped:
+            cells.append("".join(current).strip())
+            current = []
+            continue
+        if char == "\\" and not escaped:
+            escaped = True
+            current.append(char)
+            continue
+        escaped = False
+        current.append(char)
+    cells.append("".join(current).strip())
+    return cells
+
+
+def _is_table_delimiter(line: str, column_count: int) -> bool:
+    cells = _split_table_row(line)
+    return len(cells) == column_count and all(
+        _MD_TABLE_DELIMITER_CELL_RE.fullmatch(cell.replace(" ", ""))
+        for cell in cells
+    )
+
+
+def _adf_table_row(cells: List[str], header: bool) -> Dict[str, Any]:
+    cell_type = "tableHeader" if header else "tableCell"
+    return {
+        "type": "tableRow",
+        "content": [
+            {
+                "type": cell_type,
+                "content": [{"type": "paragraph", "content": _inline_to_adf(cell)}],
+            }
+            for cell in cells
+        ],
+    }
 
 
 def _inline_to_adf(text: str) -> List[Dict[str, Any]]:
@@ -249,6 +312,12 @@ def _inline_to_adf(text: str) -> List[Dict[str, Any]]:
                 "type": "text",
                 "text": match.group("code")[1:-1],
                 "marks": [{"type": "code"}],
+            })
+        elif match.group("link"):
+            nodes.append({
+                "type": "text",
+                "text": match.group("link_text"),
+                "marks": [{"type": "link", "attrs": {"href": match.group("link_url")}}],
             })
         elif match.group("bold"):
             nodes.append({
@@ -297,11 +366,10 @@ def markdown_to_adf(text: str) -> Dict[str, Any]:
 
     Any line that matches none of the above degrades to paragraph text, so
     unmodeled markdown is readable rather than dropped. Empty input yields a
-    ``doc`` with a single empty paragraph (mirrors :func:`_text_to_adf`).
-    This is a superset of ``_text_to_adf`` and is used for issue descriptions;
-    comments deliberately keep the plainer converter.
+    ``doc`` with a single empty paragraph.  The converter is used for both
+    Jira issue descriptions and comments.
     """
-    lines = (text or "").splitlines()
+    lines = _normalise_jira_markdown(text).splitlines()
     content: List[Dict[str, Any]] = []
     paragraph: List[str] = []
 
@@ -339,6 +407,35 @@ def markdown_to_adf(text: str) -> Dict[str, Any]:
             content.append(node)
             continue
 
+        indented_code = _MD_INDENTED_CODE_RE.match(line)
+        if indented_code:
+            flush_paragraph()
+            code_lines: List[str] = []
+            while i < len(lines):
+                indented_code = _MD_INDENTED_CODE_RE.match(lines[i])
+                if indented_code:
+                    code_lines.append(lines[i])
+                    i += 1
+                    continue
+                if not lines[i].strip() and i + 1 < len(lines) and _MD_INDENTED_CODE_RE.match(lines[i + 1]):
+                    code_lines.append("")
+                    i += 1
+                    continue
+                break
+            indent = min(
+                len(code_line) - len(code_line.lstrip(" \t"))
+                for code_line in code_lines if code_line.strip()
+            )
+            code_text = "\n".join(
+                code_line[indent:] if code_line.strip() else ""
+                for code_line in code_lines
+            )
+            node = {"type": "codeBlock"}
+            if code_text:
+                node["content"] = [{"type": "text", "text": code_text}]
+            content.append(node)
+            continue
+
         if not line.strip():
             flush_paragraph()
             i += 1
@@ -348,6 +445,30 @@ def markdown_to_adf(text: str) -> Dict[str, Any]:
             flush_paragraph()
             content.append({"type": "rule"})
             i += 1
+            continue
+
+        # A table is a header row followed immediately by a GFM delimiter row.
+        # Preserve malformed tables as paragraphs rather than risking data loss.
+        header_cells = _split_table_row(line) if "|" in line else []
+        if (
+            len(header_cells) > 1
+            and i + 1 < len(lines)
+            and _is_table_delimiter(lines[i + 1], len(header_cells))
+        ):
+            flush_paragraph()
+            rows = [_adf_table_row(header_cells, header=True)]
+            i += 2
+            while i < len(lines) and "|" in lines[i]:
+                cells = _split_table_row(lines[i])
+                if len(cells) != len(header_cells):
+                    break
+                rows.append(_adf_table_row(cells, header=False))
+                i += 1
+            content.append({
+                "type": "table",
+                "attrs": {"isNumberColumnEnabled": False, "layout": "default"},
+                "content": rows,
+            })
             continue
 
         heading = _MD_HEADING_RE.match(line)
@@ -946,13 +1067,13 @@ def _jira_auth_from_config() -> Tuple[str, str]:
 
 
 def jira_add_comment(issue_key: str, body_text: str) -> bool:
-    """Post a plain-text/markdown comment to a Jira issue."""
+    """Post a Markdown comment as native Jira ADF."""
     base_url, auth_header = _jira_auth_from_config()
     result = _jira_post(
         base_url,
         auth_header,
         f"/rest/api/3/issue/{issue_key}/comment",
-        {"body": _text_to_adf(body_text)},
+        {"body": markdown_to_adf(body_text)},
     )
     return result is not None
 
@@ -1041,7 +1162,7 @@ def jira_edit_comment(issue_key: str, comment_id: str, body_text: str) -> bool:
         base_url,
         auth_header,
         f"/rest/api/3/issue/{issue_key}/comment/{comment_id}",
-        {"body": _text_to_adf(body_text)},
+        {"body": markdown_to_adf(body_text)},
     )
     return result is not None
 
@@ -1061,9 +1182,8 @@ def jira_create_issue(
         "fields": {
             "project": {"key": project_key},
             "summary": title,
-            # Rich ADF so brainstorm/plan markdown bodies (headings, lists,
-            # rules, marks) render natively. Comments keep _text_to_adf so
-            # human /comment content is never restructured.
+            # Markdown is converted to rich ADF for issue descriptions and
+            # comments so tracker output keeps its intended structure.
             "description": markdown_to_adf(body_text),
             "issuetype": {"name": issue_type or "Task"},
         }

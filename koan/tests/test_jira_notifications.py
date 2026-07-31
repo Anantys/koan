@@ -805,8 +805,8 @@ class TestJiraIssueHelpers:
         ]
         assert "strong" in marks
 
-    def test_jira_add_comment_stays_plain_text_adf(self):
-        """Comments must NOT be restructured by the rich converter (FR-009)."""
+    def test_jira_add_comment_uses_rich_markdown_adf(self):
+        """Comments retain their Markdown structure in Jira."""
         from app.jira_notifications import jira_add_comment
 
         body = "## Heading-looking line\n\n- bullet-looking line"
@@ -817,8 +817,7 @@ class TestJiraIssueHelpers:
             jira_add_comment("FOO-1", body)
 
         adf = mock_post.call_args.args[3]["body"]
-        # plain converter → only paragraph blocks, no heading/bulletList
-        assert {n["type"] for n in adf["content"]} == {"paragraph"}
+        assert {n["type"] for n in adf["content"]} == {"heading", "bulletList"}
 
     def test_jira_search_issues_rejects_unsafe_project_key(self):
         from app.jira_notifications import jira_search_issues

@@ -280,19 +280,19 @@ code block is preserved verbatim (it is example text, not an alert), and
 back-to-back alert blocks with no separating blank line are degraded
 independently rather than merged.
 
-### Rich issue descriptions
+### Rich Jira messages
 
-Whereas Jira *comments* are rendered from a deliberately plain markdown subset
-(so human blockquotes survive intact), issue *descriptions* created on Jira are
-rendered as **rich ADF**. `markdown_to_adf()` in `jira_notifications.py` converts
-the markdown that skills like `/brainstorm` and `/plan` produce — headings
-(`#`–`####`), unordered and ordered lists (including `- [ ]` / `- [x]`
-checklists), horizontal rules (`---`), blockquotes, fenced code blocks, and
-inline `**bold**` / `*em*` / `` `code` `` — into native ADF nodes so the Jira
-issue reads as a properly formatted document rather than raw markdown. Lines that
-don't match a known structure degrade to a plain paragraph, and empty input
-yields a single empty paragraph. This applies to `jira_create_issue` and
-`jira_update_issue_description`; comments are unaffected.
+Koan renders both Jira issue descriptions and comments as **rich ADF**. Its
+Markdown converter preserves headings, unordered and ordered lists (including
+`- [ ]` / `- [x]` checklists), rules, blockquotes, fenced or indented code blocks, inline
+`**bold**` / `*em*` / `` `code` ``, links, and simple GitHub-style tables as
+native Jira nodes. This applies to every comment posted or updated by Koan, as
+well as `jira_create_issue` and `jira_update_issue_description`.
+
+Jira has no collapsible-section equivalent. Koan therefore removes GitHub
+`<details>` wrappers, renders their `<summary>` as a visible label, and keeps
+the contained code block expanded. Unsupported or malformed Markdown degrades
+to readable paragraph text rather than being discarded.
 
 ### Brainstorm on Jira
 
