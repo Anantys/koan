@@ -291,8 +291,10 @@ well as `jira_create_issue` and `jira_update_issue_description`.
 
 Jira has no collapsible-section equivalent. Koan therefore removes GitHub
 `<details>` wrappers, renders their `<summary>` as a visible label, and keeps
-the contained code block expanded. Unsupported or malformed Markdown degrades
-to readable paragraph text rather than being discarded.
+the contained code block expanded. `<details>` markup inside a fenced code
+block is preserved verbatim (it is example text, not a wrapper). Unsupported or
+malformed Markdown degrades to readable paragraph text rather than being
+discarded.
 
 ### Brainstorm on Jira
 

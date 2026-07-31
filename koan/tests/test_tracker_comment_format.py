@@ -121,6 +121,19 @@ class TestFlattenGitHubMarkdownForJira(unittest.TestCase):
         assert "```python" in result
         assert "<details>" not in result
 
+    def test_details_inside_a_code_fence_is_left_verbatim(self):
+        """`/plan` posts code examples; rewriting them corrupts the plan.
+
+        Only the GitHub `details` wrapper around content should be flattened —
+        the same text appearing *as* code must survive untouched.
+        """
+        result = flatten_github_markdown_for_jira(
+            "Example:\n\n```html\n<details><summary>x</summary>body</details>\n```\n"
+        )
+
+        assert "<details><summary>x</summary>body</details>" in result
+        assert "**x**" not in result
+
 
 # ---------------------------------------------------------------------------
 # build_pr_comment_success — Jira branch

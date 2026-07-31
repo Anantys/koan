@@ -197,3 +197,18 @@ class TestMarkdownToAdfEdgeCases:
         assert "rule" in types
         # no exception, valid doc envelope
         assert doc["type"] == "doc"
+
+
+class TestJiraNormalisationPreservesCode:
+    """The Jira comment path must not rewrite markup that *is* the content."""
+
+    def test_details_markup_in_a_fence_reaches_adf_verbatim(self):
+        # markdown_to_adf normalises internally, so this is the real entry point
+        # every production caller uses — no pre-flattening.
+        source = "Example:\n\n```html\n<details><summary>x</summary>body</details>\n```"
+        doc = markdown_to_adf(source)
+
+        code = [n for n in doc["content"] if n.get("type") == "codeBlock"]
+        assert len(code) == 1
+        text = "".join(c.get("text", "") for c in code[0].get("content", []))
+        assert text == "<details><summary>x</summary>body</details>"

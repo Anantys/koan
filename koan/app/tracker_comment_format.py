@@ -88,7 +88,20 @@ def flatten_github_markdown_for_jira(text: str) -> str:
 
     flattened = _flatten_github_alerts(text)
     lines: List[str] = []
+    in_fence = False
     for raw_line in flattened.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        if raw_line.strip().startswith("```"):
+            in_fence = not in_fence
+            lines.append(raw_line.rstrip())
+            continue
+        if in_fence:
+            # `/plan` posts code examples verbatim; rewriting details/summary
+            # inside a fence corrupts the very content it is meant to convey.
+            # Scoped to ``` fences on purpose: markdown_to_adf also treats a
+            # 4-space-indented block as code, but guarding that too would leave
+            # a genuine <details> wrapper nested under a list item unflattened.
+            lines.append(raw_line.rstrip())
+            continue
         line = _SUMMARY_RE.sub(lambda m: f"**{m.group(1).strip()}**", raw_line)
         line = _DETAILS_TAG_RE.sub("", line)
         lines.append(line.rstrip())
