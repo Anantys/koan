@@ -305,6 +305,11 @@ def load_staged_plan(issue_url: str, instance_dir: str = "") -> Optional[str]:
 
     staged_at = data.get("staged_at")
     if isinstance(staged_at, (int, float)) and time.time() - staged_at > _STAGE_MAX_AGE_SECONDS:
+        # Report absent whether or not the delete lands. Returning the body
+        # instead would resurrect exactly the undeliverable plan the expiry
+        # exists to retire, and a surviving file is harmless here: the next
+        # stage_plan() overwrites this same path. The failed delete is audited
+        # by _clear_staged_plan rather than passed back.
         _clear_staged_plan(issue_url, instance_dir)
         return None
     return data["comment_body"]
@@ -540,5 +545,13 @@ def publish_staged_plan(
             issue_url, instance_dir, "superseded_parts_not_retired",
         )
 
-    _clear_staged_plan(issue_url, instance_dir)
+    if not _clear_staged_plan(issue_url, instance_dir):
+        # The comments are verified, but a surviving stage makes the next
+        # `/plan` on this issue resume and republish it instead of generating
+        # the plan that was asked for. Report the inconsistency instead of a
+        # clean success; the next run re-verifies cheaply (no model call) and
+        # retries the delete. Deliberately not counted as a failed publish
+        # session — the publish itself worked.
+        return False, "stage_clear_failed"
+
     return True, ", ".join(comment_ids)

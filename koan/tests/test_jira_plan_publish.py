@@ -539,3 +539,49 @@ def test_clear_failure_does_not_claim_the_stage_was_abandoned(tmp_path):
     # The stage survived, so "abandoned" would be a lie.
     assert reason == "verification_failed"
     assert load_staged_plan(URL, str(tmp_path)) == "plan"
+
+
+def test_clear_failure_after_a_verified_publish_is_not_reported_as_success(tmp_path):
+    """The comments landed, but a surviving stage still misleads the next run.
+
+    `/plan` on this issue would resume and republish the same plan instead of
+    generating the one the user asked for.
+    """
+    body = "plan"
+    stage_plan(URL, body, str(tmp_path))
+    comments = []
+
+    def add(_key, rendered):
+        comments.append({"id": "42", "body": rendered})
+        return True
+
+    with (
+        patch("app.jira_plan_publish.jira_list_comments_checked", side_effect=lambda _k: comments),
+        patch("app.jira_plan_publish.jira_add_comment", side_effect=add),
+        patch("app.jira_plan_publish.log_event"),
+        patch("pathlib.Path.unlink", side_effect=OSError("read-only fs")),
+    ):
+        ok, reason = publish_staged_plan(URL, str(tmp_path))
+
+    assert ok is False
+    assert reason == "stage_clear_failed"
+    # The comment really was posted — the failure is local, not on Jira.
+    assert len(comments) == 1
+    assert load_staged_plan(URL, str(tmp_path)) == body
+
+
+def test_expired_stage_is_never_returned_even_if_deletion_fails(tmp_path):
+    stage_plan(URL, "old plan", str(tmp_path))
+    path = stage_path_for(URL, str(tmp_path))
+    payload = json.loads(path.read_text())
+    payload["staged_at"] -= _STAGE_MAX_AGE_SECONDS + 1
+    path.write_text(json.dumps(payload))
+
+    with (
+        patch("pathlib.Path.unlink", side_effect=OSError("read-only fs")),
+        patch("app.jira_plan_publish.log_event") as log_event,
+    ):
+        assert load_staged_plan(URL, str(tmp_path)) is None
+
+    assert path.exists()  # deletion failed …
+    assert log_event.call_args.kwargs["details"]["action"] == "stage_clear"  # … and was audited

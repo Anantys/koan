@@ -926,3 +926,50 @@ def test_list_comments_accepts_a_genuinely_empty_page():
 
     assert ok is True
     assert comments == []
+
+
+def test_fetch_jira_issue_raises_on_a_shapeless_comment_page():
+    """A JSON-valid `{}` page must not read as "this issue has no comments".
+
+    /implement locates the plan here; silently dropping every comment sends it
+    back to stale issue-body content.
+    """
+    from contextlib import ExitStack
+
+    from app.jira_notifications import fetch_jira_issue
+
+    issue = {"fields": {"summary": "Plan", "description": None}}
+
+    def get_side_effect(_base_url, _auth_header, path, _params=None):
+        return issue if path.endswith("/FOO-1") else {}
+
+    with ExitStack() as stack:
+        for cm in TestJiraIssueHelpers()._patch_enabled_config():
+            stack.enter_context(cm)
+        stack.enter_context(
+            patch("app.jira_notifications._jira_get", side_effect=get_side_effect)
+        )
+        with pytest.raises(RuntimeError, match="Failed to fetch comments"):
+            fetch_jira_issue("FOO-1")
+
+
+def test_fetch_jira_issue_accepts_a_genuinely_empty_comment_page():
+    from contextlib import ExitStack
+
+    from app.jira_notifications import fetch_jira_issue
+
+    issue = {"fields": {"summary": "Plan", "description": None}}
+
+    def get_side_effect(_base_url, _auth_header, path, _params=None):
+        return issue if path.endswith("/FOO-1") else {"comments": [], "total": 0}
+
+    with ExitStack() as stack:
+        for cm in TestJiraIssueHelpers()._patch_enabled_config():
+            stack.enter_context(cm)
+        stack.enter_context(
+            patch("app.jira_notifications._jira_get", side_effect=get_side_effect)
+        )
+        _title, _body, comments = fetch_jira_issue("FOO-1")
+
+    assert comments == []
+

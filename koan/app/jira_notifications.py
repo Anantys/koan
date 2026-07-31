@@ -1068,17 +1068,19 @@ def fetch_jira_issue(
             f"/rest/api/3/issue/{issue_key}/comment",
             params,
         )
-        if cdata is None or not isinstance(cdata, dict):
-            # Truncating here would look identical to "that was the last page".
-            # Callers use these comments to locate a plan — a partial list makes
-            # `/implement` fall back to stale issue-body content believing it
-            # saw everything. Fail the fetch the way a bad issue GET does.
+        # Truncating here would look identical to "that was the last page".
+        # Callers use these comments to locate a plan — a partial list makes
+        # `/implement` fall back to stale issue-body content believing it saw
+        # everything. Fail the fetch the way a bad issue GET does. A shapeless
+        # but JSON-valid page ({}, or `comments` not a list) is a failure too:
+        # it is indistinguishable from a genuinely empty issue otherwise.
+        if not isinstance(cdata, dict) or not isinstance(cdata.get("comments"), list):
             raise RuntimeError(
                 f"Failed to fetch comments for Jira issue {issue_key} "
                 f"(page at startAt={start_at})"
             )
 
-        batch = cdata.get("comments", [])
+        batch = cdata["comments"]
         if not batch:
             break
 

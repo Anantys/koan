@@ -201,14 +201,27 @@ def _deliver_jira_plan(
     if posted:
         return True, detail
 
+    stage = stage_path_for(issue_url, instance_dir)
+    if detail == "stage_clear_failed":
+        # The comment is live; only the local artifact survived. Saying Jira
+        # rejected the plan here would send the reader hunting the wrong fault.
+        summary = f"Plan posted, but its staged copy could not be removed: {stage}"
+        _messaging.notify_outcome(
+            f"⚠️ {summary}. Until it is, /plan on this issue republishes the "
+            "same plan instead of generating a new one.",
+            notify_fn,
+        )
+        return False, summary
+
     if detail.startswith("abandoned"):
         note = "the staged plan was dropped, so the next /plan regenerates it"
     else:
-        note = f"the plan stays staged for retry at {stage_path_for(issue_url, instance_dir)}"
+        note = f"the plan stays staged for retry at {stage}"
+    summary = f"Jira could not verify the plan comment: {detail}"
     _messaging.notify_outcome(
         f"❌ Jira did not confirm the plan comment ({detail}); {note}.", notify_fn,
     )
-    return False, detail
+    return False, summary
 
 
 def _run_issue_plan(
@@ -249,7 +262,7 @@ def _run_issue_plan(
         if load_staged_plan(issue_url, instance_dir) is not None:
             posted, detail = _deliver_jira_plan(issue_url, instance_dir, notify_fn)
             if not posted:
-                return False, f"Jira could not verify the staged plan comment: {detail}"
+                return False, detail
             _messaging.notify_outcome(
                 f"✅ Plan posted as comment on {ref.label} (Jira comment {detail}): {issue_url}",
                 notify_fn,
@@ -326,7 +339,7 @@ def _run_issue_plan(
             issue_url, instance_dir, notify_fn, comment_body=comment_body,
         )
         if not posted:
-            return False, f"Jira could not verify the plan comment: {detail}"
+            return False, detail
         label = f"{label} (Jira comment {detail})"
     else:
         try:
