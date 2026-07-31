@@ -169,7 +169,15 @@ def _enrich_idea_from_issue(
         body = issue.body
         comments = issue.comments
     except Exception as e:
+        # Falling back to an empty context is deliberate here, but it must not
+        # be invisible: `idea` is often just the issue URL, so the spec that
+        # follows is built from a bare link. Say so instead of quietly
+        # producing a thin spec the user cannot account for.
         print(f"[deepplan_runner] Failed to fetch issue: {e}", file=sys.stderr)
+        notify_fn(
+            f"⚠️ Could not fetch issue context ({str(e)[:200]}) — "
+            "continuing from the text supplied only."
+        )
         return idea, ""
 
     # Build the enriched idea from issue content

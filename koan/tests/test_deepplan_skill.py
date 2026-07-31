@@ -657,6 +657,26 @@ class TestRunnerWithIssueUrl:
         assert idea == "https://github.com/o/r/issues/1"
         assert context == ""
 
+    def test_issue_fetch_failure_is_reported_not_silent(self, runner, tmp_path):
+        """The fallback is deliberate, but the user must be told it happened.
+
+        The spec that follows is built from the bare idea text — often just the
+        issue URL — so a silent degradation looks like a thin spec for no
+        visible reason.
+        """
+        sent = []
+        with patch.object(runner, "fetch_issue",
+                          side_effect=RuntimeError("API error")), \
+             patch("app.notify.send_telegram"):
+
+            runner._enrich_idea_from_issue(
+                "https://github.com/o/r/issues/1",
+                "https://github.com/o/r/issues/1",
+                sent.append,
+            )
+
+        assert any("Could not fetch issue context" in m for m in sent)
+
 
 class TestExploreDesignMaxTurns:
     """Verify _explore_design uses configurable max_turns, not a hardcoded value."""

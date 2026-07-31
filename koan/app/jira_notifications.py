@@ -1059,8 +1059,15 @@ def fetch_jira_issue(
             f"/rest/api/3/issue/{issue_key}/comment",
             params,
         )
-        if not cdata or not isinstance(cdata, dict):
-            break
+        if cdata is None or not isinstance(cdata, dict):
+            # Truncating here would look identical to "that was the last page".
+            # Callers use these comments to locate a plan — a partial list makes
+            # `/implement` fall back to stale issue-body content believing it
+            # saw everything. Fail the fetch the way a bad issue GET does.
+            raise RuntimeError(
+                f"Failed to fetch comments for Jira issue {issue_key} "
+                f"(page at startAt={start_at})"
+            )
 
         batch = cdata.get("comments", [])
         if not batch:

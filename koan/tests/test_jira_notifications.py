@@ -742,6 +742,30 @@ class TestJiraIssueHelpers:
             with pytest.raises(RuntimeError, match="Failed to fetch"):
                 fetch_jira_issue("FOO-404")
 
+    def test_fetch_jira_issue_raises_when_comment_pagination_fails(self):
+        """A failed page must not masquerade as the end of the comment list.
+
+        `/implement` locates a (possibly multipart) plan in these comments; a
+        silently truncated list sends it back to stale issue-body content.
+        """
+        from contextlib import ExitStack
+
+        from app.jira_notifications import fetch_jira_issue
+
+        issue = {"fields": {"summary": "Plan", "description": None}}
+
+        def get_side_effect(_base_url, _auth_header, path, _params=None):
+            return issue if path.endswith("/FOO-1") else None
+
+        with ExitStack() as stack:
+            for cm in self._patch_enabled_config():
+                stack.enter_context(cm)
+            stack.enter_context(
+                patch("app.jira_notifications._jira_get", side_effect=get_side_effect)
+            )
+            with pytest.raises(RuntimeError, match="Failed to fetch comments"):
+                fetch_jira_issue("FOO-1")
+
     def test_jira_add_comment_posts_adf(self):
         from app.jira_notifications import jira_add_comment
 
