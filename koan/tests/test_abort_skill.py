@@ -1,7 +1,6 @@
 """Tests for the /abort core skill -- abort current in-progress mission."""
 
 import signal
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -59,7 +58,7 @@ class TestAbortHandler:
 
         ctx = self._make_ctx(tmp_path)
         with patch("app.pid_manager.check_pidfile", return_value=4242) as mock_check, \
-             patch("skills.core.abort.handler._verify_is_runner", return_value=True), \
+             patch("app.pid_manager._cmdline_matches", return_value=True), \
              patch("os.kill") as mock_kill:
             abort_handler.handle(ctx)
 
@@ -83,7 +82,7 @@ class TestAbortHandler:
     def test_skips_signal_when_pid_does_not_belong_to_runner(self, tmp_path):
         """PID-reuse guard: refuse to signal an unrelated process.
 
-        If the runner died and Linux recycled its PID, _verify_is_runner
+        If the runner died and Linux recycled its PID, the cmdline check
         returns False and we must not send SIGUSR1 — its default disposition
         would terminate whatever inherited the PID.
         """
@@ -91,7 +90,7 @@ class TestAbortHandler:
 
         ctx = self._make_ctx(tmp_path)
         with patch("app.pid_manager.check_pidfile", return_value=4242), \
-             patch("skills.core.abort.handler._verify_is_runner", return_value=False), \
+             patch("app.pid_manager._cmdline_matches", return_value=False), \
              patch("os.kill") as mock_kill:
             abort_handler.handle(ctx)
 
@@ -99,35 +98,21 @@ class TestAbortHandler:
         # File fallback still triggers abort on the next poll cycle.
         assert (tmp_path / ".koan-abort").exists()
 
-    def test_verify_is_runner_reads_proc_cmdline(self, tmp_path, monkeypatch):
-        """_verify_is_runner should accept PIDs whose cmdline references run.py."""
+    def test_signal_skipped_when_cmdline_is_unrelated(self, tmp_path, monkeypatch):
+        """A recycled PID whose cmdline is not run.py must not be signalled."""
         from skills.core.abort import handler as abort_handler
 
-        def fake_read_bytes(self):
-            return b"python\x00app/run.py\x00"
-
-        monkeypatch.setattr("pathlib.Path.read_bytes", fake_read_bytes)
-        assert abort_handler._verify_is_runner(1234) is True
-
-    def test_verify_is_runner_rejects_unrelated_cmdline(self, tmp_path, monkeypatch):
-        """_verify_is_runner should reject PIDs that aren't the koan runner."""
-        from skills.core.abort import handler as abort_handler
+        ctx = self._make_ctx(tmp_path)
 
         def fake_read_bytes(self):
             return b"/usr/sbin/cron\x00-f\x00"
 
         monkeypatch.setattr("pathlib.Path.read_bytes", fake_read_bytes)
-        assert abort_handler._verify_is_runner(1234) is False
+        with patch("app.pid_manager.check_pidfile", return_value=4242), \
+             patch("os.kill") as mock_kill:
+            abort_handler.handle(ctx)
 
-    def test_verify_is_runner_rejects_when_proc_unavailable(self, tmp_path, monkeypatch):
-        """No /proc (non-Linux) or unreadable PID → refuse to signal."""
-        from skills.core.abort import handler as abort_handler
-
-        def raise_oserror(self):
-            raise FileNotFoundError
-
-        monkeypatch.setattr("pathlib.Path.read_bytes", raise_oserror)
-        assert abort_handler._verify_is_runner(1234) is False
+        mock_kill.assert_not_called()
 
     def test_signal_failure_does_not_raise(self, tmp_path):
         """If the runner died between PID lookup and kill, swallow the error.
@@ -138,7 +123,7 @@ class TestAbortHandler:
 
         ctx = self._make_ctx(tmp_path)
         with patch("app.pid_manager.check_pidfile", return_value=99999), \
-             patch("skills.core.abort.handler._verify_is_runner", return_value=True), \
+             patch("app.pid_manager._cmdline_matches", return_value=True), \
              patch("os.kill", side_effect=ProcessLookupError):
             # Must not raise
             result = abort_handler.handle(ctx)

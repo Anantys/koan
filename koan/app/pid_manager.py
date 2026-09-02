@@ -258,6 +258,51 @@ def check_pidfile(koan_root: Path, process_name: str) -> Optional[int]:
     return None
 
 
+def _cmdline_matches(pid: int, needle: str) -> bool:
+    """Best-effort check that *pid*'s command line contains *needle*.
+
+    Mitigates the PID-reuse race between :func:`check_pidfile` and
+    :func:`os.kill`: if the OS recycled a daemon's PID for an unrelated
+    process, SIGUSR1/SIGUSR2's default disposition would terminate it.
+
+    On Linux, reads ``/proc/<pid>/cmdline``. On macOS/BSD (no ``/proc``),
+    falls back to ``ps -p <pid> -o command=``.
+    """
+    try:
+        return needle.encode() in Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        pass
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            capture_output=True, text=True, timeout=2,
+        )
+        return needle in result.stdout
+    except (subprocess.SubprocessError, OSError):
+        return False
+
+
+def signal_process(
+    koan_root: Path, process_name: str, sig: int, script: Optional[str] = None,
+) -> bool:
+    """Send *sig* to the running ``process_name`` daemon.
+
+    Verifies the PID still belongs to that daemon (``script``, defaulting to
+    ``<process_name>.py``) before signalling, so a recycled PID is never hit.
+
+    Returns True when the signal was delivered.
+    """
+    script = script or f"{process_name}.py"
+    try:
+        pid = check_pidfile(koan_root, process_name)
+        if not pid or not _cmdline_matches(pid, script):
+            return False
+        os.kill(pid, sig)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
 PROCESS_NAMES = ("run", "awake", "ollama", "dashboard", "api")
 
 # Process startup verification timeouts
