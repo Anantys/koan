@@ -154,7 +154,9 @@ extra `force` line and sends SIGUSR2 to the runner: the signal handler kills the
 mission subprocess and exits with the restart code immediately, and the marker
 is re-read inside the mission wait loop as a fallback if the signal is lost.
 The interrupted mission stays In Progress and is re-queued by `recover.py` on the
-next startup. The bridge needs no forced path — it re-execs on its next poll tick.
+next startup — or escalated to Failed if its crash count has already reached
+`max_crash_retries`, since the forced kill counts as a crash. The bridge needs no
+forced path — it re-execs on its next poll tick.
 
 The loop writes real-time state to status files so the bridge, dashboard, and
 commands can report progress without directly controlling the runner.

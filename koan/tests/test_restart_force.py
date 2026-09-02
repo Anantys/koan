@@ -47,6 +47,27 @@ class TestForceMarker:
         with pytest.raises(ValueError):
             is_force_restart(str(tmp_path), target="nope")
 
+    def test_unreadable_marker_is_logged(self, tmp_path, monkeypatch):
+        """An unreadable marker silently disables the fallback — log it."""
+        import app.restart_manager as rm
+
+        request_restart(str(tmp_path), force=True)
+        monkeypatch.setattr(rm, "_force_read_error_logged", False)
+        with patch("builtins.open", side_effect=PermissionError("EACCES")), \
+             patch("app.run_log.log") as mock_log:
+            assert is_force_restart(str(tmp_path), target="run") is False
+        assert mock_log.called
+        assert mock_log.call_args[0][0] == "error"
+
+    def test_missing_marker_is_not_logged(self, tmp_path, monkeypatch):
+        """Absence is the normal case — no error noise every poll tick."""
+        import app.restart_manager as rm
+
+        monkeypatch.setattr(rm, "_force_read_error_logged", False)
+        with patch("app.run_log.log") as mock_log:
+            assert is_force_restart(str(tmp_path), target="run") is False
+        mock_log.assert_not_called()
+
 
 class TestRestartHandler:
     def _ctx(self, tmp_path, args=""):

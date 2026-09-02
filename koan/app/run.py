@@ -263,7 +263,8 @@ def _force_restart_now(reason: str):
     the main thread unwinds through the mission's ``finally`` blocks (pidfile
     released, status cleared) up to :func:`main`, which re-execs on
     ``RESTART_EXIT_CODE``. The killed mission stays In Progress and is
-    re-queued by crash recovery on the next startup.
+    re-queued by crash recovery on the next startup — or failed by it, once
+    the mission has exhausted ``max_crash_retries``.
     """
     log("koan", f"{reason} — killing current mission and restarting now")
     proc = _sig.claude_proc

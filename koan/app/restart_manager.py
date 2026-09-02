@@ -19,7 +19,8 @@ Forced restart (``/restart --force``): the markers additionally carry a
 ``force`` line and the runner is sent SIGUSR2. The runner then kills the
 in-flight mission and exits with ``RESTART_EXIT_CODE`` immediately instead
 of waiting for the mission to finish; crash recovery re-queues the killed
-mission on the next startup. The bridge needs nothing extra — it re-execs
+mission on the next startup (or fails it, if it has already used up
+``max_crash_retries``). The bridge needs nothing extra — it re-execs
 on its next poll tick either way.
 
 Legacy ``.koan-restart`` (DEPRECATED): the single combined marker is no
@@ -55,6 +56,9 @@ RESTART_RUN_FILE = ".koan-restart-run"
 
 # Body line that marks a request as forced (``/restart --force``).
 FORCE_MARKER = "force"
+
+# One-shot guard so an unreadable marker logs once, not every poll tick.
+_force_read_error_logged = False
 
 # Files written by request_restart() — the two live per-consumer markers only.
 _WRITE_TARGETS = (RESTART_BRIDGE_FILE, RESTART_RUN_FILE)
@@ -106,11 +110,23 @@ def is_force_restart(koan_root: str, target: Optional[str] = None) -> bool:
     Durability fallback for the SIGUSR2 fast path: if the signal never
     reached the runner (stale PID file, runner mid-restart), the in-mission
     poll loop still sees the forced marker and kills the mission.
+
+    A missing marker is the normal case. Any *other* read failure (EACCES on
+    a marker written by a differently-privileged path, EIO on the mount)
+    silently disables this fallback, so it is logged — once per process, since
+    the mission loop calls this every poll tick.
     """
+    global _force_read_error_logged
     try:
         with open(_marker_path(koan_root, target), encoding="utf-8") as fh:
             return any(line.strip() == FORCE_MARKER for line in fh)
-    except OSError:
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        if not _force_read_error_logged:
+            _force_read_error_logged = True
+            from app.run_log import log
+            log("error", f"Cannot read restart marker for forced restart: {exc}")
         return False
 
 

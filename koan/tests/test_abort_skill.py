@@ -98,6 +98,18 @@ class TestAbortHandler:
         # File fallback still triggers abort on the next poll cycle.
         assert (tmp_path / ".koan-abort").exists()
 
+    def test_reply_says_when_signal_was_not_delivered(self, tmp_path):
+        """Undelivered SIGUSR1 must not be reported as an immediate abort."""
+        from skills.core.abort import handler as abort_handler
+
+        ctx = self._make_ctx(tmp_path)
+        with patch("app.pid_manager.check_pidfile", return_value=None), \
+             patch("app.run_log.log") as mock_log:
+            result = abort_handler.handle(ctx)
+
+        assert "abort-file poll" in result
+        assert mock_log.called
+
     def test_signal_skipped_when_cmdline_is_unrelated(self, tmp_path, monkeypatch):
         """A recycled PID whose cmdline is not run.py must not be signalled."""
         from skills.core.abort import handler as abort_handler

@@ -1984,8 +1984,11 @@ fresh install — no `/english` needed.
 Plain `/restart` is polite: the bridge re-execs right away, and the agent loop
 finishes the mission it is on before exiting for re-launch. `/restart --force`
 (also `-f`) does not wait — it kills the in-flight mission immediately and
-restarts. The killed mission is not lost: crash recovery moves it back to
-Pending on the next startup, with its `pending.md` context.
+restarts. The killed mission is usually not lost: crash recovery moves it back
+to Pending on the next startup, with its `pending.md` context. A mission that
+has already exhausted its crash retries (`max_crash_retries`, default 3) is
+escalated to Failed instead — repeated forced restarts on the same mission
+eventually stop re-queueing it.
 
 <details>
 <summary>Use cases</summary>

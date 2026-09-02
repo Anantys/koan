@@ -6,7 +6,8 @@ Restarts both agent and bridge processes without pulling new code.
 exiting. ``/restart --force`` is not — it marks the request forced and sends
 SIGUSR2 so the runner kills the in-flight mission and restarts immediately.
 Use it when the run loop is wedged. The killed mission is re-queued by crash
-recovery on the next startup.
+recovery on the next startup, unless it has already used up its crash retries
+(``max_crash_retries``) — recovery then escalates it to Failed.
 """
 
 import signal as sig_mod
@@ -35,5 +36,6 @@ def handle(ctx: SkillContext) -> str:
     detail = "" if signalled else " (runner not running — it will start clean)"
     return (
         "🔄 Force restart requested. Any in-flight mission is killed now and "
-        f"re-queued on startup{detail}."
+        "re-queued on startup — unless it has exhausted its crash retries, in "
+        f"which case recovery moves it to Failed{detail}."
     )
