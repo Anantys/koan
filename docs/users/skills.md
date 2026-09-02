@@ -279,7 +279,7 @@ Skills marked **GitHub @mention** can be triggered by commenting `@koan-bot <com
 | `/update` | `/upgrade` | Update to latest commit on main, restart |
 | `/update_last_release` | — | Update to most recent release tag, restart |
 | `/reset` | — | Reset run counter to 0 (resumes if paused by max_runs) |
-| `/restart` | — | Restart processes (no code pull) |
+| `/restart [--force]` | — | Restart processes (no code pull); `--force` kills the in-flight mission |
 | `/snapshot` | — | Export memory state to a portable file |
 
 ## Project Management

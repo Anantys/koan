@@ -1979,12 +1979,19 @@ fresh install — no `/english` needed.
 - `/reset` — Resume from a max_runs pause without losing current state
 </details>
 
-**`/restart`** — Restart both agent and bridge processes without pulling new code.
+**`/restart [--force]`** — Restart both agent and bridge processes without pulling new code.
+
+Plain `/restart` is polite: the bridge re-execs right away, and the agent loop
+finishes the mission it is on before exiting for re-launch. `/restart --force`
+(also `-f`) does not wait — it kills the in-flight mission immediately and
+restarts. The killed mission is not lost: crash recovery moves it back to
+Pending on the next startup, with its `pending.md` context.
 
 <details>
 <summary>Use cases</summary>
 
-- `/restart` — Force a restart when Kōan is already up to date but you need a fresh start
+- `/restart` — Restart when Kōan is already up to date but you need a fresh start
+- `/restart --force` — The run loop is wedged on a mission and `/abort` isn't landing; restart both daemons now
 </details>
 
 **`/snapshot`** — Export memory state to a portable snapshot file for backup or migration.
@@ -2484,7 +2491,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/update` | `/upgrade` | P | Update to latest commit on main, restart |
 | `/update_last_release` | — | P | Update to most recent release tag, restart |
 | `/reset` | — | P | Reset run counter to 0 |
-| `/restart` | — | P | Restart processes (no code pull) |
+| `/restart [--force]` | — | P | Restart processes (no code pull); `--force` kills the in-flight mission |
 | `/snapshot` | — | P | Export memory state |
 | `/add_project <url>` | `/add_project` | P | Add a project from GitHub |
 | `/delete_project <name>` | `/delete`, `/del` | P | Remove a project from workspace |

@@ -43,6 +43,7 @@ from app.pid_manager import acquire_pidfile, release_pidfile
 from app.restart_manager import (
     check_restart,
     clear_restart,
+    is_force_restart,
     RESTART_EXIT_CODE,
     RESTART_RUN_FILE,
 )
@@ -249,6 +250,36 @@ def _on_sigusr1(signum, frame):
         Path(koan_root_path, ABORT_FILE).unlink(missing_ok=True)
     log("koan", "Abort signal received — killing current mission")
     _kill_process_group(proc)
+
+
+# How often the mission wait loop wakes to check abort / forced-restart signals.
+MISSION_POLL_INTERVAL = 30
+
+
+def _force_restart_now(reason: str):
+    """Kill any in-flight mission and exit for re-launch — never returns.
+
+    The forced-restart path (``/restart --force``). Raising ``SystemExit`` in
+    the main thread unwinds through the mission's ``finally`` blocks (pidfile
+    released, status cleared) up to :func:`main`, which re-execs on
+    ``RESTART_EXIT_CODE``. The killed mission stays In Progress and is
+    re-queued by crash recovery on the next startup.
+    """
+    log("koan", f"{reason} — killing current mission and restarting now")
+    proc = _sig.claude_proc
+    if proc is not None and proc.poll() is None:
+        _kill_process_group(proc)
+    raise SystemExit(RESTART_EXIT_CODE)
+
+
+def _on_sigusr2(signum, frame):
+    """SIGUSR2 handler: forced restart from the bridge (``/restart --force``).
+
+    Unlike the between-missions restart check, this does not wait for the
+    current mission. Sent by the /restart skill; the forced marker on disk
+    is the fallback if the signal is lost.
+    """
+    _force_restart_now("Forced restart signal received")
 
 
 def _start_stagnation_monitor(stdout_file: str, proc, project_name: str):
@@ -484,7 +515,7 @@ def run_claude_task(
                 # otherwise block forever.
                 while True:
                     try:
-                        proc.wait(timeout=30)
+                        proc.wait(timeout=MISSION_POLL_INTERVAL)
                         break
                     except subprocess.TimeoutExpired:
                         # Check for abort signal (user sent /abort)
@@ -500,6 +531,10 @@ def run_claude_task(
                             except subprocess.TimeoutExpired:
                                 log("error", f"Process {proc.pid} unkillable after abort — abandoning")
                             break
+                        # Forced restart requested while the mission runs and
+                        # SIGUSR2 never landed (stale PID file, signal lost).
+                        if koan_root_path and is_force_restart(koan_root_path, target="run"):
+                            _force_restart_now("Forced restart marker detected")
                         if watchdog and watchdog.fired:
                             # Watchdog already fired but process survived —
                             # make one last kill attempt from the main thread.
@@ -1336,6 +1371,11 @@ def main_loop():
     # run_claude_task(). The file is still written for durability so a
     # missed signal (runner restarting, etc.) is recovered on next poll.
     signal.signal(signal.SIGUSR1, _on_sigusr1)
+
+    # Install SIGUSR2 handler — /restart --force. Kills the in-flight mission
+    # and exits with RESTART_EXIT_CODE instead of waiting for it to finish.
+    # The forced marker on disk is polled as a fallback if the signal is lost.
+    signal.signal(signal.SIGUSR2, _on_sigusr2)
 
     # Initialize project state
     if projects:

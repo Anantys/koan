@@ -15,6 +15,13 @@ The restart flow:
 4. Each process clears only its own marker on startup, so neither can
    silence the signal for the other.
 
+Forced restart (``/restart --force``): the markers additionally carry a
+``force`` line and the runner is sent SIGUSR2. The runner then kills the
+in-flight mission and exits with ``RESTART_EXIT_CODE`` immediately instead
+of waiting for the mission to finish; crash recovery re-queues the killed
+mission on the next startup. The bridge needs nothing extra — it re-execs
+on its next poll tick either way.
+
 Legacy ``.koan-restart`` (DEPRECATED): the single combined marker is no
 longer *written* by Kōan. It is read by nothing in-tree (both consumers poll
 their own per-process marker), so writing it was a no-op that lingered on disk.
@@ -46,6 +53,9 @@ RESTART_EXIT_CODE = 42
 RESTART_BRIDGE_FILE = ".koan-restart-bridge"
 RESTART_RUN_FILE = ".koan-restart-run"
 
+# Body line that marks a request as forced (``/restart --force``).
+FORCE_MARKER = "force"
+
 # Files written by request_restart() — the two live per-consumer markers only.
 _WRITE_TARGETS = (RESTART_BRIDGE_FILE, RESTART_RUN_FILE)
 
@@ -67,19 +77,41 @@ def _marker_path(koan_root: str, target: Optional[str]) -> str:
     return os.path.join(koan_root, fname)
 
 
-def request_restart(koan_root: str) -> None:
+def request_restart(koan_root: str, force: bool = False) -> None:
     """Create restart signal files for both consumers.
 
     Writes the two per-consumer markers (``.koan-restart-bridge`` and
     ``.koan-restart-run``) so each consumer can clear its own without
     silencing the other. The deprecated legacy ``.koan-restart`` is no
     longer written — nothing reads it.
+
+    Args:
+        koan_root: Root path for the koan installation.
+        force: Mark the request as forced (``/restart --force``). A forced
+            marker tells the runner to kill an in-flight mission instead of
+            waiting for it to finish — see :func:`is_force_restart`.
     """
     from app.utils import atomic_write
 
     body = f"restart requested at {time.strftime('%H:%M:%S')}\n"
+    if force:
+        body += f"{FORCE_MARKER}\n"
     for fname in _WRITE_TARGETS:
         atomic_write(Path(koan_root) / fname, body)
+
+
+def is_force_restart(koan_root: str, target: Optional[str] = None) -> bool:
+    """Return True when the pending restart request for ``target`` is forced.
+
+    Durability fallback for the SIGUSR2 fast path: if the signal never
+    reached the runner (stale PID file, runner mid-restart), the in-mission
+    poll loop still sees the forced marker and kills the mission.
+    """
+    try:
+        with open(_marker_path(koan_root, target), encoding="utf-8") as fh:
+            return any(line.strip() == FORCE_MARKER for line in fh)
+    except OSError:
+        return False
 
 
 def check_restart(
