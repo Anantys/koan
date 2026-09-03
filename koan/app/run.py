@@ -255,6 +255,34 @@ def _on_sigusr1(signum, frame):
 # How often the mission wait loop wakes to check abort / forced-restart signals.
 MISSION_POLL_INTERVAL = 30
 
+# Wall-clock time main_loop() started. Restart markers older than this are
+# leftovers from a previous incarnation and must not force a restart. Stays
+# 0.0 outside the daemon (tests, direct run_claude_task calls) → no filtering.
+_runner_start_time = 0.0
+
+
+@contextlib.contextmanager
+def _sigusr2_deferred():
+    """Block SIGUSR2 for the duration of the block, then let it fire.
+
+    Closes the publish race in :func:`run_claude_task`: SIGUSR2 delivered
+    between ``popen_cli()`` returning and ``_sig.claude_proc = proc`` would
+    find no process, kill nothing, and re-exec — orphaning a provider process
+    group started with ``start_new_session=True``. Deferring delivery until
+    the proc is published means the handler always sees it.
+    """
+    try:
+        signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGUSR2})
+    except (AttributeError, OSError):  # no pthread_sigmask on this platform
+        yield
+        return
+    try:
+        yield
+    finally:
+        # Unblocking delivers any pending SIGUSR2 here — after publication.
+        with contextlib.suppress(OSError):
+            signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGUSR2})
+
 
 def _force_restart_now(reason: str):
     """Kill any in-flight mission and exit for re-launch — never returns.
@@ -270,6 +298,11 @@ def _force_restart_now(reason: str):
     proc = _sig.claude_proc
     if proc is not None and proc.poll() is None:
         _kill_process_group(proc)
+    elif _sig.task_running:
+        # A mission is in flight but its subprocess is not published yet (or
+        # already gone). Say so — a survivor would keep burning quota and
+        # mutating the worktree after the re-exec, invisibly.
+        log("warn", "Forced restart found no live mission subprocess to kill")
     raise SystemExit(RESTART_EXIT_CODE)
 
 
@@ -452,16 +485,20 @@ def run_claude_task(
                 # Contain the mission in its own cgroup scope: the provider CLI
                 # spawns build tools that outlive it (a Gradle daemon detaches to
                 # PPID 1 in its own session), and only a cgroup catches those.
-                scoped = mission_scope.launch_scoped(
-                    cmd,
-                    spawn=_spawn_in_scope,
-                    koan_root=koan_root_active or None,
-                    stdout=out_f,
-                    stderr=err_f,
-                    cwd=cwd,
-                    **popen_kwargs,
-                )
-                proc = scoped.proc
+                # SIGUSR2 stays blocked until claude_proc is published, so a
+                # forced restart can never re-exec past a just-spawned session.
+                with _sigusr2_deferred():
+                    scoped = mission_scope.launch_scoped(
+                        cmd,
+                        spawn=_spawn_in_scope,
+                        koan_root=koan_root_active or None,
+                        stdout=out_f,
+                        stderr=err_f,
+                        cwd=cwd,
+                        **popen_kwargs,
+                    )
+                    proc = scoped.proc
+                    _sig.claude_proc = proc
             except FileNotFoundError as e:
                 # The provider binary vanished mid-session (the startup check +
                 # planner gate handle the common case). Fail this mission
@@ -477,7 +514,6 @@ def run_claude_task(
                     err_f.flush()
                 exit_code = 127
                 return exit_code
-            _sig.claude_proc = proc
 
             # Record the live provider PID so status consumers can report
             # observed runtime state instead of an inferred timestamp (#2086).
@@ -534,7 +570,9 @@ def run_claude_task(
                             break
                         # Forced restart requested while the mission runs and
                         # SIGUSR2 never landed (stale PID file, signal lost).
-                        if koan_root_path and is_force_restart(koan_root_path, target="run"):
+                        if koan_root_path and is_force_restart(
+                            koan_root_path, "run", since=_runner_start_time,
+                        ):
                             _force_restart_now("Forced restart marker detected")
                         if watchdog and watchdog.fired:
                             # Watchdog already fired but process survived —
@@ -1347,8 +1385,10 @@ def main_loop():
     # Parse projects (projects.yaml > KOAN_PROJECTS)
     projects = parse_projects()
 
-    # Record startup time
-    start_time = time.time()
+    # Record startup time — also published module-wide so the mission wait
+    # loop can ignore restart markers from a previous incarnation.
+    global _runner_start_time
+    start_time = _runner_start_time = time.time()
 
     # Acquire PID (flock-based exclusive lock)
     pidfile_lock = acquire_pidfile(Path(koan_root), "run")

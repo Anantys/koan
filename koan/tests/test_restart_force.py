@@ -5,7 +5,9 @@ the request on disk and signals the runner (SIGUSR2) so it kills the in-flight
 mission and exits with RESTART_EXIT_CODE immediately.
 """
 
+import os
 import signal
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -42,6 +44,17 @@ class TestForceMarker:
         request_restart(str(tmp_path), force=True)
         request_restart(str(tmp_path))
         assert is_force_restart(str(tmp_path), target="run") is False
+
+    def test_marker_older_than_since_is_ignored(self, tmp_path):
+        """A leftover marker from a previous incarnation must not force."""
+        request_restart(str(tmp_path), force=True)
+        mtime = os.path.getmtime(tmp_path / RESTART_RUN_FILE)
+        assert is_force_restart(str(tmp_path), "run", since=mtime + 1) is False
+
+    def test_marker_newer_than_since_still_forces(self, tmp_path):
+        request_restart(str(tmp_path), force=True)
+        mtime = os.path.getmtime(tmp_path / RESTART_RUN_FILE)
+        assert is_force_restart(str(tmp_path), "run", since=mtime - 1) is True
 
     def test_unknown_target_rejected(self, tmp_path):
         with pytest.raises(ValueError):
@@ -165,6 +178,7 @@ class TestRunnerSigusr2:
         from app import run
 
         monkeypatch.setattr(run._sig, "claude_proc", None)
+        monkeypatch.setattr(run._sig, "task_running", False)
         monkeypatch.setattr(
             run, "_kill_process_group", lambda p: pytest.fail("nothing to kill"))
 
@@ -173,9 +187,54 @@ class TestRunnerSigusr2:
 
         assert exc.value.code == RESTART_EXIT_CODE
 
+    def test_warns_when_a_running_mission_has_no_killable_subprocess(
+            self, monkeypatch):
+        """An unkilled session would survive the re-exec — say so."""
+        from app import run
+
+        monkeypatch.setattr(run._sig, "claude_proc", None)
+        monkeypatch.setattr(run._sig, "task_running", True)
+
+        with patch("app.run.log") as mock_log, pytest.raises(SystemExit):
+            run._on_sigusr2(signal.SIGUSR2, None)
+
+        assert any(c[0][0] == "warn" for c in mock_log.call_args_list)
+
+    def test_signal_is_deferred_until_the_subprocess_is_published(self):
+        """SIGUSR2 raised inside the guard must not fire before it exits."""
+        from app import run
+
+        fired = []
+        previous = signal.signal(signal.SIGUSR2, lambda *a: fired.append(True))
+        try:
+            with run._sigusr2_deferred():
+                os.kill(os.getpid(), signal.SIGUSR2)
+                assert fired == []
+            assert fired == [True]
+        finally:
+            signal.signal(signal.SIGUSR2, previous)
+
 
 class TestForcedMarkerFallback:
     """If SIGUSR2 is lost, the mission poll loop must still restart."""
+
+    @pytest.fixture(autouse=True)
+    def _sandbox(self, monkeypatch):
+        """Keep run_claude_task off host-wide state.
+
+        Its real path takes the per-uid provider invocation lock (serialising
+        against any other Kōan process on the machine) and, in its finally,
+        sweeps stray /tmp trees — including a concurrent pytest run's
+        ``pytest-of-*`` dirs — and drops the page cache.
+        """
+        def fake_popen_cli(cmd, provider=None, **kwargs):
+            kwargs.pop("stdin", None)
+            proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, **kwargs)
+            return proc, lambda: None
+
+        monkeypatch.setattr("app.cli_exec.popen_cli", fake_popen_cli)
+        monkeypatch.setattr("app.utils.sweep_stray_tmp_dirs", lambda *a, **k: [])
+        monkeypatch.setattr("app.page_cache.run_reclaim", lambda *a, **k: None)
 
     def test_mission_wait_loop_kills_and_exits_on_forced_marker(
             self, tmp_path, monkeypatch):

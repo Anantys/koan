@@ -104,12 +104,21 @@ def request_restart(koan_root: str, force: bool = False) -> None:
         atomic_write(Path(koan_root) / fname, body)
 
 
-def is_force_restart(koan_root: str, target: Optional[str] = None) -> bool:
+def is_force_restart(koan_root: str, target: str, since: float = 0) -> bool:
     """Return True when the pending restart request for ``target`` is forced.
 
     Durability fallback for the SIGUSR2 fast path: if the signal never
     reached the runner (stale PID file, runner mid-restart), the in-mission
     poll loop still sees the forced marker and kills the mission.
+
+    Args:
+        koan_root: Root path for the koan installation.
+        target: ``"bridge"`` or ``"run"`` — required, mirroring
+            :func:`check_restart`'s per-consumer markers. The deprecated
+            legacy marker is not a forced-restart carrier.
+        since: If > 0, ignore markers not modified after this timestamp, so a
+            marker left over from a previous incarnation cannot force a
+            restart. Also short-circuits the read on every poll tick.
 
     A missing marker is the normal case. Any *other* read failure (EACCES on
     a marker written by a differently-privileged path, EIO on the mount)
@@ -117,8 +126,11 @@ def is_force_restart(koan_root: str, target: Optional[str] = None) -> bool:
     the mission loop calls this every poll tick.
     """
     global _force_read_error_logged
+    path = _marker_path(koan_root, target)
     try:
-        with open(_marker_path(koan_root, target), encoding="utf-8") as fh:
+        if since > 0 and os.path.getmtime(path) <= since:
+            return False
+        with open(path, encoding="utf-8") as fh:
             return any(line.strip() == FORCE_MARKER for line in fh)
     except FileNotFoundError:
         return False
