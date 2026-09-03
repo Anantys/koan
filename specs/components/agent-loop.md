@@ -380,9 +380,9 @@ heuristic:
   is called with `trust_stdout=False` for skill dispatches so a transcript is not
   mistaken for a quota/auth message. Keep that default for new dispatch pathways.
 - **Every termination pathway needs a retry guard.** Stagnation kill, timeout kill,
-  and CLI error all route through `_maybe_retry_mission`'s RETRYABLE check. The
-  forced-restart exit (below) is the ONE sanctioned exception: it never returns to
-  the retry guard at all, and hands the mission to crash recovery instead.
+  and CLI error all route through `_maybe_retry_mission`'s RETRYABLE check.
+  The forced-restart exit (below) is the ONE sanctioned exception: it never returns
+  to the retry guard at all, and hands the mission to crash recovery instead.
 - **Forced restart (`/restart --force`) unwinds the process; it does not return an
   exit code.** `run_claude_task` is normally the only thing that decides a mission's
   outcome, and every other kill path returns to `_finalize_mission`. The forced path
@@ -463,10 +463,10 @@ heuristic:
   until the 7200s watchdog. A resettable-deadline timer would catch stuck sessions far
   faster than post-kill JSON-completeness checks.
 - Retry-guard gaps: introducing a new kill/abort mechanism without a `_maybe_retry_mission`
-  guard silently drops retryable missions. The forced-restart exit is the single
-  sanctioned exception (see the invariant above) — it bypasses the guard by design and
-  delegates to `recover.py`. Do not read it as precedent: any *other* new kill path
-  still needs the guard.
+  guard silently drops retryable missions.
+  The forced-restart exit is the single sanctioned exception (see the invariant
+  above) — it bypasses the guard by design and delegates to `recover.py`. Do not
+  read it as precedent: any *other* new kill path still needs the guard.
 - `_run_iteration` is large; the dispatch layer was extracted to `mission_executor` to
   keep `run.py` focused on the execution host. Resist re-merging them.
 
