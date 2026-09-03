@@ -275,6 +275,13 @@ def _sigusr2_deferred():
     find no process, kill nothing, and re-exec — orphaning a provider process
     group started with ``start_new_session=True``.
 
+    The block must stay *short*, or a forced restart is silently swallowed for
+    its duration. :func:`run_claude_task` therefore takes the provider
+    invocation lock (``cli_exec.acquire_provider_lock``) before entering: that
+    is the one unbounded wait inside ``popen_cli``, and honouring a restart
+    during it is safe precisely because nothing has been forked yet. What
+    remains here is prompt-file setup plus ``fork``/``exec`` — milliseconds.
+
     The deferral is done in :func:`_on_sigusr2` rather than with
     ``pthread_sigmask``, because a signal mask is *per thread*: a
     process-directed ``kill()`` is accepted by any thread that has not blocked
@@ -432,7 +439,7 @@ def run_claude_task(
             stdout_file, instance_dir, project_name, run_num,
         )
 
-    from app.cli_exec import popen_cli
+    from app.cli_exec import acquire_provider_lock, popen_cli
     from app.config import (
         get_bash_foreground_timeout_ms,
         get_cli_provider_name,
@@ -489,14 +496,29 @@ def run_claude_task(
                     child_env.get("PYTEST_ADDOPTS", ""), mission_tmp
                 )
                 popen_kwargs["env"] = child_env
+            # Take the provider invocation lock BEFORE arming the deferral: it
+            # is a contended wait that a peer Kōan can hold for a whole mission,
+            # and a forced restart during it must be honoured at once (no child
+            # exists yet, so there is nothing to orphan). Ownership passes to
+            # popen_cli's cleanup(); only a failure before that returns leaves
+            # it to us.
+            cli_lock = acquire_provider_lock(provider)
+            lock_handed_over = False
 
             def _spawn_in_scope(argv, launcher, **kwargs):
                 # popen_cli owns the provider's prompt-file stdin and the
                 # invocation lock, so the scope launcher is handed to it and
                 # prefixed there — after the prompt rewrite, never before.
-                nonlocal cleanup
+                # The pre-acquired lock transfers on the FIRST attempt only:
+                # launch_scoped retries unscoped after a spawn failure, and
+                # popen_cli has already released it by then, so the retry must
+                # take a fresh one instead of running unserialized.
+                nonlocal cleanup, lock_handed_over
+                handover = None if lock_handed_over else cli_lock
+                lock_handed_over = True
                 spawned, cleanup = popen_cli(
-                    argv, provider=provider, launcher=launcher, **kwargs,
+                    argv, provider=provider, launcher=launcher,
+                    cli_lock=handover, **kwargs,
                 )
                 return spawned
 
@@ -533,6 +555,13 @@ def run_claude_task(
                     err_f.flush()
                 exit_code = 127
                 return exit_code
+            except BaseException:
+                # popen_cli releases the lock on its own failures; this covers
+                # the paths that never reach it (e.g. SystemExit raised by a
+                # deferred forced restart replaying on block exit). release()
+                # is idempotent.
+                cli_lock.release()
+                raise
 
             # Record the live provider PID so status consumers can report
             # observed runtime state instead of an inferred timestamp (#2086).

@@ -408,6 +408,17 @@ heuristic:
   has not blocked it (journal tail, watchdog, stagnation monitor), and CPython then
   runs the Python-level handler on the main thread regardless of that thread's own
   mask. Only a check inside the handler is independent of the thread topology.
+  The deferral window MUST stay bounded: anything inside it suppresses forced
+  restarts for its whole duration. `run_claude_task` therefore calls
+  `cli_exec.acquire_provider_lock` *before* `_sigusr2_deferred` and hands the lock to
+  `popen_cli(cli_lock=...)`, because that flock is contended by every other Kōan on
+  the host and can be held for a whole peer mission. Honouring a forced restart while
+  waiting for it is safe — nothing has been forked yet, so there is nothing to orphan.
+  Correspondingly, `_ProviderInvocationLock` waits with `LOCK_EX | LOCK_NB` plus a
+  `LOCK_POLL_INTERVAL` sleep rather than a blocking `LOCK_EX`: a blocking flock parks
+  the main thread in the kernel, where CPython cannot run Python-level signal handlers
+  at all (the process-directed signal may be taken by another thread, so the flock
+  never sees `EINTR`), leaving the runner deaf to `/abort` and `/restart --force`.
 - **SIGUSR2 is capability-gated, never sent optimistically.** Its default disposition
   is *terminate*, so a runner without `_on_sigusr2` is hard-killed by it: no `finally`
   runs, and the provider subprocess — spawned `start_new_session=True`, hence outside

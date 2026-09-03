@@ -314,7 +314,7 @@ class TestRunCli:
 
         run_cli(cmd, capture_output=True, text=True)
 
-        assert mock_flock.call_args_list[0][0][1] == fcntl.LOCK_EX
+        assert mock_flock.call_args_list[0][0][1] == fcntl.LOCK_EX | fcntl.LOCK_NB
         assert mock_flock.call_args_list[-1][0][1] == fcntl.LOCK_UN
 
 
@@ -458,7 +458,7 @@ class TestPopenCli:
 
         _proc, cleanup = popen_cli(cmd)
 
-        assert mock_flock.call_args_list[0][0][1] == fcntl.LOCK_EX
+        assert mock_flock.call_args_list[0][0][1] == fcntl.LOCK_EX | fcntl.LOCK_NB
         cleanup()
         assert mock_flock.call_args_list[-1][0][1] == fcntl.LOCK_UN
 
@@ -483,7 +483,7 @@ class TestPopenCli:
             with pytest.raises(OSError):
                 popen_cli(cmd)
 
-        assert mock_flock.call_args_list[0][0][1] == fcntl.LOCK_EX
+        assert mock_flock.call_args_list[0][0][1] == fcntl.LOCK_EX | fcntl.LOCK_NB
         assert mock_flock.call_args_list[-1][0][1] == fcntl.LOCK_UN
 
 

@@ -323,10 +323,10 @@ class TestForcedMarkerFallback:
         sweeps stray /tmp trees — including a concurrent pytest run's
         ``pytest-of-*`` dirs — and drops the page cache.
         """
-        def fake_popen_cli(cmd, provider=None, **kwargs):
+        def fake_popen_cli(cmd, provider=None, cli_lock=None, **kwargs):
             kwargs.pop("stdin", None)
             proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, **kwargs)
-            return proc, lambda: None
+            return proc, lambda: (cli_lock.release() if cli_lock else None)
 
         monkeypatch.setattr("app.cli_exec.popen_cli", fake_popen_cli)
         monkeypatch.setattr("app.utils.sweep_stray_tmp_dirs", lambda *a, **k: [])
@@ -372,3 +372,71 @@ class TestForcedMarkerFallback:
 
         assert exit_code == 0
         assert "done" in Path(tmp_path / "out.txt").read_text()
+
+
+class TestForcedRestartWhileProviderLockContended:
+    """The provider invocation lock must not swallow a forced restart.
+
+    Providers such as codex serialize invocations through a per-uid flock that
+    a peer Kōan can hold for an entire mission. The runner waits for it before
+    forking, so /restart --force must be honoured *during* that wait — nothing
+    has been spawned yet, so there is nothing to orphan.
+    """
+
+    def test_sigusr2_honoured_while_blocked_on_provider_lock(
+            self, tmp_path, monkeypatch):
+        import fcntl
+
+        from app import run
+        from app.provider.codex import CodexProvider
+
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        monkeypatch.setattr("app.utils.koan_tmp_dir", lambda: str(tmp_path))
+        monkeypatch.setattr("app.utils.sweep_stray_tmp_dirs", lambda *a, **k: [])
+        monkeypatch.setattr("app.page_cache.run_reclaim", lambda *a, **k: None)
+
+        def unreachable_popen_cli(cmd, provider=None, cli_lock=None, **kwargs):
+            raise AssertionError("mission was spawned despite a forced restart")
+
+        monkeypatch.setattr("app.cli_exec.popen_cli", unreachable_popen_cli)
+
+        # A peer holds codex's invocation lock. Released from a thread purely as
+        # a safety valve so a regression fails loudly instead of hanging.
+        holder = open(tmp_path / "codex-cli.lock", "a+")
+        fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        released = threading.Event()
+
+        def hold_then_release():
+            released.wait(timeout=5)
+            fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
+
+        def send_force_restart():
+            time.sleep(0.2)
+            os.kill(os.getpid(), signal.SIGUSR2)
+
+        releaser = threading.Thread(target=hold_then_release, daemon=True)
+        sender = threading.Thread(target=send_force_restart, daemon=True)
+        previous = signal.signal(signal.SIGUSR2, run._on_sigusr2)
+        started = time.monotonic()
+        try:
+            releaser.start()
+            sender.start()
+            with pytest.raises(SystemExit) as exc:
+                run.run_claude_task(
+                    cmd=["sleep", "30"],
+                    stdout_file=str(tmp_path / "out.txt"),
+                    stderr_file=str(tmp_path / "err.txt"),
+                    cwd=str(tmp_path),
+                    provider=CodexProvider(),
+                )
+        finally:
+            elapsed = time.monotonic() - started
+            signal.signal(signal.SIGUSR2, previous)
+            released.set()
+            sender.join(timeout=2)
+            releaser.join(timeout=2)
+            holder.close()
+
+        assert exc.value.code == RESTART_EXIT_CODE
+        # Honoured during the wait, not after the peer happened to let go.
+        assert elapsed < 3
