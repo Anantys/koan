@@ -8,6 +8,8 @@ mission and exits with RESTART_EXIT_CODE immediately.
 import os
 import signal
 import subprocess
+import threading
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -265,19 +267,48 @@ class TestRunnerSigusr2:
 
         assert any(c[0][0] == "warn" for c in mock_log.call_args_list)
 
-    def test_signal_is_deferred_until_the_subprocess_is_published(self):
-        """SIGUSR2 raised inside the guard must not fire before it exits."""
+    def test_signal_is_deferred_until_the_subprocess_is_published(
+            self, monkeypatch):
+        """A forced restart mid-publication must kill the mission, not orphan it.
+
+        The runner always has threads that leave SIGUSR2 unblocked (journal
+        tail, watchdog, stagnation monitor), so a process-directed kill lands
+        on one of them and CPython still runs the handler on the main thread.
+        Reproduce that topology: signal from a second thread, then publish.
+        """
         from app import run
 
-        fired = []
-        previous = signal.signal(signal.SIGUSR2, lambda *a: fired.append(True))
+        class FakeProc:
+            def poll(self):
+                return None
+
+        proc = FakeProc()
+        killed = []
+        monkeypatch.setattr(run._sig, "claude_proc", None)
+        monkeypatch.setattr(run._sig, "task_running", True)
+        monkeypatch.setattr(run, "_kill_process_group", killed.append)
+
+        # A thread that leaves SIGUSR2 unblocked, started before the guard just
+        # like run_claude_task's journal tail. The kernel delivers the
+        # process-directed signal here when the main thread masks it.
+        release = threading.Event()
+        bystander = threading.Thread(target=release.wait, daemon=True)
+        bystander.start()
+
+        previous = signal.signal(signal.SIGUSR2, run._on_sigusr2)
         try:
-            with run._sigusr2_deferred():
-                os.kill(os.getpid(), signal.SIGUSR2)
-                assert fired == []
-            assert fired == [True]
+            with pytest.raises(SystemExit) as exc:
+                with run._sigusr2_deferred():
+                    os.kill(os.getpid(), signal.SIGUSR2)
+                    time.sleep(0.05)  # let a non-deferred handler fire
+                    run._sig.claude_proc = proc
         finally:
             signal.signal(signal.SIGUSR2, previous)
+            release.set()
+            bystander.join(timeout=1)
+
+        assert exc.value.code == RESTART_EXIT_CODE
+        assert killed == [proc]
 
 
 class TestForcedMarkerFallback:

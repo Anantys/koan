@@ -162,6 +162,9 @@ class SignalState:
     claude_proc: Optional[subprocess.Popen] = None
     timeout: int = 10
     phase: str = ""  # Human-readable description of current activity
+    # Set while claude_proc is being published — see _sigusr2_deferred().
+    defer_force_restart: bool = False
+    pending_force_restart: str = ""
 
 
 _sig = SignalState()
@@ -265,25 +268,33 @@ _runner_start_time = 0.0
 
 @contextlib.contextmanager
 def _sigusr2_deferred():
-    """Block SIGUSR2 for the duration of the block, then let it fire.
+    """Hold off a forced restart until ``_sig.claude_proc`` is published.
 
     Closes the publish race in :func:`run_claude_task`: SIGUSR2 delivered
     between ``popen_cli()`` returning and ``_sig.claude_proc = proc`` would
     find no process, kill nothing, and re-exec — orphaning a provider process
-    group started with ``start_new_session=True``. Deferring delivery until
-    the proc is published means the handler always sees it.
+    group started with ``start_new_session=True``.
+
+    The deferral is done in :func:`_on_sigusr2` rather than with
+    ``pthread_sigmask``, because a signal mask is *per thread*: a
+    process-directed ``kill()`` is accepted by any thread that has not blocked
+    it (the runner always has some — the journal tail, the watchdog, the
+    stagnation monitor), and CPython then runs the Python-level handler on the
+    main thread regardless of the main thread's own mask. Recording the
+    request and replaying it on exit is independent of that thread topology:
+    the Python handler only ever runs on the main thread, which is the thread
+    sitting inside this block.
     """
-    try:
-        signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGUSR2})
-    except (AttributeError, OSError):  # no pthread_sigmask on this platform
-        yield
-        return
+    _sig.pending_force_restart = ""
+    _sig.defer_force_restart = True
     try:
         yield
     finally:
-        # Unblocking delivers any pending SIGUSR2 here — after publication.
-        with contextlib.suppress(OSError):
-            signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGUSR2})
+        _sig.defer_force_restart = False
+        reason = _sig.pending_force_restart
+        _sig.pending_force_restart = ""
+        if reason:
+            _force_restart_now(reason)
 
 
 def _force_restart_now(reason: str):
@@ -315,7 +326,13 @@ def _on_sigusr2(signum, frame):
     current mission. Sent by the /restart skill; the forced marker on disk
     is the fallback if the signal is lost.
     """
-    _force_restart_now("Forced restart signal received")
+    reason = "Forced restart signal received"
+    if _sig.defer_force_restart:
+        # Mid-publication of the mission subprocess — restarting now would
+        # orphan it. :func:`_sigusr2_deferred` replays this on block exit.
+        _sig.pending_force_restart = reason
+        return
+    _force_restart_now(reason)
 
 
 def _start_stagnation_monitor(stdout_file: str, proc, project_name: str):
@@ -487,8 +504,8 @@ def run_claude_task(
                 # Contain the mission in its own cgroup scope: the provider CLI
                 # spawns build tools that outlive it (a Gradle daemon detaches to
                 # PPID 1 in its own session), and only a cgroup catches those.
-                # SIGUSR2 stays blocked until claude_proc is published, so a
-                # forced restart can never re-exec past a just-spawned session.
+                # A forced restart is held until claude_proc is published, so
+                # it can never re-exec past a just-spawned session.
                 with _sigusr2_deferred():
                     scoped = mission_scope.launch_scoped(
                         cmd,

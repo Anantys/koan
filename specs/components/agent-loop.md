@@ -399,10 +399,15 @@ heuristic:
   `_on_sigusr2`, installed in `main_loop`; (2) the `force` line in `.koan-restart-run`,
   re-read every `MISSION_POLL_INTERVAL` inside the mission wait loop as the fallback
   for a lost signal, filtered by `_runner_start_time` so a marker from a previous
-  incarnation cannot force a restart. SIGUSR2 delivery is blocked (`_sigusr2_deferred`)
-  across the window between spawning the CLI subprocess and publishing it on
-  `_sig.claude_proc`, otherwise a forced restart in that window would kill nothing and
-  orphan the just-spawned session.
+  incarnation cannot force a restart. Across the window between spawning the CLI
+  subprocess and publishing it on `_sig.claude_proc`, `_sigusr2_deferred` records the
+  request and replays it on exit instead of acting on it — otherwise a forced restart
+  in that window would kill nothing and orphan the just-spawned session. The deferral
+  MUST live in `_on_sigusr2`, not in a `pthread_sigmask` block: a signal mask is *per
+  thread*, a process-directed `kill()` is accepted by any of the runner's threads that
+  has not blocked it (journal tail, watchdog, stagnation monitor), and CPython then
+  runs the Python-level handler on the main thread regardless of that thread's own
+  mask. Only a check inside the handler is independent of the thread topology.
 - **SIGUSR2 is capability-gated, never sent optimistically.** Its default disposition
   is *terminate*, so a runner without `_on_sigusr2` is hard-killed by it: no `finally`
   runs, and the provider subprocess — spawned `start_new_session=True`, hence outside
