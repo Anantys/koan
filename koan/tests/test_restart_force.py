@@ -16,8 +16,11 @@ from app.restart_manager import (
     RESTART_BRIDGE_FILE,
     RESTART_EXIT_CODE,
     RESTART_RUN_FILE,
+    clear_runner_caps,
+    declare_runner_caps,
     is_force_restart,
     request_restart,
+    runner_supports_force_signal,
 )
 from app.skills import SkillContext
 
@@ -82,6 +85,35 @@ class TestForceMarker:
         mock_log.assert_not_called()
 
 
+class TestRunnerCaps:
+    """The runner advertises SIGUSR2 only while it actually handles it."""
+
+    def test_no_marker_means_unsupported(self, tmp_path):
+        assert runner_supports_force_signal(str(tmp_path), 4242) is False
+
+    def test_declared_pid_supports_the_signal(self, tmp_path):
+        declare_runner_caps(str(tmp_path), 4242)
+        assert runner_supports_force_signal(str(tmp_path), 4242) is True
+
+    def test_marker_from_another_incarnation_is_ignored(self, tmp_path):
+        """A stale marker must not vouch for a different (older) runner."""
+        declare_runner_caps(str(tmp_path), 4242)
+        assert runner_supports_force_signal(str(tmp_path), 777) is False
+
+    def test_cleared_marker_withdraws_support(self, tmp_path):
+        declare_runner_caps(str(tmp_path), 4242)
+        clear_runner_caps(str(tmp_path))
+        assert runner_supports_force_signal(str(tmp_path), 4242) is False
+
+    def test_clearing_a_missing_marker_is_a_noop(self, tmp_path):
+        clear_runner_caps(str(tmp_path))  # must not raise
+
+    def test_unreadable_marker_fails_closed(self, tmp_path):
+        declare_runner_caps(str(tmp_path), 4242)
+        with patch("builtins.open", side_effect=PermissionError("EACCES")):
+            assert runner_supports_force_signal(str(tmp_path), 4242) is False
+
+
 class TestRestartHandler:
     def _ctx(self, tmp_path, args=""):
         instance_dir = tmp_path / "instance"
@@ -94,6 +126,7 @@ class TestRestartHandler:
     def test_plain_restart_does_not_signal_runner(self, tmp_path):
         from skills.core.restart.handler import handle
 
+        declare_runner_caps(str(tmp_path), 4242)
         with patch("app.pid_manager.check_pidfile", return_value=4242), \
              patch("app.pid_manager._cmdline_matches", return_value=True), \
              patch("os.kill") as mock_kill:
@@ -107,6 +140,7 @@ class TestRestartHandler:
     def test_force_flag_signals_runner_with_sigusr2(self, tmp_path, args):
         from skills.core.restart.handler import handle
 
+        declare_runner_caps(str(tmp_path), 4242)
         with patch("app.pid_manager.check_pidfile", return_value=4242), \
              patch("app.pid_manager._cmdline_matches", return_value=True), \
              patch("os.kill") as mock_kill:
@@ -116,6 +150,35 @@ class TestRestartHandler:
         assert is_force_restart(str(tmp_path), target="run") is True
         assert is_force_restart(str(tmp_path), target="bridge") is True
         assert "Force restart" in result
+
+    def test_force_does_not_signal_a_runner_without_the_sigusr2_cap(
+            self, tmp_path):
+        """A pre-upgrade runner would be terminated, orphaning its provider."""
+        from skills.core.restart.handler import handle
+
+        with patch("app.pid_manager.check_pidfile", return_value=4242), \
+             patch("app.pid_manager._cmdline_matches", return_value=True), \
+             patch("os.kill") as mock_kill:
+            result = handle(self._ctx(tmp_path, "--force"))
+
+        mock_kill.assert_not_called()
+        assert "polite restart" in result
+        # The polite markers still land, so the old runner restarts after the
+        # mission it is on — the behaviour it does understand.
+        assert (tmp_path / RESTART_RUN_FILE).exists()
+        assert (tmp_path / RESTART_BRIDGE_FILE).exists()
+
+    def test_force_does_not_signal_a_stale_caps_marker(self, tmp_path):
+        """Caps left by a crashed newer runner must not vouch for this PID."""
+        from skills.core.restart.handler import handle
+
+        declare_runner_caps(str(tmp_path), 111)
+        with patch("app.pid_manager.check_pidfile", return_value=4242), \
+             patch("app.pid_manager._cmdline_matches", return_value=True), \
+             patch("os.kill") as mock_kill:
+            handle(self._ctx(tmp_path, "--force"))
+
+        mock_kill.assert_not_called()
 
     def test_force_without_running_runner_still_writes_marker(self, tmp_path):
         from skills.core.restart.handler import handle
@@ -133,6 +196,7 @@ class TestRestartHandler:
         """PID reuse guard: SIGUSR2 would kill whatever inherited the PID."""
         from skills.core.restart.handler import handle
 
+        declare_runner_caps(str(tmp_path), 4242)
         monkeypatch.setattr(
             "pathlib.Path.read_bytes", lambda self: b"/usr/sbin/cron\x00-f\x00")
         with patch("app.pid_manager.check_pidfile", return_value=4242), \
@@ -146,6 +210,7 @@ class TestRestartHandler:
     def test_force_survives_a_dead_pid_between_lookup_and_kill(self, tmp_path):
         from skills.core.restart.handler import handle
 
+        declare_runner_caps(str(tmp_path), 99999)
         with patch("app.pid_manager.check_pidfile", return_value=99999), \
              patch("app.pid_manager._cmdline_matches", return_value=True), \
              patch("os.kill", side_effect=ProcessLookupError):

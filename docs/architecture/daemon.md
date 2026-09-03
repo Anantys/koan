@@ -158,6 +158,20 @@ next startup — or escalated to Failed if its crash count has already reached
 `max_crash_retries`, since the forced kill counts as a crash. The bridge needs no
 forced path — it re-execs on its next poll tick.
 
+SIGUSR2 is **capability-gated**. Its default disposition is *terminate*, so
+sending it to a runner that never installed the handler would hard-kill it: the
+mission's `finally` blocks would not run, and the provider subprocess (started
+with `start_new_session=True`, so it is not in the runner's process group) would
+survive as an orphan — still burning quota and editing the worktree while the
+relaunched runner picks up the next mission in the same repo. This is a real
+window, because `/update` re-execs the bridge immediately but lets the runner
+finish its current mission, so a new bridge routinely drives an older runner.
+The runner therefore writes `.koan-run-caps` (its PID plus a `sigusr2` line)
+right after installing the handler and removes it on exit; `/restart --force`
+signals only when that file vouches for the live PID. Otherwise it degrades to
+the polite restart — the behavior every runner understands — and says so in the
+reply.
+
 The loop writes real-time state to status files so the bridge, dashboard, and
 commands can report progress without directly controlling the runner.
 

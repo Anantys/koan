@@ -1990,6 +1990,10 @@ has already exhausted its crash retries (`max_crash_retries`, default 3) is
 escalated to Failed instead — repeated forced restarts on the same mission
 eventually stop re-queueing it.
 
+Right after an update, the agent loop may still be running the older code while
+it finishes its current mission. Forcing it then is unsafe, so Kōan detects that
+case and falls back to a polite restart, telling you that in the reply.
+
 <details>
 <summary>Use cases</summary>
 

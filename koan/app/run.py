@@ -43,6 +43,8 @@ from app.pid_manager import acquire_pidfile, release_pidfile
 from app.restart_manager import (
     check_restart,
     clear_restart,
+    clear_runner_caps,
+    declare_runner_caps,
     is_force_restart,
     RESTART_EXIT_CODE,
     RESTART_RUN_FILE,
@@ -1416,7 +1418,11 @@ def main_loop():
     # Install SIGUSR2 handler — /restart --force. Kills the in-flight mission
     # and exits with RESTART_EXIT_CODE instead of waiting for it to finish.
     # The forced marker on disk is polled as a fallback if the signal is lost.
+    # Only once the handler exists do we advertise the capability: SIGUSR2's
+    # default disposition is terminate, so /restart --force must never signal a
+    # runner that predates this handler (it would orphan the provider session).
     signal.signal(signal.SIGUSR2, _on_sigusr2)
+    declare_runner_caps(koan_root, os.getpid())
 
     # Initialize project state
     if projects:
@@ -1652,6 +1658,8 @@ def main_loop():
         _session_registry = None
         # Cleanup
         Path(koan_root, STATUS_FILE).unlink(missing_ok=True)
+        # Withdraw the SIGUSR2 capability before the PID can be recycled.
+        clear_runner_caps(koan_root)
         release_pidfile(pidfile_lock, Path(koan_root), "run")
         log("koan", f"Shutdown. {count} runs executed.")
         _reset_terminal()

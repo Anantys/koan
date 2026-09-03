@@ -23,6 +23,20 @@ mission on the next startup (or fails it, if it has already used up
 ``max_crash_retries``). The bridge needs nothing extra — it re-execs
 on its next poll tick either way.
 
+SIGUSR2 is **capability-gated**, never optimistic. Its default disposition is
+*terminate*, so sending it to a runner that never installed ``_on_sigusr2``
+hard-kills it: the mission's ``finally`` blocks never run and the provider
+subprocess (spawned with ``start_new_session=True``) survives as an orphan,
+burning quota and mutating the worktree while the relaunched runner starts a
+new mission in the same repo. That is a live window, not a theoretical one:
+``/update`` re-execs the bridge immediately but lets the runner finish its
+mission first, so a new bridge routinely drives an older runner. The runner
+therefore publishes ``.koan-run-caps`` (its PID + one line per capability)
+*after* installing the handler and removes it on exit; ``/restart --force``
+only signals when :func:`runner_supports_force_signal` confirms the live PID
+advertises ``sigusr2``, and otherwise degrades to the polite restart the old
+runner does understand.
+
 Legacy ``.koan-restart`` (DEPRECATED): the single combined marker is no
 longer *written* by Kōan. It is read by nothing in-tree (both consumers poll
 their own per-process marker), so writing it was a no-op that lingered on disk.
@@ -56,6 +70,13 @@ RESTART_RUN_FILE = ".koan-restart-run"
 
 # Body line that marks a request as forced (``/restart --force``).
 FORCE_MARKER = "force"
+
+# Capability marker published by the live runner — see the module docstring.
+RUN_CAPS_FILE = ".koan-run-caps"
+
+# Capability name meaning "I have a SIGUSR2 handler installed; signalling me
+# triggers a forced restart instead of killing me".
+FORCE_SIGNAL_CAP = "sigusr2"
 
 # One-shot guard so an unreadable marker logs once, not every poll tick.
 _force_read_error_logged = False
@@ -140,6 +161,41 @@ def is_force_restart(koan_root: str, target: str, since: float = 0) -> bool:
             from app.run_log import log
             log("error", f"Cannot read restart marker for forced restart: {exc}")
         return False
+
+
+def declare_runner_caps(koan_root: str, pid: int) -> None:
+    """Publish what the runner incarnation owning *pid* can be signalled with.
+
+    Called once the SIGUSR2 handler is installed. The PID is part of the body
+    so a stale file (crash, or a rollback to a runner that predates this
+    protocol) can never be mistaken for the live runner's capabilities.
+    """
+    from app.utils import atomic_write
+
+    atomic_write(
+        Path(koan_root) / RUN_CAPS_FILE, f"pid={pid}\n{FORCE_SIGNAL_CAP}\n",
+    )
+
+
+def clear_runner_caps(koan_root: str) -> None:
+    """Withdraw the runner capability marker (runner exit)."""
+    with contextlib.suppress(FileNotFoundError):
+        os.remove(os.path.join(koan_root, RUN_CAPS_FILE))
+
+
+def runner_supports_force_signal(koan_root: str, pid: int) -> bool:
+    """True when the runner at *pid* advertises the SIGUSR2 forced-restart cap.
+
+    Fails closed: a missing, stale (different PID), or unreadable marker means
+    "assume not supported", so ``/restart --force`` degrades to the polite
+    restart instead of hard-killing a runner from a pre-upgrade image.
+    """
+    try:
+        with open(os.path.join(koan_root, RUN_CAPS_FILE), encoding="utf-8") as fh:
+            lines = {line.strip() for line in fh}
+    except OSError:
+        return False
+    return f"pid={pid}" in lines and FORCE_SIGNAL_CAP in lines
 
 
 def check_restart(
