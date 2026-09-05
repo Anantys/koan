@@ -315,19 +315,24 @@ class TestForcedMarkerFallback:
     """If SIGUSR2 is lost, the mission poll loop must still restart."""
 
     @pytest.fixture(autouse=True)
-    def _sandbox(self, monkeypatch):
+    def _sandbox(self, tmp_path, monkeypatch):
         """Keep run_claude_task off host-wide state.
 
         Its real path takes the per-uid provider invocation lock (serialising
         against any other Kōan process on the machine) and, in its finally,
         sweeps stray /tmp trees — including a concurrent pytest run's
         ``pytest-of-*`` dirs — and drops the page cache.
+
+        The lock is acquired by ``run_claude_task`` itself (hoisted out of
+        ``popen_cli``), so stubbing ``popen_cli`` does not bypass it —
+        ``koan_tmp_dir`` is redirected here so the lock file is per-test.
         """
         def fake_popen_cli(cmd, provider=None, cli_lock=None, **kwargs):
             kwargs.pop("stdin", None)
             proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, **kwargs)
             return proc, lambda: (cli_lock.release() if cli_lock else None)
 
+        monkeypatch.setattr("app.utils.koan_tmp_dir", lambda: str(tmp_path))
         monkeypatch.setattr("app.cli_exec.popen_cli", fake_popen_cli)
         monkeypatch.setattr("app.utils.sweep_stray_tmp_dirs", lambda *a, **k: [])
         monkeypatch.setattr("app.page_cache.run_reclaim", lambda *a, **k: None)
