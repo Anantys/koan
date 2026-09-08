@@ -22,13 +22,16 @@ class TestPublishJiraMissionOutcome:
         mock_list.assert_not_called()
         mock_add.assert_not_called()
 
-    def test_success_with_pr_posts_comment(self):
+    def test_success_with_pr_posts_structured_comment(self):
         from app.jira_outcome_publish import publish_jira_mission_outcome
 
         with (
             patch("app.jira_outcome_publish.jira_list_comments_checked", return_value=[]),
             patch("app.jira_outcome_publish.jira_add_comment", return_value=True) as mock_add,
-            patch("app.jira_outcome_publish._fetch_pr_details", return_value=("", "")),
+            patch(
+                "app.jira_outcome_publish._fetch_pr_details",
+                return_value=("Repair widget validators", ""),
+            ),
         ):
             result = publish_jira_mission_outcome(
                 mission_title="/fix https://org.atlassian.net/browse/PROJ-42 branch:main",
@@ -42,8 +45,13 @@ class TestPublishJiraMissionOutcome:
         assert result["pr_url"] == "https://github.com/o/r/pull/123"
         mock_add.assert_called_once()
         body = mock_add.call_args.args[1]
-        assert "Pull request: https://github.com/o/r/pull/123" in body
-        assert "Mission: /fix" in body
+        assert body.startswith("### Kōan · draft pull request created")
+        assert "- **Mission**: `/fix`" in body
+        assert (
+            "- **Pull request**: [PR #123 — Repair widget validators]"
+            "(https://github.com/o/r/pull/123)"
+        ) in body
+        assert "<!-- koan-jira-outcome:" not in body
 
     def test_success_comment_enriched_from_pr_body(self):
         # The publisher fetches the PR body from GitHub so the agent-path
@@ -65,9 +73,9 @@ class TestPublishJiraMissionOutcome:
 
         mock_fetch.assert_called_once_with("https://github.com/o/r/pull/123")
         body = mock_add.call_args.args[1]
-        assert "What changed:" in body
+        assert "**What changed**" in body
         assert "Reworked parser" in body
-        assert "Why: Fixes the crash" in body
+        assert "**Why**\nFixes the crash" in body
 
     def test_success_with_pr_updates_existing_comment(self):
         from app.jira_outcome_publish import _marker_for, publish_jira_mission_outcome
@@ -107,8 +115,8 @@ class TestPublishJiraMissionOutcome:
         assert result["published"] == "true"
         assert result["outcome"] == "failure"
         body = mock_add.call_args.args[1]
-        assert "Pull request creation failed" in body
-        assert "Mission: /implement" in body
+        assert body.startswith("### Kōan · pull request creation failed")
+        assert "- **Mission**: `/implement`" in body
 
     def test_success_without_pr_is_skipped(self):
         # exit 0 but no PR URL in the output → nothing to report.
@@ -239,8 +247,12 @@ class TestExtractFailureReason:
 
 
 class TestUpsertJiraComment:
-    def test_delegates_to_upsert_status_comment(self):
-        from app.jira_outcome_publish import upsert_jira_comment
+    def test_new_outcome_uses_hidden_property_without_body_marker(self):
+        from app.jira_outcome_publish import (
+            _OUTCOME_PROPERTY_KEY,
+            _outcome_digest,
+            upsert_jira_comment,
+        )
 
         with (
             patch("app.jira_outcome_publish.jira_list_comments_checked", return_value=[]),
@@ -248,12 +260,76 @@ class TestUpsertJiraComment:
         ):
             ok, mode = upsert_jira_comment("PROJ-1", "fix", "hello world")
 
-        assert ok is True
-        assert mode == "created"
-        # body carries the dedup marker appended to the supplied text
-        body = mock_add.call_args.args[1]
-        assert body.startswith("hello world")
-        assert "koan-jira-outcome:" in body
+        assert (ok, mode) == (True, "created")
+        assert mock_add.call_args.args[1] == "hello world"
+        assert "<!--" not in mock_add.call_args.args[1]
+        assert mock_add.call_args.kwargs["properties"] == [{
+            "key": _OUTCOME_PROPERTY_KEY,
+            "value": {
+                "digest": _outcome_digest("PROJ-1", "fix"),
+                "command": "fix",
+            },
+        }]
+
+    def test_existing_property_identifies_comment_for_update(self):
+        from app.jira_outcome_publish import (
+            _OUTCOME_PROPERTY_KEY,
+            _outcome_digest,
+            upsert_jira_comment,
+        )
+
+        existing = [{
+            "id": "99",
+            "body": "old body",
+            "properties": {
+                _OUTCOME_PROPERTY_KEY: {
+                    "digest": _outcome_digest("PROJ-1", "fix"),
+                    "command": "fix",
+                },
+            },
+        }]
+        with (
+            patch(
+                "app.jira_outcome_publish.jira_list_comments_checked",
+                return_value=existing,
+            ),
+            patch(
+                "app.jira_outcome_publish.jira_edit_comment",
+                return_value=True,
+            ) as edit_comment,
+            patch("app.jira_outcome_publish.jira_add_comment") as add_comment,
+        ):
+            ok, mode = upsert_jira_comment("PROJ-1", "fix", "new body")
+
+        assert (ok, mode) == (True, "updated")
+        assert edit_comment.call_args.args[:3] == ("PROJ-1", "99", "new body")
+        assert edit_comment.call_args.kwargs["properties"]
+        add_comment.assert_not_called()
+
+    def test_legacy_marker_is_migrated_to_property_and_removed_from_body(self):
+        from app.jira_outcome_publish import _marker_for, upsert_jira_comment
+
+        existing = [{
+            "id": "99",
+            "body": f"old body\n\n{_marker_for('PROJ-1', 'fix')}",
+            "properties": {},
+        }]
+        with (
+            patch(
+                "app.jira_outcome_publish.jira_list_comments_checked",
+                return_value=existing,
+            ),
+            patch(
+                "app.jira_outcome_publish.jira_edit_comment",
+                return_value=True,
+            ) as edit_comment,
+        ):
+            ok, mode = upsert_jira_comment("PROJ-1", "fix", "new body")
+
+        assert (ok, mode) == (True, "updated")
+        assert edit_comment.call_args.args[2] == "new body"
+        assert "koan-jira-outcome" not in edit_comment.call_args.args[2]
+        assert edit_comment.call_args.kwargs["properties"]
 
 
 def test_lookup_failure_never_creates_a_duplicate_status_comment():

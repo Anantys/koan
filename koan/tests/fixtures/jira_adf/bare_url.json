@@ -1,0 +1,34 @@
+{
+  "markdown": "Pull request: https://github.com/example/my-toolkit/pull/42.",
+  "adf": {
+    "version": 1,
+    "type": "doc",
+    "content": [
+      {
+        "type": "paragraph",
+        "content": [
+          {
+            "type": "text",
+            "text": "Pull request: "
+          },
+          {
+            "type": "text",
+            "text": "https://github.com/example/my-toolkit/pull/42",
+            "marks": [
+              {
+                "type": "link",
+                "attrs": {
+                  "href": "https://github.com/example/my-toolkit/pull/42"
+                }
+              }
+            ]
+          },
+          {
+            "type": "text",
+            "text": "."
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -779,6 +779,50 @@ class TestJiraIssueHelpers:
         assert payload["body"]["type"] == "doc"
         assert len(payload["body"]["content"]) == 2
 
+    def test_jira_add_comment_strips_html_comment_metadata(self):
+        from app.jira_notifications import jira_add_comment
+
+        with (
+            patch(
+                "app.jira_notifications._jira_auth_from_config",
+                return_value=("https://test", "Basic token"),
+            ),
+            patch(
+                "app.jira_notifications._jira_post",
+                return_value={"id": "1"},
+            ) as mock_post,
+        ):
+            assert jira_add_comment(
+                "FOO-1",
+                "Visible\n\n<!-- koan-jira-outcome:abc123 -->",
+            )
+
+        adf = mock_post.call_args.args[3]["body"]
+        assert "koan-jira-outcome" not in json.dumps(adf)
+        assert "Visible" in json.dumps(adf)
+
+    def test_jira_add_comment_includes_properties(self):
+        from app.jira_notifications import jira_add_comment
+
+        properties = [{
+            "key": "koan.jira.outcome",
+            "value": {"digest": "abc123", "command": "fix"},
+        }]
+        with (
+            patch(
+                "app.jira_notifications._jira_auth_from_config",
+                return_value=("https://test", "Basic token"),
+            ),
+            patch(
+                "app.jira_notifications._jira_post",
+                return_value={"id": "7"},
+            ) as mock_post,
+        ):
+            assert jira_add_comment("FOO-1", "body", properties=properties)
+
+        payload = mock_post.call_args.args[3]
+        assert payload == {"body": payload["body"], "properties": properties}
+
     def test_jira_edit_comment_posts_adf_via_put(self):
         from app.jira_notifications import jira_edit_comment
 
@@ -791,6 +835,30 @@ class TestJiraIssueHelpers:
         payload = mock_put.call_args.args[3]
         assert payload["body"]["type"] == "doc"
         assert "/rest/api/3/issue/FOO-1/comment/123" in mock_put.call_args.args[2]
+
+    def test_jira_edit_comment_includes_properties(self):
+        from app.jira_notifications import jira_edit_comment
+
+        properties = [{
+            "key": "koan.jira.outcome",
+            "value": {"digest": "abc123", "command": "fix"},
+        }]
+        with (
+            patch(
+                "app.jira_notifications._jira_auth_from_config",
+                return_value=("https://test", "Basic token"),
+            ),
+            patch(
+                "app.jira_notifications._jira_put",
+                return_value={"id": "7"},
+            ) as mock_put,
+        ):
+            assert jira_edit_comment(
+                "FOO-1", "7", "body", properties=properties
+            )
+
+        payload = mock_put.call_args.args[3]
+        assert payload == {"body": payload["body"], "properties": properties}
 
 
     def test_jira_create_issue_rejects_invalid_project_key(self):
@@ -928,6 +996,69 @@ def test_list_comments_accepts_a_genuinely_empty_page():
     assert comments == []
 
 
+def test_list_comments_exposes_properties_by_key():
+    from app.jira_notifications import _list_comments_result
+
+    page = {
+        "comments": [{
+            "id": "7",
+            "body": {
+                "version": 1,
+                "type": "doc",
+                "content": [{
+                    "type": "paragraph",
+                    "content": [{"type": "text", "text": "body"}],
+                }],
+            },
+            "properties": [{
+                "key": "koan.jira.outcome",
+                "value": {"digest": "abc123", "command": "fix"},
+            }],
+        }],
+        "total": 1,
+    }
+    with (
+        patch(
+            "app.jira_notifications._jira_auth_from_config",
+            return_value=("https://test", "Basic token"),
+        ),
+        patch("app.jira_notifications._jira_get", return_value=page) as get,
+    ):
+        ok, comments = _list_comments_result("FOO-1")
+
+    assert ok is True
+    assert get.call_args.args[3]["expand"] == "properties"
+    assert comments[0]["properties"]["koan.jira.outcome"] == {
+        "digest": "abc123",
+        "command": "fix",
+    }
+
+
+@pytest.mark.parametrize("raw_properties", [None, {}, [None, {"value": 1}]])
+def test_list_comments_normalizes_malformed_properties(raw_properties):
+    from app.jira_notifications import _list_comments_result
+
+    page = {
+        "comments": [{
+            "id": "7",
+            "body": "body",
+            "properties": raw_properties,
+        }],
+        "total": 1,
+    }
+    with (
+        patch(
+            "app.jira_notifications._jira_auth_from_config",
+            return_value=("https://test", "Basic token"),
+        ),
+        patch("app.jira_notifications._jira_get", return_value=page),
+    ):
+        ok, comments = _list_comments_result("FOO-1")
+
+    assert ok is True
+    assert comments[0]["properties"] == {}
+
+
 def test_fetch_jira_issue_raises_on_a_shapeless_comment_page():
     """A JSON-valid `{}` page must not read as "this issue has no comments".
 
@@ -972,4 +1103,29 @@ def test_fetch_jira_issue_accepts_a_genuinely_empty_comment_page():
         _title, _body, comments = fetch_jira_issue("FOO-1")
 
     assert comments == []
+
+
+def test_fetch_jira_issue_requests_comment_property_expansion():
+    from contextlib import ExitStack
+
+    from app.jira_notifications import fetch_jira_issue
+
+    issue = {"fields": {"summary": "Plan", "description": None}}
+    comment_params = {}
+
+    def get_side_effect(_base_url, _auth_header, path, params=None):
+        if path.endswith("/FOO-1"):
+            return issue
+        comment_params.update(params or {})
+        return {"comments": [], "total": 0}
+
+    with ExitStack() as stack:
+        for cm in TestJiraIssueHelpers()._patch_enabled_config():
+            stack.enter_context(cm)
+        stack.enter_context(
+            patch("app.jira_notifications._jira_get", side_effect=get_side_effect)
+        )
+        fetch_jira_issue("FOO-1")
+
+    assert comment_params["expand"] == "properties"
 

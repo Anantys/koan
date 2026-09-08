@@ -17,6 +17,7 @@ from app.run_log import log_safe as _log_runner
 from app.tracker_comment_format import build_pr_comment_failure, build_pr_comment_success
 
 _PR_URL_RE = re.compile(r"https?://[^/]*github[^\s)]+/pull/\d+")
+_OUTCOME_PROPERTY_KEY = "koan.jira.outcome"
 _MARKER_PREFIX = "<!-- koan-jira-outcome:"
 
 
@@ -69,19 +70,35 @@ def _extract_failure_reason(content: str, exit_code: int) -> str:
     return f"Mission failed (exit code {exit_code})."
 
 
-def _marker_for(issue_key: str, command_name: str) -> str:
+def _outcome_digest(issue_key: str, command_name: str) -> str:
     token = f"{issue_key}:{command_name}"
-    digest = hashlib.sha1(token.encode("utf-8")).hexdigest()[:12]
-    return f"{_MARKER_PREFIX}{digest} -->"
+    return hashlib.sha1(token.encode("utf-8")).hexdigest()[:12]
 
 
-def _build_status_comment(
+def _marker_for(issue_key: str, command_name: str) -> str:
+    """Return the legacy visible marker used before comment properties."""
+    return f"{_MARKER_PREFIX}{_outcome_digest(issue_key, command_name)} -->"
+
+
+def _outcome_property(
     issue_key: str,
     command_name: str,
-    body_text: str,
-) -> str:
-    marker = _marker_for(issue_key, command_name)
-    return f"{body_text}\n\n{marker}".strip()
+) -> Dict[str, object]:
+    return {
+        "key": _OUTCOME_PROPERTY_KEY,
+        "value": {
+            "digest": _outcome_digest(issue_key, command_name),
+            "command": command_name,
+        },
+    }
+
+
+def _has_outcome_property(comment: dict, digest: str) -> bool:
+    properties = comment.get("properties", {})
+    if not isinstance(properties, dict):
+        return False
+    value = properties.get(_OUTCOME_PROPERTY_KEY)
+    return isinstance(value, dict) and value.get("digest") == digest
 
 
 def _upsert_status_comment(
@@ -89,8 +106,9 @@ def _upsert_status_comment(
     command_name: str,
     body_text: str,
 ) -> Tuple[bool, str]:
-    marker = _marker_for(issue_key, command_name)
-    status_body = _build_status_comment(issue_key, command_name, body_text)
+    digest = _outcome_digest(issue_key, command_name)
+    legacy_marker = _marker_for(issue_key, command_name)
+    properties = [_outcome_property(issue_key, command_name)]
     try:
         comments = jira_list_comments_checked(issue_key)
     except Exception as e:
@@ -98,13 +116,26 @@ def _upsert_status_comment(
         # Creating on that signal is how one outcome becomes a pile of them.
         _log_runner("jira", f"Comment lookup failed for {issue_key}: {e}")
         return False, "lookup_failed"
-    existing = next((c for c in comments if marker in (c.get("body") or "")), None)
+    existing = next(
+        (
+            comment
+            for comment in comments
+            if _has_outcome_property(comment, digest)
+            or legacy_marker in (comment.get("body") or "")
+        ),
+        None,
+    )
 
     if existing:
-        ok = jira_edit_comment(issue_key, existing.get("id", ""), status_body)
+        ok = jira_edit_comment(
+            issue_key,
+            existing.get("id", ""),
+            body_text,
+            properties=properties,
+        )
         return ok, "updated" if ok else "update_failed"
 
-    ok = jira_add_comment(issue_key, status_body)
+    ok = jira_add_comment(issue_key, body_text, properties=properties)
     return ok, "created" if ok else "create_failed"
 
 
@@ -113,11 +144,11 @@ def upsert_jira_comment(
     command_name: str,
     body_text: str,
 ) -> Tuple[bool, str]:
-    """Idempotently post or update a marker-tagged Jira status comment.
+    """Idempotently post or update a property-tagged Jira status comment.
 
     Shared entry point so every Jira commenter (end-of-mission publisher,
     draft-PR submission helper) dedups under the same ``(issue_key,
-    command_name)`` marker instead of stacking duplicate comments.
+    command_name)`` property instead of stacking duplicate comments.
     """
     return _upsert_status_comment(issue_key, command_name, body_text)
 

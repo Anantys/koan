@@ -216,7 +216,8 @@ def _adf_inline_to_markdown(nodes: Any) -> str:
         link = marks.get("link")
         if link:
             href = str(link.get("attrs", {}).get("href", ""))
-            text = f"[{text}]({href})" if href else text
+            if href and text != href:
+                text = f"[{text}]({href})"
         rendered.append(text)
     return "".join(rendered)
 
@@ -309,9 +310,12 @@ _MD_FENCE_RE = re.compile(r"^\s*```(.*)$")
 _MD_QUOTE_RE = re.compile(r"^\s*>\s?(.*)$")
 _MD_INDENTED_CODE_RE = re.compile(r"^(?: {4}|\t)(.*)$")
 _MD_TABLE_DELIMITER_CELL_RE = re.compile(r"^:?-{3,}:?$")
+_BARE_URL_RE = re.compile(r"https?://[^\s<]+")
+_TRAILING_URL_PUNCTUATION = ".,;:!?"
 _MD_INLINE_RE = re.compile(
     r"(?P<link>\[(?P<link_text>[^\]]+)\]\((?P<link_url>[^\s)]+)(?:\s+\"[^\"]*\")?\))"
     r"|(?P<code>`[^`]+`)"
+    r"|(?P<bare_url>https?://[^\s<]+)"
     r"|(?P<bold>\*\*[^*]+\*\*)"
     # Underscore emphasis must be flanked by non-word boundaries so intra-word
     # underscores (snake_case identifiers, file paths like ``my_module.py``) are
@@ -320,8 +324,80 @@ _MD_INLINE_RE = re.compile(
 )
 
 
+def _strip_html_comments_outside_code(text: str) -> str:
+    """Remove HTML comments except when they are literal code content."""
+    if not text:
+        return ""
+
+    lines = text.splitlines(keepends=True)
+    closer_after_line = [False] * len(lines)
+    closer_seen = False
+    for index in range(len(lines) - 1, -1, -1):
+        closer_after_line[index] = closer_seen
+        if "-->" in lines[index]:
+            closer_seen = True
+
+    output: List[str] = []
+    in_fence = False
+    in_comment = False
+
+    for line_number, raw_line in enumerate(lines):
+        body = raw_line.rstrip("\r\n")
+        ending = raw_line[len(body):]
+        inline_ticks = 0
+
+        if not in_comment and _MD_FENCE_RE.match(body):
+            in_fence = not in_fence
+            output.append(raw_line)
+            continue
+
+        if in_fence:
+            output.append(raw_line)
+            continue
+
+        i = 0
+        while i < len(body):
+            if in_comment:
+                close = body.find("-->", i)
+                if close == -1:
+                    i = len(body)
+                    continue
+                in_comment = False
+                i = close + 3
+                continue
+
+            if body[i] == "`":
+                end = i + 1
+                while end < len(body) and body[end] == "`":
+                    end += 1
+                tick_count = end - i
+                if inline_ticks == 0:
+                    inline_ticks = tick_count
+                elif tick_count == inline_ticks:
+                    inline_ticks = 0
+                output.append(body[i:end])
+                i = end
+                continue
+
+            if inline_ticks == 0 and body.startswith("<!--", i):
+                if "-->" not in body[i + 4:] and not closer_after_line[line_number]:
+                    # Malformed comments must not consume later user-visible prose.
+                    i = len(body)
+                    continue
+                in_comment = True
+                i += 4
+                continue
+
+            output.append(body[i])
+            i += 1
+
+        output.append(ending)
+
+    return "".join(output)
+
+
 def _normalise_jira_markdown(text: str) -> str:
-    """Convert GitHub-only markdown extensions into Jira-readable Markdown.
+    """Sanitize shared Jira Markdown and flatten GitHub-only extensions.
 
     Jira's ADF schema has no collapsible ``details`` node and does not
     understand GitHub alert syntax.  Keep the useful content, but remove only
@@ -329,7 +405,8 @@ def _normalise_jira_markdown(text: str) -> str:
     """
     from app.tracker_comment_format import flatten_github_markdown_for_jira
 
-    return flatten_github_markdown_for_jira(text or "")
+    sanitized = _strip_html_comments_outside_code(text or "")
+    return flatten_github_markdown_for_jira(sanitized)
 
 
 def _split_table_row(line: str) -> List[str]:
@@ -380,6 +457,40 @@ def _adf_table_row(cells: List[str], header: bool) -> Dict[str, Any]:
     }
 
 
+def _split_bare_url_suffix(value: str) -> Tuple[str, str]:
+    """Separate prose punctuation from a detected URL."""
+    url = value
+    suffix = ""
+    while url and url[-1] in _TRAILING_URL_PUNCTUATION:
+        suffix = url[-1] + suffix
+        url = url[:-1]
+    for opener, closer in (("(", ")"), ("[", "]")):
+        while url.endswith(closer) and url.count(closer) > url.count(opener):
+            suffix = closer + suffix
+            url = url[:-1]
+    return url, suffix
+
+
+def _append_bare_url(
+    nodes: List[Dict[str, Any]],
+    value: str,
+    inherited_marks: Optional[List[Dict[str, Any]]] = None,
+) -> None:
+    url, suffix = _split_bare_url_suffix(value)
+    marks = list(inherited_marks or [])
+    if url:
+        nodes.append({
+            "type": "text",
+            "text": url,
+            "marks": marks + [{"type": "link", "attrs": {"href": url}}],
+        })
+    if suffix:
+        suffix_node: Dict[str, Any] = {"type": "text", "text": suffix}
+        if marks:
+            suffix_node["marks"] = marks
+        nodes.append(suffix_node)
+
+
 def _inline_to_adf(text: str) -> List[Dict[str, Any]]:
     """Split a line of markdown into ADF text nodes with inline marks.
 
@@ -404,18 +515,28 @@ def _inline_to_adf(text: str) -> List[Dict[str, Any]]:
                 "text": match.group("link_text"),
                 "marks": [{"type": "link", "attrs": {"href": match.group("link_url")}}],
             })
+        elif match.group("bare_url"):
+            _append_bare_url(nodes, match.group("bare_url"))
         elif match.group("bold"):
-            nodes.append({
-                "type": "text",
-                "text": match.group("bold")[2:-2],
-                "marks": [{"type": "strong"}],
-            })
+            value = match.group("bold")[2:-2]
+            if _BARE_URL_RE.fullmatch(value):
+                _append_bare_url(nodes, value, [{"type": "strong"}])
+            else:
+                nodes.append({
+                    "type": "text",
+                    "text": value,
+                    "marks": [{"type": "strong"}],
+                })
         else:  # em
-            nodes.append({
-                "type": "text",
-                "text": match.group("em")[1:-1],
-                "marks": [{"type": "em"}],
-            })
+            value = match.group("em")[1:-1]
+            if _BARE_URL_RE.fullmatch(value):
+                _append_bare_url(nodes, value, [{"type": "em"}])
+            else:
+                nodes.append({
+                    "type": "text",
+                    "text": value,
+                    "marks": [{"type": "em"}],
+                })
         pos = match.end()
     if pos < len(text):
         nodes.append({"type": "text", "text": text[pos:]})
@@ -1062,6 +1183,7 @@ def fetch_jira_issue(
             "startAt": start_at,
             "maxResults": max_results,
             "orderBy": "created",
+            "expand": "properties",
         }
         cdata = _jira_get(
             base_url, auth_header,
@@ -1172,14 +1294,28 @@ def _jira_auth_from_config() -> Tuple[str, str]:
     return base_url, _make_auth_header(email, api_token)
 
 
-def jira_add_comment(issue_key: str, body_text: str) -> bool:
+def _jira_comment_payload(
+    body_text: str,
+    properties: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {"body": markdown_to_adf(body_text)}
+    if properties is not None:
+        payload["properties"] = properties
+    return payload
+
+
+def jira_add_comment(
+    issue_key: str,
+    body_text: str,
+    properties: Optional[List[Dict[str, Any]]] = None,
+) -> bool:
     """Post a Markdown comment as native Jira ADF."""
     base_url, auth_header = _jira_auth_from_config()
     result = _jira_post(
         base_url,
         auth_header,
         f"/rest/api/3/issue/{issue_key}/comment",
-        {"body": markdown_to_adf(body_text)},
+        _jira_comment_payload(body_text, properties),
     )
     return result is not None
 
@@ -1205,6 +1341,7 @@ def _list_comments_result(issue_key: str) -> Tuple[bool, List[dict]]:
             "startAt": start_at,
             "maxResults": max_results,
             "orderBy": "created",
+            "expand": "properties",
         }
         data = _jira_get(
             base_url,
@@ -1228,7 +1365,19 @@ def _list_comments_result(issue_key: str) -> Tuple[bool, List[dict]]:
                 continue
             body_node = comment.get("body")
             body_text = _adf_to_text(body_node) if body_node else ""
-            all_comments.append({"id": comment_id, "body": body_text})
+            raw_properties = comment.get("properties", [])
+            if not isinstance(raw_properties, list):
+                raw_properties = []
+            properties = {
+                str(item["key"]): item.get("value")
+                for item in raw_properties
+                if isinstance(item, dict) and str(item.get("key", "")).strip()
+            }
+            all_comments.append({
+                "id": comment_id,
+                "body": body_text,
+                "properties": properties,
+            })
 
         total = data.get("total", 0)
         start_at += len(batch)
@@ -1256,8 +1405,13 @@ def jira_list_comments_checked(issue_key: str) -> List[dict]:
     return comments
 
 
-def jira_edit_comment(issue_key: str, comment_id: str, body_text: str) -> bool:
-    """Edit a Jira issue comment body."""
+def jira_edit_comment(
+    issue_key: str,
+    comment_id: str,
+    body_text: str,
+    properties: Optional[List[Dict[str, Any]]] = None,
+) -> bool:
+    """Edit a Jira issue comment body and optional entity properties."""
     if not str(comment_id).strip():
         return False
     base_url, auth_header = _jira_auth_from_config()
@@ -1265,7 +1419,7 @@ def jira_edit_comment(issue_key: str, comment_id: str, body_text: str) -> bool:
         base_url,
         auth_header,
         f"/rest/api/3/issue/{issue_key}/comment/{comment_id}",
-        {"body": markdown_to_adf(body_text)},
+        _jira_comment_payload(body_text, properties),
     )
     return result is not None
 

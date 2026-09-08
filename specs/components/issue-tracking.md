@@ -80,6 +80,22 @@ issue_cli.py          → CLI entry point (fetch/comment/create) used by prompts
   text the plan is trying to convey, not wrappers. Alert folding stops each
   block's body run at the next opener (adjacent blocks degrade independently
   instead of merging).
+- **Jira-bound text is sanitized and linked centrally.**
+  `markdown_to_adf()` removes HTML comments outside inline and fenced code,
+  preserves comment syntax inside those code scopes, and adds ADF `link`
+  marks to bare HTTP(S) URLs as well as explicit Markdown links. Outcome
+  templates express their heading, metadata list, section labels, code
+  values, and labelled PR link in Markdown; the transport remains the single
+  owner of ADF construction.
+- **Jira outcome identity is metadata, not prose.**
+  Mission-outcome comments store the stable `(issue, command)` digest in the
+  `koan.jira.outcome` comment property supplied atomically with comment
+  creation or update. Comment listing must return normalized properties so
+  upsert can find the existing status without inspecting visible prose.
+  Legacy `<!-- koan-jira-outcome:… -->` markers are lookup-only migration
+  inputs: the next update removes the marker and attaches the property.
+  Lookup failure remains fail-closed and must never authorize creation of a
+  potentially duplicate comment.
 
 ## Integration points
 

@@ -1,6 +1,12 @@
 """Tests for markdown_to_adf — the rich markdown→ADF converter for Jira."""
 
-from app.jira_notifications import markdown_to_adf
+import json
+from pathlib import Path
+
+from app.jira_notifications import _adf_to_markdown, markdown_to_adf
+
+
+_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "jira_adf"
 
 
 def _types(doc):
@@ -9,6 +15,17 @@ def _types(doc):
 
 def _marks(node):
     return [m["type"] for text in node.get("content", []) for m in text.get("marks", [])]
+
+
+def _text_nodes(value):
+    if isinstance(value, dict):
+        if value.get("type") == "text":
+            yield value
+        for child in value.get("content", []):
+            yield from _text_nodes(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _text_nodes(child)
 
 
 class TestMarkdownToAdfBlocks:
@@ -102,6 +119,38 @@ class TestMarkdownToAdfBlocks:
 
 
 class TestMarkdownToAdfInline:
+    def test_bare_url_matches_adf_fixture(self):
+        case = json.loads((_FIXTURE_DIR / "bare_url.json").read_text())
+        assert markdown_to_adf(case["markdown"]) == case["adf"]
+
+    def test_bare_url_inside_inline_code_is_not_linked(self):
+        doc = markdown_to_adf("Run `https://example.com/setup` in a browser.")
+        code_node = next(
+            node
+            for node in doc["content"][0]["content"]
+            if any(mark["type"] == "code" for mark in node.get("marks", []))
+        )
+        assert code_node["text"] == "https://example.com/setup"
+        assert code_node["marks"] == [{"type": "code"}]
+
+    def test_bare_url_round_trip_stays_bare_markdown(self):
+        source = "Next part: https://example.com/x?focusedCommentId=2"
+        assert _adf_to_markdown(markdown_to_adf(source)) == source
+
+    def test_bare_url_keeps_balanced_parentheses(self):
+        doc = markdown_to_adf("See https://example.com/a(b).")
+        link = next(node for node in _text_nodes(doc) if node.get("marks"))
+        assert link["text"] == "https://example.com/a(b)"
+        assert link["marks"][0]["attrs"]["href"] == "https://example.com/a(b)"
+
+    def test_bare_url_drops_unmatched_closing_punctuation(self):
+        doc = markdown_to_adf("(https://example.com/path]).")
+        link = next(node for node in _text_nodes(doc) if node.get("marks"))
+        assert link["text"] == "https://example.com/path"
+        assert "".join(node["text"] for node in _text_nodes(doc)) == (
+            "(https://example.com/path])."
+        )
+
     def test_bold_mark(self):
         doc = markdown_to_adf("some **bold** here")
         assert "strong" in _marks(doc["content"][0])
@@ -212,6 +261,55 @@ class TestJiraNormalisationPreservesCode:
         assert len(code) == 1
         text = "".join(c.get("text", "") for c in code[0].get("content", []))
         assert text == "<details><summary>x</summary>body</details>"
+
+    def test_html_comments_outside_code_are_removed(self):
+        doc = markdown_to_adf(
+            "before <!-- internal --> after\n\n"
+            "<!-- koan-jira-outcome:abc123 -->\n\n"
+            "visible"
+        )
+        rendered_text = "".join(node["text"] for node in _text_nodes(doc))
+        assert rendered_text == "before  aftervisible"
+        assert "<!--" not in rendered_text
+        assert "koan-jira-outcome" not in rendered_text
+
+    def test_multiline_html_comment_is_removed(self):
+        doc = markdown_to_adf("before\n<!-- private\nmetadata -->\nafter")
+        rendered_text = "".join(node["text"] for node in _text_nodes(doc))
+        assert "private" not in rendered_text
+        assert "metadata" not in rendered_text
+        assert "before" in rendered_text
+        assert "after" in rendered_text
+
+    def test_unmatched_backtick_does_not_expose_later_html_comment(self):
+        doc = markdown_to_adf(
+            "unmatched `\n<!-- koan-jira-outcome:abc123 -->\nvisible"
+        )
+        rendered_text = "".join(node["text"] for node in _text_nodes(doc))
+        assert "koan-jira-outcome" not in rendered_text
+        assert "visible" in rendered_text
+
+    def test_unclosed_html_comment_does_not_remove_later_lines(self):
+        doc = markdown_to_adf("before <!-- private\nafter")
+        rendered_text = "".join(node["text"] for node in _text_nodes(doc))
+        assert "private" not in rendered_text
+        assert "before" in rendered_text
+        assert "after" in rendered_text
+
+    def test_html_comment_inside_inline_code_is_preserved(self):
+        doc = markdown_to_adf("Example: `<!-- example -->`")
+        code = next(
+            node
+            for node in _text_nodes(doc)
+            if node.get("marks") == [{"type": "code"}]
+        )
+        assert code["text"] == "<!-- example -->"
+
+    def test_html_comment_inside_fenced_code_is_preserved(self):
+        doc = markdown_to_adf("```html\n<!-- example -->\n```")
+        block = doc["content"][0]
+        assert block["type"] == "codeBlock"
+        assert block["content"][0]["text"] == "<!-- example -->"
 
 
 class TestIndentedCodeDoesNotSwallowProse:

@@ -205,6 +205,15 @@ def _strip_markdown_for_jira(text: str) -> str:
     return "\n".join(collapsed).strip()
 
 
+def _jira_pr_link_label(pr_url: str, pr_title: str) -> str:
+    pr_number = pr_url.rstrip("/").rsplit("/", 1)[-1]
+    prefix = f"PR #{pr_number}" if pr_number.isdigit() else "Pull request"
+    safe_title = " ".join(
+        (pr_title or "").replace("[", "(").replace("]", ")").split()
+    )
+    return f"{prefix} — {safe_title}" if safe_title else prefix
+
+
 def build_pr_comment_success(
     provider: str,
     pr_url: str,
@@ -230,28 +239,31 @@ def build_pr_comment_success(
     target_branch = (base_branch or "").strip()
 
     if provider == "jira":
+        link_label = _jira_pr_link_label(pr_url, pr_title)
         lines: List[str] = [
-            "Koan update: Draft pull request created.",
+            "### Kōan · draft pull request created",
             "",
-            f"Mission: {mission}",
-            f"Pull request: {pr_url}",
+            f"- **Mission**: `{mission}`",
+            f"- **Pull request**: [{link_label}]({pr_url})",
         ]
-        if pr_title:
-            lines.append(f"PR title: {pr_title}")
         if target_branch:
-            lines.append(f"Target branch: {target_branch}")
+            lines.append(f"- **Target branch**: `{target_branch}`")
         if what_bullets:
-            lines.extend(["", "What changed:"])
+            lines.extend(["", "**What changed**"])
             lines.extend(f"- {item}" for item in what_bullets[:8])
         if why_text:
-            lines.extend(["", f"Why: {why_text}"])
+            lines.extend(["", "**Why**", why_text])
         if how_bullets:
-            lines.extend(["", "How it was implemented:"])
+            lines.extend(["", "**How it was implemented**"])
             lines.extend(f"- {item}" for item in how_bullets[:8])
         if testing_bullets:
-            lines.extend(["", "Validation:"])
+            lines.extend(["", "**Validation**"])
             lines.extend(f"- {item}" for item in testing_bullets[:8])
-        lines.extend(["", "Next:", "- Review the draft PR and merge when ready."])
+        lines.extend([
+            "",
+            "**Next**",
+            "- Review the draft PR and merge when ready.",
+        ])
         return "\n".join(lines)
 
     # GitHub / generic markdown-capable trackers.
@@ -293,19 +305,19 @@ def build_pr_comment_failure(
     if provider == "jira":
         reason_text = _flatten_github_alerts(reason_text).strip()
         lines = [
-            "Koan update: Pull request creation failed.",
+            "### Kōan · pull request creation failed",
             "",
-            f"Mission: {mission}",
-            f"Reason: {reason_text}",
+            f"- **Mission**: `{mission}`",
+            f"- **Reason**: {reason_text}",
         ]
         if branch_text:
-            lines.append(f"Current branch: {branch_text}")
+            lines.append(f"- **Current branch**: `{branch_text}`")
         if target_branch:
-            lines.append(f"Target branch: {target_branch}")
+            lines.append(f"- **Target branch**: `{target_branch}`")
         lines.extend(
             [
                 "",
-                "Next:",
+                "**Next**",
                 "- Check branch state and repository permissions.",
                 "- Re-run the mission after fixing the blocking issue.",
             ],
