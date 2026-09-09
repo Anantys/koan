@@ -4,7 +4,7 @@ title: "REST API"
 description: "Documents Kōan's optional, token-authenticated HTTP control layer (missions, projects, pause/resume, config, admin, usage/metrics/logs endpoints), its generated OpenAPI spec + drift guard, and its security model."
 tags: [operations]
 created: 2026-05-31
-updated: 2026-07-10
+updated: 2026-09-08
 ---
 
 # REST API
@@ -69,6 +69,17 @@ Authorization: Bearer <your-token>
 | `403` | Token present but incorrect |
 
 Token comparison uses `hmac.compare_digest` to prevent timing attacks. If no token is configured, **all authenticated requests return 403** — the server never accepts unauthenticated control requests.
+
+---
+
+## Command-line client
+
+[`bin/koan-cli`](../../bin/koan-cli) is the checkout-local REST client. It
+reads this repository's committed OpenAPI document at runtime, supports all
+documented operations, and retains generic JSON/query flags while body and
+query schemas are being enriched. See the
+[Kōan REST CLI](../users/koan-cli.md) guide for secure profiles, examples,
+output guarantees, and exit codes.
 
 ---
 

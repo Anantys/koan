@@ -4,12 +4,13 @@ title: "Component Spec — Web Dashboard & REST API"
 description: "Documents the Flask dashboard and token-gated REST API, their shared `dashboard_service`/`usage_service`/`log_reader` logic, the code-derived OpenAPI spec + drift guard, and the invariants keeping the two surfaces from drifting."
 tags: [web]
 created: 2026-06-27
-updated: 2026-07-17
+updated: 2026-09-08
 ---
 
 # Component Spec — Web Dashboard & REST API
 
-**Packages:** `koan/app/dashboard/`, `koan/app/dashboard_service/`, `koan/app/api/`
+**Packages:** `koan/app/dashboard/`, `koan/app/dashboard_service/`, `koan/app/api/`,
+`koan/app/cli/`
 + shared `usage_service.py`, `log_reader.py`
 
 ## Purpose
@@ -38,6 +39,13 @@ dashboard_service/  (pure logic, no Flask client needed to test)
 api/  (Flask blueprints via create_app())
   auth (require_token) · mission_index (sidecar) · routes_missions/projects/status/
   admin/observability · server.py (waitress entrypoint) · openapi_gen.py (spec generator)
+
+cli/  (runtime OpenAPI REST client)
+  ├─ spec.py      operation discovery, stable command names, collision checks
+  ├─ config.py    mode-0600 named profiles and environment overrides
+  ├─ commands.py  argparse generation and generic request construction
+  ├─ http.py      confirmation, transport, JSON output, exit-code mapping
+  └─ main.py      generated commands plus configure/raw built-ins
 ```
 
 ## Key types & functions
@@ -180,6 +188,15 @@ control flow, lifecycle, or quota decisions.
   check (`.github/workflows/openapi.yml`) enforces this only when API-defining files change.
   Generation is deterministic (unchanged code → byte-identical output) and needs no server,
   token, or `api.enabled`.
+- **The REST CLI consumes the committed OpenAPI document at runtime.** It does
+  not commit generated client code. Every documented operation must map to one
+  collision-free public command and its hidden `operationId` alias.
+- **Sparse specifications remain usable.** Every operation accepts generic
+  JSON through `--data` and repeatable query pairs through `--query`; schema-
+  derived flags are additive when request/query schemas exist.
+- **CLI credentials fail closed.** Tokens come from a mode-0600 or mode-0400
+  profile or `KOAN_API_TOKEN`, never from argv. Destructive requests require
+  confirmation on a TTY and `--yes` in non-interactive execution.
 
 ## Integration points
 

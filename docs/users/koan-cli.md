@@ -1,0 +1,142 @@
+---
+type: doc
+title: "Kōan REST CLI"
+description: "Configure and use bin/koan-cli to call every operation in Kōan's token-authenticated REST API."
+tags: [users]
+created: 2026-09-08
+updated: 2026-09-09
+---
+
+# Kōan REST CLI
+
+`bin/koan-cli` reads `koan/openapi.yaml` at runtime and exposes every
+documented REST operation without requiring package installation. Enable and
+start the API first, as described in the [REST API guide](../operations/rest-api.md).
+
+## Configure
+
+Create or update the default profile interactively:
+
+```bash
+bin/koan-cli configure
+```
+
+Profiles are stored in `~/.config/koan-cli.cfg`. The CLI creates this file with
+mode `0600` and also accepts an existing mode-`0400` file. It refuses a
+group- or world-readable file and prints the exact `chmod 600` repair command.
+Tokens never belong in command-line arguments.
+
+Create or select another profile by putting global options before the command:
+
+```bash
+bin/koan-cli --profile prod configure
+bin/koan-cli --profile prod status
+```
+
+Settings resolve in this order:
+
+1. `--profile` and `--base-url` command-line options.
+2. Non-empty `KOAN_PROFILE`, `KOAN_BASE_URL`, and `KOAN_API_TOKEN` values.
+3. Values in the selected profile.
+4. The first server URL in `koan/openapi.yaml` for the base URL.
+
+Empty environment values are ignored. Without any configuration, the public
+`health` command uses the specification's default local server and needs no
+token:
+
+```bash
+bin/koan-cli health
+```
+
+Configuration always saves before verification. Verification checks public
+health for reachability, then authenticated status to confirm the token; a
+stopped server does not discard the saved profile. Failed verification returns
+the corresponding nonzero exit code.
+
+## Generated commands
+
+Commands follow the API resources. Discover the available roots and leaf
+commands with `--help`:
+
+```bash
+bin/koan-cli --help
+bin/koan-cli missions --help
+bin/koan-cli missions list -q status=pending
+bin/koan-cli missions get MISSION_ID
+bin/koan-cli observability logs
+```
+
+Each OpenAPI `operationId` also works as a hidden root-level alias for scripts
+that prefer specification identifiers. Public command names and aliases are
+validated at startup so ambiguous specification changes fail locally.
+
+## Generic input
+
+Every operation accepts JSON through `--data`, from either inline text or an
+`@`-prefixed file, plus repeatable query pairs through `-q` or `--query`. This
+includes GET requests.
+
+```bash
+bin/koan-cli missions create --data '{"command":"/review https://github.com/org/repo/pull/42"}'
+bin/koan-cli missions create --data @request.json
+bin/koan-cli missions list -q status=pending -q project=my-toolkit
+```
+
+Duplicate generic query keys use the last value. Schema-derived typed flags
+will appear automatically when the OpenAPI document contains request or query
+schemas, and will override a generic query value with the same name. The
+current committed specification only describes path parameters, so generic
+input remains the request-body and query interface today.
+
+Path parameters are positional and percent-encoded before dispatch:
+
+```bash
+bin/koan-cli projects update my-toolkit --data '{"auto_merge":false}'
+```
+
+## Raw requests
+
+Use `raw` for debugging or for a server endpoint newer than the checked-out
+specification:
+
+```bash
+bin/koan-cli raw GET /v1/status
+bin/koan-cli raw POST /v1/missions --data @request.json -q trace=test
+```
+
+Raw requests require authentication except exactly `GET /v1/health`. A raw
+path must begin with `/`.
+
+## Output and exit codes
+
+Successful responses go to stdout as valid JSON. Output is pretty-printed on a
+TTY and compact when piped; `--pretty` and `--compact` override detection.
+HTTP error bodies and local diagnostics go to stderr, leaving stdout empty.
+Non-JSON response bodies are wrapped in a JSON object.
+
+| Code | Meaning |
+|---|---|
+| `0` | HTTP success |
+| `1` | Local/usage error or other 4xx response |
+| `2` | Authentication failure (`401` or `403`) |
+| `3` | Not found (`404`) |
+| `4` | Server error (`5xx`) |
+
+All DELETE requests plus restart, shutdown, update, and release-update requests
+are destructive. They prompt when stdin is a TTY and require `--yes` in
+non-interactive scripts.
+
+```bash
+bin/koan-cli missions delete MISSION_ID --yes
+```
+
+## Troubleshooting
+
+- `authentication required` means the selected profile has no token. Run
+  `bin/koan-cli configure` or set `KOAN_API_TOKEN`.
+- `token was rejected` means health succeeded but authenticated status returned
+  `401` or `403`. Generate a matching token with `make api-token`.
+- A connection-refused diagnostic lists the API setup sequence: enable
+  `api.enabled`, configure a generated token, then run `make api`.
+- Invalid JSON, malformed query pairs, and missing required values fail locally
+  without sending a request.

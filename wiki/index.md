@@ -4,7 +4,7 @@ The catalog of all pages in this wiki. Each entry: a link to the page and a one-
 
 This wiki spans two content roots — `docs/` (operational "how to use", see [`docs/README.md`](docs/README.md)) and the durable half of `specs/` (design "why/contract", see [`specs/README.md`](../specs/README.md)) — reached from here via the `wiki/docs`, `wiki/specs-components`, `wiki/specs-skills` symlinks. Speckit's ephemeral per-feature folders (`specs/<NNN-slug>/`) are listed under "Specs — Active Features" below with a computed status, not frontmattered. See `SCHEMA.md` for the full rationale.
 
-~84 pages total — well under the ~150-page / 300-line shard threshold, so this stays flat.
+~85 pages total — well under the ~150-page / 300-line shard threshold, so this stays flat.
 
 ---
 
@@ -92,6 +92,7 @@ This wiki spans two content roots — `docs/` (operational "how to use", see [`d
 
 ### Users
 - [`users/koan-md.md`](docs/users/koan-md.md) — Documents the optional project-root `KOAN.md` file and the `.koan/` directory (a second `.koan/KOAN.md`, per-skill `.koan/skills/<skill>/*.md` hooks, and a structured `.koan/config.yaml` with `review.always_check`): koan-only steering for the autonomous agent, 16k caps, runner `project_path` wiring, and this repo's dogfood quality-gate layout.
+- [`users/koan-cli.md`](docs/users/koan-cli.md) — Explains the runtime OpenAPI REST client, secure named profiles, generated commands, generic JSON/query input, output and exit-code contracts, and destructive-request confirmation.
 - [`users/model-configuration.md`](docs/users/model-configuration.md) — Explains how to configure which model handles each Koan role (mission, chat, lightweight, fallback, etc.) per provider via `config.yaml`, including resolution order and CLI-provider-per-role routing.
 - [`users/onboarding.md`](docs/users/onboarding.md) — Documents the interactive 12-step onboarding wizard that sets up a new Koan instance, its resumability, personality presets, and non-interactive/CI mode.
 - [`users/quickstart.md`](docs/users/quickstart.md) — A 5-minute guide to the commands for driving Koan from GitHub PRs/issues, Jira, and messaging apps (Telegram/Slack), with minimal and context-augmented examples for each.
