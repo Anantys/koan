@@ -368,14 +368,19 @@ For Jira-linked missions, Koan publishes one final status update per
 - optional What/Why/How/Validation content is derived from the generated PR
   body as before.
 
-Outcome idempotency is stored in the hidden Jira comment property
-`koan.jira.outcome`; no bookkeeping marker is appended to the visible body.
-On the first update after upgrading, Koan still recognizes an existing
-`<!-- koan-jira-outcome:… -->` body marker, edits that comment in place without
-the marker, and attaches the property. Because the property is now the
-comment's only identity, Koan reads the comment back after each write and
-reports the update only once the property is observed; a write Jira accepted
-without storing the property is reported as unverified and logged, rather than
+Outcome idempotency is keyed on a `(issue, command)` digest carried two ways:
+the hidden Jira comment property `koan.jira.outcome`, and a trailing visible
+`Kōan status · <digest>` footer. Koan matches on either. The property is
+preferred, but it cannot be the sole key — a Jira deployment that does not
+persist comment properties would leave the comment unfindable and accumulate
+one duplicate status comment per mission, so the footer provides an identity
+the transport cannot silently strip (the same reason `/plan` comments carry a
+visible `Koan current plan (rev …)` footer). On the first update after
+upgrading, Koan still recognizes an existing `<!-- koan-jira-outcome:… -->`
+body marker, edits that comment in place without the marker, and attaches the
+footer and property. Koan reads the comment back after each write and reports
+the update only once one of the two identities is observed; a write Jira
+accepted while dropping both is reported as unverified and logged, rather than
 reported as a success that the next run would silently duplicate. If comment
 lookup fails, Koan continues to fail closed and does not create a potentially
 duplicate status comment.

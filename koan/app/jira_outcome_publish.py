@@ -19,6 +19,13 @@ from app.tracker_comment_format import build_pr_comment_failure, build_pr_commen
 _PR_URL_RE = re.compile(r"https?://[^/]*github[^\s)]+/pull/\d+")
 _OUTCOME_PROPERTY_KEY = "koan.jira.outcome"
 _MARKER_PREFIX = "<!-- koan-jira-outcome:"
+# The comment property is the preferred dedup key, but it is not a durable one:
+# a Jira deployment that drops it on write, or that ignores `expand=properties`
+# when listing, leaves the comment unfindable and earns a duplicate per mission.
+# So the digest is also written as a visible trailing footer — plain text, which
+# the transport cannot silently strip the way it strips HTML comments. Same
+# reasoning as `jira_plan_publish`'s `Koan current plan (rev …)` footer.
+_FOOTER_LABEL = "Kōan status"
 
 
 def _fetch_pr_details(pr_url: str) -> Tuple[str, str]:
@@ -72,9 +79,12 @@ def _extract_failure_reason(content: str, exit_code: int) -> str:
 
 def _outcome_digest(issue_key: str, command_name: str) -> str:
     # Not a security primitive: this digest is a dedup key over a non-secret
-    # (issue, command) pair. It stays SHA-1 because comments already published
-    # carry that value in their legacy body marker, and re-hashing would orphan
-    # them into duplicates. `usedforsecurity=False` says so to the runtime.
+    # (issue, command) pair, and `usedforsecurity=False` says so to the runtime
+    # (bandit B324 treats that declaration as a non-cryptographic use). It stays
+    # SHA-1 because comments already published carry this exact value in their
+    # legacy body marker — and, from now on, in their visible footer. Switching
+    # algorithms would make every one of them unfindable and stack a duplicate
+    # per issue, the failure this module exists to prevent.
     token = f"{issue_key}:{command_name}"
     return hashlib.sha1(token.encode("utf-8"), usedforsecurity=False).hexdigest()[:12]
 
@@ -97,12 +107,39 @@ def _outcome_property(
     }
 
 
+def _footer_for(digest: str) -> str:
+    return f"{_FOOTER_LABEL} · {digest}"
+
+
+def _with_footer(body_text: str, digest: str) -> str:
+    return f"{(body_text or '').rstrip()}\n\n{_footer_for(digest)}"
+
+
 def _has_outcome_property(comment: dict, digest: str) -> bool:
     properties = comment.get("properties", {})
     if not isinstance(properties, dict):
         return False
     value = properties.get(_OUTCOME_PROPERTY_KEY)
     return isinstance(value, dict) and value.get("digest") == digest
+
+
+def _has_outcome_footer(comment: dict, digest: str) -> bool:
+    """True when the body *ends* with this outcome's footer.
+
+    Anchored at the end so a comment that merely quotes the footer text — a
+    human pasting a previous status, say — is never mistaken for the status
+    comment itself.
+    """
+    body = (comment.get("body") or "").rstrip()
+    return bool(re.search(rf"{re.escape(_footer_for(digest))}\s*$", body))
+
+
+def _identifies_outcome(comment: dict, digest: str, legacy_marker: str) -> bool:
+    return (
+        _has_outcome_property(comment, digest)
+        or _has_outcome_footer(comment, digest)
+        or legacy_marker in (comment.get("body") or "")
+    )
 
 
 def _upsert_status_comment(
@@ -113,6 +150,7 @@ def _upsert_status_comment(
     digest = _outcome_digest(issue_key, command_name)
     legacy_marker = _marker_for(issue_key, command_name)
     properties = [_outcome_property(issue_key, command_name)]
+    status_body = _with_footer(body_text, digest)
     try:
         comments = jira_list_comments_checked(issue_key)
     except Exception as e:
@@ -124,8 +162,7 @@ def _upsert_status_comment(
         (
             comment
             for comment in comments
-            if _has_outcome_property(comment, digest)
-            or legacy_marker in (comment.get("body") or "")
+            if _identifies_outcome(comment, digest, legacy_marker)
         ),
         None,
     )
@@ -134,27 +171,27 @@ def _upsert_status_comment(
         ok = jira_edit_comment(
             issue_key,
             existing.get("id", ""),
-            body_text,
+            status_body,
             properties=properties,
         )
         if not ok:
             return False, "update_failed"
-        return _confirm_property(issue_key, digest, "updated")
+        return _confirm_identity(issue_key, digest, "updated")
 
-    ok = jira_add_comment(issue_key, body_text, properties=properties)
+    ok = jira_add_comment(issue_key, status_body, properties=properties)
     if not ok:
         return False, "create_failed"
-    return _confirm_property(issue_key, digest, "created")
+    return _confirm_identity(issue_key, digest, "created")
 
 
-def _confirm_property(issue_key: str, digest: str, action: str) -> Tuple[bool, str]:
-    """Confirm Jira actually stored the dedup property we just wrote.
+def _confirm_identity(issue_key: str, digest: str, action: str) -> Tuple[bool, str]:
+    """Confirm the comment we just wrote can be found again.
 
-    The property is now the comment's only identity — the legacy body marker
-    is an HTML comment and the shared renderer strips those, so it cannot be
-    kept as a fallback. If Jira accepted the write but dropped the property,
-    the next run cannot find this comment and posts a duplicate; say so loudly
-    now rather than letting status comments quietly stack up.
+    Either identity is enough: the hidden property (preferred) or the visible
+    footer (the fallback that survives a transport which drops properties).
+    A write that left neither is a comment the next run cannot recognize, and
+    would therefore duplicate — say so loudly now rather than letting status
+    comments quietly stack up.
     """
     try:
         comments = jira_list_comments_checked(issue_key)
@@ -162,13 +199,17 @@ def _confirm_property(issue_key: str, digest: str, action: str) -> Tuple[bool, s
         _log_runner("jira", f"Outcome read-back failed for {issue_key}: {e}")
         return False, f"{action}_unverified"
 
-    if any(_has_outcome_property(comment, digest) for comment in comments):
+    if any(
+        _has_outcome_property(comment, digest) or _has_outcome_footer(comment, digest)
+        for comment in comments
+    ):
         return True, action
 
     _log_runner(
         "jira",
-        f"Outcome property {_OUTCOME_PROPERTY_KEY} missing after {action} on "
-        f"{issue_key}; the next status update will not find this comment.",
+        f"Neither the {_OUTCOME_PROPERTY_KEY} property nor the status footer "
+        f"survived the {action} on {issue_key}; the next status update will not "
+        f"find this comment.",
     )
     return False, f"{action}_unverified"
 
@@ -178,11 +219,13 @@ def upsert_jira_comment(
     command_name: str,
     body_text: str,
 ) -> Tuple[bool, str]:
-    """Idempotently post or update a property-tagged Jira status comment.
+    """Idempotently post or update a digest-tagged Jira status comment.
 
     Shared entry point so every Jira commenter (end-of-mission publisher,
     draft-PR submission helper) dedups under the same ``(issue_key,
-    command_name)`` property instead of stacking duplicate comments.
+    command_name)`` digest instead of stacking duplicate comments. The digest
+    is written both as a hidden comment property and as a visible footer, and
+    either one is enough to re-find the comment on the next run.
     """
     return _upsert_status_comment(issue_key, command_name, body_text)
 

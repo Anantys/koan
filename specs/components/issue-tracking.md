@@ -87,19 +87,27 @@ issue_cli.py          → CLI entry point (fetch/comment/create) used by prompts
   templates express their heading, metadata list, section labels, code
   values, and labelled PR link in Markdown; the transport remains the single
   owner of ADF construction.
-- **Jira outcome identity is metadata, not prose.**
-  Mission-outcome comments store the stable `(issue, command)` digest in the
-  `koan.jira.outcome` comment property supplied atomically with comment
-  creation or update. Comment listing must return normalized properties so
-  upsert can find the existing status without inspecting visible prose.
+- **Jira outcome identity survives a hostile transport.**
+  Mission-outcome comments carry the stable `(issue, command)` digest twice:
+  in the `koan.jira.outcome` comment property supplied atomically with comment
+  creation or update, and in a trailing visible `Kōan status · <digest>`
+  footer. Upsert matches on **either**. The property is the preferred key and
+  comment listing must return normalized properties so upsert can find the
+  existing status without inspecting prose — but it is an optimization, not
+  the identity. The footer is, because it is the only carrier the transport
+  cannot silently drop: HTML comments are stripped by the shared renderer, and
+  a Jira deployment that does not persist comment properties (or does not
+  honour `expand=properties` on the comment-list endpoint) would otherwise
+  leave the comment unfindable and stack one duplicate per mission. This is
+  the same reason `/plan` comments carry a visible `Koan current plan (rev …)`
+  footer.
   Legacy `<!-- koan-jira-outcome:… -->` markers are lookup-only migration
-  inputs: the next update removes the marker and attaches the property.
-  Lookup failure remains fail-closed and must never authorize creation of a
-  potentially duplicate comment. The property is the comment's only identity —
-  the legacy marker is an HTML comment and the shared renderer strips those —
-  so a write is only reported as published once a read-back observes the
-  property on a comment; an accepted write whose property did not persist is
-  reported as unverified rather than as success.
+  inputs: the next update removes the marker and writes the footer plus the
+  property. Lookup failure remains fail-closed and must never authorize
+  creation of a potentially duplicate comment. A write is only reported as
+  published once a read-back observes one of the two identities on a comment;
+  an accepted write that left neither is reported as unverified rather than as
+  success.
 
 ## Integration points
 

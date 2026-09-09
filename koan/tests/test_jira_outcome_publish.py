@@ -76,6 +76,10 @@ class TestPublishJiraMissionOutcome:
         ) in body
         assert "<!-- koan-jira-outcome:" not in body
 
+        from app.jira_outcome_publish import _footer_for, _outcome_digest
+
+        assert body.endswith(_footer_for(_outcome_digest("PROJ-42", "fix")))
+
     def test_success_comment_enriched_from_pr_body(self):
         # The publisher fetches the PR body from GitHub so the agent-path
         # comment includes the What/Why summary, matching the skill path.
@@ -276,21 +280,20 @@ class TestExtractFailureReason:
 
 
 class TestUpsertJiraComment:
-    def test_new_outcome_uses_hidden_property_without_body_marker(self):
+    def test_new_outcome_carries_property_and_visible_footer(self):
         from app.jira_outcome_publish import (
             _OUTCOME_PROPERTY_KEY,
+            _footer_for,
             _outcome_digest,
             upsert_jira_comment,
         )
 
+        digest = _outcome_digest("PROJ-1", "fix")
         posted = [{
             "id": "1",
-            "body": "hello world",
+            "body": f"hello world\n\n{_footer_for(digest)}",
             "properties": {
-                _OUTCOME_PROPERTY_KEY: {
-                    "digest": _outcome_digest("PROJ-1", "fix"),
-                    "command": "fix",
-                },
+                _OUTCOME_PROPERTY_KEY: {"digest": digest, "command": "fix"},
             },
         }]
         with (
@@ -303,14 +306,12 @@ class TestUpsertJiraComment:
             ok, mode = upsert_jira_comment("PROJ-1", "fix", "hello world")
 
         assert (ok, mode) == (True, "created")
-        assert mock_add.call_args.args[1] == "hello world"
-        assert "<!--" not in mock_add.call_args.args[1]
+        body = mock_add.call_args.args[1]
+        assert body == f"hello world\n\n{_footer_for(digest)}"
+        assert "<!--" not in body
         assert mock_add.call_args.kwargs["properties"] == [{
             "key": _OUTCOME_PROPERTY_KEY,
-            "value": {
-                "digest": _outcome_digest("PROJ-1", "fix"),
-                "command": "fix",
-            },
+            "value": {"digest": digest, "command": "fix"},
         }]
 
     def test_existing_property_identifies_comment_for_update(self):
@@ -344,18 +345,21 @@ class TestUpsertJiraComment:
             ok, mode = upsert_jira_comment("PROJ-1", "fix", "new body")
 
         assert (ok, mode) == (True, "updated")
-        assert edit_comment.call_args.args[:3] == ("PROJ-1", "99", "new body")
+        assert edit_comment.call_args.args[:2] == ("PROJ-1", "99")
+        assert edit_comment.call_args.args[2].startswith("new body")
         assert edit_comment.call_args.kwargs["properties"]
         add_comment.assert_not_called()
 
     def test_legacy_marker_is_migrated_to_property_and_removed_from_body(self):
         from app.jira_outcome_publish import (
             _OUTCOME_PROPERTY_KEY,
+            _footer_for,
             _marker_for,
             _outcome_digest,
             upsert_jira_comment,
         )
 
+        digest = _outcome_digest("PROJ-1", "fix")
         existing = [{
             "id": "99",
             "body": f"old body\n\n{_marker_for('PROJ-1', 'fix')}",
@@ -363,12 +367,9 @@ class TestUpsertJiraComment:
         }]
         migrated = [{
             "id": "99",
-            "body": "new body",
+            "body": f"new body\n\n{_footer_for(digest)}",
             "properties": {
-                _OUTCOME_PROPERTY_KEY: {
-                    "digest": _outcome_digest("PROJ-1", "fix"),
-                    "command": "fix",
-                },
+                _OUTCOME_PROPERTY_KEY: {"digest": digest, "command": "fix"},
             },
         }]
         with (
@@ -384,30 +385,149 @@ class TestUpsertJiraComment:
             ok, mode = upsert_jira_comment("PROJ-1", "fix", "new body")
 
         assert (ok, mode) == (True, "updated")
-        assert edit_comment.call_args.args[2] == "new body"
+        assert edit_comment.call_args.args[2] == f"new body\n\n{_footer_for(digest)}"
         assert "koan-jira-outcome" not in edit_comment.call_args.args[2]
         assert edit_comment.call_args.kwargs["properties"]
 
-    def test_dropped_property_is_reported_instead_of_claiming_success(self):
-        """Jira can accept the write and silently keep no property.
+    def test_dropped_property_still_verifies_via_visible_footer(self):
+        """A Jira that does not persist the property must not fail the publish.
 
-        The property is the comment's only identity now — the legacy body
-        marker is an HTML comment and the renderer strips those — so an
-        unstored property means the next run posts a duplicate. Report it.
+        The visible footer is the durable identity, so a read-back that shows
+        the footer proves the comment is findable again.
         """
-        from app.jira_outcome_publish import upsert_jira_comment
+        from app.jira_outcome_publish import _footer_for, _outcome_digest, upsert_jira_comment
 
-        posted_without_property = [{"id": "1", "body": "hello world", "properties": {}}]
+        digest = _outcome_digest("PROJ-1", "fix")
+        posted = [{
+            "id": "1",
+            "body": f"hello world\n\n{_footer_for(digest)}",
+            "properties": {},
+        }]
         with (
             patch(
                 "app.jira_outcome_publish.jira_list_comments_checked",
-                side_effect=[[], posted_without_property],
+                side_effect=[[], posted],
+            ),
+            patch("app.jira_outcome_publish.jira_add_comment", return_value=True),
+        ):
+            ok, mode = upsert_jira_comment("PROJ-1", "fix", "hello world")
+
+        assert (ok, mode) == (True, "created")
+
+    def test_second_run_updates_footer_only_comment_instead_of_duplicating(self):
+        """The regression the property-only identity introduced.
+
+        A deployment that drops comment properties leaves nothing but the
+        visible footer behind. The next mission must recognize that comment and
+        edit it, not stack a second status comment on the issue.
+        """
+        from app.jira_outcome_publish import _footer_for, _outcome_digest, upsert_jira_comment
+
+        digest = _outcome_digest("PROJ-1", "fix")
+        # What the first run left on the issue: footer kept, property dropped.
+        on_issue = [{
+            "id": "1",
+            "body": f"first status\n\n{_footer_for(digest)}",
+            "properties": {},
+        }]
+        updated = [{
+            "id": "1",
+            "body": f"second status\n\n{_footer_for(digest)}",
+            "properties": {},
+        }]
+        with (
+            patch(
+                "app.jira_outcome_publish.jira_list_comments_checked",
+                side_effect=[on_issue, updated],
+            ),
+            patch(
+                "app.jira_outcome_publish.jira_edit_comment", return_value=True,
+            ) as edit_comment,
+            patch("app.jira_outcome_publish.jira_add_comment") as add_comment,
+        ):
+            ok, mode = upsert_jira_comment("PROJ-1", "fix", "second status")
+
+        assert (ok, mode) == (True, "updated")
+        assert edit_comment.call_args.args[:2] == ("PROJ-1", "1")
+        add_comment.assert_not_called()
+
+    def test_footer_quoted_mid_body_is_not_mistaken_for_the_status_comment(self):
+        """Only a trailing footer identifies a status comment.
+
+        A human quoting a previous status inside their own comment must not
+        make Koan overwrite that comment.
+        """
+        from app.jira_outcome_publish import _footer_for, _outcome_digest, upsert_jira_comment
+
+        digest = _outcome_digest("PROJ-1", "fix")
+        quoted = [{
+            "id": "5",
+            "body": f"I saw this:\n\n{_footer_for(digest)}\n\nany idea why?",
+            "properties": {},
+        }]
+        posted = quoted + [{
+            "id": "6",
+            "body": f"status\n\n{_footer_for(digest)}",
+            "properties": {},
+        }]
+        with (
+            patch(
+                "app.jira_outcome_publish.jira_list_comments_checked",
+                side_effect=[quoted, posted],
+            ),
+            patch("app.jira_outcome_publish.jira_add_comment", return_value=True) as add_comment,
+            patch("app.jira_outcome_publish.jira_edit_comment") as edit_comment,
+        ):
+            ok, mode = upsert_jira_comment("PROJ-1", "fix", "status")
+
+        assert (ok, mode) == (True, "created")
+        add_comment.assert_called_once()
+        edit_comment.assert_not_called()
+
+    def test_write_that_kept_neither_identity_is_reported_unverified(self):
+        """Jira can accept the write and keep neither property nor footer.
+
+        Nothing then re-identifies the comment, so the next run would post a
+        duplicate. Report it instead of claiming success.
+        """
+        from app.jira_outcome_publish import upsert_jira_comment
+
+        posted_bare = [{"id": "1", "body": "hello world", "properties": {}}]
+        with (
+            patch(
+                "app.jira_outcome_publish.jira_list_comments_checked",
+                side_effect=[[], posted_bare],
             ),
             patch("app.jira_outcome_publish.jira_add_comment", return_value=True),
         ):
             ok, mode = upsert_jira_comment("PROJ-1", "fix", "hello world")
 
         assert (ok, mode) == (False, "created_unverified")
+
+
+def test_status_footer_survives_the_jira_renderer_round_trip():
+    """The footer is only a durable identity if the transport keeps it.
+
+    The body is rendered to ADF on the way out and extracted back to text on
+    the way in; a renderer that swallowed the footer (as it does HTML comments)
+    would put us back to a property-only identity without anyone noticing.
+    """
+    from app.jira_notifications import _adf_to_text, markdown_to_adf
+    from app.jira_outcome_publish import _has_outcome_footer, _outcome_digest, _with_footer
+    from app.tracker_comment_format import build_pr_comment_success
+
+    digest = _outcome_digest("PROJ-42", "fix")
+    body = build_pr_comment_success(
+        "jira",
+        pr_url="https://github.com/o/r/pull/123",
+        pr_title="Repair widget validators",
+        pr_body="## Summary\n\n- Reworked parser",
+        skill_name="fix",
+        base_branch="main",
+    )
+    round_tripped = _adf_to_text(markdown_to_adf(_with_footer(body, digest)))
+
+    assert _has_outcome_footer({"body": round_tripped}, digest)
 
 
 def test_lookup_failure_never_creates_a_duplicate_status_comment():

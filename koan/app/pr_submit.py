@@ -253,17 +253,21 @@ def submit_draft_pr(
                         issue_key, skill_name or "mission", body,
                     )
                     if not ok:
-                        # The upsert declines to write when it cannot first read
-                        # the existing comment, so a quiet failure here means no
-                        # status was posted at all — say so.
+                        # `reason` distinguishes the two shapes of failure: a
+                        # `*_failed`/`lookup_failed` means nothing was posted,
+                        # while `*_unverified` means the comment *is* on the
+                        # issue but could not be re-identified afterwards. Both
+                        # need an operator's eyes, so log the reason verbatim
+                        # rather than asserting which one happened.
                         logger.warning(
-                            "Jira comment upsert failed for %s: %s", issue_key, reason,
+                            "Jira comment upsert did not complete for %s: %s",
+                            issue_key, reason,
                         )
                     return
                 except Exception as e:
-                    # Same user-visible outcome as the `not ok` branch above —
-                    # no status comment on the issue — so it gets the same
-                    # visibility instead of hiding at debug level.
+                    # An unhandled error leaves no status comment on the issue,
+                    # so it gets the same visibility as the `not ok` branch
+                    # above instead of hiding at debug level.
                     logger.warning(
                         "Jira comment upsert failed for %s: %s", issue_key, e,
                     )
