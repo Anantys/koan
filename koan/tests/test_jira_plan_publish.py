@@ -121,6 +121,30 @@ def test_lookup_failure_never_blind_posts_a_duplicate(tmp_path):
     assert load_staged_plan(URL, str(tmp_path)) == "plan"
 
 
+def test_failures_reach_the_run_log_not_only_the_audit_sink(tmp_path):
+    """`log_event` is config-gated and never raises, so it cannot be the only sink.
+
+    With `audit.enabled` false, a Jira error whose sole trace is
+    `security.jsonl` is invisible to whoever runs `make logs`.
+    """
+    stage_plan(URL, "plan", str(tmp_path))
+
+    with (
+        patch(
+            "app.jira_plan_publish.jira_list_comments_checked",
+            side_effect=JiraCommentFetchError("boom"),
+        ),
+        patch("app.jira_plan_publish.time.sleep"),
+        patch("app.jira_plan_publish.log_event"),
+        patch("app.jira_plan_publish._log_runner") as run_log,
+    ):
+        publish_staged_plan(URL, str(tmp_path))
+
+    messages = [call.args[1] for call in run_log.call_args_list]
+    assert any("lookup failed" in m and "PROJ-9" in m for m in messages)
+    assert any("boom" in m for m in messages)
+
+
 def test_transient_lookup_failure_then_success_posts_once(tmp_path):
     stage_plan(URL, "plan", str(tmp_path))
     comments = []
