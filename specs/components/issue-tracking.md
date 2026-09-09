@@ -4,7 +4,7 @@ title: "Component Spec — Issue Tracking"
 description: "Design contract for the provider-neutral issue-tracker abstraction (GitHub/Jira) that routes fetch/comment/create calls through one service layer."
 tags: [issue-tracking]
 created: 2026-06-27
-updated: 2026-07-18
+updated: 2026-09-08
 ---
 
 # Component Spec — Issue Tracking
