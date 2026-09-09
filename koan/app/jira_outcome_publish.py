@@ -71,8 +71,12 @@ def _extract_failure_reason(content: str, exit_code: int) -> str:
 
 
 def _outcome_digest(issue_key: str, command_name: str) -> str:
+    # Not a security primitive: this digest is a dedup key over a non-secret
+    # (issue, command) pair. It stays SHA-1 because comments already published
+    # carry that value in their legacy body marker, and re-hashing would orphan
+    # them into duplicates. `usedforsecurity=False` says so to the runtime.
     token = f"{issue_key}:{command_name}"
-    return hashlib.sha1(token.encode("utf-8")).hexdigest()[:12]
+    return hashlib.sha1(token.encode("utf-8"), usedforsecurity=False).hexdigest()[:12]
 
 
 def _marker_for(issue_key: str, command_name: str) -> str:
@@ -133,10 +137,40 @@ def _upsert_status_comment(
             body_text,
             properties=properties,
         )
-        return ok, "updated" if ok else "update_failed"
+        if not ok:
+            return False, "update_failed"
+        return _confirm_property(issue_key, digest, "updated")
 
     ok = jira_add_comment(issue_key, body_text, properties=properties)
-    return ok, "created" if ok else "create_failed"
+    if not ok:
+        return False, "create_failed"
+    return _confirm_property(issue_key, digest, "created")
+
+
+def _confirm_property(issue_key: str, digest: str, action: str) -> Tuple[bool, str]:
+    """Confirm Jira actually stored the dedup property we just wrote.
+
+    The property is now the comment's only identity — the legacy body marker
+    is an HTML comment and the shared renderer strips those, so it cannot be
+    kept as a fallback. If Jira accepted the write but dropped the property,
+    the next run cannot find this comment and posts a duplicate; say so loudly
+    now rather than letting status comments quietly stack up.
+    """
+    try:
+        comments = jira_list_comments_checked(issue_key)
+    except Exception as e:
+        _log_runner("jira", f"Outcome read-back failed for {issue_key}: {e}")
+        return False, f"{action}_unverified"
+
+    if any(_has_outcome_property(comment, digest) for comment in comments):
+        return True, action
+
+    _log_runner(
+        "jira",
+        f"Outcome property {_OUTCOME_PROPERTY_KEY} missing after {action} on "
+        f"{issue_key}; the next status update will not find this comment.",
+    )
+    return False, f"{action}_unverified"
 
 
 def upsert_jira_comment(

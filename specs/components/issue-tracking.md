@@ -4,7 +4,7 @@ title: "Component Spec — Issue Tracking"
 description: "Design contract for the provider-neutral issue-tracker abstraction (GitHub/Jira) that routes fetch/comment/create calls through one service layer."
 tags: [issue-tracking]
 created: 2026-06-27
-updated: 2026-09-08
+updated: 2026-09-09
 ---
 
 # Component Spec — Issue Tracking
@@ -95,7 +95,11 @@ issue_cli.py          → CLI entry point (fetch/comment/create) used by prompts
   Legacy `<!-- koan-jira-outcome:… -->` markers are lookup-only migration
   inputs: the next update removes the marker and attaches the property.
   Lookup failure remains fail-closed and must never authorize creation of a
-  potentially duplicate comment.
+  potentially duplicate comment. The property is the comment's only identity —
+  the legacy marker is an HTML comment and the shared renderer strips those —
+  so a write is only reported as published once a read-back observes the
+  property on a comment; an accepted write whose property did not persist is
+  reported as unverified rather than as success.
 
 ## Integration points
 

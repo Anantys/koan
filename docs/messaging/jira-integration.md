@@ -4,7 +4,7 @@ title: "Jira Integration"
 description: "Full reference for controlling Kōan via `@mention` commands in Jira issue comments, including project mapping, ADF parsing, and coexistence with GitHub."
 tags: [messaging]
 created: 2026-05-28
-updated: 2026-09-08
+updated: 2026-09-09
 ---
 
 # Jira Integration
@@ -372,8 +372,13 @@ Outcome idempotency is stored in the hidden Jira comment property
 `koan.jira.outcome`; no bookkeeping marker is appended to the visible body.
 On the first update after upgrading, Koan still recognizes an existing
 `<!-- koan-jira-outcome:… -->` body marker, edits that comment in place without
-the marker, and attaches the property. If comment lookup fails, Koan continues
-to fail closed and does not create a potentially duplicate status comment.
+the marker, and attaches the property. Because the property is now the
+comment's only identity, Koan reads the comment back after each write and
+reports the update only once the property is observed; a write Jira accepted
+without storing the property is reported as unverified and logged, rather than
+reported as a success that the next run would silently duplicate. If comment
+lookup fails, Koan continues to fail closed and does not create a potentially
+duplicate status comment.
 
 For Jira `/plan` updates, Koan maintains one human-readable **current plan** comment (plain text adapted for Jira rendering), identified by a trailing `Koan current plan (rev <digest>)` footer. A plan too large for one Jira comment (over 29,000 characters) is published as consecutive `Part N of M` comments, each independently verified and footered `(rev <digest>, part N/M)`; because Jira's public REST API cannot create a reply under an existing comment, the parts are linked with `?focusedCommentId=` previous/next URLs instead of being threaded. Shrinking a plan retires the now-orphaned trailing parts rather than stranding them. Koan stages the plan on disk, retries the Jira write three times, and reports success only after reading back a comment carrying that revision — Jira's write endpoints return success for writes that never produce a visible comment, so an unverified write is treated as a failure. Because a failed comment *lookup* is indistinguishable from an empty issue, Koan never creates a comment on a lookup error; a flaky read path therefore cannot stack duplicates. A publish failure keeps the staged plan for a later retry instead of regenerating it, and the stage is dropped after three consecutive failed runs so a permanently undeliverable plan does not wedge the issue. Koan posts an explicit failure status comment when plan generation itself fails.
 

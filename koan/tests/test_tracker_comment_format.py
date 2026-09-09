@@ -13,8 +13,8 @@ from app.tracker_comment_format import (
     build_plan_comment_success,
     build_pr_comment_failure,
     build_pr_comment_success,
-    jira_readable_markdown,
     flatten_github_markdown_for_jira,
+    jira_readable_markdown,
 )
 
 

@@ -491,6 +491,24 @@ def _append_bare_url(
         nodes.append(suffix_node)
 
 
+def _emphasized(value: str, mark_type: str) -> List[Dict[str, Any]]:
+    """Render emphasized content, keeping links inside it clickable.
+
+    The emphasis alternatives match the whole run, so without re-parsing the
+    content a link wrapped in emphasis — the Kōan footer, for one — renders as
+    literal ``[text](url)`` text.
+    """
+    mark = {"type": mark_type}
+    nodes = _inline_to_adf(value)
+    if not nodes:
+        return [{"type": "text", "text": value, "marks": [mark]}]
+    for node in nodes:
+        node["marks"] = [mark] + [
+            m for m in node.get("marks", []) if m.get("type") != mark_type
+        ]
+    return nodes
+
+
 def _inline_to_adf(text: str) -> List[Dict[str, Any]]:
     """Split a line of markdown into ADF text nodes with inline marks.
 
@@ -518,25 +536,9 @@ def _inline_to_adf(text: str) -> List[Dict[str, Any]]:
         elif match.group("bare_url"):
             _append_bare_url(nodes, match.group("bare_url"))
         elif match.group("bold"):
-            value = match.group("bold")[2:-2]
-            if _BARE_URL_RE.fullmatch(value):
-                _append_bare_url(nodes, value, [{"type": "strong"}])
-            else:
-                nodes.append({
-                    "type": "text",
-                    "text": value,
-                    "marks": [{"type": "strong"}],
-                })
+            nodes.extend(_emphasized(match.group("bold")[2:-2], "strong"))
         else:  # em
-            value = match.group("em")[1:-1]
-            if _BARE_URL_RE.fullmatch(value):
-                _append_bare_url(nodes, value, [{"type": "em"}])
-            else:
-                nodes.append({
-                    "type": "text",
-                    "text": value,
-                    "marks": [{"type": "em"}],
-                })
+            nodes.extend(_emphasized(match.group("em")[1:-1], "em"))
         pos = match.end()
     if pos < len(text):
         nodes.append({"type": "text", "text": text[pos:]})
@@ -617,9 +619,12 @@ def markdown_to_adf(text: str) -> Dict[str, Any]:
         # indented text under a list is that item's continuation. Without both
         # guards, ordinary wrapped prose and nested bullets render as code —
         # and every Jira comment Koan posts now goes through this renderer.
+        # A whitespace-only line matches the indent rule but is a blank line,
+        # not code: let it fall through to the blank-line handler below.
         indented_code = (
             _MD_INDENTED_CODE_RE.match(line)
-            if not paragraph
+            if line.strip()
+            and not paragraph
             and not (content and content[-1].get("type") in ("bulletList", "orderedList"))
             else None
         )
@@ -637,9 +642,15 @@ def markdown_to_adf(text: str) -> Dict[str, Any]:
                     i += 1
                     continue
                 break
+            # A line of nothing but spaces matches the indent rule too, so the
+            # collected block can be entirely blank — `default` keeps that from
+            # raising ValueError and blaming Jira for an unpublishable comment.
             indent = min(
-                len(code_line) - len(code_line.lstrip(" \t"))
-                for code_line in code_lines if code_line.strip()
+                (
+                    len(code_line) - len(code_line.lstrip(" \t"))
+                    for code_line in code_lines if code_line.strip()
+                ),
+                default=0,
             )
             code_text = "\n".join(
                 code_line[indent:] if code_line.strip() else ""

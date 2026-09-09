@@ -27,14 +27,15 @@ from app.issue_tracker import (
     project_name_for_path,
 )
 from app.issue_tracker.config import resolve_code_repository
+from app.jira_plan_publish import parse_plan_comment, strip_plan_envelope
 from app.pr_submit import (
     get_commit_subjects,
     get_current_branch,
     guess_project_name,
     submit_draft_pr,
 )
-from app.prompts import load_prompt_or_skill
 from app.private_review_gate import format_gate_note, run_gate_for_skill
+from app.prompts import load_prompt_or_skill
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +59,6 @@ _PLAN_MARKER_RE = re.compile(
     r"^#{2,}\s+(?:Implementation Phases|Phase \d+|Summary|Changes in this iteration)",
     re.MULTILINE | re.IGNORECASE,
 )
-from app.jira_plan_publish import parse_plan_comment, strip_plan_envelope
 
 
 def _build_footer() -> str:

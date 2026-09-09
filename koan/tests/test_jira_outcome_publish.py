@@ -3,6 +3,26 @@
 from unittest.mock import patch
 
 
+def _tagged(issue_key: str, command: str, comment_id: str = "1", body: str = "posted"):
+    """A read-back listing carrying the dedup property the publisher writes.
+
+    Every write is confirmed by re-listing the comments, so a test that stubs
+    the listing has to answer that second call too.
+    """
+    from app.jira_outcome_publish import _OUTCOME_PROPERTY_KEY, _outcome_digest
+
+    return [{
+        "id": comment_id,
+        "body": body,
+        "properties": {
+            _OUTCOME_PROPERTY_KEY: {
+                "digest": _outcome_digest(issue_key, command),
+                "command": command,
+            },
+        },
+    }]
+
+
 class TestPublishJiraMissionOutcome:
     def test_skips_when_no_jira_url(self):
         from app.jira_outcome_publish import publish_jira_mission_outcome
@@ -26,7 +46,10 @@ class TestPublishJiraMissionOutcome:
         from app.jira_outcome_publish import publish_jira_mission_outcome
 
         with (
-            patch("app.jira_outcome_publish.jira_list_comments_checked", return_value=[]),
+            patch(
+                "app.jira_outcome_publish.jira_list_comments_checked",
+                side_effect=[[], _tagged("PROJ-42", "fix")],
+            ),
             patch("app.jira_outcome_publish.jira_add_comment", return_value=True) as mock_add,
             patch(
                 "app.jira_outcome_publish._fetch_pr_details",
@@ -83,7 +106,10 @@ class TestPublishJiraMissionOutcome:
         marker = _marker_for("PROJ-42", "fix")
         existing = [{"id": "99", "body": f"old\n\n{marker}"}]
         with (
-            patch("app.jira_outcome_publish.jira_list_comments_checked", return_value=existing),
+            patch(
+                "app.jira_outcome_publish.jira_list_comments_checked",
+                side_effect=[existing, _tagged("PROJ-42", "fix", comment_id="99")],
+            ),
             patch("app.jira_outcome_publish.jira_edit_comment", return_value=True) as mock_edit,
             patch("app.jira_outcome_publish.jira_add_comment", return_value=True) as mock_add,
             patch("app.jira_outcome_publish._fetch_pr_details", return_value=("", "")),
@@ -103,7 +129,10 @@ class TestPublishJiraMissionOutcome:
         from app.jira_outcome_publish import publish_jira_mission_outcome
 
         with (
-            patch("app.jira_outcome_publish.jira_list_comments_checked", return_value=[]),
+            patch(
+                "app.jira_outcome_publish.jira_list_comments_checked",
+                side_effect=[[], _tagged("PROJ-99", "implement")],
+            ),
             patch("app.jira_outcome_publish.jira_add_comment", return_value=True) as mock_add,
         ):
             result = publish_jira_mission_outcome(
@@ -254,8 +283,21 @@ class TestUpsertJiraComment:
             upsert_jira_comment,
         )
 
+        posted = [{
+            "id": "1",
+            "body": "hello world",
+            "properties": {
+                _OUTCOME_PROPERTY_KEY: {
+                    "digest": _outcome_digest("PROJ-1", "fix"),
+                    "command": "fix",
+                },
+            },
+        }]
         with (
-            patch("app.jira_outcome_publish.jira_list_comments_checked", return_value=[]),
+            patch(
+                "app.jira_outcome_publish.jira_list_comments_checked",
+                side_effect=[[], posted],
+            ),
             patch("app.jira_outcome_publish.jira_add_comment", return_value=True) as mock_add,
         ):
             ok, mode = upsert_jira_comment("PROJ-1", "fix", "hello world")
@@ -307,17 +349,32 @@ class TestUpsertJiraComment:
         add_comment.assert_not_called()
 
     def test_legacy_marker_is_migrated_to_property_and_removed_from_body(self):
-        from app.jira_outcome_publish import _marker_for, upsert_jira_comment
+        from app.jira_outcome_publish import (
+            _OUTCOME_PROPERTY_KEY,
+            _marker_for,
+            _outcome_digest,
+            upsert_jira_comment,
+        )
 
         existing = [{
             "id": "99",
             "body": f"old body\n\n{_marker_for('PROJ-1', 'fix')}",
             "properties": {},
         }]
+        migrated = [{
+            "id": "99",
+            "body": "new body",
+            "properties": {
+                _OUTCOME_PROPERTY_KEY: {
+                    "digest": _outcome_digest("PROJ-1", "fix"),
+                    "command": "fix",
+                },
+            },
+        }]
         with (
             patch(
                 "app.jira_outcome_publish.jira_list_comments_checked",
-                return_value=existing,
+                side_effect=[existing, migrated],
             ),
             patch(
                 "app.jira_outcome_publish.jira_edit_comment",
@@ -330,6 +387,27 @@ class TestUpsertJiraComment:
         assert edit_comment.call_args.args[2] == "new body"
         assert "koan-jira-outcome" not in edit_comment.call_args.args[2]
         assert edit_comment.call_args.kwargs["properties"]
+
+    def test_dropped_property_is_reported_instead_of_claiming_success(self):
+        """Jira can accept the write and silently keep no property.
+
+        The property is the comment's only identity now — the legacy body
+        marker is an HTML comment and the renderer strips those — so an
+        unstored property means the next run posts a duplicate. Report it.
+        """
+        from app.jira_outcome_publish import upsert_jira_comment
+
+        posted_without_property = [{"id": "1", "body": "hello world", "properties": {}}]
+        with (
+            patch(
+                "app.jira_outcome_publish.jira_list_comments_checked",
+                side_effect=[[], posted_without_property],
+            ),
+            patch("app.jira_outcome_publish.jira_add_comment", return_value=True),
+        ):
+            ok, mode = upsert_jira_comment("PROJ-1", "fix", "hello world")
+
+        assert (ok, mode) == (False, "created_unverified")
 
 
 def test_lookup_failure_never_creates_a_duplicate_status_comment():

@@ -261,7 +261,12 @@ def submit_draft_pr(
                         )
                     return
                 except Exception as e:
-                    logger.debug("Failed to upsert Jira comment: %s", e)
+                    # Same user-visible outcome as the `not ok` branch above —
+                    # no status comment on the issue — so it gets the same
+                    # visibility instead of hiding at debug level.
+                    logger.warning(
+                        "Jira comment upsert failed for %s: %s", issue_key, e,
+                    )
                     return
         try:
             from app.issue_tracker import add_comment

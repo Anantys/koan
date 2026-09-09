@@ -28,6 +28,7 @@ from app.jira_notifications import (
     jira_edit_comment,
     jira_list_comments_checked,
 )
+from app.run_log import log_safe as _log_runner
 from app.security_audit import TRACKER_COMMENT_MUTATION, log_event
 from app.utils import atomic_write
 
@@ -236,14 +237,32 @@ def _verify_part(comments, revision: str, part_number: int) -> Optional[dict]:
     return None
 
 
+def _stage_unreadable(issue_url: str, reason: str) -> None:
+    """Report a stage that exists but cannot be used.
+
+    Silence here would be indistinguishable from "nothing was staged", and what
+    is lost is the model run this whole module exists to protect.
+    """
+    issue_key = ""
+    with suppress(Exception):
+        issue_key = parse_jira_url(issue_url)
+    _audit(issue_key, "stage_read", "failure", 1, error=reason[:180])
+
+
 def _read_stage(issue_url: str, instance_dir: str) -> Optional[dict]:
+    path = stage_path_for(issue_url, instance_dir)
     try:
-        data = json.loads(stage_path_for(issue_url, instance_dir).read_text())
-    except (OSError, ValueError, TypeError):
+        data = json.loads(path.read_text())
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError, TypeError) as exc:
+        _stage_unreadable(issue_url, f"{type(exc).__name__}: {exc}")
         return None
     if not isinstance(data, dict):
+        _stage_unreadable(issue_url, "staged payload is not an object")
         return None
     if data.get("issue_url") != issue_url or not isinstance(data.get("comment_body"), str):
+        _stage_unreadable(issue_url, "staged payload is missing issue_url/comment_body")
         return None
     return data
 
@@ -270,14 +289,9 @@ def _clear_staged_plan(issue_url: str, instance_dir: str) -> bool:
         issue_key = ""
         with suppress(Exception):
             issue_key = parse_jira_url(issue_url)
-        log_event(
-            TRACKER_COMMENT_MUTATION,
-            result="failure",
-            details={
-                "provider": "jira", "issue_key": issue_key,
-                "action": "stage_clear", "error": str(exc)[:180],
-                "stage_path": str(path),
-            },
+        _audit(
+            issue_key, "stage_clear", "failure", 1,
+            error=str(exc)[:180], stage_path=str(path),
         )
         return False
 
@@ -324,6 +338,15 @@ def _audit(issue_key: str, action: str, result: str, attempt: int, **details) ->
             "attempt": attempt, **details,
         },
     )
+    if result == "failure":
+        # log_event returns early when auditing is disabled, so a failure whose
+        # only trace is security.jsonl is invisible to whoever runs `make logs`.
+        extra = " ".join(f"{k}={v}" for k, v in details.items() if v not in (None, ""))
+        _log_runner(
+            "jira",
+            f"plan {action} failed for {issue_key or '?'} "
+            f"(attempt {attempt}){': ' + extra if extra else ''}",
+        )
 
 
 def _record_failed_session(
@@ -346,6 +369,19 @@ def _record_failed_session(
     data["sessions"] = sessions
     _write_stage(issue_url, instance_dir, data)
     return False, reason
+
+
+def _contains_navigation(body: str, navigation: str) -> bool:
+    """Whether a read-back comment already carries these navigation links.
+
+    Compared on collapsed whitespace: the body comes back through ADF, which
+    splits a linked URL into its own text node and re-joins siblings with a
+    space. A literal substring test never matches that, so every part would be
+    rewritten on every run and re-notify every watcher.
+    """
+    if not navigation.strip():
+        return True
+    return " ".join(navigation.split()) in " ".join(body.split())
 
 
 def _upsert_part(
@@ -382,7 +418,7 @@ def _upsert_part(
 
         settled = _verify_part(comments, revision, part_number)
         if settled is not None and (
-            not always_write or navigation.strip() in (settled.get("body") or "")
+            not always_write or _contains_navigation(settled.get("body") or "", navigation)
         ):
             _audit(
                 issue_key, "verify", "success", attempt,

@@ -4,20 +4,19 @@ import json
 from unittest.mock import patch
 
 import pytest
-
-from app.jira_notifications import JiraCommentFetchError
+from app.jira_notifications import JiraCommentFetchError, _adf_to_text, markdown_to_adf
 from app.jira_plan_publish import (
     _FOOTER_RE,
-    _SUPERSEDED_BODY,
     _MAX_COMMENT_CHARS,
     _MAX_PUBLISH_SESSIONS,
     _PART_BODY_CHARS,
     _STAGE_MAX_AGE_SECONDS,
+    _SUPERSEDED_BODY,
     _fence_balanced,
     _footer_for,
+    _plan_parts,
     _render_comment,
     _revision,
-    _plan_parts,
     _split_comment_body,
     load_staged_plan,
     publish_staged_plan,
@@ -36,6 +35,17 @@ def _footer(body):
 def _rendered(body):
     """The comment text the publisher is expected to send for ``body``."""
     return f"{body}\n\n{_footer(body)}"
+
+
+def _as_jira_returns(rendered):
+    """What a read-back of ``rendered`` actually yields.
+
+    Jira stores ADF, and ``jira_list_comments_checked`` renders it back through
+    ``_adf_to_text`` — which joins sibling inline nodes with a space, so a
+    linked URL comes back spaced differently from what was sent. A fake listing
+    that echoes the raw markdown hides idempotency checks that never match.
+    """
+    return _adf_to_text(markdown_to_adf(rendered))
 
 
 def test_publish_creates_then_verifies_and_clears_stage(tmp_path):
@@ -234,6 +244,29 @@ def test_expired_stage_is_discarded(tmp_path):
     assert not path.exists()
 
 
+def test_corrupt_stage_is_reported_not_silently_treated_as_absent(tmp_path):
+    """A truncated stage file must not read as "nothing was staged".
+
+    What it holds is the model run this module exists to protect; discarding
+    it without a trace makes an expensive loss look like a fresh start.
+    """
+    stage_plan(URL, "plan", str(tmp_path))
+    stage_path_for(URL, str(tmp_path)).write_text('{"issue_url": "https://org')
+
+    with patch("app.jira_plan_publish.log_event") as log_event:
+        assert load_staged_plan(URL, str(tmp_path)) is None
+
+    actions = [call.kwargs["details"]["action"] for call in log_event.call_args_list]
+    assert "stage_read" in actions
+
+
+def test_missing_stage_is_not_reported_as_a_failure(tmp_path):
+    with patch("app.jira_plan_publish.log_event") as log_event:
+        assert load_staged_plan(URL, str(tmp_path)) is None
+
+    log_event.assert_not_called()
+
+
 def test_publish_without_a_stage_is_a_no_op(tmp_path):
     with patch("app.jira_plan_publish.jira_add_comment") as add_comment:
         ok, reason = publish_staged_plan(URL, str(tmp_path))
@@ -331,11 +364,12 @@ def test_resuming_a_fully_published_split_plan_rewrites_nothing(tmp_path):
     comments = []
 
     def add(_key, rendered):
-        comments.append({"id": str(len(comments) + 1), "body": rendered})
+        comments.append({"id": str(len(comments) + 1), "body": _as_jira_returns(rendered)})
         return True
 
     def edit(_key, comment_id, rendered):
-        next(c for c in comments if c["id"] == comment_id)["body"] = rendered
+        target = next(c for c in comments if c["id"] == comment_id)
+        target["body"] = _as_jira_returns(rendered)
         return True
 
     with (
