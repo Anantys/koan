@@ -207,8 +207,8 @@ def _deliver_jira_plan(
         # rejected the plan here would send the reader hunting the wrong fault.
         summary = f"Plan posted, but its staged copy could not be removed: {stage}"
         _messaging.notify_outcome(
-            f"⚠️ {summary}. Until it is, /plan on this issue republishes the "
-            "same plan instead of generating a new one.",
+            f"⚠️ {summary}. Until it is, a bare /plan on this issue republishes "
+            "the same plan; pass instructions to force a fresh one.",
             notify_fn,
         )
         return False, summary
@@ -254,9 +254,14 @@ def _run_issue_plan(
     notify_fn(f"\U0001f4d6 Reading {ref.provider} issue {ref.label}...")
     print(f"[plan] Fetching tracker issue {issue_url}", flush=True)
 
+    effective_context = merge_context_with_base_branch(context, base_branch)
+
     # A prior Jira publish failure already has a generated plan on disk.  Try
     # delivery before spending another model run generating an equivalent plan.
-    if ref.provider == "jira":
+    # Only when this run adds nothing: a staged plan predates the instructions
+    # supplied now, so republishing it would silently drop them and still
+    # report success.
+    if ref.provider == "jira" and not effective_context:
         from app.jira_plan_publish import load_staged_plan
 
         if load_staged_plan(issue_url, instance_dir) is not None:
@@ -264,10 +269,13 @@ def _run_issue_plan(
             if not posted:
                 return False, detail
             _messaging.notify_outcome(
-                f"✅ Plan posted as comment on {ref.label} (Jira comment {detail}): {issue_url}",
+                f"✅ Previously staged plan posted as comment on {ref.label} "
+                f"(Jira comment {detail}): {issue_url}",
                 notify_fn,
             )
-            return True, f"Plan posted on {ref.label}: {issue_url}"
+            return True, (
+                f"Plan posted on {ref.label} from a previously staged copy: {issue_url}"
+            )
 
     try:
         content = fetch_issue(
@@ -292,7 +300,6 @@ def _run_issue_plan(
         context_parts.append(f"\n\n## Discussion Comments\n\n{comments_text}")
     else:
         context_parts.append("\n\n*No comments yet on this issue.*")
-    effective_context = merge_context_with_base_branch(context, base_branch)
     if effective_context:
         context_parts.append(f"\n\n## User Instructions\n\n{effective_context}")
     issue_context = "\n".join(context_parts)

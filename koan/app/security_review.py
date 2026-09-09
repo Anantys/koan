@@ -62,7 +62,12 @@ SENSITIVE_CONTENT_PATTERNS = [
     (r"(?i)dangerouslySetInnerHTML", "React XSS risk"),
     (r"(?i)yaml\.(?:unsafe_load\s*\(|load\s*\((?!.*SafeLoader))", "unsafe YAML deserialization"),
     (r"BEGIN[ \t]+(?:RSA |DSA |EC |OPENSSH )?PRIVATE KEY", "private key in source"),
-    (r"(?i)hashlib\.(?:md5|sha1)\s*\(", "weak cryptographic hash"),
+    # Mirrors bandit B324: a call that declares usedforsecurity=False is a
+    # non-cryptographic use (checksums, dedup keys) and is not flagged.
+    (
+        r"(?i)hashlib\.(?:md5|sha1)\s*\((?!.*usedforsecurity\s*=\s*False)",
+        "weak cryptographic hash",
+    ),
     (r"(?i)tempfile\.mktemp\s*\(", "insecure temp file creation"),
     (r"(?i)render_template_string\s*\(", "potential template injection"),
     (r"(?i)\bverify\s*=\s*False\b", "SSL/TLS verification bypass"),

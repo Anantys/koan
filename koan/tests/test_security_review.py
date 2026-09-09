@@ -252,6 +252,13 @@ class TestScanDiffForPatterns:
         assert len(findings) == 1
         assert findings[0][0] == "weak cryptographic hash"
 
+    def test_weak_hash_declared_non_security_is_not_flagged(self):
+        diff = (
+            '+h = hashlib.sha1(token.encode("utf-8"), usedforsecurity=False).hexdigest()'
+        )
+        findings = scan_diff_for_patterns(diff)
+        assert findings == []
+
     def test_detects_insecure_mktemp(self):
         diff = "+path = tempfile.mktemp(suffix='.tmp')"
         findings = scan_diff_for_patterns(diff)

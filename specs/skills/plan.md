@@ -72,9 +72,13 @@ See `docs/users/skills.md` for the end-user `/plan` reference and
   deliberately no lenient variant — a broken read path must not be able to stack
   duplicate plan comments.
 - An unverified publish fails the mission and retains the staged plan, so a later run
-  republishes it without spending a model call to regenerate. The stage is dropped once
-  it expires or three consecutive runs fail, after which the next `/plan` regenerates —
-  a permanently undeliverable plan must not wedge the issue.
+  republishes it without spending a model call to regenerate. The replay only applies
+  when the later run adds nothing: a `/plan` carrying user instructions or a base
+  branch **must regenerate**, because the stage predates those instructions and
+  republishing it would drop them while reporting success. A replayed publish says so
+  in its outcome instead of reading as a freshly generated plan. The stage is dropped
+  once it expires or three consecutive runs fail, after which the next `/plan`
+  regenerates — a permanently undeliverable plan must not wedge the issue.
 - A plan exceeding one Jira comment is split at paragraph (then line, then word)
   boundaries into sequential parts, each footered `(rev <digest>, part N/M)` and
   verified independently. Parts are located by **part number, not revision**, so a new

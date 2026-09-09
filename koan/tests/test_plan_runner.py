@@ -561,6 +561,66 @@ class TestRunIssuePlan:
         fetch.assert_not_called()
         generate.assert_not_called()
 
+    def test_jira_resume_is_skipped_when_new_instructions_are_supplied(self):
+        """New instructions must be planned, not answered with the stale stage."""
+        notify = MagicMock()
+        url = "https://org.atlassian.net/browse/PROJ-9"
+        ref = _issue_ref(provider="jira", url=url, key="PROJ-9", repo="o/r")
+        content = _issue_content(provider="jira", key="PROJ-9")
+        p_ref, p_fetch, p_add, _add = self._patch_tracker(content, ref=ref)
+        staged = []
+        with p_ref, p_fetch, p_add, \
+             patch("app.plan_runner._generate_iteration_plan",
+                   return_value="## Plan\n\n- Cover the retry path") as generate, \
+             patch("app.jira_plan_publish.load_staged_plan", return_value="stale plan"), \
+             patch("app.jira_plan_publish.stage_plan",
+                   side_effect=lambda _url, body, _instance: staged.append(body)), \
+             patch("app.jira_plan_publish.publish_staged_plan", return_value=(True, "321")):
+            ok, _msg = _run_issue_plan(
+                "/project", url, notify, None, context="also cover the retry path",
+            )
+
+        assert ok
+        generate.assert_called_once()
+        assert "also cover the retry path" in generate.call_args[0][1]
+        assert "Cover the retry path" in staged[0]
+        assert "stale plan" not in staged[0]
+
+    def test_jira_resume_is_skipped_when_base_branch_is_supplied(self):
+        notify = MagicMock()
+        url = "https://org.atlassian.net/browse/PROJ-9"
+        ref = _issue_ref(provider="jira", url=url, key="PROJ-9", repo="o/r")
+        content = _issue_content(provider="jira", key="PROJ-9")
+        p_ref, p_fetch, p_add, _add = self._patch_tracker(content, ref=ref)
+        with p_ref, p_fetch, p_add, \
+             patch("app.plan_runner._generate_iteration_plan",
+                   return_value="## Plan") as generate, \
+             patch("app.jira_plan_publish.load_staged_plan", return_value="stale plan"), \
+             patch("app.jira_plan_publish.stage_plan"), \
+             patch("app.jira_plan_publish.publish_staged_plan", return_value=(True, "321")):
+            ok, _msg = _run_issue_plan(
+                "/project", url, notify, None, base_branch="release/2.0",
+            )
+
+        assert ok
+        generate.assert_called_once()
+        assert "release/2.0" in generate.call_args[0][1]
+
+    def test_jira_resume_outcome_says_it_replayed_a_staged_plan(self):
+        notify = MagicMock()
+        url = "https://org.atlassian.net/browse/PROJ-9"
+        ref = _issue_ref(provider="jira", url=url, key="PROJ-9", repo="o/r")
+        with patch("app.plan_runner.resolve_issue_ref", return_value=ref), \
+             patch("app.plan_runner.fetch_issue"), \
+             patch("app.plan_runner._generate_iteration_plan"), \
+             patch("app.jira_plan_publish.load_staged_plan", return_value="saved plan"), \
+             patch("app.jira_plan_publish.publish_staged_plan", return_value=(True, "321")):
+            ok, msg = _run_issue_plan("/project", url, notify, None)
+
+        assert ok
+        assert "staged" in msg
+        assert any("staged" in str(call) for call in notify.call_args_list)
+
 
 # ---------------------------------------------------------------------------
 # _generate_plan
