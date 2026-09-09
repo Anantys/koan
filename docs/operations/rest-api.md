@@ -4,7 +4,7 @@ title: "REST API"
 description: "Documents Kōan's optional, token-authenticated HTTP control layer (missions, projects, pause/resume, config, admin, usage/metrics/logs endpoints), its generated OpenAPI spec + drift guard, and its security model."
 tags: [operations]
 created: 2026-05-31
-updated: 2026-09-08
+updated: 2026-09-09
 ---
 
 # REST API
@@ -136,10 +136,14 @@ but **only when an API-defining file changes** (`koan/app/api/**`, `koan/openapi
 CI time on it. If the check
 fails, the log tells you to run `make openapi` and commit the result.
 
-> **Scope (iteration 1):** the document precisely covers **paths, methods, path parameters,
-> and bearer-auth security** for every route. Per-operation request/response **body** schemas
-> are a planned enrichment and are not yet included. Two known non-`200` successes are
-> reflected: `POST /v1/missions` → `202`, `POST /v1/projects` → `201`.
+> **Request coverage:** the generated document covers paths, methods, path
+> parameters, bearer-auth security, JSON request bodies, and query parameters
+> for every current route. Body schemas and query declarations live beside
+> their Flask views through `openapi_operation()`, while
+> `app.api.openapi_gen` reads those declarations from the registered route.
+> Response body schemas remain a planned enrichment and are not included in
+> this iteration. Two known non-`200` successes remain explicit:
+> `POST /v1/missions` → `202` and `POST /v1/projects` → `201`.
 
 ---
 

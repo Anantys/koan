@@ -6,6 +6,7 @@ from pathlib import Path
 from flask import Blueprint, current_app, jsonify, request
 
 from app.api.auth import require_token
+from app.api.openapi_metadata import openapi_operation
 
 bp = Blueprint("admin", __name__)
 
@@ -23,6 +24,16 @@ _SECRET_SUBSTRINGS = (
     "signing_key",
     "encryption_key",
 )
+
+_PAUSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "duration": {
+            "type": "string",
+            "description": "Duration such as 2h, 30m, or 1h30m; omit for indefinite.",
+        },
+    },
+}
 
 
 def _koan_root() -> Path:
@@ -52,6 +63,7 @@ def _mask_secrets(obj, depth: int = 0):
 
 
 @bp.route("/v1/pause", methods=["POST"])
+@openapi_operation(request_schema=_PAUSE_SCHEMA, request_required=False)
 @require_token
 def pause():
     data = request.get_json(silent=True) or {}

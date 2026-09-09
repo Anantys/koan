@@ -1,9 +1,8 @@
 """Generate the OpenAPI document for the Kōan REST API from the live Flask app.
 
-The document is **derived** from the app's route table — it can only describe
-routes that are actually registered, so it cannot drift from the code. Auth
-requirements come from the ``require_token`` decorator marker
-(``_koan_requires_token``), not a hand-maintained allow-list.
+The document is **derived** from the app's route table and request metadata
+attached to registered views. Auth requirements come from the ``require_token``
+decorator marker (``_koan_requires_token``), not a hand-maintained allow-list.
 
 Usage::
 
@@ -17,10 +16,17 @@ See specs/005-openapi-enforcement/ and docs/operations/rest-api.md.
 import argparse
 import re
 import sys
+from copy import deepcopy
 from pathlib import Path
 
 import yaml
 from flask import Flask
+
+from app.api.openapi_metadata import (
+    QUERY_PARAMETERS_ATTR,
+    REQUEST_REQUIRED_ATTR,
+    REQUEST_SCHEMA_ATTR,
+)
 
 # The API contract version (matches the /v1 URL prefix). Pinned deliberately so
 # that bumping app.__version__ on a release does NOT cause spurious spec drift.
@@ -91,7 +97,7 @@ def _tag(endpoint: str) -> str:
 def build_spec(app: Flask) -> dict:
     """Build the OpenAPI 3.1 document (as a plain dict) from ``app``'s route table.
 
-    Pure with respect to the route table: equal route tables yield equal dicts.
+    Pure with respect to registered routes and their attached metadata.
     """
     paths: dict = {}
     tags: set = set()
@@ -108,7 +114,9 @@ def build_spec(app: Flask) -> dict:
         secured = bool(getattr(view, "_koan_requires_token", False))
         tag = _tag(rule.endpoint)
         tags.add(tag)
-        params = _path_params(openapi_path)
+        path_params = _path_params(openapi_path)
+        query_params = getattr(view, QUERY_PARAMETERS_ATTR, ())
+        request_schema = getattr(view, REQUEST_SCHEMA_ATTR, None)
 
         for method in methods:
             m = method.lower()
@@ -127,8 +135,18 @@ def build_spec(app: Flask) -> dict:
                 "tags": [tag],
                 "responses": responses,
             }
-            if params:
-                operation["parameters"] = params
+            parameters = [*deepcopy(path_params), *deepcopy(query_params)]
+            if parameters:
+                operation["parameters"] = parameters
+            if request_schema is not None:
+                operation["requestBody"] = {
+                    "required": bool(getattr(view, REQUEST_REQUIRED_ATTR, True)),
+                    "content": {
+                        "application/json": {
+                            "schema": deepcopy(request_schema),
+                        },
+                    },
+                }
             if not secured:
                 # Override the global bearerAuth requirement — this route is public.
                 operation["security"] = []

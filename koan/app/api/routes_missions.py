@@ -6,6 +6,7 @@ from pathlib import Path
 from flask import Blueprint, current_app, jsonify, request
 
 from app.api.auth import require_token
+from app.api.openapi_metadata import openapi_operation, query_parameter
 from app.api.mission_index import (
     _normalize_for_match,
     cancel_mission,
@@ -21,6 +22,76 @@ bp = Blueprint("missions", __name__)
 
 # Validate command-style missions
 _COMMAND_RE = re.compile(r"^/[a-zA-Z0-9_]+")
+
+_CREATE_MISSION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "command": {
+            "type": "string",
+            "description": "Slash-command mission; takes precedence over text.",
+        },
+        "text": {
+            "type": "string",
+            "description": "Free-form mission text.",
+        },
+        "project": {
+            "type": "string",
+            "description": "Optional project name added as a project tag.",
+        },
+        "urgent": {
+            "type": "boolean",
+            "default": False,
+            "description": "Insert the mission at the front of the pending queue.",
+        },
+    },
+    "anyOf": [
+        {
+            "required": ["command"],
+            "properties": {"command": {"pattern": r"\S"}},
+        },
+        {
+            "required": ["text"],
+            "properties": {"text": {"pattern": r"\S"}},
+        },
+    ],
+}
+
+_REORDER_MISSION_SCHEMA = {
+    "type": "object",
+    "required": ["mission_id", "target_position"],
+    "properties": {
+        "mission_id": {"type": "string", "pattern": r"\S"},
+        "target_position": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "One-indexed position in the pending queue.",
+        },
+    },
+}
+
+_EDIT_MISSION_SCHEMA = {
+    "type": "object",
+    "required": ["text"],
+    "properties": {
+        "text": {"type": "string", "pattern": r"\S"},
+    },
+}
+
+_LIST_MISSIONS_QUERY_PARAMETERS = (
+    query_parameter(
+        "status",
+        {
+            "type": "string",
+            "enum": ["pending", "in_progress", "done", "failed", "removed"],
+        },
+        "Restrict results to one mission status.",
+    ),
+    query_parameter(
+        "project",
+        {"type": "string"},
+        "Restrict results to one project.",
+    ),
+)
 
 
 def _instance_dir() -> Path:
@@ -88,6 +159,7 @@ def _find_pending_position(content: str, stored_text: str):
 
 
 @bp.route("/v1/missions", methods=["GET"])
+@openapi_operation(query_parameters=_LIST_MISSIONS_QUERY_PARAMETERS)
 @require_token
 def list_missions_route():
     status_filter = request.args.get("status")
@@ -103,6 +175,7 @@ def list_missions_route():
 
 
 @bp.route("/v1/missions", methods=["POST"])
+@openapi_operation(request_schema=_CREATE_MISSION_SCHEMA)
 @require_token
 def create_mission():
     data = request.get_json(silent=True) or {}
@@ -121,6 +194,7 @@ def create_mission():
 
 
 @bp.route("/v1/missions/reorder", methods=["POST"])
+@openapi_operation(request_schema=_REORDER_MISSION_SCHEMA)
 @require_token
 def reorder_mission_route():
     data = request.get_json(silent=True)
@@ -264,6 +338,7 @@ def delete_mission(mission_id: str):
 
 
 @bp.route("/v1/missions/<mission_id>", methods=["PATCH"])
+@openapi_operation(request_schema=_EDIT_MISSION_SCHEMA)
 @require_token
 def edit_mission(mission_id: str):
     rec = get_mission(_instance_dir(), mission_id)

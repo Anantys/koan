@@ -4,7 +4,7 @@ title: "Component Spec — Web Dashboard & REST API"
 description: "Documents the Flask dashboard and token-gated REST API, their shared `dashboard_service`/`usage_service`/`log_reader` logic, the code-derived OpenAPI spec + drift guard, and the invariants keeping the two surfaces from drifting."
 tags: [web]
 created: 2026-06-27
-updated: 2026-09-08
+updated: 2026-09-09
 ---
 
 # Component Spec — Web Dashboard & REST API
@@ -62,7 +62,8 @@ cli/  (runtime OpenAPI REST client)
 | `usage_service.build_usage_payload()` | Shared usage payload (week/month buckets) for dashboard **and** `GET /v1/usage`. |
 | `log_reader.tail_log()/read_logs()` | Shared log tailing for dashboard **and** `GET /v1/logs`. |
 | `api/server.py` | Validates token at startup (fail-closed), warns on non-loopback bind, serves via waitress. |
-| `api/openapi_gen.py` | Generates the committed OpenAPI 3.1 doc `koan/openapi.yaml` from the live `create_app()` route table. `build_spec(app)` (pure: equal route table → equal dict) → `dump_yaml()` (deterministic, sorted) → `generate()`/`check()`. Per-route bearer-auth is read from the `require_token` marker `_koan_requires_token` (single source of truth), never an allow-list. `make openapi` regenerates; `make openapi-check` (and CI `openapi.yml`, path-filtered) fails on drift. |
+| `api/openapi_metadata.py` | Defines route-adjacent request-schema and query-parameter declarations. `openapi_operation()` stores metadata on the registered view, mirroring the auth marker pattern without performing runtime validation. |
+| `api/openapi_gen.py` | Generates the committed OpenAPI 3.1 document from the live route table plus metadata attached to each view. Paths, methods, path parameters, auth, JSON request bodies, and query parameters are code-derived; response schemas remain a separate enrichment. |
 
 ## Mission record: typed structured `result`
 
@@ -188,6 +189,11 @@ control flow, lifecycle, or quota decisions.
   check (`.github/workflows/openapi.yml`) enforces this only when API-defining files change.
   Generation is deterministic (unchanged code → byte-identical output) and needs no server,
   token, or `api.enabled`.
+- **OpenAPI request metadata stays beside the handler.** Every view that reads a JSON body
+  or query parameter declares that input through `openapi_operation()`. The generator reads
+  those markers and never maintains a second method/path schema map. Handler-access tests
+  guard the declared field names, and numeric defaults used by both metadata and parsing come
+  from the same constants.
 - **The REST CLI consumes the committed OpenAPI document at runtime.** It does
   not commit generated client code. Every documented operation must map to one
   collision-free public command and its hidden `operationId` alias.

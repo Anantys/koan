@@ -5,8 +5,104 @@ from pathlib import Path
 from flask import Blueprint, current_app, jsonify, request
 
 from app.api.auth import require_token
+from app.api.openapi_metadata import openapi_operation, query_parameter
+from app.log_reader import LOG_DEFAULT_LIMIT, LOG_MAX_LIMIT
 
 bp = Blueprint("observability", __name__)
+
+_USAGE_DEFAULT_DAYS = 7
+_USAGE_DEFAULT_OFFSET = 0
+_USAGE_MIN_DAYS = 1
+_USAGE_MAX_DAYS = 100
+_METRICS_DEFAULT_DAYS = 30
+_METRICS_MIN_DAYS = 0
+_METRICS_MAX_DAYS = 365
+
+_USAGE_QUERY_PARAMETERS = (
+    query_parameter(
+        "days",
+        {
+            "type": "integer",
+            "default": _USAGE_DEFAULT_DAYS,
+            "minimum": _USAGE_MIN_DAYS,
+            "maximum": _USAGE_MAX_DAYS,
+        },
+        "Window length; values are clamped to the documented range.",
+    ),
+    query_parameter(
+        "offset",
+        {
+            "type": "integer",
+            "default": _USAGE_DEFAULT_OFFSET,
+            "minimum": 0,
+        },
+        "Shift the window back by this many granularity units.",
+    ),
+    query_parameter(
+        "granularity",
+        {
+            "type": "string",
+            "enum": ["day", "week", "month"],
+            "default": "day",
+        },
+        "Series bucketing granularity.",
+    ),
+    query_parameter(
+        "stacked",
+        {"type": "boolean", "default": False},
+        "Include a per-project series breakdown.",
+    ),
+    query_parameter(
+        "project",
+        {"type": "string"},
+        "Restrict totals and series to one project.",
+    ),
+)
+
+_METRICS_QUERY_PARAMETERS = (
+    query_parameter(
+        "days",
+        {
+            "type": "integer",
+            "default": _METRICS_DEFAULT_DAYS,
+            "minimum": _METRICS_MIN_DAYS,
+            "maximum": _METRICS_MAX_DAYS,
+        },
+        "Lookback window; values are clamped to the documented range.",
+    ),
+    query_parameter(
+        "project",
+        {"type": "string"},
+        "Return metrics and trend for one project.",
+    ),
+)
+
+_LOGS_QUERY_PARAMETERS = (
+    query_parameter(
+        "source",
+        {
+            "type": "string",
+            "enum": ["run", "awake", "all"],
+            "default": "all",
+        },
+        "Log source to read.",
+    ),
+    query_parameter(
+        "limit",
+        {
+            "type": "integer",
+            "default": LOG_DEFAULT_LIMIT,
+            "minimum": 1,
+            "maximum": LOG_MAX_LIMIT,
+        },
+        "Maximum lines returned per source.",
+    ),
+    query_parameter(
+        "q",
+        {"type": "string"},
+        "Case-insensitive substring filter.",
+    ),
+)
 
 
 def _instance_dir() -> Path:
@@ -31,13 +127,14 @@ def _int_param(name: str, default: str) -> int:
 
 
 @bp.route("/v1/usage")
+@openapi_operation(query_parameters=_USAGE_QUERY_PARAMETERS)
 @require_token
 def usage():
     from app.usage_service import build_usage_payload
 
     try:
-        days = _int_param("days", "7")
-        offset = _int_param("offset", "0")
+        days = _int_param("days", str(_USAGE_DEFAULT_DAYS))
+        offset = _int_param("offset", str(_USAGE_DEFAULT_OFFSET))
     except _BadParam as e:
         return jsonify({"error": {"code": "invalid_request", "message": str(e)}}), 422
     stacked = request.args.get("stacked", "false").lower() in ("true", "1", "yes")
@@ -52,6 +149,7 @@ def usage():
 
 
 @bp.route("/v1/metrics")
+@openapi_operation(query_parameters=_METRICS_QUERY_PARAMETERS)
 @require_token
 def metrics():
     from app.mission_metrics import (
@@ -61,7 +159,13 @@ def metrics():
     )
 
     try:
-        days = max(0, min(_int_param("days", "30"), 365))
+        days = max(
+            _METRICS_MIN_DAYS,
+            min(
+                _int_param("days", str(_METRICS_DEFAULT_DAYS)),
+                _METRICS_MAX_DAYS,
+            ),
+        )
     except _BadParam as e:
         return jsonify({"error": {"code": "invalid_request", "message": str(e)}}), 422
     project = request.args.get("project", "")
@@ -82,9 +186,10 @@ def metrics():
 
 
 @bp.route("/v1/logs")
+@openapi_operation(query_parameters=_LOGS_QUERY_PARAMETERS)
 @require_token
 def logs():
-    from app.log_reader import LOG_DEFAULT_LIMIT, read_logs
+    from app.log_reader import read_logs
 
     source = request.args.get("source", "all")
     try:

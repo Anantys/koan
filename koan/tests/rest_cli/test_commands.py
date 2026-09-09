@@ -1,4 +1,5 @@
 import argparse
+import json
 
 import pytest
 
@@ -11,6 +12,15 @@ from app.cli.commands import (
     is_destructive,
 )
 from app.cli.spec import load_operations, load_spec
+
+
+def _sample_value(schema):
+    return {
+        "boolean": True,
+        "integer": 1,
+        "number": 1.0,
+        "object": {},
+    }.get(schema.get("type"), "sample-value")
 
 
 def test_data_is_available_on_get(api_spec_path):
@@ -196,9 +206,15 @@ def test_every_required_parameter_is_expressible(enriched_operations):
         argv = list(operation.command)
         argv.extend("path-value" for _ in path_names)
         for name in query_names:
-            argv.extend([f"--{name.replace('_', '-')}", "query-value"])
+            parameter = next(
+                item for item in operation.parameters if item.name == name
+            )
+            argv.extend(
+                [f"--{name.replace('_', '-')}", str(_sample_value(parameter.schema))]
+            )
         for name in body_names:
-            argv.extend([f"--{name.replace('_', '-')}", "body-value"])
+            schema = operation.body_schema["properties"][name]
+            argv.extend([f"--{name.replace('_', '-')}", str(_sample_value(schema))])
 
         namespace = parser.parse_args(argv)
         request = build_operation_request(
@@ -220,10 +236,14 @@ def test_every_operation_accepts_generic_data_and_query(api_spec_path):
             for parameter in operation.parameters
             if parameter.location == "path"
         )
-        argv.extend(["--data", '{"generic":true}', "-q", "trace=test"])
+        body = {"generic": True}
+        schema = operation.body_schema or {}
+        for name in schema.get("required", []):
+            body[name] = _sample_value(schema["properties"][name])
+        argv.extend(["--data", json.dumps(body), "-q", "trace=test"])
         namespace = parser.parse_args(argv)
         request = build_operation_request(
             operation, namespace, "http://127.0.0.1:8420"
         )
-        assert request.body == {"generic": True}
+        assert request.body == body
         assert request.query["trace"] == "test"
