@@ -37,6 +37,11 @@ def _rendered(body):
     return f"{body}\n\n{_footer(body)}"
 
 
+def _properties_map(properties):
+    """Mirror how ``jira_list_comments_checked`` returns entity properties."""
+    return {item["key"]: item["value"] for item in properties or []}
+
+
 def _as_jira_returns(rendered):
     """What a read-back of ``rendered`` actually yields.
 
@@ -53,8 +58,10 @@ def test_publish_creates_then_verifies_and_clears_stage(tmp_path):
     stage_plan(URL, body, str(tmp_path))
     comments = []
 
-    def add(_key, rendered):
-        comments.append({"id": "42", "body": rendered})
+    def add(_key, rendered, properties=None):
+        comments.append({
+            "id": "42", "body": rendered, "properties": _properties_map(properties),
+        })
         return True
 
     with (
@@ -125,8 +132,10 @@ def test_transient_lookup_failure_then_success_posts_once(tmp_path):
             raise JiraCommentFetchError("transient")
         return comments
 
-    def add(_key, rendered):
-        comments.append({"id": "7", "body": rendered})
+    def add(_key, rendered, properties=None):
+        comments.append({
+            "id": "7", "body": rendered, "properties": _properties_map(properties),
+        })
         return True
 
     with (
@@ -147,8 +156,10 @@ def test_existing_current_plan_is_updated_not_appended(tmp_path):
     stage_plan(URL, body, str(tmp_path))
     existing = {"id": "11", "body": _rendered("stale plan")}
 
-    def edit(_key, _comment_id, rendered):
+    def edit(_key, _comment_id, rendered, properties=None):
         existing["body"] = rendered
+        if properties is not None:
+            existing["properties"] = _properties_map(properties)
         return True
 
     with (
@@ -198,7 +209,9 @@ def test_footer_quoted_mid_body_is_not_mistaken_for_the_plan_comment(tmp_path):
         patch("app.jira_plan_publish.jira_list_comments_checked", side_effect=lambda _k: [unrelated] + posted),
         patch(
             "app.jira_plan_publish.jira_add_comment",
-            side_effect=lambda _k, r: posted.append({"id": "9", "body": r}) or True,
+            side_effect=lambda _k, r, properties=None: posted.append(
+                {"id": "9", "body": r, "properties": _properties_map(properties)}
+            ) or True,
         ),
         patch("app.jira_plan_publish.jira_edit_comment") as edit_comment,
         patch("app.jira_plan_publish.log_event"),
@@ -208,6 +221,140 @@ def test_footer_quoted_mid_body_is_not_mistaken_for_the_plan_comment(tmp_path):
     assert ok is True
     assert comment_id == "9"
     edit_comment.assert_not_called()
+
+
+def test_a_quoted_footer_at_the_end_of_a_human_comment_is_never_edited(tmp_path):
+    """A reviewer quoting the tail of a plan must not become the plan comment.
+
+    End-anchoring alone does not help here: the quote *is* the last thing in
+    the reviewer's comment. Only Koan's own comments carry the entity property.
+    """
+    stage_plan(URL, "revised plan", str(tmp_path))
+    koan_part = {
+        "id": "10",
+        "body": _rendered("original plan"),
+        "properties": {"koan.jira.plan": {"revision": _revision("original plan"),
+                                          "part": 1, "parts": 1}},
+    }
+    human = {"id": "11", "body": f"Why this step?\n\n{_footer('original plan')}"}
+    comments = [human, koan_part]
+
+    def edit(_key, comment_id, rendered, properties=None):
+        target = next(c for c in comments if c["id"] == comment_id)
+        target["body"] = rendered
+        if properties is not None:
+            target["properties"] = _properties_map(properties)
+        return True
+
+    with (
+        patch("app.jira_plan_publish.jira_list_comments_checked", side_effect=lambda _k: comments),
+        patch("app.jira_plan_publish.jira_edit_comment", side_effect=edit),
+        patch("app.jira_plan_publish.jira_add_comment") as add_comment,
+        patch("app.jira_plan_publish.log_event"),
+    ):
+        ok, comment_id = publish_staged_plan(URL, str(tmp_path))
+
+    assert ok is True
+    assert comment_id == "10"
+    add_comment.assert_not_called()
+    assert human["body"] == f"Why this step?\n\n{_footer('original plan')}"
+    assert koan_part["body"].endswith(_footer("revised plan"))
+
+
+def test_a_quoted_stale_footer_in_a_human_comment_is_never_retired(tmp_path):
+    """Retirement blanks a comment's whole body — never a human's."""
+    stage_plan(URL, "revised plan", str(tmp_path))
+    koan_part = {
+        "id": "10",
+        "body": _rendered("original plan"),
+        "properties": {"koan.jira.plan": {"revision": _revision("original plan"),
+                                          "part": 1, "parts": 1}},
+    }
+    # A stale revision *and* a part number beyond the new plan: both retirement
+    # triggers at once.
+    human = {"id": "11", "body": f"Quoting part 2:\n\n{_footer_for(_revision('older'), 2, 2)}"}
+    comments = [koan_part, human]
+
+    def edit(_key, comment_id, rendered, properties=None):
+        target = next(c for c in comments if c["id"] == comment_id)
+        target["body"] = rendered
+        if properties is not None:
+            target["properties"] = _properties_map(properties)
+        return True
+
+    with (
+        patch("app.jira_plan_publish.jira_list_comments_checked", side_effect=lambda _k: comments),
+        patch("app.jira_plan_publish.jira_edit_comment", side_effect=edit),
+        patch("app.jira_plan_publish.jira_add_comment") as add_comment,
+        patch("app.jira_plan_publish.log_event"),
+    ):
+        ok, comment_id = publish_staged_plan(URL, str(tmp_path))
+
+    assert ok is True
+    assert comment_id == "10"
+    add_comment.assert_not_called()
+    assert _SUPERSEDED_BODY not in human["body"]
+    assert load_staged_plan(URL, str(tmp_path)) is None
+
+
+def test_a_created_part_is_not_created_again_when_the_listing_lags(tmp_path):
+    """Jira's comment listing is not read-your-writes.
+
+    A create that reported success but has not replicated yet must not be
+    posted a second time — that is the duplicate this module exists to prevent.
+    """
+    stage_plan(URL, "plan", str(tmp_path))
+
+    with (
+        patch("app.jira_plan_publish.jira_list_comments_checked", return_value=[]),
+        patch("app.jira_plan_publish.jira_add_comment", return_value=True) as add_comment,
+        patch("app.jira_plan_publish.jira_edit_comment") as edit_comment,
+        patch("app.jira_plan_publish.time.sleep"),
+        patch("app.jira_plan_publish.log_event"),
+    ):
+        ok, reason = publish_staged_plan(URL, str(tmp_path))
+
+    assert ok is False
+    assert reason == "created_unverified"
+    assert add_comment.call_count == 1
+    edit_comment.assert_not_called()
+    # The stage survives, so the next mission run re-verifies without paying
+    # for another model run.
+    assert load_staged_plan(URL, str(tmp_path)) == "plan"
+
+
+def test_a_lagging_create_verifies_on_a_later_attempt_without_a_second_post(tmp_path):
+    """Once the replica catches up, the same attempt loop verifies the comment."""
+    stage_plan(URL, "plan", str(tmp_path))
+    comments = []
+    reads = {"n": 0}
+
+    def listing(_key):
+        reads["n"] += 1
+        # The create lands in the listing only from the third read on, so
+        # attempt 1's own post-write read-back still comes back empty.
+        return comments if reads["n"] > 2 else []
+
+    def add(_key, rendered, properties=None):
+        comments.append({
+            "id": "42", "body": rendered, "properties": _properties_map(properties),
+        })
+        return True
+
+    with (
+        patch("app.jira_plan_publish.jira_list_comments_checked", side_effect=listing),
+        patch("app.jira_plan_publish.jira_add_comment", side_effect=add) as add_comment,
+        patch("app.jira_plan_publish.jira_edit_comment") as edit_comment,
+        patch("app.jira_plan_publish.time.sleep"),
+        patch("app.jira_plan_publish.log_event"),
+    ):
+        ok, comment_id = publish_staged_plan(URL, str(tmp_path))
+
+    assert ok is True
+    assert comment_id == "42"
+    assert add_comment.call_count == 1
+    edit_comment.assert_not_called()
+    assert len(comments) == 1
 
 
 def test_repeated_failed_runs_eventually_abandon_the_stage(tmp_path):
@@ -329,12 +476,19 @@ def test_long_plan_creates_linked_verified_parts(tmp_path):
     stage_plan(URL, body, str(tmp_path))
     comments = []
 
-    def add(_key, rendered):
-        comments.append({"id": str(len(comments) + 1), "body": rendered})
+    def add(_key, rendered, properties=None):
+        comments.append({
+            "id": str(len(comments) + 1),
+            "body": rendered,
+            "properties": _properties_map(properties),
+        })
         return True
 
-    def edit(_key, comment_id, rendered):
-        next(c for c in comments if c["id"] == comment_id)["body"] = rendered
+    def edit(_key, comment_id, rendered, properties=None):
+        target = next(c for c in comments if c["id"] == comment_id)
+        target["body"] = rendered
+        if properties is not None:
+            target["properties"] = _properties_map(properties)
         return True
 
     with (
@@ -363,13 +517,19 @@ def test_resuming_a_fully_published_split_plan_rewrites_nothing(tmp_path):
     stage_plan(URL, body, str(tmp_path))
     comments = []
 
-    def add(_key, rendered):
-        comments.append({"id": str(len(comments) + 1), "body": _as_jira_returns(rendered)})
+    def add(_key, rendered, properties=None):
+        comments.append({
+            "id": str(len(comments) + 1),
+            "body": _as_jira_returns(rendered),
+            "properties": _properties_map(properties),
+        })
         return True
 
-    def edit(_key, comment_id, rendered):
+    def edit(_key, comment_id, rendered, properties=None):
         target = next(c for c in comments if c["id"] == comment_id)
         target["body"] = _as_jira_returns(rendered)
+        if properties is not None:
+            target["properties"] = _properties_map(properties)
         return True
 
     with (
@@ -398,12 +558,19 @@ def test_shrinking_plan_retires_orphaned_parts(tmp_path):
     stage_plan(URL, _split_fixture(3), str(tmp_path))
     comments = []
 
-    def add(_key, rendered):
-        comments.append({"id": str(len(comments) + 1), "body": rendered})
+    def add(_key, rendered, properties=None):
+        comments.append({
+            "id": str(len(comments) + 1),
+            "body": rendered,
+            "properties": _properties_map(properties),
+        })
         return True
 
-    def edit(_key, comment_id, rendered):
-        next(c for c in comments if c["id"] == comment_id)["body"] = rendered
+    def edit(_key, comment_id, rendered, properties=None):
+        target = next(c for c in comments if c["id"] == comment_id)
+        target["body"] = rendered
+        if properties is not None:
+            target["properties"] = _properties_map(properties)
         return True
 
     with (
@@ -514,12 +681,19 @@ def test_failed_orphan_retirement_keeps_the_stage_and_fails(tmp_path):
     stage_plan(URL, _split_fixture(3), str(tmp_path))
     comments = []
 
-    def add(_key, rendered):
-        comments.append({"id": str(len(comments) + 1), "body": rendered})
+    def add(_key, rendered, properties=None):
+        comments.append({
+            "id": str(len(comments) + 1),
+            "body": rendered,
+            "properties": _properties_map(properties),
+        })
         return True
 
-    def edit(_key, comment_id, rendered):
-        next(c for c in comments if c["id"] == comment_id)["body"] = rendered
+    def edit(_key, comment_id, rendered, properties=None):
+        target = next(c for c in comments if c["id"] == comment_id)
+        target["body"] = rendered
+        if properties is not None:
+            target["properties"] = _properties_map(properties)
         return True
 
     with (
@@ -535,11 +709,11 @@ def test_failed_orphan_retirement_keeps_the_stage_and_fails(tmp_path):
         # publish edits still work, so this isolates the cleanup step.
         retire_calls = []
 
-        def edit_but_drop_retirements(_key, comment_id, rendered):
+        def edit_but_drop_retirements(_key, comment_id, rendered, properties=None):
             if rendered == _SUPERSEDED_BODY:
                 retire_calls.append(comment_id)
                 return True
-            return edit(_key, comment_id, rendered)
+            return edit(_key, comment_id, rendered, properties=properties)
 
         stage_plan(URL, "a much shorter plan", str(tmp_path))
         with patch(
@@ -585,8 +759,10 @@ def test_clear_failure_after_a_verified_publish_is_not_reported_as_success(tmp_p
     stage_plan(URL, body, str(tmp_path))
     comments = []
 
-    def add(_key, rendered):
-        comments.append({"id": "42", "body": rendered})
+    def add(_key, rendered, properties=None):
+        comments.append({
+            "id": "42", "body": rendered, "properties": _properties_map(properties),
+        })
         return True
 
     with (

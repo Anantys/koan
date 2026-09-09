@@ -44,6 +44,11 @@ _FOOTER_RE = re.compile(
 )
 _SUPERSEDED_BODY = "(Superseded — this part of an earlier Koan plan was replaced.)"
 _FENCE_RE = re.compile(r"^\s*```(.*)$")
+# The footer is plain text, so a human can reproduce it by quoting the tail of a
+# plan. A Jira comment entity property cannot be produced from the comment
+# editor — it only exists if something wrote it through the REST comment
+# payload — which makes it the authorship proof the footer can never be.
+_PLAN_PROPERTY_KEY = "koan.jira.plan"
 
 _PUBLISH_ATTEMPTS = 3
 # Jira rejects comments beyond roughly 32k characters. Split well under that so
@@ -202,14 +207,41 @@ def _render_comment(
     return rendered
 
 
+def _plan_properties(revision: str, part_number: int, part_count: int) -> List[dict]:
+    """The entity property stamped on every plan comment Koan writes."""
+    return [{
+        "key": _PLAN_PROPERTY_KEY,
+        "value": {"revision": revision, "part": part_number, "parts": part_count},
+    }]
+
+
+def _authored_by_koan(comment: dict) -> bool:
+    properties = comment.get("properties")
+    return isinstance(properties, dict) and _PLAN_PROPERTY_KEY in properties
+
+
 def _find_plan_comments(comments) -> List[Tuple[dict, str, int, int]]:
     """Return every Koan plan comment as ``(comment, revision, part, count)``.
 
-    The footer is matched at the end of the body so a plan that merely quotes
-    the footer text mid-body is not mistaken for a plan comment itself.
+    Identity is the ``koan.jira.plan`` entity property *and* the trailing
+    footer. The property answers "is this ours?" — a reviewer who pastes the
+    tail of a plan into their own comment ends it with the footer, and without
+    the authorship guard that comment becomes what the next revision edits and
+    what the retirement pass blanks out. The footer answers "which revision and
+    part?" and is still matched at the end of the body, so a plan quoted
+    mid-body is not mistaken for a plan comment either.
+
+    When *no* comment on the issue carries the property, every comment is
+    considered: a Jira deployment that drops properties on write, or ignores
+    ``expand=properties`` when listing, must still be able to find, update and
+    retire the plan comment it published, and there the footer is all there is.
     """
+    pool = [comment for comment in comments or [] if _authored_by_koan(comment)]
+    if not pool:
+        pool = list(comments or [])
+
     found = []
-    for comment in comments or []:
+    for comment in pool:
         match = _FOOTER_RE.search((comment.get("body") or "").rstrip())
         if match:
             revision, part, count = match.group(1), match.group(2), match.group(3)
@@ -398,6 +430,10 @@ def _upsert_part(
 
     ``always_write`` forces the edit used to attach navigation links, whose
     targets are only known once every part has an id.
+
+    Returns ``(published, detail)``: the Jira comment id on success, and
+    otherwise a machine-readable failure reason (``""`` for the generic
+    verification failure the caller names itself).
     """
     try:
         rendered = _render_comment(part, revision, part_number, part_count, navigation)
@@ -405,6 +441,8 @@ def _upsert_part(
         _audit(issue_key, "render", "failure", 0, error=str(exc)[:180], part=part_number)
         return False, ""
 
+    properties = _plan_properties(revision, part_number, part_count)
+    created_unverified = False
     for attempt in range(1, max(1, attempts) + 1):
         # A failed lookup is not "no plan comment yet" — creating one here is how
         # a flaky read path turns into a pile of duplicate plan comments.
@@ -427,12 +465,29 @@ def _upsert_part(
             return True, str(settled.get("id", ""))
 
         existing = settled or _locate_part(comments, part_number)
+        if existing is None and created_unverified:
+            # An earlier attempt's create reported success and the comment is
+            # still not in the listing. Jira's comment read path is not
+            # read-your-writes, so this is at least as likely to be a lagging
+            # replica as a phantom write — and creating again is exactly how
+            # one plan part becomes two, each notifying every watcher. Stop
+            # and let the next mission run re-verify; the stage is kept, so no
+            # model run is lost.
+            _audit(
+                issue_key, "create", "failure", attempt,
+                error="create reported success but never read back",
+                part=part_number, parts=part_count,
+            )
+            return False, "created_unverified"
+
         action = "update" if existing is not None else "create"
         try:
             ok = (
-                jira_edit_comment(issue_key, str(existing.get("id", "")), rendered)
+                jira_edit_comment(
+                    issue_key, str(existing.get("id", "")), rendered, properties=properties,
+                )
                 if existing is not None
-                else jira_add_comment(issue_key, rendered)
+                else jira_add_comment(issue_key, rendered, properties=properties)
             )
         except Exception as exc:
             ok = False
@@ -445,6 +500,8 @@ def _upsert_part(
                 issue_key, action, "success" if ok else "failure", attempt,
                 part=part_number, parts=part_count,
             )
+            if ok and action == "create":
+                created_unverified = True
 
         try:
             verified = _verify_part(jira_list_comments_checked(issue_key), revision, part_number)
@@ -525,11 +582,12 @@ def publish_staged_plan(
 ) -> Tuple[bool, str]:
     """Publish and read-back verify the staged plan comment(s) for ``issue_url``.
 
-    The footer makes an ordinary retry an update of the existing plan comment
-    rather than a second one, and its revision proves Jira is holding this exact
-    staged plan before success is reported. A failed verification deliberately
-    leaves the staged artifact intact so the next mission run does not have to
-    regenerate the plan.
+    The ``koan.jira.plan`` property plus the footer make an ordinary retry an
+    update of Koan's own existing plan comment rather than a second one, and
+    the footer's revision proves Jira is holding this exact staged plan before
+    success is reported. A failed verification deliberately leaves the staged
+    artifact intact so the next mission run does not have to regenerate the
+    plan.
 
     Oversized plans are published as consecutive parts, then revisited to attach
     previous/next links once every part id is known.
@@ -555,23 +613,23 @@ def publish_staged_plan(
 
     comment_ids: List[str] = []
     for index, part in enumerate(parts):
-        posted, comment_id = _upsert_part(
+        posted, detail = _upsert_part(
             issue_key, revision, part, index + 1, part_count, "", attempts,
         )
         if not posted:
-            return failure(index + 1, "verification_failed")
-        comment_ids.append(comment_id)
+            return failure(index + 1, detail or "verification_failed")
+        comment_ids.append(detail)
 
     if part_count > 1:
         for index, part in enumerate(parts):
-            posted, comment_id = _upsert_part(
+            posted, detail = _upsert_part(
                 issue_key, revision, part, index + 1, part_count,
                 _navigation(issue_url, comment_ids, index), attempts,
                 always_write=True,
             )
             if not posted:
-                return failure(index + 1, "navigation_failed")
-            comment_ids[index] = comment_id
+                return failure(index + 1, detail or "navigation_failed")
+            comment_ids[index] = detail
 
     # Keep the stage until cleanup is verified. A stranded older group would be
     # picked up by `/implement` in preference to this revision, so the publish

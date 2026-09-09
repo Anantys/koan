@@ -4,7 +4,7 @@ title: "Skill Spec — plan"
 description: "Documents the `/plan` skill that deep-thinks an idea (or iterates an existing issue) into a structured tracker-issue plan via a critic→regenerate loop, covered by the deterministic eval harness."
 tags: [skill]
 created: 2026-06-27
-updated: 2026-09-08
+updated: 2026-09-09
 ---
 
 # Skill Spec — `plan`
@@ -66,6 +66,22 @@ See `docs/users/skills.md` for the end-user `/plan` reference and
   is retried three times; it counts as posted only once a read-back returns a comment
   carrying that revision — Jira's write endpoints report success for writes that never
   became a visible comment.
+- **Only Koan's own comments may be written to.** Every plan comment is stamped with a
+  `koan.jira.plan` entity property, supplied atomically with the create or update. A
+  human-readable footer is reproducible by anyone quoting the tail of a plan, and a
+  comment matched on the footer alone is a comment the next revision would *overwrite*
+  and the retirement pass would blank; the property cannot be produced from Jira's
+  comment editor, so it is what distinguishes Koan's parts from a reviewer's. Lookup
+  and retirement therefore consider only property-carrying comments — falling back to
+  footer-only matching solely when no comment on the issue carries the property, since
+  a deployment that drops properties (or ignores `expand=properties`) must still be
+  able to update the plan it published.
+- **A create that reported success is never repeated.** Jira's comment listing is not
+  read-your-writes, so a successful create whose read-back has not replicated must not
+  be posted again — that is the duplicate this whole path exists to prevent. Later
+  attempts may only re-verify, or update in place once the comment does appear; if it
+  never does, the publish reports `created_unverified` and leaves the stage for the
+  next run.
 - A failed comment **lookup** must never trigger a write. An empty comment list is
   indistinguishable from a failed read, so every upsert path reads through
   `jira_list_comments_checked`, which raises instead of degrading to `[]`. There is
