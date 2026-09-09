@@ -130,6 +130,7 @@ def _execution_truth(agent: dict, missions: dict, koan_root: Path) -> dict:
 @bp.route("/v1/status")
 @require_token
 def status():
+    """Get current agent state, execution and mission counters."""
     agent = _get_agent_state()
     missions = _mission_counts()
     return jsonify(

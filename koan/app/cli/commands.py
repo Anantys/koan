@@ -9,7 +9,62 @@ from typing import Any
 from urllib.parse import quote
 
 from app.cli import CliError
-from app.cli.spec import Operation
+from app.cli.spec import Operation, load_tag_descriptions
+
+# One executable example per group, shown in that group's --help epilog.
+GROUP_EXAMPLES = {
+    "missions": [
+        "koan-cli missions list --status pending",
+        'koan-cli missions create --text "fix the flaky test" --project koan',
+        'koan-cli missions create --command "/fix 1234"',
+        "koan-cli missions get 42",
+        "koan-cli missions delete 42 --yes",
+    ],
+    "projects": [
+        "koan-cli projects list --pretty",
+        'koan-cli projects create --github_url https://github.com/acme/my-toolkit',
+        "koan-cli projects update my-toolkit",
+    ],
+    "observability": [
+        "koan-cli observability usage --days 30",
+        "koan-cli observability metrics --pretty",
+        "koan-cli observability logs --limit 200",
+    ],
+    "admin": [
+        "koan-cli admin config",
+        "koan-cli admin pause",
+        "koan-cli admin resume",
+        "koan-cli admin restart --yes",
+        "koan-cli admin shutdown --yes",
+    ],
+    "health": ["koan-cli health"],
+    "status": ["koan-cli status"],
+}
+
+
+def _example_epilog(examples: list[str]) -> str | None:
+    if not examples:
+        return None
+    return "examples:\n  " + "\n  ".join(examples)
+
+
+def _first_examples() -> list[str]:
+    examples = []
+    examples.append("koan-cli status")
+    examples.append('koan-cli missions create --text "review PR 42" --project koan')
+    examples.append("koan-cli projects list --pretty")
+    examples.append("koan-cli raw GET /v1/metrics")
+    return examples
+
+
+def _root_epilog() -> str:
+    lines = ["examples:"] + [f"  {line}" for line in _first_examples()]
+    lines.append("")
+    lines.append(
+        "The bearer token comes from KOAN_API_TOKEN or the profile. Run "
+        "`koan-cli configure` to write one."
+    )
+    return "\n".join(lines)
 
 
 DESTRUCTIVE = {
@@ -20,8 +75,21 @@ DESTRUCTIVE = {
 }
 
 
+class _RawHelp(argparse.RawDescriptionHelpFormatter):
+    """Help formatter that preserves newlines in help/description/epilog.
+
+    The group and root epilogs are hand-formatted, multi-line example blocks
+    (and the ``anyOf`` note appends a line to a generated description); the
+    default formatter would collapse them onto one line.
+    """
+
+
 class CliArgumentParser(argparse.ArgumentParser):
     """Argument parser whose usage errors follow the CLI exit contract."""
+
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("formatter_class", _RawHelp)
+        super().__init__(*args, **kwargs)
 
     def error(self, message):
         self.print_usage()
@@ -48,12 +116,57 @@ def _schema_type(schema: dict[str, Any]):
 def _add_common_request_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--data", help="JSON text or @path, valid for every method")
     parser.add_argument(
-        "-q", "--query", action="append", default=[], metavar="KEY=VALUE"
+        "-q",
+        "--query",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Raw query parameter, repeated for each KEY=VALUE pair.",
     )
-    parser.add_argument("--yes", action="store_true")
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help=(
+            "Skip the confirmation prompt on destructive requests. "
+            "Required when stdin is not a TTY."
+        ),
+    )
     output = parser.add_mutually_exclusive_group()
-    output.add_argument("--compact", action="store_true")
-    output.add_argument("--pretty", action="store_true")
+    output.add_argument(
+        "--compact", action="store_true", help="Force single-line JSON (default when piped)."
+    )
+    output.add_argument(
+        "--pretty", action="store_true", help="Force indented JSON (default on a TTY)."
+    )
+
+
+def _metavar(schema: dict[str, Any], fallback: str) -> str:
+    if schema.get("type") == "boolean":
+        return "true|false"
+    return str(schema.get("title") or fallback).upper()
+
+
+def _required_note(schema: dict | None) -> str | None:
+    """Render an ``anyOf`` body schema as an argparse description note.
+
+    The CLI renders each ``anyOf`` branch's properties as independent flags, so
+    a schema like ``command XOR text`` cannot express its exclusivity in the
+    parser itself. State it in prose on the leaf's description instead.
+    """
+    if not schema:
+        return None
+    branches = schema.get("anyOf")
+    if not isinstance(branches, list) or not branches:
+        return None
+    labels = []
+    for branch in branches:
+        required = branch.get("required")
+        if isinstance(required, list) and len(required) == 1:
+            labels.append(required[0])
+    if len(labels) == len(branches) and len(labels) > 1:
+        flags = ", ".join("--" + label.replace("_", "-") for label in labels)
+        return f"Provide exactly one of {flags}."
+    return None
 
 
 def _configure_operation_parser(
@@ -62,12 +175,18 @@ def _configure_operation_parser(
 ) -> None:
     for parameter in operation.parameters:
         if parameter.location == "path":
-            parser.add_argument(parameter.name)
+            parser.add_argument(
+                parameter.name,
+                metavar=parameter.name.replace("_", "-").upper(),
+                help=parameter.description or None,
+            )
         elif parameter.location == "query":
             parser.add_argument(
                 f"--{parameter.name.replace('_', '-')}",
                 dest=f"_query_{parameter.name}",
                 type=_schema_type(parameter.schema),
+                metavar=_metavar(parameter.schema, parameter.name),
+                help=parameter.description or None,
             )
     properties = (operation.body_schema or {}).get("properties", {})
     for name, schema in properties.items():
@@ -75,40 +194,82 @@ def _configure_operation_parser(
             f"--{name.replace('_', '-')}",
             dest=f"_body_{name}",
             type=_schema_type(schema),
+            metavar=_metavar(schema, name),
+            help=schema.get("description") or None,
         )
+
+    note = _required_note(operation.body_schema)
+    if note:
+        base = parser.description.rstrip(".") if parser.description else ""
+        parser.description = f"{base}. {note}" if base else note
     _add_common_request_flags(parser)
     parser.set_defaults(_operation=operation)
 
 
-def build_parser(operations: list[Operation]) -> CliArgumentParser:
+def build_parser(
+    operations: list[Operation],
+    spec: dict[str, Any] | None = None,
+) -> CliArgumentParser:
     parser = CliArgumentParser(prog="koan-cli")
+    parser.description = "Command-line client for the Kōan REST API."
     parser.add_argument("--profile")
     parser.add_argument("--base-url")
     roots = parser.add_subparsers(dest="_root", required=True)
 
-    configure = roots.add_parser("configure")
+    configure = roots.add_parser(
+        "configure",
+        help="Write a named profile to the config file.",
+        description=(
+            "Write base URL and bearer token to a named profile in the config file."
+        ),
+    )
     configure.set_defaults(_builtin="configure")
 
-    raw = roots.add_parser("raw")
-    raw.add_argument("raw_method")
-    raw.add_argument("raw_path")
+    raw = roots.add_parser(
+        "raw",
+        help="Send an arbitrary METHOD/PATH request.",
+        description="Send an arbitrary HTTP request to the Kōan REST API.",
+    )
+    raw.add_argument("raw_method", metavar="METHOD")
+    raw.add_argument("raw_path", metavar="PATH")
     _add_common_request_flags(raw)
     raw.set_defaults(_builtin="raw")
+
+    tag_descriptions = load_tag_descriptions(spec or {})
+
+    def _tag_description(tagname: str) -> str | None:
+        return tag_descriptions.get(tagname) or None
 
     groups = {}
     for operation in sorted(operations, key=lambda item: item.command):
         if len(operation.command) == 1:
-            leaf = roots.add_parser(operation.command[0])
+            leaf = roots.add_parser(
+                operation.command[0],
+                help=operation.summary,
+                description=operation.description or operation.summary,
+                epilog=_example_epilog(GROUP_EXAMPLES.get(operation.command[0])),
+            )
         else:
             group_name, leaf_name = operation.command
             if group_name not in groups:
-                group = roots.add_parser(group_name)
+                group = roots.add_parser(
+                    group_name,
+                    help=_tag_description(group_name) or operation.summary,
+                    description=_tag_description(group_name) or operation.summary,
+                    epilog=_example_epilog(GROUP_EXAMPLES.get(group_name)),
+                )
                 groups[group_name] = group.add_subparsers(
                     dest=f"_{group_name}_command",
                     required=True,
                 )
-            leaf = groups[group_name].add_parser(leaf_name)
+            leaf = groups[group_name].add_parser(
+                leaf_name,
+                help=operation.summary,
+                description=operation.description or operation.summary,
+            )
         _configure_operation_parser(leaf, operation)
+
+    parser.epilog = _root_epilog()
     return parser
 
 

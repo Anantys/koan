@@ -52,6 +52,7 @@ def create_app(koan_root: Path = None, instance_dir: Path = None) -> Flask:
     # Health endpoint — unauthenticated liveness probe
     @app.route("/v1/health")
     def health():
+        """Liveness probe; public, no token required."""
         try:
             from app import __version__
             version = __version__

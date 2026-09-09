@@ -59,6 +59,18 @@ SUCCESS_STATUS = {
     ("post", "/v1/projects"): "201",
 }
 
+# One-line human summary per API tag (blueprint / command group). Feeds the
+# OpenAPI ``tags[].description``, which the CLI surfaces as group-level --help.
+# This is the single source for group help — keep each entry a short sentence.
+TAG_DESCRIPTIONS = {
+    "admin": "Config, pause/resume, restart, update and shutdown",
+    "health": "Liveness probe (no token required)",
+    "missions": "Queue, inspect, reorder and delete missions",
+    "observability": "Logs, metrics and usage",
+    "projects": "List, add, update and remove watched projects",
+    "status": "Current agent state, execution and mission counters",
+}
+
 _PATH_PARAM_RE = re.compile(r"<(?:[^:<>]+:)?([^<>]+)>")
 
 
@@ -153,6 +165,7 @@ def build_spec(app: Flask) -> dict:
 
             paths.setdefault(openapi_path, {})[m] = operation
 
+    sorted_tags = sorted(tags)
     return {
         "openapi": OPENAPI_VERSION,
         "info": {
@@ -165,7 +178,10 @@ def build_spec(app: Flask) -> dict:
         },
         "servers": [{"url": "http://127.0.0.1:8420", "description": "Default loopback bind"}],
         "security": [{"bearerAuth": []}],
-        "tags": [{"name": t} for t in sorted(tags)],
+        "tags": [
+            ({"name": t, "description": TAG_DESCRIPTIONS[t]} if t in TAG_DESCRIPTIONS else {"name": t})
+            for t in sorted_tags
+        ],
         "paths": paths,
         "components": {
             "securitySchemes": {

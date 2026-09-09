@@ -169,6 +169,93 @@ def test_parser_usage_errors_exit_one(api_spec_path):
     assert exc.value.code == 1
 
 
+def test_every_operation_contributes_help(api_spec_path):
+    """Every operation must carry a non-empty summary so its --help is useful.
+
+    Guards the CLI's discoverability: a future endpoint that adds no docstring
+    would silently regress --help to a bare command name.
+    """
+    operations = load_operations(load_spec(api_spec_path))
+    assert operations  # guard against a vacuous pass on an empty spec
+    for operation in operations:
+        assert operation.summary, (
+            f"{operation.method} {operation.path} has no summary for --help; "
+            f"add a docstring to its view."
+        )
+
+
+def _walk_leaf_parsers(parser):
+    """Yield every leaf argparse parser (deeper than the root subparser set)."""
+    # Find the root subparsers action, then recurse through group subparsers.
+    visited = set()
+
+    def _walk(p):
+        if id(p) in visited:
+            return
+        visited.add(id(p))
+        for action in p._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                for sub in action.choices.values():
+                    if sub is None:
+                        continue
+                    if any(
+                        isinstance(a, argparse._SubParsersAction) for a in sub._actions
+                    ):
+                        yield from _walk(sub)  # group parser — descend again
+                    else:
+                        yield sub
+
+    yield from _walk(parser)
+
+
+def test_generated_meavars_never_leak_dest_prefixes(api_spec_path):
+    """No _BODY_/_QUERY_ dest prefix may appear in any generated --help."""
+    parser = build_parser(load_operations(load_spec(api_spec_path)))
+
+    def _assert_no_leak(help_text, context):
+        assert "_BODY_" not in help_text, f"_BODY_ leaked in {context}"
+        assert "_QUERY_" not in help_text, f"_QUERY_ leaked in {context}"
+
+    _assert_no_leak(parser.format_help(), "root --help")
+    for sub in _walk_leaf_parsers(parser):
+        _assert_no_leak(sub.format_help(), sub.prog)
+
+
+def test_generated_flags_with_spec_description_show_help(api_spec_path):
+    """Every spec-described query/body flag surfaces its help on that leaf.
+
+    Guards the help wiring: if a future regenerate stops passing help= from a
+    parameter or body-property description, this fails instead of silently
+    dropping the text from --help.
+    """
+    operations = load_operations(load_spec(api_spec_path))
+    parser = build_parser(operations)
+
+    leaves = {
+        sub.prog.removeprefix("koan-cli "): sub for sub in _walk_leaf_parsers(parser)
+    }
+    for operation in operations:
+        key = " ".join(operation.command)
+        leaf = leaves[key]
+        by_flag = {
+            flag: action
+            for action in leaf._actions
+            for flag in getattr(action, "option_strings", [])
+        }
+        for parameter in operation.parameters:
+            if parameter.location == "query" and parameter.description:
+                flag = f"--{parameter.name.replace('_', '-')}"
+                assert by_flag[flag].help == parameter.description, (
+                    f"{key} flag {flag} lost its spec help"
+                )
+        for name, schema in (operation.body_schema or {}).get("properties", {}).items():
+            if schema.get("description"):
+                flag = f"--{name.replace('_', '-')}"
+                assert by_flag[flag].help == schema["description"], (
+                    f"{key} flag {flag} lost its spec help"
+                )
+
+
 def test_every_spec_operation_is_parser_reachable(api_spec_path):
     operations = load_operations(load_spec(api_spec_path))
     parser = build_parser(operations)

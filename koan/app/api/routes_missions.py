@@ -162,6 +162,7 @@ def _find_pending_position(content: str, stored_text: str):
 @openapi_operation(query_parameters=_LIST_MISSIONS_QUERY_PARAMETERS)
 @require_token
 def list_missions_route():
+    """List missions, newest first, optionally filtered."""
     status_filter = request.args.get("status")
     project_filter = request.args.get("project")
     records = list_missions(_instance_dir(), status_filter, project_filter)
@@ -178,6 +179,7 @@ def list_missions_route():
 @openapi_operation(request_schema=_CREATE_MISSION_SCHEMA)
 @require_token
 def create_mission():
+    """Queue a new mission."""
     data = request.get_json(silent=True) or {}
     try:
         text, project, urgent = _validate_mission_body(data)
@@ -197,6 +199,7 @@ def create_mission():
 @openapi_operation(request_schema=_REORDER_MISSION_SCHEMA)
 @require_token
 def reorder_mission_route():
+    """Move a pending mission to a new position."""
     data = request.get_json(silent=True)
     if data is None:
         return jsonify(
@@ -253,6 +256,7 @@ def reorder_mission_route():
 @bp.route("/v1/missions/<mission_id>", methods=["GET"])
 @require_token
 def get_mission_route(mission_id: str):
+    """Fetch one mission by id."""
     rec = get_mission(_instance_dir(), mission_id)
     if rec is None:
         return jsonify({"error": {"code": "not_found", "message": "Mission not found"}}), 404
@@ -289,6 +293,7 @@ def get_mission_route(mission_id: str):
 @bp.route("/v1/missions/<mission_id>/result", methods=["GET"])
 @require_token
 def get_mission_result_route(mission_id: str):
+    """Fetch a finished mission's result."""
     if get_mission(_instance_dir(), mission_id) is None:
         return jsonify({"error": {"code": "not_found", "message": "Mission not found"}}), 404
     # reconcile so a just-completed mission gets its result attached first
@@ -304,6 +309,7 @@ def get_mission_result_route(mission_id: str):
 @bp.route("/v1/missions/<mission_id>", methods=["DELETE"])
 @require_token
 def delete_mission(mission_id: str):
+    """Remove a pending mission."""
     rec = get_mission(_instance_dir(), mission_id)
     if rec is None:
         return jsonify({"error": {"code": "not_found", "message": "Mission not found"}}), 404
@@ -341,6 +347,7 @@ def delete_mission(mission_id: str):
 @openapi_operation(request_schema=_EDIT_MISSION_SCHEMA)
 @require_token
 def edit_mission(mission_id: str):
+    """Change a pending mission."""
     rec = get_mission(_instance_dir(), mission_id)
     if rec is None:
         return jsonify({"error": {"code": "not_found", "message": "Mission not found"}}), 404

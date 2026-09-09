@@ -52,7 +52,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Get config
+      summary: Get the effective config, with secrets masked out.
       tags:
       - admin
   /v1/health:
@@ -68,7 +68,7 @@ paths:
                 $ref: '#/components/schemas/Error'
           description: Error response
       security: []
-      summary: Health
+      summary: Liveness probe; public, no token required.
       tags:
       - health
   /v1/logs:
@@ -122,7 +122,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Logs
+      summary: Tail recent agent logs, optionally filtered by source.
       tags:
       - observability
   /v1/metrics:
@@ -165,7 +165,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Metrics
+      summary: Mission throughput and success metrics over a window.
       tags:
       - observability
   /v1/missions:
@@ -211,7 +211,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: List missions route
+      summary: List missions, newest first, optionally filtered.
       tags:
       - missions
     post:
@@ -268,7 +268,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Create mission
+      summary: Queue a new mission.
       tags:
       - missions
   /v1/missions/reorder:
@@ -312,7 +312,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Reorder mission route
+      summary: Move a pending mission to a new position.
       tags:
       - missions
   /v1/missions/{mission_id}:
@@ -345,7 +345,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Delete mission
+      summary: Remove a pending mission.
       tags:
       - missions
     get:
@@ -377,7 +377,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Get mission route
+      summary: Fetch one mission by id.
       tags:
       - missions
     patch:
@@ -421,7 +421,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Edit mission
+      summary: Change a pending mission.
       tags:
       - missions
   /v1/missions/{mission_id}/result:
@@ -454,7 +454,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Get mission result route
+      summary: Fetch a finished mission's result.
       tags:
       - missions
   /v1/pause:
@@ -491,7 +491,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Pause
+      summary: Pause the agent, optionally for a duration like "2h" or "30m".
       tags:
       - admin
   /v1/projects:
@@ -518,7 +518,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: List projects
+      summary: List watched projects.
       tags:
       - projects
     post:
@@ -558,7 +558,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Add project
+      summary: Add a project to watch.
       tags:
       - projects
   /v1/projects/{name}:
@@ -591,7 +591,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Delete project
+      summary: Remove a watched project.
       tags:
       - projects
     patch:
@@ -664,7 +664,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Patch project
+      summary: Update a watched project's configuration.
       tags:
       - projects
   /v1/restart:
@@ -691,7 +691,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Restart
+      summary: Request a full agent restart.
       tags:
       - admin
   /v1/resume:
@@ -718,7 +718,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Resume
+      summary: Resume the agent after a pause.
       tags:
       - admin
   /v1/shutdown:
@@ -745,7 +745,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Shutdown
+      summary: Gracefully stop the agent.
       tags:
       - admin
   /v1/status:
@@ -772,7 +772,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Status
+      summary: Get current agent state, execution and mission counters.
       tags:
       - status
   /v1/update:
@@ -799,7 +799,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Update
+      summary: Pull upstream changes and restart.
       tags:
       - admin
   /v1/update_release:
@@ -826,7 +826,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Update release
+      summary: Check out the latest tagged release and restart.
       tags:
       - admin
   /v1/usage:
@@ -895,7 +895,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Usage
+      summary: Daily agent usage totals, optionally split by project.
       tags:
       - observability
 security:
@@ -904,9 +904,15 @@ servers:
 - description: Default loopback bind
   url: http://127.0.0.1:8420
 tags:
-- name: admin
-- name: health
-- name: missions
-- name: observability
-- name: projects
-- name: status
+- description: Config, pause/resume, restart, update and shutdown
+  name: admin
+- description: Liveness probe (no token required)
+  name: health
+- description: Queue, inspect, reorder and delete missions
+  name: missions
+- description: Logs, metrics and usage
+  name: observability
+- description: List, add, update and remove watched projects
+  name: projects
+- description: Current agent state, execution and mission counters
+  name: status

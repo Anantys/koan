@@ -130,6 +130,7 @@ def _int_param(name: str, default: str) -> int:
 @openapi_operation(query_parameters=_USAGE_QUERY_PARAMETERS)
 @require_token
 def usage():
+    """Daily agent usage totals, optionally split by project."""
     from app.usage_service import build_usage_payload
 
     try:
@@ -152,6 +153,7 @@ def usage():
 @openapi_operation(query_parameters=_METRICS_QUERY_PARAMETERS)
 @require_token
 def metrics():
+    """Mission throughput and success metrics over a window."""
     from app.mission_metrics import (
         compute_global_metrics,
         compute_project_metrics,
@@ -189,6 +191,7 @@ def metrics():
 @openapi_operation(query_parameters=_LOGS_QUERY_PARAMETERS)
 @require_token
 def logs():
+    """Tail recent agent logs, optionally filtered by source."""
     from app.log_reader import read_logs
 
     source = request.args.get("source", "all")

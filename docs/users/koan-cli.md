@@ -1,7 +1,7 @@
 ---
 type: doc
 title: "Kōan REST CLI"
-description: "Configure and use bin/koan-cli to call every operation in Kōan's token-authenticated REST API."
+description: "Configure and use bin/koan-cli to call every operation in Kōan's token-authenticated REST API, with self-documenting --help."
 tags: [users]
 created: 2026-09-08
 updated: 2026-09-09
@@ -55,16 +55,24 @@ the corresponding nonzero exit code.
 
 ## Generated commands
 
-Commands follow the API resources. Discover the available roots and leaf
-commands with `--help`:
+Commands follow the API resources. `--help` is generated from the OpenAPI
+document, so every root, group, and leaf carries a one-line description pulled
+from its view's summary, and every spec-described flag shows its help text:
 
 ```bash
-bin/koan-cli --help
-bin/koan-cli missions --help
+bin/koan-cli --help              # every root command, plus global examples
+bin/koan-cli missions --help     # every leaf, plus group examples
+bin/koan-cli missions create --help  # per-flag help and the command XOR text note
 bin/koan-cli missions list -q status=pending
 bin/koan-cli missions get MISSION_ID
 bin/koan-cli observability logs
 ```
+
+Because the help is derived from the spec, a new endpoint is documented in the
+CLI for free as soon as its view docstring and `koan/openapi.yaml` land. Bodies
+declared with `anyOf` (for example `POST /v1/missions`, where `command` and
+`text` are mutually exclusive) render that constraint in prose on the command's
+`--help`.
 
 Each OpenAPI `operationId` also works as a hidden root-level alias for scripts
 that prefer specification identifiers. Public command names and aliases are
@@ -83,10 +91,10 @@ bin/koan-cli missions list -q status=pending -q project=my-toolkit
 ```
 
 Duplicate generic query keys use the last value. Schema-derived typed flags
-will appear automatically when the OpenAPI document contains request or query
-schemas, and will override a generic query value with the same name. The
-current committed specification only describes path parameters, so generic
-input remains the request-body and query interface today.
+appear automatically when the OpenAPI document contains request or query
+schemas, and will override a generic query value with the same name. The typed
+flags use clean metavars (`COMMAND`, `TEXT`, `PROJECT`, …) and their `--help`
+shows the schema's description where the spec provides one.
 
 Path parameters are positional and percent-encoded before dispatch:
 

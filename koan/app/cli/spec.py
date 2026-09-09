@@ -11,6 +11,15 @@ from app.cli import CliError
 
 
 HTTP_METHODS = {"get", "post", "put", "patch", "delete"}
+# Operation summaries (from view docstrings) may span multiple lines; the CLI has
+# room for one. Keep only the first line so group/leaf help stays terse.
+FIRST_LINE_FALLBACK = "Unknown operation"
+
+
+def _first_line(summary: str) -> str:
+    if not summary.strip():
+        return FIRST_LINE_FALLBACK
+    return summary.strip().splitlines()[0].strip()
 RESERVED_ROOTS = {"configure", "raw"}
 ITEM_VERBS = {
     "get": "get",
@@ -30,6 +39,7 @@ class Parameter:
     location: str
     required: bool
     schema: dict[str, Any]
+    description: str = ""
 
 
 @dataclass(frozen=True)
@@ -42,6 +52,21 @@ class Operation:
     body_schema: dict[str, Any] | None
     body_required: bool
     requires_auth: bool
+    summary: str = ""
+    description: str = ""
+
+
+def load_tag_descriptions(spec: dict[str, Any]) -> dict[str, str]:
+    """Map each tag name to its one-line ``description`` ('' when absent)."""
+    descriptions: dict[str, str] = {}
+    for tag in spec.get("tags", []) or []:
+        if not isinstance(tag, dict):
+            continue
+        name = tag.get("name")
+        if not isinstance(name, str):
+            continue
+        descriptions[name] = (tag.get("description") or "").strip()
+    return descriptions
 
 
 def load_spec(path: Path) -> dict[str, Any]:
@@ -114,12 +139,17 @@ def load_operations(spec: dict[str, Any]) -> list[Operation]:
         params = []
         for item in [*path_item.get("parameters", []), *operation.get("parameters", [])]:
             item = resolve_local_ref(spec, item)
+            description = item.get("description") or ""
+            schema = resolve_local_ref(spec, item.get("schema", {}))
+            if not description:
+                description = schema.get("description") or ""
             params.append(
                 Parameter(
                     name=item["name"],
                     location=item["in"],
                     required=bool(item.get("required")),
-                    schema=resolve_local_ref(spec, item.get("schema", {})),
+                    schema=schema,
+                    description=str(description).strip(),
                 )
             )
         request_body = resolve_local_ref(spec, operation.get("requestBody", {}))
@@ -140,6 +170,8 @@ def load_operations(spec: dict[str, Any]) -> list[Operation]:
                 body_schema=body_schema,
                 body_required=bool(request_body.get("required")),
                 requires_auth=bool(security),
+                summary=_first_line(operation.get("summary") or ""),
+                description=(operation.get("description") or "").strip(),
             )
         )
     assert_unique(operations)

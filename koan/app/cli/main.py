@@ -33,7 +33,7 @@ def main(
         spec = load_spec(spec_path or DEFAULT_SPEC)
         operations = load_operations(spec)
         arguments = expand_alias(arguments, operations)
-        args = build_parser(operations).parse_args(arguments)
+        args = build_parser(operations, spec).parse_args(arguments)
         server_default = load_server_default(spec)
         path = config_path or CONFIG_PATH
 
