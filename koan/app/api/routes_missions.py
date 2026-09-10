@@ -10,7 +10,6 @@ from app.api.mission_index import (
     _normalize_for_match,
     cancel_mission,
     get_mission,
-    list_missions,
     load_full_result,
     record_mission,
     reconcile,
@@ -90,15 +89,63 @@ def _find_pending_position(content: str, stored_text: str):
 @bp.route("/v1/missions", methods=["GET"])
 @require_token
 def list_missions_route():
+    """List missions from the authoritative mission store, newest first.
+
+    The store is the same source ``GET /v1/status`` counts, so a mission
+    queued from Slack/GitHub/dashboard is visible here even when it was never
+    recorded in the API sidecar. ``?status`` filters to a store state
+    (``pending``/``in_progress``/``done``/``failed``). ``?limit`` caps each
+    state's returned rows.
+    """
+    from app.mission_store import VALID_STATES, get_mission_store
+    from app.mission_store.transition import ensure_store_synced
+
     status_filter = request.args.get("status")
     project_filter = request.args.get("project")
-    records = list_missions(_instance_dir(), status_filter, project_filter)
-    # Reconcile each record
+
+    try:
+        limit = int(request.args.get("limit")) if request.args.get("limit") else None
+    except (TypeError, ValueError):
+        limit = None
+    if limit is not None and limit < 1:
+        limit = None
+
+    if status_filter and status_filter not in VALID_STATES:
+        return (
+            jsonify(
+                {
+                    "error": {
+                        "code": "invalid_request",
+                        "message": f"Unknown status '{status_filter}'. "
+                        f"Valid: {', '.join(VALID_STATES)}",
+                    }
+                }
+            ),
+            400,
+        )
+
+    instance = _instance_dir()
+    ensure_store_synced(str(instance))
+    store = get_mission_store(str(instance))
+
+    states = [status_filter] if status_filter else list(VALID_STATES)
+
     out = []
-    for rec in records:
-        rec = reconcile(_instance_dir(), _missions_file(), rec["id"])
-        if rec:
-            out.append(rec)
+    for state in states:
+        out.extend(
+            {
+                "id": m.id,
+                "text": m.text,
+                "status": m.state,
+                "project": m.project,
+                "sequence": m.sequence,
+                "complexity": m.complexity,
+                "queued_at": m.queued_at,
+                "started_at": m.started_at,
+                "completed_at": m.completed_at,
+            }
+            for m in store.list_by_state(state, project=project_filter, limit=limit)
+        )
     return jsonify(out)
 
 

@@ -149,7 +149,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: List missions route
+      summary: List missions from the authoritative mission store, newest first.
       tags:
       - missions
     post:
