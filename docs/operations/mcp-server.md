@@ -4,7 +4,7 @@ title: "MCP Server"
 description: "Configure Kōan's opt-in stdio MCP server for Claude Code, Claude Desktop, and other local MCP clients."
 tags: [operations]
 created: 2026-09-09
-updated: 2026-09-09
+updated: 2026-09-10
 ---
 
 # MCP Server
@@ -117,6 +117,33 @@ mcp:
 Legacy top-level list syntax remains accepted for provider configuration, but
 cannot also contain server settings. Per-project `mcp` lists in `projects.yaml`
 remain unchanged.
+
+### Automatic migration of the legacy list
+
+An `instance/config.yaml` written before the MCP server landed holds `mcp` as a
+bare list:
+
+```yaml
+mcp:
+  - "/path/to/mcp-config.json"
+```
+
+On the first startup after upgrading, Kōan rewrites that block in place to the
+mapping form (`mcp.configs`) so server settings can be added by hand later. The
+rewrite is:
+
+- **comment-preserving** — only the `mcp:` block's lines change; the rest of the
+  file, including every comment, is untouched;
+- **verified** — the result is re-parsed and compared before it is written, so a
+  rewrite that would change any other key is discarded;
+- **backed up** — the pre-migration file is copied to
+  `instance/config.yaml.bak-mcp-mapping` once;
+- **idempotent** — a config already in mapping form is left alone.
+
+The migration is a convenience, not a requirement: the list form stays valid, so
+a read-only or hand-reverted config still starts. Look for
+`[migration] mcp: converted legacy list to 'mcp.configs' mapping` in the startup
+log.
 
 ## See also
 

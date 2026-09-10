@@ -4,7 +4,7 @@ title: "Component Spec — MCP Server"
 description: "Defines Kōan's opt-in stdio MCP front-end, curated REST operation tools, destructive-tool gate, and shared OpenAPI HTTP client boundary."
 tags: [web]
 created: 2026-09-09
-updated: 2026-09-09
+updated: 2026-09-10
 ---
 
 # Component Spec — MCP Server
@@ -40,6 +40,23 @@ an actionable message. Kōan never edits or installs client configuration.
 
 `mcp.tools_allow_destructive` defaults to `false`. It only controls whether the
 named destructive mission-delete tool appears in `tools/list`.
+
+The `mcp` key predates this component as a bare list of provider client config
+paths. Both shapes stay valid: a list means "provider configs only", a mapping
+carries this component's settings beside `mcp.configs`. **A shape change to a
+key an operator already sets must never be a hard startup stop.** Two mechanisms
+uphold that, and both are required:
+
+1. `app.config_migration.migrate_mcp_config` rewrites a legacy list into the
+   mapping form in place at startup, before strict validation. It preserves
+   comments, verifies the re-parsed result differs only in `mcp`, backs the file
+   up once, and is idempotent.
+2. `config_validator.accepts_non_mapping` keeps the list form valid regardless,
+   so an unmigrated config (read-only mount, manual revert) still starts. That
+   predicate is the single shared source for every `_NESTED` shorthand:
+   `validate_config` and `validate_config_or_raise` must never disagree about
+   which shapes are legal, because a value one accepts and the other rejects
+   turns a working config into a boot failure.
 
 MCP has no credential or address settings. Its bearer token comes from
 `config.get_api_token()` and its base URL comes from `api.host` plus `api.port`.
