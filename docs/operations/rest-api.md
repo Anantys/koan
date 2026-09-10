@@ -4,7 +4,7 @@ title: "REST API"
 description: "Documents Kōan's optional, token-authenticated HTTP control layer (missions, projects, pause/resume, config, admin, usage/metrics/logs endpoints), its generated OpenAPI spec + drift guard, and its security model."
 tags: [operations]
 created: 2026-05-31
-updated: 2026-07-10
+updated: 2026-09-10
 ---
 
 # REST API
@@ -217,12 +217,27 @@ sessions also suppress the flag. The same cross-check backs the `make status`
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| `GET` | `/v1/missions` | yes | List API-queued missions. Query params: `?status=pending\|in_progress\|done\|failed\|removed`, `?project=name` |
+| `GET` | `/v1/missions` | yes | List missions from the mission store (all queue sources: Slack/GitHub/API/dashboard). Query params: `?status=pending\|in_progress\|done\|failed`, `?project=name`, `?limit=N` |
 | `POST` | `/v1/missions` | yes | Queue a new mission |
 | `GET` | `/v1/missions/{id}` | yes | Get mission by id (reconciles vs missions.md) |
 | `PATCH` | `/v1/missions/{id}` | yes | Edit a pending mission's text (409 if not pending) |
 | `DELETE` | `/v1/missions/{id}` | yes | Cancel a pending mission (409 if already started) |
 | `POST` | `/v1/missions/reorder` | yes | Reorder a pending mission in the queue |
+
+The list endpoint reads the authoritative mission store — the same source as
+`GET /v1/status`'s counts — so every queued mission is visible regardless of
+how it was created. `?status` filters to a store state (`pending`,
+`in_progress`, `done`, `failed`); unknown values return `400`. `?limit=N`
+caps the rows returned per state (terminal states can be large). The
+single-mission detail and result endpoints (`GET /v1/missions/{id}`,
+`/result`) still operate on API-queued records only.
+
+> **Backward-compatibility note.** The list previously returned sidecar
+> records carrying `result`/`result_ref`/`usage`/`created` and a `removed`
+> status for API-queued missions. Now that the list is store-backed, those
+> fields are no longer present and `removed` is not a valid `?status`
+> filter. Consumers that need result or cancellation state should use
+> `GET /v1/missions/{id}` and `GET /v1/missions/{id}/result`.
 
 **POST /v1/missions** body:
 ```json

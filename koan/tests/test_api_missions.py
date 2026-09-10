@@ -245,6 +245,112 @@ class TestListMissions:
         assert data[0]["project"] == "alpha"
 
 
+class TestListMissionsStoreBacked:
+    """GET /v1/missions must read the mission store, not the API sidecar."""
+
+    def test_list_returns_store_queued_missions_without_sidecar(
+        self, api_client, instance_dir
+    ):
+        # No .api-missions.json on this host: the bug this fixes.
+        assert not (instance_dir / ".api-missions.json").exists()
+        seed_missions(
+            instance_dir,
+            "# Missions\n\n## Pending\n\n"
+            "- Fix auth bug\n"
+            "- Deploy release\n\n"
+            "## In Progress\n\n"
+            "## Done\n",
+        )
+        resp = api_client.get("/v1/missions", headers=_AUTH)
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert len(data) == 2
+        assert {m["text"] for m in data} == {"Fix auth bug", "Deploy release"}
+        assert all(m["status"] == "pending" for m in data)
+
+    def test_list_agrees_with_status_counts(self, api_client, instance_dir):
+        seed_missions(
+            instance_dir,
+            "# Missions\n\n## Pending\n\n- P1\n- P2\n\n"
+            "## In Progress\n\n- Running\n\n## Done\n",
+        )
+        list_resp = api_client.get("/v1/missions", headers=_AUTH).get_json()
+        counts = {}
+        for m in list_resp:
+            counts[m["status"]] = counts.get(m["status"], 0) + 1
+        status = api_client.get("/v1/status", headers=_AUTH).get_json()
+        assert counts.get("pending") == status["missions"]["pending"] == 2
+        assert counts.get("in_progress") == status["missions"]["in_progress"] == 1
+
+    def test_list_filter_by_project_store_backed(self, api_client, instance_dir):
+        seed_missions(
+            instance_dir,
+            "# Missions\n\n## Pending\n\n"
+            "- [project:alpha] For proj\n"
+            "- No project\n\n"
+            "## In Progress\n\n## Done\n",
+        )
+        resp = api_client.get("/v1/missions?project=alpha", headers=_AUTH)
+        data = resp.get_json()
+        assert len(data) == 1
+        assert data[0]["project"] == "alpha"
+
+    def test_list_created_api_mission_appears_and_drops_sidecar_fields(
+        self, api_client, instance_dir
+    ):
+        # A mission created via the API lives in both the sidecar and the store;
+        # the list is store-backed and renders Mission fields only (no result).
+        api_client.post(
+            "/v1/missions", json={"text": "API queued"}, headers=_AUTH
+        )
+        resp = api_client.get("/v1/missions", headers=_AUTH)
+        data = resp.get_json()
+        texts = {m["text"] for m in data}
+        assert "API queued" in texts
+        assert all("result" not in m and "created" not in m for m in data)
+
+    def test_list_cancelled_api_mission_not_listed(self, api_client, instance_dir):
+        # A cancelled API mission is `removed` in the sidecar only; the
+        # store-backed list must not resurrect it and `?status` has no removed.
+        create = api_client.post(
+            "/v1/missions", json={"text": "To cancel"}, headers=_AUTH
+        ).get_json()
+        api_client.delete(f"/v1/missions/{create['id']}", headers=_AUTH)
+        resp = api_client.get("/v1/missions", headers=_AUTH)
+        data = resp.get_json()
+        assert all(m["text"] != "To cancel" for m in data)
+
+    def test_list_unknown_status_returns_400(self, api_client, instance_dir):
+        seed_missions(
+            instance_dir,
+            "# Missions\n\n## Pending\n\n- Fix auth bug\n\n"
+            "## In Progress\n\n## Done\n",
+        )
+        resp = api_client.get("/v1/missions?status=bogus", headers=_AUTH)
+        assert resp.status_code == 400
+        assert "error" in resp.get_json()
+
+    def test_list_limit_caps_rows_per_state(self, api_client, instance_dir):
+        seed_missions(
+            instance_dir,
+            "# Missions\n\n## Pending\n\n- P1\n- P2\n- P3\n\n"
+            "## In Progress\n\n## Done\n",
+        )
+        resp = api_client.get("/v1/missions?status=pending&limit=2", headers=_AUTH)
+        data = resp.get_json()
+        assert len(data) == 2
+
+    def test_list_limit_zero_or_bad_is_unlimited(self, api_client, instance_dir):
+        seed_missions(
+            instance_dir,
+            "# Missions\n\n## Pending\n\n- P1\n- P2\n- P3\n\n"
+            "## In Progress\n\n## Done\n",
+        )
+        for bad in ("0", "-1", "abc"):
+            resp = api_client.get(f"/v1/missions?status=pending&limit={bad}", headers=_AUTH)
+            assert len(resp.get_json()) == 3
+
+
 class TestCancelByText:
     def test_cancel_by_text_marks_removed(self, instance_dir):
         from app.api.mission_index import record_mission, cancel_by_text, get_mission
