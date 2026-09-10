@@ -4,8 +4,11 @@ from pathlib import Path
 import pytest
 
 from app.apiclient.spec import load_operations, load_spec
+from app.mcp import catalog as catalog_module
 from app.mcp.catalog import (
     DENIED_NAMED_OPERATIONS,
+    CuratedTool,
+    ToolAnnotations,
     build_tool_definitions,
 )
 
@@ -75,6 +78,57 @@ def test_deny_list_never_receives_named_tools(operations):
     tools = build_tool_definitions(operations, allow_destructive=True)
 
     assert not ({tool.operation_key for tool in tools} & DENIED_NAMED_OPERATIONS)
+
+
+def test_deny_list_pins_every_operation_that_must_never_be_a_tool():
+    """Pin the deny-list membership itself.
+
+    The intersection assertion above holds trivially while no curated entry
+    names a denied operation, so on its own it would still pass if an entry were
+    dropped from ``DENIED_NAMED_OPERATIONS``. Assert the set directly, so
+    weakening the deny-list fails here rather than in review.
+    """
+    assert DENIED_NAMED_OPERATIONS == frozenset(
+        {
+            ("POST", "/v1/shutdown"),
+            ("POST", "/v1/restart"),
+            ("POST", "/v1/update"),
+            ("POST", "/v1/update_release"),
+            ("POST", "/v1/projects"),
+            ("PATCH", "/v1/projects/{name}"),
+            ("DELETE", "/v1/projects/{name}"),
+        }
+    )
+
+
+def test_deny_list_overrides_a_curated_entry(monkeypatch, api_spec_path):
+    """The deny-list is an enforced gate, not documentation.
+
+    A future edit that both marks a denied route ``x-koan-mcp`` and adds a
+    curated entry for it — the exact accident the deny-list exists to stop —
+    must still produce no named tool, even with the destructive gate open.
+    Marking the route is what makes the deny-list the *only* gate left, so this
+    fails if that check is removed.
+    """
+    spec = deepcopy(load_spec(api_spec_path))
+    spec["paths"]["/v1/shutdown"]["post"]["x-koan-mcp"] = True
+    smuggled = CuratedTool(
+        "koan_shutdown",
+        "POST",
+        "/v1/shutdown",
+        ToolAnnotations(),
+        {"type": "object", "properties": {}},
+    )
+    monkeypatch.setattr(
+        catalog_module,
+        "CURATED_TOOLS",
+        (*catalog_module.CURATED_TOOLS, smuggled),
+    )
+
+    tools = build_tool_definitions(load_operations(spec), allow_destructive=True)
+
+    assert "koan_shutdown" not in {tool.name for tool in tools}
+    assert ("POST", "/v1/shutdown") not in {tool.operation_key for tool in tools}
 
 
 def test_write_schemas_describe_model_inputs(operations):

@@ -6,6 +6,10 @@ on:
     paths:
       - 'koan/app/apiclient/**'
       - 'koan/app/mcp/**'
+      # The x-koan-mcp marker plumbing: a change here can alter which
+      # operations become named tools without touching koan/openapi.yaml.
+      - 'koan/app/api/openapi_gen.py'
+      - 'koan/app/api/openapi_metadata.py'
       - 'koan/tests_mcp/**'
       - 'koan/requirements-mcp.txt'
       - 'koan/openapi.yaml'
