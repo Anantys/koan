@@ -942,6 +942,36 @@ def _review_attribution(project_name: str = "") -> Tuple[str, str]:
     )
 
 
+def _review_stall_timeout() -> int:
+    """Seconds of provider silence that end a single review pass.
+
+    Derived from ``first_output_timeout`` (run.py's outer skill-runner
+    watchdog) rather than configured separately, because the only value the
+    inner bound can usefully take is one strictly below the outer one — at or
+    above it the outer watchdog fires first and SIGKILLs the whole runner, and
+    the inner bound is decorative. Half the outer budget leaves room for the
+    pass to fail, be reported, and let the review continue.
+
+    Returns 0 (no inner bound) in the two cases where one cannot help:
+
+    - the operator disabled the outer watchdog (``first_output_timeout: 0``),
+      i.e. asked for no stall killing at all;
+    - the outer budget is already tighter than the 60s floor below which a
+      brief legitimate pause would be misread as a stall. The outer watchdog
+      governs there, so an inner bound would only ever be decorative.
+
+    The postcondition is therefore exact: the result is either 0, or a value
+    strictly below ``first_output_timeout``.
+    """
+    from app.config import get_first_output_timeout
+
+    outer = get_first_output_timeout()
+    if outer <= 0:
+        return 0
+    inner = outer // 2
+    return inner if inner >= 60 else 0
+
+
 def _run_claude_review(
     prompt: str,
     project_path: str,
@@ -978,6 +1008,7 @@ def _run_claude_review(
     from app.cli_provider import run_command_streaming
     from app.config import get_skill_max_turns
 
+    idle_timeout = _review_stall_timeout()
     if model is None:
         # Resolve the model against the review_mode provider (not the global
         # one) so it matches the binary the review runs on — see
@@ -1008,6 +1039,11 @@ def _run_claude_review(
             # triggered by opening a pull request. Repo conventions still reach
             # the model via the fenced {REPO_CONVENTIONS} prompt block.
             project_context=False,
+            # Bound inactivity, not wall-clock: a healthy pass streams progress
+            # for many minutes, but a provider that prints its session banner
+            # and then goes silent must fail *this pass* rather than let the
+            # outer skill-runner watchdog SIGKILL the whole review.
+            idle_timeout=idle_timeout,
         )
         return output, ""
     except RuntimeError as e:

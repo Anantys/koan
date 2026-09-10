@@ -4,6 +4,7 @@ Covers: base.py, claude.py, copilot.py, ollama_launch.py, __init__.py
 These modules had zero test coverage despite being used throughout the codebase.
 """
 
+import contextlib
 import json
 import os
 from unittest.mock import MagicMock, patch
@@ -2800,3 +2801,186 @@ class TestReadOnlyRoleEnforcement:
         assert not os.path.exists(captured["path"]), (
             "system-prompt temp file leaked when the build raised"
         )
+
+
+class TestStreamingReadLoopIsInactivityBounded:
+    """A provider that opens stdout then goes silent must not hang the caller.
+
+    Production symptom (2026-09-10): a review pass printed its `session init`
+    banner and then emitted nothing for 600s. The ``timeout=`` argument did not
+    bound it — ``timeout`` is applied by the ``proc.wait()`` that runs *after*
+    stdout EOF, and a blocking ``for line in proc.stdout`` never reaches that
+    line. The only thing that ended the run was run.py's outer skill-runner
+    watchdog, which SIGKILLs the whole runner: the mission died as a generic
+    "Skill runner timed out", no partial result was written, and the stall was
+    not attributable to the pass that caused it.
+
+    A wall-clock cap is the wrong instrument — a healthy long pass streams
+    progress for many minutes — so the bound is on inactivity.
+    """
+
+    STALL_SECONDS = 30
+
+    def _spawn(self, script):
+        import subprocess as _sp
+        import sys as _sys
+        return _sp.Popen(
+            [_sys.executable, "-c", script],
+            stdout=_sp.PIPE, stderr=_sp.PIPE,
+            encoding="utf-8", errors="replace",
+            start_new_session=True,
+        )
+
+    def _run(self, proc, **kwargs):
+        from app.provider import run_command_streaming
+        cleanup = MagicMock()
+        with patch("app.config.get_model_config",
+                   return_value={"chat": "m", "fallback": "f"}), \
+             patch("app.provider.build_full_command", return_value=["fake"]), \
+             patch("app.cli_exec.popen_cli", return_value=(proc, cleanup)), \
+             patch("app.claude_step.strip_cli_noise", side_effect=lambda s: s):
+            return run_command_streaming("hi", "/tmp", [], **kwargs)
+
+    def test_a_silent_provider_fails_the_pass_instead_of_blocking(self):
+        import time as _time
+        proc = self._spawn(
+            "import sys,time\n"
+            "sys.stdout.write('session init\\n')\n"
+            "sys.stdout.flush()\n"
+            f"time.sleep({self.STALL_SECONDS})\n"
+        )
+        started = _time.monotonic()
+        try:
+            with pytest.raises(RuntimeError, match="no output for 2s"):
+                self._run(proc, idle_timeout=2)
+        finally:
+            proc.kill()
+            proc.wait()
+        elapsed = _time.monotonic() - started
+        assert elapsed < self.STALL_SECONDS / 2, (
+            f"returned in {elapsed:.1f}s — the bound did not reach the read loop"
+        )
+
+    def test_a_streaming_provider_is_not_killed_by_the_idle_bound(self):
+        """Every consumed line heartbeats, so steady progress survives."""
+        proc = self._spawn(
+            "import sys,time\n"
+            "for i in range(10):\n"
+            "    sys.stdout.write('tick %d\\n' % i)\n"
+            "    sys.stdout.flush()\n"
+            "    time.sleep(0.2)\n"
+        )
+        try:
+            out = self._run(proc, idle_timeout=2)
+        finally:
+            proc.kill()
+            proc.wait()
+        # Ran 2s wall-clock with a 2s idle bound and still completed.
+        assert "tick 0" in out and "tick 9" in out
+
+    def _spawn_kwargs(self, **kwargs):
+        """popen_cli kwargs for a trivially-successful streaming call."""
+        from app.provider import run_command_streaming
+        proc = MagicMock()
+        stdout = MagicMock()
+        stdout.__iter__ = lambda self: iter(["ok\n"])
+        proc.stdout = stdout
+        proc.stderr = MagicMock()
+        proc.stderr.read.return_value = ""
+        proc.returncode = 0
+        proc.wait.return_value = None
+        with patch("app.config.get_model_config",
+                   return_value={"chat": "m", "fallback": "f"}), \
+             patch("app.provider.build_full_command", return_value=["fake"]), \
+             patch("app.cli_exec.popen_cli",
+                   return_value=(proc, MagicMock())) as mock_popen, \
+             patch("app.claude_step.strip_cli_noise", side_effect=lambda s: s):
+            run_command_streaming("hi", "/tmp", [], **kwargs)
+        return mock_popen.call_args[1]
+
+    def test_an_opted_in_child_gets_its_own_session(self):
+        """An armed watchdog group-kills; a shared group would kill koan."""
+        assert self._spawn_kwargs(idle_timeout=30).get(
+            "start_new_session") is True
+
+    def test_a_non_opted_in_child_stays_in_the_caller_s_group(self):
+        """Session isolation must not outrun the watchdog that needs it.
+
+        run.py's skill-runner teardown and ``mission_scope``'s fallback both
+        reap by process group. A child in its own session is outside both, so
+        isolating one with no watchdog to protect buys nothing and lets a
+        stuck provider outlive the runner that spawned it — surviving a skill
+        timeout, an abort, or the outer liveness kill while still burning
+        quota.
+        """
+        assert "start_new_session" not in self._spawn_kwargs()
+        assert "start_new_session" not in self._spawn_kwargs(idle_timeout=0)
+        assert "start_new_session" not in self._spawn_kwargs(idle_timeout=None)
+
+    def test_a_sigterm_ignoring_descendant_cannot_hold_the_pipe_open(self):
+        """The watchdog kill must be SIGKILL-to-the-group, not SIGTERM-first.
+
+        ``kill_process_group`` stops escalating the moment the *leader* exits.
+        A descendant that ignores SIGTERM therefore survives it — and if it
+        inherited the stdout write end, the reader never sees EOF, never
+        reaches the ``fired`` check, and hangs exactly as it did before the
+        watchdog existed. Only a group SIGKILL is guaranteed to release the
+        pipe.
+        """
+        import time as _time
+        proc = self._spawn(
+            "import signal,subprocess,sys,time\n"
+            # Inherits stdout, ignores SIGTERM: survives the graceful path
+            # while still holding the pipe's write end open.
+            "subprocess.Popen([sys.executable, '-c',\n"
+            "  'import signal,time\\n"
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN)\\n"
+            f"time.sleep({self.STALL_SECONDS})'])\n"
+            "sys.stdout.write('session init\\n')\n"
+            "sys.stdout.flush()\n"
+            f"time.sleep({self.STALL_SECONDS})\n"
+        )
+        started = _time.monotonic()
+        try:
+            with pytest.raises(RuntimeError, match="no output for 2s"):
+                self._run(proc, idle_timeout=2)
+        finally:
+            import os as _os
+            import signal as _signal
+            with contextlib.suppress(OSError, ProcessLookupError):
+                _os.killpg(_os.getpgid(proc.pid), _signal.SIGKILL)
+            with contextlib.suppress(Exception):
+                proc.wait(timeout=5)
+        elapsed = _time.monotonic() - started
+        assert elapsed < self.STALL_SECONDS / 2, (
+            f"returned in {elapsed:.1f}s — a SIGTERM survivor held the pipe"
+        )
+
+
+class TestReviewStallTimeoutStaysUnderTheOuterWatchdog:
+    """An inner bound at or above the outer one is decorative."""
+
+    @pytest.mark.parametrize("outer,expected", [
+        (600, 300),  # the default
+        (120, 60),   # exactly the floor, still strictly below the outer
+        (119, 0),    # half falls under the 60s floor -> outer governs
+        (60, 0),     # outer already tighter than the floor
+        (0, 0),      # operator disabled stall killing -- honour it
+    ])
+    def test_derived_from_first_output_timeout(self, outer, expected):
+        from app.review_runner import _review_stall_timeout
+        with patch("app.config.get_first_output_timeout", return_value=outer):
+            assert _review_stall_timeout() == expected
+
+    @pytest.mark.parametrize("outer", [0, 1, 59, 60, 119, 120, 300, 600, 3600])
+    def test_result_is_zero_or_strictly_below_the_outer_budget(self, outer):
+        """The postcondition, over the whole input range.
+
+        A single off-by-one here silently reinstates the bug: the outer
+        watchdog fires first and SIGKILLs the runner, so the pass never gets
+        to report its own stall.
+        """
+        from app.review_runner import _review_stall_timeout
+        with patch("app.config.get_first_output_timeout", return_value=outer):
+            inner = _review_stall_timeout()
+        assert inner == 0 or inner < outer

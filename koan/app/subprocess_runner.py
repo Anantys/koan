@@ -220,6 +220,14 @@ class LivenessWatchdog:
 
     Each call to :meth:`heartbeat` restarts the countdown.  If no heartbeat
     arrives within *timeout* seconds the process group is killed.
+
+    ``graceful=False`` (mirroring :class:`ProcessWatchdog`) SIGKILLs the whole
+    group immediately instead of the SIGTERM-then-escalate path. The graceful
+    path stops escalating as soon as the *leader* exits, so a descendant that
+    handles or ignores SIGTERM survives it. Callers whose liveness depends on
+    the group releasing an inherited pipe must pass ``graceful=False``: a
+    survivor holding the write end keeps the reader blocked forever, which is
+    the exact hang the watchdog was armed to end.
     """
 
     def __init__(
@@ -227,10 +235,12 @@ class LivenessWatchdog:
         proc: subprocess.Popen,
         timeout: float,
         on_timeout: Optional[Callable[[], None]] = None,
+        graceful: bool = True,
     ):
         self._proc = proc
         self._timeout = timeout
         self._on_timeout = on_timeout
+        self._graceful = graceful
         self._fired = False
         self._timer: Optional[threading.Timer] = None
         self._lock = threading.Lock()
@@ -271,4 +281,7 @@ class LivenessWatchdog:
         if self._on_timeout:
             self._on_timeout()
 
-        kill_process_group(self._proc)
+        if self._graceful:
+            kill_process_group(self._proc)
+        else:
+            force_kill_process_group(self._proc)

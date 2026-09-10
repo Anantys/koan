@@ -1638,6 +1638,7 @@ def run_command_streaming(
     project_name: str = "",
     mcp_configs: Optional[List[str]] = None,
     project_context: bool = True,
+    idle_timeout: Optional[int] = None,
 ) -> str:
     """Build and run a CLI command, streaming progress to stdout in real time.
 
@@ -1666,6 +1667,19 @@ def run_command_streaming(
     and skills loaded from ``project_path``. Pass it whenever *project_path* is
     untrusted — a reviewed branch can carry a ``.claude/settings.json`` that
     defines hooks, which is code execution on this host.
+
+    ``idle_timeout`` bounds **inactivity**, and is the only bound that reaches
+    the read loop. ``timeout`` is applied by the ``proc.wait()`` *after* stdout
+    EOF, so a provider that prints its session banner and then goes silent
+    forever blocks in ``for line in proc.stdout`` and is never bounded by it;
+    only run.py's outer skill-runner watchdog ends such a run, by SIGKILLing
+    the whole runner. With ``idle_timeout`` set, every consumed line heartbeats
+    a :class:`~app.subprocess_runner.LivenessWatchdog` and a stall raises
+    ``RuntimeError`` the caller can attribute and degrade on. A wall-clock cap
+    would be the wrong instrument — a healthy long pass streams progress for
+    many minutes. Default ``None`` keeps the historical unbounded behavior;
+    an opted-in caller must pick a value strictly below ``first_output_timeout``
+    or the outer watchdog still wins.
 
     Raises:
         RuntimeError: If the command exits with non-zero code (except
@@ -1732,6 +1746,19 @@ def run_command_streaming(
             text_delta_parts.clear()
 
     try:
+        bounded = bool(idle_timeout and idle_timeout > 0)
+        spawn_kwargs = {}
+        if bounded:
+            # Only when the watchdog is armed. The watchdog group-kills, and a
+            # child sharing Kōan's group would make that kill land on the
+            # daemon itself — so an armed watchdog *requires* session
+            # isolation. But isolation is not free: run.py's skill-runner
+            # teardown and mission_scope's fallback both reap by process
+            # group, and a child in its own session is outside both. Applying
+            # it unconditionally would put every non-opted-in caller's provider
+            # beyond that teardown, buying nothing (no watchdog to protect) and
+            # letting a stuck provider outlive the runner that spawned it.
+            spawn_kwargs["start_new_session"] = True
         try:
             proc, cleanup = popen_cli(
                 cmd,
@@ -1741,11 +1768,24 @@ def run_command_streaming(
                 encoding="utf-8",
                 errors="replace",
                 cwd=project_path,
+                **spawn_kwargs,
             )
         except FileNotFoundError as e:
             raise RuntimeError(
                 missing_binary_message(e, cmd, provider.name, model_key)
             ) from e
+        idle_watchdog = None
+        if bounded:
+            from app.subprocess_runner import LivenessWatchdog
+
+            # graceful=False: SIGTERM-then-escalate stops escalating once the
+            # leader exits, so a descendant that ignores SIGTERM survives while
+            # still holding the inherited stdout write end. The read loop below
+            # would then never see EOF, never reach the `fired` check, and hang
+            # exactly as it did before this watchdog existed.
+            idle_watchdog = LivenessWatchdog(
+                proc, idle_timeout, graceful=False,
+            ).start()
         # Every print() in this loop is the load-bearing watchdog signal —
         # run.py's skill-runner liveness watchdog (600s) resets on each line
         # emitted to stdout. Do not silence these prints; doing so reintroduces
@@ -1754,6 +1794,10 @@ def run_command_streaming(
             for line in proc.stdout:
                 stripped = line.rstrip("\n")
                 raw_lines.append(stripped)
+                # Every consumed line is activity, blank ones included — the
+                # `continue` below skips rendering, not liveness.
+                if idle_watchdog is not None:
+                    idle_watchdog.heartbeat()
                 if not stripped:
                     continue
                 event: Optional[Dict[str, Any]] = None
@@ -1796,6 +1840,15 @@ def run_command_streaming(
                     print(stripped, flush=True)
                     text_lines.append(stripped)
             _flush_text_deltas()
+            if idle_watchdog is not None and idle_watchdog.fired:
+                # The watchdog already SIGKILLed the group, which is what ended
+                # the read loop. Reap the corpse and report the stall rather
+                # than letting it surface as an opaque exit -9 further down.
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    proc.wait(timeout=5)
+                raise RuntimeError(
+                    f"CLI stalled — no output for {idle_timeout}s"
+                )
             stderr_text = proc.stderr.read() if proc.stderr else ""
             proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired as e:
@@ -1803,6 +1856,10 @@ def run_command_streaming(
             proc.wait()
             raise RuntimeError(f"CLI invocation timed out after {timeout}s") from e
         finally:
+            # Cancel before closing the pipes: a live timer outliving this call
+            # could group-kill a recycled PID.
+            if idle_watchdog is not None:
+                idle_watchdog.cancel()
             if proc.stdout:
                 proc.stdout.close()
             if proc.stderr:

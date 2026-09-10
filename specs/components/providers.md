@@ -486,6 +486,48 @@ tools — MCP tools must still be allowlisted via qualified names
   and `53` (turn limit) are documented but not mapped to Kōan's max-turns
   handling. Recorded samples: `koan/tests/gemini_samples.py`. Operator docs:
   `docs/providers/gemini.md`.
+- **The streaming read loop must be inactivity-bounded, and the child must be
+  session-isolated.** `run_command_streaming` consumes `proc.stdout` with a
+  blocking `for line in ...`. Its `timeout` argument reaches only the
+  `proc.wait(timeout=...)` that runs **after** stdout EOF, so a provider that
+  opens the pipe, prints its session banner and then goes silent forever is not
+  bounded by it at all — the loop simply blocks. The only thing that ever ended
+  such a run was run.py's outer skill-runner liveness watchdog
+  (`first_output_timeout`, default 600s), which SIGKILLs the whole runner
+  mid-pipeline: the mission dies with a generic "Skill runner timed out", no
+  partial result is written, and the stall is not attributable to the pass that
+  caused it. A hard wall-clock bound is the wrong instrument here — a healthy
+  long pass emits progress events for many minutes and must not be capped — so
+  the bound is on **inactivity**: callers opt in with `idle_timeout`, a
+  `LivenessWatchdog` heartbeats on every consumed line, and a stall raises
+  `RuntimeError` that the caller can attribute and degrade on. `idle_timeout`
+  defaults to `None`, which preserves the historical (unbounded) behavior for
+  callers that have not opted in. An opted-in caller MUST pick a value strictly
+  below `first_output_timeout`, otherwise the outer watchdog still wins and the
+  inner bound is decorative.
+- **Session isolation is scoped to the armed watchdog, and the watchdog's kill
+  is SIGKILL-to-the-group.** These two follow from the bound above and are as
+  load-bearing as it is.
+  `start_new_session=True` is passed **only when `idle_timeout` is set**. An
+  armed watchdog requires it — the kill is a group kill, and a child sharing
+  Kōan's process group would make it SIGKILL the daemon itself. But isolation
+  is not free in the other direction: `run.py`'s skill-runner teardown and
+  `mission_scope`'s fallback path both reap by process group, and a child in
+  its own session is outside both. Isolating unconditionally would put every
+  non-opted-in caller's provider beyond that teardown with no watchdog to
+  justify it, so a stuck provider could outlive a skill timeout, an abort, or
+  the outer liveness kill while still burning quota.
+  The kill must be `force_kill_process_group` (`graceful=False`), not the
+  SIGTERM-then-escalate default: escalation stops as soon as the *leader*
+  exits, so a descendant that handles or ignores SIGTERM survives it — and a
+  survivor holding the inherited stdout write end keeps the reader blocked,
+  never reaching the fired check. That is the same hang the watchdog exists to
+  end, re-entered through the kill path.
+  Residual, accepted: an opted-in child is outside the outer group teardown, so
+  an abort or `skill_timeout` that fires while the provider is *actively
+  streaming* leaves it running. It is bounded by its own strictly-tighter idle
+  watchdog, which is why the trade is worth taking; closing it fully needs the
+  outer teardown to track isolated provider sessions.
 
 ## Integration points
 
