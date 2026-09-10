@@ -1129,3 +1129,104 @@ def test_fetch_jira_issue_requests_comment_property_expansion():
 
     assert comment_params["expand"] == "properties"
 
+
+
+def test_failed_self_identity_lookup_is_not_re_requested_per_comment():
+    """A `/myself` that never answers must cost one request, not one per comment.
+
+    Authorship is checked while scanning a comment listing, so re-issuing the
+    lookup on every failure turns an unreachable endpoint into a per-comment
+    30-second stall that outlives the mission timeout.
+    """
+    from contextlib import ExitStack
+
+    from app.jira_notifications import (
+        _SELF_IDENTITY_CACHE,
+        jira_comment_authored_by_self,
+    )
+
+    _SELF_IDENTITY_CACHE.clear()
+    try:
+        with ExitStack() as stack:
+            for cm in TestJiraIssueHelpers()._patch_enabled_config():
+                stack.enter_context(cm)
+            jira_get = stack.enter_context(
+                patch(
+                    "app.jira_notifications._jira_get",
+                    side_effect=RuntimeError("403 Forbidden"),
+                )
+            )
+            verdicts = [
+                jira_comment_authored_by_self({"author_account_id": f"acct-{i}"})
+                for i in range(20)
+            ]
+
+        assert verdicts == [None] * 20
+        assert jira_get.call_count == 1
+    finally:
+        _SELF_IDENTITY_CACHE.clear()
+
+
+def test_unusable_self_identity_payload_is_not_re_requested_per_comment():
+    """Same guarantee when Jira answers with a payload carrying no identity."""
+    from contextlib import ExitStack
+
+    from app.jira_notifications import (
+        _SELF_IDENTITY_CACHE,
+        jira_comment_authored_by_self,
+    )
+
+    _SELF_IDENTITY_CACHE.clear()
+    try:
+        with ExitStack() as stack:
+            for cm in TestJiraIssueHelpers()._patch_enabled_config():
+                stack.enter_context(cm)
+            jira_get = stack.enter_context(
+                patch("app.jira_notifications._jira_get", return_value={})
+            )
+            verdicts = [
+                jira_comment_authored_by_self({"author_account_id": f"acct-{i}"})
+                for i in range(20)
+            ]
+
+        assert verdicts == [None] * 20
+        assert jira_get.call_count == 1
+    finally:
+        _SELF_IDENTITY_CACHE.clear()
+
+
+def test_failed_self_identity_lookup_is_retried_after_the_backoff():
+    """A transient outage must not leave authorship unknowable until restart."""
+    from contextlib import ExitStack
+
+    from app.jira_notifications import (
+        _SELF_IDENTITY_CACHE,
+        _SELF_IDENTITY_RETRY_SECONDS,
+        jira_comment_authored_by_self,
+    )
+
+    _SELF_IDENTITY_CACHE.clear()
+    clock = [1000.0]
+    try:
+        with ExitStack() as stack:
+            for cm in TestJiraIssueHelpers()._patch_enabled_config():
+                stack.enter_context(cm)
+            stack.enter_context(
+                patch("app.jira_notifications.time.time", side_effect=lambda: clock[0])
+            )
+            jira_get = stack.enter_context(
+                patch(
+                    "app.jira_notifications._jira_get",
+                    side_effect=[
+                        RuntimeError("connection reset"),
+                        {"accountId": "koan-account"},
+                    ],
+                )
+            )
+            assert jira_comment_authored_by_self({"author_account_id": "koan-account"}) is None
+            clock[0] += _SELF_IDENTITY_RETRY_SECONDS + 1
+            assert jira_comment_authored_by_self({"author_account_id": "koan-account"}) is True
+
+        assert jira_get.call_count == 2
+    finally:
+        _SELF_IDENTITY_CACHE.clear()

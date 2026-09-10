@@ -642,6 +642,40 @@ def test_long_plan_creates_linked_verified_parts(tmp_path):
     assert load_staged_plan(URL, str(tmp_path)) is None
 
 
+def test_rejected_navigation_edit_is_not_reported_as_published(tmp_path):
+    """A nav edit Jira refuses must fail the publish, not verify on revision alone.
+
+    The comment already carries the current revision from the first pass, so
+    only reading back the links themselves can tell the two apart. Claiming
+    success strands a part with no way to reach its siblings — Jira has no
+    threading — while the stage is cleared and nothing ever retries.
+    """
+    stage_plan(URL, _split_fixture(3), str(tmp_path))
+    comments = []
+
+    def add(_key, rendered, properties=None):
+        comments.append({
+            "id": str(len(comments) + 1),
+            "body": _as_jira_returns(rendered),
+            "properties": _properties_map(properties),
+        })
+        return True
+
+    with (
+        patch("app.jira_plan_publish.jira_list_comments_checked", side_effect=lambda _k: comments),
+        patch("app.jira_plan_publish.jira_add_comment", side_effect=add),
+        patch("app.jira_plan_publish.jira_edit_comment", return_value=False),
+        patch("app.jira_plan_publish.time.sleep"),
+        patch("app.jira_plan_publish.log_event"),
+    ):
+        ok, reason = publish_staged_plan(URL, str(tmp_path))
+
+    assert ok is False
+    assert reason == "part_1_of_3_navigation_failed"
+    assert all("focusedCommentId" not in c["body"] for c in comments)
+    assert load_staged_plan(URL, str(tmp_path)) == _split_fixture(3)
+
+
 def test_resuming_a_fully_published_split_plan_rewrites_nothing(tmp_path):
     body = _split_fixture(3)
     stage_plan(URL, body, str(tmp_path))

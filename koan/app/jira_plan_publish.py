@@ -528,6 +528,14 @@ def _upsert_part(
             verified = None
             _audit(issue_key, "verify", "failure", attempt, error=str(exc)[:180], part=part_number)
 
+        # The navigation pass edits a comment that already carries this revision,
+        # so a revision match alone proves nothing about whether the edit landed.
+        # Read back the artifact this write was for — the links themselves.
+        if verified is not None and always_write and not _contains_navigation(
+            verified.get("body") or "", navigation
+        ):
+            verified = None
+
         if verified is not None:
             _audit(
                 issue_key, "verify", "success", attempt,

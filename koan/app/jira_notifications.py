@@ -1329,6 +1329,11 @@ def _jira_auth_from_config() -> Tuple[str, str]:
 
 
 _SELF_IDENTITY_CACHE: Dict[str, str] = {}
+# How long a *failed* identity lookup is remembered. Long enough that an
+# unreachable `/myself` costs one request instead of one per comment, short
+# enough that a transient outage does not leave authorship unknowable for the
+# rest of the daemon's life. A successful lookup is cached without expiry.
+_SELF_IDENTITY_RETRY_SECONDS = 300
 
 
 def jira_self_identity() -> Tuple[str, str]:
@@ -1338,24 +1343,33 @@ def jira_self_identity() -> Tuple[str, str]:
     credential in ``config.yaml``, which cannot change under a running daemon.
     Jira Cloud hides ``emailAddress`` on most accounts, so ``accountId`` is the
     identity that actually resolves; the email is a fallback for Server/DC.
+
+    Failures are cached too, briefly. Callers ask per comment — authorship is
+    checked while scanning a whole comment listing — so a Jira whose ``/myself``
+    is forbidden or hanging would otherwise cost one 30-second request per
+    comment and stall the mission instead of degrading to "authorship unknown".
     """
-    if _SELF_IDENTITY_CACHE:
-        return (
-            _SELF_IDENTITY_CACHE.get("account_id", ""),
-            _SELF_IDENTITY_CACHE.get("email", ""),
-        )
+    account_id = _SELF_IDENTITY_CACHE.get("account_id", "")
+    email = _SELF_IDENTITY_CACHE.get("email", "")
+    if account_id or email:
+        return account_id, email
+    failed_at = float(_SELF_IDENTITY_CACHE.get("failed_at") or 0)
+    if failed_at and time.time() - failed_at < _SELF_IDENTITY_RETRY_SECONDS:
+        return "", ""
+
+    data: Any = None
     try:
         base_url, auth_header = _jira_auth_from_config()
         data = _jira_get(base_url, auth_header, "/rest/api/3/myself")
     except Exception as e:
         log.warning("Jira self-identity lookup failed: %s", e)
-        return "", ""
-    if not isinstance(data, dict):
-        return "", ""
-    account_id = str(data.get("accountId") or "")
-    email = str(data.get("emailAddress") or "")
+    if isinstance(data, dict):
+        account_id = str(data.get("accountId") or "")
+        email = str(data.get("emailAddress") or "")
     if account_id or email:
         _SELF_IDENTITY_CACHE.update({"account_id": account_id, "email": email})
+    else:
+        _SELF_IDENTITY_CACHE["failed_at"] = str(time.time())
     return account_id, email
 
 
