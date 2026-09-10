@@ -42,6 +42,10 @@ Settings resolve in this order:
 4. The first server URL in `koan/openapi.yaml` for the base URL, and a
    120-second response timeout.
 
+`configure` uses the same ladder to pick which profile it writes and which
+base URL it offers as the prompt default, so `KOAN_PROFILE=prod koan-cli
+configure` writes `[prod]`, not `[default]`.
+
 Empty environment values are ignored. Without any configuration, the public
 `health` command uses the specification's default local server and needs no
 token:

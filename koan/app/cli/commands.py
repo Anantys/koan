@@ -157,7 +157,9 @@ def _add_common_request_flags(parser: argparse.ArgumentParser) -> None:
     )
     output = parser.add_mutually_exclusive_group()
     output.add_argument(
-        "--compact", action="store_true", help="Force single-line JSON (default when piped)."
+        "--compact",
+        action="store_true",
+        help="Force single-line JSON (default when piped).",
     )
     output.add_argument(
         "--pretty", action="store_true", help="Force indented JSON (default on a TTY)."

@@ -1,7 +1,6 @@
 import stat
 
 import pytest
-
 from app.cli import CliError
 from app.cli.config import (
     DEFAULT_TIMEOUT,

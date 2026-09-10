@@ -12,11 +12,9 @@ from unittest.mock import patch
 
 import pytest
 import yaml
-from flask import request
-
-from app.api import create_app
-from app.api import openapi_gen
+from app.api import create_app, openapi_gen
 from app.api.openapi_metadata import openapi_operation, query_parameter
+from flask import request
 
 
 @pytest.fixture

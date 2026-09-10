@@ -3,7 +3,6 @@ import json
 import shlex
 
 import pytest
-
 from app.cli import CliError
 from app.cli.commands import (
     GROUP_EXAMPLES,
@@ -340,7 +339,7 @@ def test_every_operation_accepts_generic_data_and_query(api_spec_path):
 
 
 def test_object_body_flag_sends_a_json_object(api_spec_path):
-    """``--patch`` is declared ``type: object``; a JSON *string* can never satisfy it."""
+    """``--patch`` is ``type: object``; a JSON *string* can never satisfy it."""
     operations = load_operations(load_spec(api_spec_path))
     parser = build_parser(operations)
     args = parser.parse_args(
@@ -425,13 +424,17 @@ def test_every_help_example_actually_runs(api_spec_path):
         try:
             args = parser.parse_args(argv[1:])
         except SystemExit as exc:
-            raise AssertionError(f"--help example rejected by argparse: {line}") from exc
+            raise AssertionError(
+                f"--help example rejected by argparse: {line}"
+            ) from exc
         if getattr(args, "_builtin", None) is not None:
             continue
         try:
             build_operation_request(args._operation, args, "http://localhost:8420")
         except CliError as exc:
-            raise AssertionError(f"--help example builds no request: {line} ({exc})") from exc
+            raise AssertionError(
+                f"--help example builds no request: {line} ({exc})"
+            ) from exc
 
 
 def test_help_examples_cover_every_command_group(api_spec_path):

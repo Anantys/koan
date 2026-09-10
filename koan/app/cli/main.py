@@ -16,12 +16,13 @@ from app.cli.commands import (
 from app.cli.config import (
     CONFIG_PATH,
     load_settings,
+    resolve_base_url,
+    resolve_profile,
     resolve_timeout,
     write_profile,
 )
 from app.cli.http import confirm_destructive, execute, verify_configuration
 from app.cli.spec import load_operations, load_server_default, load_spec
-
 
 DEFAULT_SPEC = Path(__file__).resolve().parents[2] / "openapi.yaml"
 
@@ -43,8 +44,14 @@ def main(
         path = config_path or CONFIG_PATH
 
         if getattr(args, "_builtin", None) == "configure":
-            profile = (args.profile or "default").strip()
-            default_url = (args.base_url or server_default).rstrip("/")
+            # configure resolves the profile and URL on the same ladder as
+            # every other command, so an exported KOAN_PROFILE does not write
+            # production credentials into [default].
+            profile = resolve_profile(cli_profile=args.profile)
+            default_url = resolve_base_url(
+                cli_base_url=args.base_url,
+                fallback=server_default,
+            )
             entered_url = input(f"Base URL [{default_url}]: ").strip()
             base_url = (entered_url or default_url).rstrip("/")
             token = getpass.getpass("Bearer token: ").strip()

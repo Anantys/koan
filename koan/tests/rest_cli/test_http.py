@@ -2,8 +2,14 @@ import io
 
 import pytest
 import requests
-
-from app.cli import EXIT_AUTH, EXIT_LOCAL, EXIT_NOT_FOUND, EXIT_OK, EXIT_SERVER, CliError
+from app.cli import (
+    EXIT_AUTH,
+    EXIT_LOCAL,
+    EXIT_NOT_FOUND,
+    EXIT_OK,
+    EXIT_SERVER,
+    CliError,
+)
 from app.cli.commands import RequestPlan
 from app.cli.config import DEFAULT_TIMEOUT, Settings
 from app.cli.http import confirm_destructive, execute, verify_configuration

@@ -46,6 +46,35 @@ def _parse_timeout(value: str, source: str) -> float:
     return timeout
 
 
+def resolve_profile(
+    *,
+    cli_profile: str | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> str:
+    """Resolve the profile name: flag, then environment, then ``default``."""
+    env = os.environ if environ is None else environ
+    return (cli_profile or "").strip() or _nonempty(env, "KOAN_PROFILE") or "default"
+
+
+def resolve_base_url(
+    *,
+    cli_base_url: str | None = None,
+    section: Mapping[str, str] | None = None,
+    environ: Mapping[str, str] | None = None,
+    fallback: str = "",
+) -> str:
+    """Resolve the base URL: flag, environment, stored profile, then fallback."""
+    env = os.environ if environ is None else environ
+    stored = str(section.get("base_url", "")).strip() if section is not None else ""
+    value = (
+        (cli_base_url or "").strip()
+        or _nonempty(env, "KOAN_BASE_URL")
+        or stored
+        or fallback
+    )
+    return value.rstrip("/")
+
+
 def resolve_timeout(
     *,
     cli_timeout: float | None = None,
@@ -91,20 +120,20 @@ def load_settings(
     environ: Mapping[str, str] | None = None,
 ) -> Settings:
     env = os.environ if environ is None else environ
-    profile = (cli_profile or "").strip() or _nonempty(env, "KOAN_PROFILE") or "default"
+    profile = resolve_profile(cli_profile=cli_profile, environ=env)
     parser = _read_config(path)
     if parser.sections() and profile not in parser:
         raise CliError(f"unknown profile {profile!r} in {path}")
     section = parser[profile] if profile in parser else {}
-    base_url = (
-        (cli_base_url or "").strip()
-        or _nonempty(env, "KOAN_BASE_URL")
-        or str(section.get("base_url", "")).strip()
-        or server_default
+    base_url = resolve_base_url(
+        cli_base_url=cli_base_url,
+        section=section,
+        environ=env,
+        fallback=server_default,
     )
     token = _nonempty(env, "KOAN_API_TOKEN") or str(section.get("token", "")).strip()
     timeout = resolve_timeout(cli_timeout=cli_timeout, section=section, environ=env)
-    return Settings(profile, base_url.rstrip("/"), token, timeout)
+    return Settings(profile, base_url, token, timeout)
 
 
 def write_profile(path: Path, profile: str, base_url: str, token: str) -> None:

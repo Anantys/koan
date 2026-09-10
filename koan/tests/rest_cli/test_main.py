@@ -4,7 +4,6 @@ import sys
 from pathlib import Path
 
 import requests
-
 from app.cli import EXIT_LOCAL, EXIT_OK
 from app.cli.main import main
 
@@ -91,3 +90,67 @@ def test_executable_help():
     assert result.returncode == 0, result.stderr
     assert "configure" in result.stdout
     assert "raw" in result.stdout
+
+
+def test_configure_writes_the_profile_named_by_the_environment(
+    api_spec_path, tmp_path, monkeypatch, session_factory
+):
+    """configure must not drop prod credentials into [default] under KOAN_PROFILE."""
+    path = tmp_path / "koan-cli.cfg"
+    monkeypatch.setenv("KOAN_PROFILE", "prod")
+    monkeypatch.setattr("builtins.input", lambda prompt: "")
+    monkeypatch.setattr("getpass.getpass", lambda prompt: "prod-token")
+
+    main(
+        ["configure"],
+        spec_path=api_spec_path,
+        config_path=path,
+        session=session_factory([requests.ConnectionError("down")]),
+    )
+
+    written = path.read_text()
+    assert "[prod]" in written
+    assert "[default]" not in written
+    assert "prod-token" in written
+
+
+def test_configure_prompt_defaults_to_the_environment_base_url(
+    api_spec_path, tmp_path, monkeypatch, session_factory
+):
+    path = tmp_path / "koan-cli.cfg"
+    monkeypatch.setenv("KOAN_BASE_URL", "https://env.example")
+    prompts = []
+    monkeypatch.setattr("builtins.input", lambda prompt: prompts.append(prompt) or "")
+    monkeypatch.setattr("getpass.getpass", lambda prompt: "token")
+
+    main(
+        ["configure"],
+        spec_path=api_spec_path,
+        config_path=path,
+        session=session_factory([requests.ConnectionError("down")]),
+    )
+
+    assert "https://env.example" in prompts[0]
+    assert "https://env.example" in path.read_text()
+
+
+def test_configure_flag_beats_the_environment(
+    api_spec_path, tmp_path, monkeypatch, session_factory
+):
+    path = tmp_path / "koan-cli.cfg"
+    monkeypatch.setenv("KOAN_PROFILE", "prod")
+    monkeypatch.setenv("KOAN_BASE_URL", "https://env.example")
+    monkeypatch.setattr("builtins.input", lambda prompt: "")
+    monkeypatch.setattr("getpass.getpass", lambda prompt: "token")
+
+    main(
+        ["--profile", "staging", "--base-url", "https://flag.example", "configure"],
+        spec_path=api_spec_path,
+        config_path=path,
+        session=session_factory([requests.ConnectionError("down")]),
+    )
+
+    written = path.read_text()
+    assert "[staging]" in written
+    assert "https://flag.example" in written
+    assert "env.example" not in written

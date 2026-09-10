@@ -2,7 +2,6 @@ from dataclasses import replace
 
 import pytest
 import yaml
-
 from app.cli.spec import (
     SpecError,
     assert_unique,
@@ -11,7 +10,6 @@ from app.cli.spec import (
     load_spec,
     resolve_local_ref,
 )
-
 
 EXPECTED = {
     ("GET", "/v1/health"): ("health",),

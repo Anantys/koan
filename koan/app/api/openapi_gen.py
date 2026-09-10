@@ -179,7 +179,11 @@ def build_spec(app: Flask) -> dict:
         "servers": [{"url": "http://127.0.0.1:8420", "description": "Default loopback bind"}],
         "security": [{"bearerAuth": []}],
         "tags": [
-            ({"name": t, "description": TAG_DESCRIPTIONS[t]} if t in TAG_DESCRIPTIONS else {"name": t})
+            (
+                {"name": t, "description": TAG_DESCRIPTIONS[t]}
+                if t in TAG_DESCRIPTIONS
+                else {"name": t}
+            )
             for t in sorted_tags
         ],
         "paths": paths,
