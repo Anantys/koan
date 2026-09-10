@@ -22,6 +22,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
+from app import jira_notifications as _jira_notifications
 from app.github_url_parser import parse_jira_url
 from app.jira_notifications import (
     jira_add_comment,
@@ -230,24 +231,12 @@ def _provably_koan(comment: dict) -> bool:
 
 
 def koan_authorship_check(comments) -> Callable[[dict], bool]:
-    """Return "did Koan write this comment?" for one issue's comment listing.
+    """"Did Koan write this comment?", keyed on the plan entity property.
 
-    The predicate is built from the whole listing because the strongest
-    available evidence depends on it. The ``koan.jira.plan`` entity property is
-    proof — it cannot be produced from the comment editor, only through the
-    REST comment payload — so when *any* comment carries it, only comments that
-    carry it count.
-
-    When *no* comment on the issue does, the property is not available evidence
-    at all: a Jira deployment may drop properties on write, or ignore
-    ``expand=properties`` when listing, and Koan must still recognise the plan
-    comment it published. There the check falls back to Jira's own authorship
-    and excludes only comments Jira positively attributes to someone else —
-    "cannot tell" stays admissible, a foreign account does not.
+    See :func:`app.jira_notifications.koan_authorship_check` for the rule; the
+    plan comment's proof of authorship is the ``koan.jira.plan`` property.
     """
-    if any(_authored_by_koan(comment) for comment in comments or []):
-        return _authored_by_koan
-    return lambda comment: jira_comment_authored_by_self(comment) is not False
+    return _jira_notifications.koan_authorship_check(comments, _PLAN_PROPERTY_KEY)
 
 
 def _find_plan_comments(comments) -> List[Tuple[dict, str, int, int]]:

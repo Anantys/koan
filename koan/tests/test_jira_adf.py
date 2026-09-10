@@ -305,9 +305,10 @@ class TestJiraNormalisationPreservesCode:
         assert "visible" in rendered_text
 
     def test_unclosed_html_comment_does_not_remove_later_lines(self):
+        """An opener with no closer is prose, not metadata: keep it verbatim."""
         doc = markdown_to_adf("before <!-- private\nafter")
         rendered_text = "".join(node["text"] for node in _text_nodes(doc))
-        assert "private" not in rendered_text
+        assert "<!-- private" in rendered_text
         assert "before" in rendered_text
         assert "after" in rendered_text
 
@@ -339,7 +340,9 @@ class TestJiraNormalisationPreservesCode:
         assert block["content"][0]["text"] == "<!-- example -->"
         rendered_text = "".join(node["text"] for node in _text_nodes(doc))
         assert "still visible" in rendered_text
-        assert "oops" not in rendered_text
+        # The fence's `-->` is out of scope, so the opener never closes: it is
+        # kept verbatim instead of swallowing the prose that follows it.
+        assert "<!-- oops" in rendered_text
 
     def test_html_comment_inside_indented_code_is_preserved(self):
         """An indented block renders as code, so its content is example text.

@@ -5,13 +5,14 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from typing import Dict, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple
 
 from app.github_url_parser import search_jira_url
 from app.jira_notifications import (
     jira_add_comment,
     jira_edit_comment,
     jira_list_comments_checked,
+    koan_authorship_check,
 )
 from app.run_log import log_safe as _log_runner
 from app.tracker_comment_format import build_pr_comment_failure, build_pr_comment_success
@@ -134,10 +135,27 @@ def _has_outcome_footer(comment: dict, digest: str) -> bool:
     return bool(re.search(rf"{re.escape(_footer_for(digest))}\s*$", body))
 
 
-def _identifies_outcome(comment: dict, digest: str, legacy_marker: str) -> bool:
+def _identifies_outcome(
+    comment: dict,
+    digest: str,
+    legacy_marker: str,
+    authored_by_koan: Callable[[dict], bool],
+) -> bool:
+    """Whether ``comment`` is Koan's own status comment for ``digest``.
+
+    The entity property is proof on its own. The visible footer and the legacy
+    marker are not: both are plain text a reviewer reproduces by quoting a
+    status Koan posted, so they only identify the status comment when Jira does
+    not attribute the comment to someone else. Without that guard the upsert
+    below overwrites the quoting reviewer's body — same reasoning, and the same
+    check, as the plan comment path.
+    """
+    if _has_outcome_property(comment, digest):
+        return True
+    if not authored_by_koan(comment):
+        return False
     return (
-        _has_outcome_property(comment, digest)
-        or _has_outcome_footer(comment, digest)
+        _has_outcome_footer(comment, digest)
         or legacy_marker in (comment.get("body") or "")
     )
 
@@ -158,11 +176,12 @@ def _upsert_status_comment(
         # Creating on that signal is how one outcome becomes a pile of them.
         _log_runner("jira", f"Comment lookup failed for {issue_key}: {e}")
         return False, "lookup_failed"
+    authored_by_koan = koan_authorship_check(comments, _OUTCOME_PROPERTY_KEY)
     existing = next(
         (
             comment
             for comment in comments
-            if _identifies_outcome(comment, digest, legacy_marker)
+            if _identifies_outcome(comment, digest, legacy_marker, authored_by_koan)
         ),
         None,
     )
@@ -192,6 +211,10 @@ def _confirm_identity(issue_key: str, digest: str, action: str) -> Tuple[bool, s
     A write that left neither is a comment the next run cannot recognize, and
     would therefore duplicate — say so loudly now rather than letting status
     comments quietly stack up.
+
+    The footer only counts on a comment Koan could have written: a reviewer
+    quoting the tail of an earlier status would otherwise satisfy verification
+    for a write that in fact landed without either identity.
     """
     try:
         comments = jira_list_comments_checked(issue_key)
@@ -199,8 +222,10 @@ def _confirm_identity(issue_key: str, digest: str, action: str) -> Tuple[bool, s
         _log_runner("jira", f"Outcome read-back failed for {issue_key}: {e}")
         return False, f"{action}_unverified"
 
+    authored_by_koan = koan_authorship_check(comments, _OUTCOME_PROPERTY_KEY)
     if any(
-        _has_outcome_property(comment, digest) or _has_outcome_footer(comment, digest)
+        _has_outcome_property(comment, digest)
+        or (authored_by_koan(comment) and _has_outcome_footer(comment, digest))
         for comment in comments
     ):
         return True, action

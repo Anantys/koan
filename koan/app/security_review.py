@@ -65,8 +65,9 @@ SENSITIVE_CONTENT_PATTERNS = [
     # Mirrors bandit B324: a call that declares usedforsecurity=False is a
     # non-cryptographic use (checksums, dedup keys) and is not flagged. The
     # lookahead is bounded to *this* call's own argument list (one level of
-    # nesting, so `hashlib.sha1(x.encode("utf-8"), usedforsecurity=False)`
-    # still matches) — an unbounded `.*` would let the literal appear anywhere
+    # nesting, so a call whose first argument is itself a call — say an
+    # `x.encode("utf-8")` — still matches the exemption when the declaration
+    # follows it) — an unbounded `.*` would let the literal appear anywhere
     # later on the line, so a trailing comment or a second annotated call would
     # silently exempt a genuinely security-relevant hash.
     (

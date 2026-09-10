@@ -101,13 +101,20 @@ issue_cli.py          → CLI entry point (fetch/comment/create) used by prompts
   leave the comment unfindable and stack one duplicate per mission. This is
   the same reason `/plan` comments carry a visible `Koan current plan (rev …)`
   footer.
+  Because that footer is plain text anyone can reproduce by quoting the tail of
+  a status, it identifies the status comment only together with **authorship**,
+  under the same rule the `/plan` path applies: the `koan.jira.outcome` property
+  when any comment on the issue carries one, otherwise Jira's own attribution
+  excluding foreign accounts. An upsert overwrites a comment body outright, so a
+  reviewer's quoted footer must never be what it edits.
   Legacy `<!-- koan-jira-outcome:… -->` markers are lookup-only migration
-  inputs: the next update removes the marker and writes the footer plus the
-  property. Lookup failure remains fail-closed and must never authorize
-  creation of a potentially duplicate comment. A write is only reported as
-  published once a read-back observes one of the two identities on a comment;
-  an accepted write that left neither is reported as unverified rather than as
-  success.
+  inputs subject to the same authorship guard: the next update removes the
+  marker and writes the footer plus the property. Lookup failure remains
+  fail-closed and must never authorize creation of a potentially duplicate
+  comment. A write is only reported as published once a read-back observes one
+  of the two identities on a comment Koan could have written; an accepted write
+  that left neither is reported as unverified rather than as success, and a
+  quoted footer elsewhere on the issue does not satisfy it.
 - **Every Jira comment read carries its authorship evidence.** Both comment-read
   paths — the notification-side listing and the full issue fetch — normalize
   `expand=properties` into a `{key: value}` map and surface the author's

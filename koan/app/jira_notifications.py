@@ -16,7 +16,7 @@ import time
 from base64 import b64encode
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from app.bounded_set import BoundedSet
 
@@ -1422,6 +1422,36 @@ def jira_comment_authored_by_self(comment: dict) -> Optional[bool]:
     if email and comment_email:
         return email.strip().lower() == comment_email.strip().lower()
     return None
+
+
+def koan_authorship_check(comments, property_key: str) -> Callable[[dict], bool]:
+    """Return "did Koan write this comment?" for one issue's comment listing.
+
+    The predicate is built from the whole listing because the strongest
+    available evidence depends on it. A Jira comment entity property is proof —
+    it cannot be produced from the comment editor, only through the REST comment
+    payload — so when *any* comment carries ``property_key``, only comments that
+    carry it count.
+
+    When *no* comment on the issue does, the property is not available evidence
+    at all: a Jira deployment may drop properties on write, or ignore
+    ``expand=properties`` when listing, and Koan must still recognise the
+    comment it published. There the check falls back to Jira's own authorship
+    and excludes only comments Jira positively attributes to someone else —
+    "cannot tell" stays admissible, a foreign account does not.
+
+    Callers pair this with their own body marker: authorship answers "is this
+    ours?", the marker answers "which one is it?". Never overwrite a comment
+    body on the marker alone — the markers are plain text a reviewer reproduces
+    by quoting the tail of a comment Koan wrote.
+    """
+    def carries_property(comment: dict) -> bool:
+        properties = comment.get("properties")
+        return isinstance(properties, dict) and property_key in properties
+
+    if any(carries_property(comment) for comment in comments or []):
+        return carries_property
+    return lambda comment: jira_comment_authored_by_self(comment) is not False
 
 
 def _jira_comment_payload(

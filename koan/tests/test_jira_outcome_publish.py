@@ -484,6 +484,85 @@ class TestUpsertJiraComment:
         add_comment.assert_called_once()
         edit_comment.assert_not_called()
 
+    def test_footer_quoted_at_the_end_by_a_human_is_not_overwritten(self):
+        """End-anchoring alone is not identity — authorship decides.
+
+        A reviewer who quotes the tail of a status Koan posted ends their own
+        comment with the footer. Editing it would destroy their text.
+        """
+        from app.jira_outcome_publish import _footer_for, _outcome_digest, upsert_jira_comment
+
+        digest = _outcome_digest("PROJ-1", "fix")
+        human_body = f"Is this still true?\n\n{_footer_for(digest)}"
+        on_issue = [{
+            "id": "5",
+            "body": human_body,
+            "properties": {},
+            "author_account_id": "human-account",
+        }]
+        posted = on_issue + [{
+            "id": "6",
+            "body": f"status\n\n{_footer_for(digest)}",
+            "properties": {},
+            "author_account_id": "koan-account",
+        }]
+        with (
+            patch(
+                "app.jira_notifications.jira_self_identity",
+                return_value=("koan-account", ""),
+            ),
+            patch(
+                "app.jira_outcome_publish.jira_list_comments_checked",
+                side_effect=[on_issue, posted],
+            ),
+            patch("app.jira_outcome_publish.jira_add_comment", return_value=True) as add_comment,
+            patch("app.jira_outcome_publish.jira_edit_comment") as edit_comment,
+        ):
+            ok, mode = upsert_jira_comment("PROJ-1", "fix", "status")
+
+        assert (ok, mode) == (True, "created")
+        add_comment.assert_called_once()
+        edit_comment.assert_not_called()
+        assert on_issue[0]["body"] == human_body
+
+    def test_a_humans_quoted_footer_does_not_verify_koans_own_write(self):
+        """Read-back must find *Koan's* comment, not a quote of it.
+
+        A write that landed with neither identity is unfindable next run; a
+        reviewer's quoted footer must not paper over that.
+        """
+        from app.jira_outcome_publish import _footer_for, _outcome_digest, upsert_jira_comment
+
+        digest = _outcome_digest("PROJ-1", "fix")
+        posted = [
+            {
+                "id": "5",
+                "body": f"Is this still true?\n\n{_footer_for(digest)}",
+                "properties": {},
+                "author_account_id": "human-account",
+            },
+            {
+                "id": "6",
+                "body": "status",  # property dropped, footer stripped
+                "properties": {},
+                "author_account_id": "koan-account",
+            },
+        ]
+        with (
+            patch(
+                "app.jira_notifications.jira_self_identity",
+                return_value=("koan-account", ""),
+            ),
+            patch(
+                "app.jira_outcome_publish.jira_list_comments_checked",
+                side_effect=[[], posted],
+            ),
+            patch("app.jira_outcome_publish.jira_add_comment", return_value=True),
+        ):
+            ok, mode = upsert_jira_comment("PROJ-1", "fix", "status")
+
+        assert (ok, mode) == (False, "created_unverified")
+
     def test_write_that_kept_neither_identity_is_reported_unverified(self):
         """Jira can accept the write and keep neither property nor footer.
 

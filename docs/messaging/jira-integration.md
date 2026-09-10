@@ -377,13 +377,20 @@ preferred, but it cannot be the sole key — a Jira deployment that does not
 persist comment properties would leave the comment unfindable and accumulate
 one duplicate status comment per mission, so the footer provides an identity
 the transport cannot silently strip (the same reason `/plan` comments carry a
-visible `Koan current plan (rev …)` footer). On the first update after
+visible `Koan current plan (rev …)` footer). The footer only identifies the
+status comment together with authorship, under the same rule the `/plan` path
+applies: Koan considers property-carrying comments when any comment on the
+issue has the property, and otherwise falls back to Jira's own attribution,
+skipping any comment written by another account. Updating a status rewrites the
+comment body, so a reviewer who quotes the tail of a status — ending their own
+comment with the footer — is never what Koan edits. On the first update after
 upgrading, Koan still recognizes an existing `<!-- koan-jira-outcome:… -->`
-body marker, edits that comment in place without the marker, and attaches the
-footer and property. Koan reads the comment back after each write and reports
-the update only once one of the two identities is observed; a write Jira
-accepted while dropping both is reported as unverified and logged, rather than
-reported as a success that the next run would silently duplicate. If comment
+body marker on one of its own comments, edits that comment in place without the
+marker, and attaches the footer and property. Koan reads the comment back after
+each write and reports the update only once one of the two identities is
+observed on a comment it could have written; a write Jira accepted while
+dropping both is reported as unverified and logged, rather than reported as a
+success that the next run would silently duplicate. If comment
 lookup fails, Koan continues to fail closed and does not create a potentially
 duplicate status comment.
 
