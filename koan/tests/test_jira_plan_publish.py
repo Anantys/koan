@@ -321,6 +321,50 @@ def test_a_quoted_stale_footer_in_a_human_comment_is_never_retired(tmp_path):
     assert load_staged_plan(URL, str(tmp_path)) is None
 
 
+def test_property_less_fallback_still_spares_a_human_comment(tmp_path):
+    """Authorship, not the footer, decides when properties are unavailable.
+
+    On a deployment that drops comment properties every plan comment falls into
+    the footer-only path — including a human's quoted plan tail, which the next
+    revision would otherwise overwrite and the retirement pass blank.
+    """
+    stage_plan(URL, "revised plan", str(tmp_path))
+    koan_part = {
+        "id": "10",
+        "body": _rendered("original plan"),
+        "properties": {},
+        "author_account_id": "koan-account",
+    }
+    human_body = f"Quoting part 2:\n\n{_footer_for(_revision('older'), 2, 2)}"
+    human = {
+        "id": "11",
+        "body": human_body,
+        "properties": {},
+        "author_account_id": "human-account",
+    }
+    comments = [koan_part, human]
+
+    def edit(_key, comment_id, rendered, properties=None):
+        target = next(c for c in comments if c["id"] == comment_id)
+        target["body"] = rendered
+        return True
+
+    with (
+        patch("app.jira_notifications.jira_self_identity", return_value=("koan-account", "")),
+        patch("app.jira_plan_publish.jira_list_comments_checked", side_effect=lambda _k: comments),
+        patch("app.jira_plan_publish.jira_edit_comment", side_effect=edit),
+        patch("app.jira_plan_publish.jira_add_comment") as add_comment,
+        patch("app.jira_plan_publish.log_event"),
+    ):
+        ok, comment_id = publish_staged_plan(URL, str(tmp_path))
+
+    assert ok is True
+    assert comment_id == "10"
+    add_comment.assert_not_called()
+    assert human["body"] == human_body
+    assert koan_part["body"].endswith(_footer("revised plan"))
+
+
 def test_a_created_part_is_not_created_again_when_the_listing_lags(tmp_path):
     """Jira's comment listing is not read-your-writes.
 

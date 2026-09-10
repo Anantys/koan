@@ -330,30 +330,53 @@ def _strip_html_comments_outside_code(text: str) -> str:
         return ""
 
     lines = text.splitlines(keepends=True)
+    # A closer only counts when it is reachable as prose: a `-->` sitting inside
+    # a later code block does not close an earlier stray `<!--`, and treating it
+    # as one would delete every visible line up to that code block.
     closer_after_line = [False] * len(lines)
     closer_seen = False
     for index in range(len(lines) - 1, -1, -1):
         closer_after_line[index] = closer_seen
-        if "-->" in lines[index]:
+        if _MD_FENCE_RE.match(lines[index]):
+            closer_seen = False
+        elif "-->" in lines[index]:
             closer_seen = True
 
     output: List[str] = []
     in_fence = False
     in_comment = False
+    in_indented_code = False
+    prev_blank = True
 
     for line_number, raw_line in enumerate(lines):
         body = raw_line.rstrip("\r\n")
         ending = raw_line[len(body):]
         inline_ticks = 0
+        was_blank, prev_blank = prev_blank, not body.strip()
 
-        if not in_comment and _MD_FENCE_RE.match(body):
+        if _MD_FENCE_RE.match(body):
+            # A fence terminates an open comment rather than being swallowed by
+            # it: a stray `<!--` in prose must never eat the code block below.
+            in_comment = False
             in_fence = not in_fence
+            in_indented_code = False
             output.append(raw_line)
             continue
 
         if in_fence:
             output.append(raw_line)
             continue
+
+        # `markdown_to_adf` renders indented blocks as code, so a marker shown
+        # as an indented example is content, not hidden metadata — stripping it
+        # would empty the very code block it illustrates. A blank line keeps an
+        # open block open (as CommonMark does); ordinary prose closes it.
+        if not in_comment and body.strip():
+            if _MD_INDENTED_CODE_RE.match(body) and (in_indented_code or was_blank):
+                in_indented_code = True
+                output.append(raw_line)
+                continue
+            in_indented_code = False
 
         i = 0
         while i < len(body):
@@ -1305,6 +1328,53 @@ def _jira_auth_from_config() -> Tuple[str, str]:
     return base_url, _make_auth_header(email, api_token)
 
 
+_SELF_IDENTITY_CACHE: Dict[str, str] = {}
+
+
+def jira_self_identity() -> Tuple[str, str]:
+    """Return the ``(account_id, email)`` Koan comments as, ``("", "")`` if unknown.
+
+    Cached for the process: it is one extra round-trip and the answer is the
+    credential in ``config.yaml``, which cannot change under a running daemon.
+    Jira Cloud hides ``emailAddress`` on most accounts, so ``accountId`` is the
+    identity that actually resolves; the email is a fallback for Server/DC.
+    """
+    if _SELF_IDENTITY_CACHE:
+        return (
+            _SELF_IDENTITY_CACHE.get("account_id", ""),
+            _SELF_IDENTITY_CACHE.get("email", ""),
+        )
+    try:
+        base_url, auth_header = _jira_auth_from_config()
+        data = _jira_get(base_url, auth_header, "/rest/api/3/myself")
+    except Exception:
+        return "", ""
+    if not isinstance(data, dict):
+        return "", ""
+    account_id = str(data.get("accountId") or "")
+    email = str(data.get("emailAddress") or "")
+    if account_id or email:
+        _SELF_IDENTITY_CACHE.update({"account_id": account_id, "email": email})
+    return account_id, email
+
+
+def jira_comment_authored_by_self(comment: dict) -> Optional[bool]:
+    """Whether Koan's own Jira account wrote ``comment`` — ``None`` if unknowable.
+
+    The tri-state matters: callers that are about to overwrite a comment body
+    must treat "cannot tell" as "not mine", while a read-only lookup can stay
+    permissive.
+    """
+    account_id, email = jira_self_identity()
+    comment_account = str(comment.get("author_account_id") or "")
+    comment_email = str(comment.get("author_email") or "")
+    if account_id and comment_account:
+        return account_id == comment_account
+    if email and comment_email:
+        return email.strip().lower() == comment_email.strip().lower()
+    return None
+
+
 def _jira_comment_payload(
     body_text: str,
     properties: Optional[List[Dict[str, Any]]] = None,
@@ -1384,10 +1454,17 @@ def _list_comments_result(issue_key: str) -> Tuple[bool, List[dict]]:
                 for item in raw_properties
                 if isinstance(item, dict) and str(item.get("key", "")).strip()
             }
+            author = comment.get("author")
+            if not isinstance(author, dict):
+                author = {}
             all_comments.append({
                 "id": comment_id,
                 "body": body_text,
                 "properties": properties,
+                # Authorship is what keeps a destructive edit off a human's
+                # comment when the deployment does not persist properties.
+                "author_account_id": str(author.get("accountId") or ""),
+                "author_email": str(author.get("emailAddress") or ""),
             })
 
         total = data.get("total", 0)

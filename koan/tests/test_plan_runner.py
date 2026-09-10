@@ -18,6 +18,7 @@ from app.plan_runner import (
     _strip_title_line,
     _run_new_plan,
     _run_issue_plan,
+    _deliver_jira_plan,
     _PLAN_LABEL,
     main,
     review_plan,
@@ -620,6 +621,46 @@ class TestRunIssuePlan:
         assert ok
         assert "staged" in msg
         assert any("staged" in str(call) for call in notify.call_args_list)
+
+
+class TestDeliverJiraPlanKeepsThePlanVisible:
+    """A dropped plan must be shown before it is destroyed."""
+
+    URL = "https://org.atlassian.net/browse/PROJ-9"
+
+    def test_abandoned_stage_echoes_the_plan_body(self):
+        notify = MagicMock()
+        with patch("app.jira_plan_publish.stage_plan"), \
+             patch("app.jira_plan_publish.load_staged_plan", return_value="the whole plan"), \
+             patch("app.jira_plan_publish.publish_staged_plan",
+                   return_value=(False, "abandoned_after_3_failed_runs")):
+            ok, _msg = _deliver_jira_plan(self.URL, "", notify)
+
+        assert ok is False
+        assert any("the whole plan" in str(call) for call in notify.call_args_list)
+
+    def test_retryable_failure_does_not_echo_the_plan(self):
+        """The stage still holds it; repeating 3000 chars would be noise."""
+        notify = MagicMock()
+        with patch("app.jira_plan_publish.stage_plan"), \
+             patch("app.jira_plan_publish.load_staged_plan", return_value="the whole plan"), \
+             patch("app.jira_plan_publish.publish_staged_plan",
+                   return_value=(False, "not_verified")):
+            ok, _msg = _deliver_jira_plan(self.URL, "", notify)
+
+        assert ok is False
+        assert not any("the whole plan" in str(call) for call in notify.call_args_list)
+
+    def test_staging_failure_echoes_the_plan_body(self):
+        notify = MagicMock()
+        with patch("app.jira_plan_publish.stage_plan", side_effect=OSError("disk full")), \
+             patch("app.jira_plan_publish.publish_staged_plan") as publish:
+            ok, msg = _deliver_jira_plan(self.URL, "", notify, comment_body="the whole plan")
+
+        assert ok is False
+        assert "staging failed" in msg
+        publish.assert_not_called()
+        assert any("the whole plan" in str(call) for call in notify.call_args_list)
 
 
 # ---------------------------------------------------------------------------

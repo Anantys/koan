@@ -192,10 +192,32 @@ def _deliver_jira_plan(
     reason otherwise. The failure notification is emitted here so the resumed
     and freshly-generated paths report identically.
     """
-    from app.jira_plan_publish import publish_staged_plan, stage_path_for, stage_plan
+    from app.jira_plan_publish import (
+        load_staged_plan,
+        publish_staged_plan,
+        stage_path_for,
+        stage_plan,
+    )
 
     if comment_body is not None:
-        stage_plan(issue_url, comment_body, instance_dir)
+        try:
+            stage_plan(issue_url, comment_body, instance_dir)
+        except OSError as e:
+            # Before staging lands the plan exists only in memory. Losing it
+            # silently would throw away the model run this module protects, so
+            # echo it inline the way the tracker-failure path does.
+            summary = f"Plan generated but staging failed: {e}"
+            _messaging.notify_outcome(
+                f"⚠️ {summary}. The plan itself:\n\n{comment_body[:3000]}",
+                notify_fn,
+            )
+            return False, summary
+
+    # Read the body back *before* publishing: the abandon path deletes the
+    # stage, and the failure notification still has to show what was generated.
+    plan_text = comment_body if comment_body is not None else (
+        load_staged_plan(issue_url, instance_dir) or ""
+    )
 
     posted, detail = publish_staged_plan(issue_url, instance_dir)
     if posted:
@@ -215,11 +237,14 @@ def _deliver_jira_plan(
 
     if detail.startswith("abandoned"):
         note = "the staged plan was dropped, so the next /plan regenerates it"
+        # Dropping the stage destroys the only copy — show it before it goes.
+        echo = f"\n\n{plan_text[:3000]}" if plan_text else ""
     else:
         note = f"the plan stays staged for retry at {stage}"
+        echo = ""
     summary = f"Jira could not verify the plan comment: {detail}"
     _messaging.notify_outcome(
-        f"❌ Jira did not confirm the plan comment ({detail}); {note}.", notify_fn,
+        f"❌ Jira did not confirm the plan comment ({detail}); {note}.{echo}", notify_fn,
     )
     return False, summary
 

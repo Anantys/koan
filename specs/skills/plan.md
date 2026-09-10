@@ -75,7 +75,11 @@ See `docs/users/skills.md` for the end-user `/plan` reference and
   and retirement therefore consider only property-carrying comments — falling back to
   footer-only matching solely when no comment on the issue carries the property, since
   a deployment that drops properties (or ignores `expand=properties`) must still be
-  able to update the plan it published.
+  able to update the plan it published. In that fallback the comment's Jira author is
+  the remaining guard: a comment Jira attributes to an account other than Koan's own is
+  never matched, and the **retirement pass demands positive proof** — the property, or
+  Jira naming Koan's account as author. A stale part left standing is recoverable; a
+  human's comment blanked by the retirement pass is not.
 - **A create that reported success is never repeated.** Jira's comment listing is not
   read-your-writes, so a successful create whose read-back has not replicated must not
   be posted again — that is the duplicate this whole path exists to prevent. Later

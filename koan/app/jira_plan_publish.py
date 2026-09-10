@@ -25,6 +25,7 @@ from typing import List, Optional, Tuple
 from app.github_url_parser import parse_jira_url
 from app.jira_notifications import (
     jira_add_comment,
+    jira_comment_authored_by_self,
     jira_edit_comment,
     jira_list_comments_checked,
 )
@@ -220,6 +221,14 @@ def _authored_by_koan(comment: dict) -> bool:
     return isinstance(properties, dict) and _PLAN_PROPERTY_KEY in properties
 
 
+def _provably_koan(comment: dict) -> bool:
+    """Authorship Koan can prove before overwriting a comment body."""
+    return (
+        _authored_by_koan(comment)
+        or jira_comment_authored_by_self(comment) is True
+    )
+
+
 def _find_plan_comments(comments) -> List[Tuple[dict, str, int, int]]:
     """Return every Koan plan comment as ``(comment, revision, part, count)``.
 
@@ -231,14 +240,19 @@ def _find_plan_comments(comments) -> List[Tuple[dict, str, int, int]]:
     part?" and is still matched at the end of the body, so a plan quoted
     mid-body is not mistaken for a plan comment either.
 
-    When *no* comment on the issue carries the property, every comment is
-    considered: a Jira deployment that drops properties on write, or ignores
+    When *no* comment on the issue carries the property, the footer is all
+    there is — a Jira deployment that drops properties on write, or ignores
     ``expand=properties`` when listing, must still be able to find, update and
-    retire the plan comment it published, and there the footer is all there is.
+    retire the plan comment it published. Comments Jira attributes to someone
+    other than Koan's own account are excluded even then: matching them would
+    make a human's quoted plan the comment the next revision overwrites.
     """
     pool = [comment for comment in comments or [] if _authored_by_koan(comment)]
     if not pool:
-        pool = list(comments or [])
+        pool = [
+            comment for comment in comments or []
+            if jira_comment_authored_by_self(comment) is not False
+        ]
 
     found = []
     for comment in pool:
@@ -539,11 +553,18 @@ def _retire_superseded_parts(issue_key: str, revision: str, part_count: int) -> 
     only once a read-back shows no superseded part remains: Jira's write
     endpoints report success for writes that never landed, so an unverified
     retirement must not let the caller declare the publish complete.
+
+    This pass destroys a comment body, so it is the one place that demands
+    *proof* of authorship — the ``koan.jira.plan`` property, or Jira naming
+    Koan's own account as the author. A comment that merely looks like a stale
+    part (a human quoting an older plan on a property-less deployment) is left
+    untouched: a stranded part is recoverable, an overwritten human comment is
+    not.
     """
     def superseded(comments):
         return [
             comment for comment, rev, part, _count in _find_plan_comments(comments)
-            if rev != revision or part > part_count
+            if (rev != revision or part > part_count) and _provably_koan(comment)
         ]
 
     try:

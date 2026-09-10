@@ -326,6 +326,42 @@ class TestJiraNormalisationPreservesCode:
         assert block["type"] == "codeBlock"
         assert block["content"][0]["text"] == "<!-- example -->"
 
+    def test_stray_comment_opener_does_not_swallow_the_next_code_block(self):
+        """A `-->` inside a later fence does not close an earlier stray opener."""
+        doc = markdown_to_adf(
+            "before <!-- oops\n"
+            "still visible\n\n"
+            "```html\n"
+            "<!-- example -->\n"
+            "```"
+        )
+        block = next(n for n in doc["content"] if n.get("type") == "codeBlock")
+        assert block["content"][0]["text"] == "<!-- example -->"
+        rendered_text = "".join(node["text"] for node in _text_nodes(doc))
+        assert "still visible" in rendered_text
+        assert "oops" not in rendered_text
+
+    def test_html_comment_inside_indented_code_is_preserved(self):
+        """An indented block renders as code, so its content is example text.
+
+        Stripping it would publish the empty code block the plan meant to show.
+        """
+        doc = markdown_to_adf(
+            "The marker looks like this:\n\n"
+            "    <!-- koan-jira-outcome:abc123 -->\n\n"
+            "after"
+        )
+        block = next(n for n in doc["content"] if n.get("type") == "codeBlock")
+        assert block["content"][0]["text"] == "<!-- koan-jira-outcome:abc123 -->"
+
+    def test_html_comment_in_indented_prose_continuation_is_still_removed(self):
+        """Indented *continuation* of a paragraph is prose, not code."""
+        doc = markdown_to_adf("before\n    <!-- internal -->\nafter")
+        rendered_text = "".join(node["text"] for node in _text_nodes(doc))
+        assert "internal" not in rendered_text
+        assert "before" in rendered_text
+        assert "after" in rendered_text
+
 
 class TestIndentedCodeDoesNotSwallowProse:
     """Indented code must not interrupt a paragraph or a list continuation.
