@@ -480,21 +480,28 @@ def _upsert_part(
 
         existing = settled or _locate_part(comments, part_number)
         if existing is None and created_unverified:
-            # An earlier attempt's create reported success and the comment is
-            # still not in the listing. Jira's comment read path is not
-            # read-your-writes, so this is at least as likely to be a lagging
-            # replica as a phantom write — and creating again is exactly how
-            # one plan part becomes two, each notifying every watcher. Stop
-            # and let the next mission run re-verify; the stage is kept, so no
-            # model run is lost.
+            # An earlier attempt already tried to create this part and the
+            # comment is still not in the listing. Jira's comment read path is
+            # not read-your-writes, so this is at least as likely to be a
+            # lagging replica as a write that never landed — and creating again
+            # is exactly how one plan part becomes two, each notifying every
+            # watcher. Stop and let the next mission run re-verify; the stage is
+            # kept, so no model run is lost.
             _audit(
                 issue_key, "create", "failure", attempt,
-                error="create reported success but never read back",
+                error="create attempted but never read back",
                 part=part_number, parts=part_count,
             )
             return False, "created_unverified"
 
         action = "update" if existing is not None else "create"
+        if action == "create":
+            # Arm the guard on the *attempt*, not on its reported result: a POST
+            # whose response is lost (socket timeout, dropped connection) is
+            # reported as a failure by `jira_add_comment` even though Jira
+            # created the comment. Trusting that report is how a duplicate
+            # `Part N of M` gets posted on the next attempt.
+            created_unverified = True
         try:
             ok = (
                 jira_edit_comment(
@@ -514,8 +521,6 @@ def _upsert_part(
                 issue_key, action, "success" if ok else "failure", attempt,
                 part=part_number, parts=part_count,
             )
-            if ok and action == "create":
-                created_unverified = True
 
         try:
             verified = _verify_part(jira_list_comments_checked(issue_key), revision, part_number)

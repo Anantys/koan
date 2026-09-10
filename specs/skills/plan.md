@@ -80,12 +80,15 @@ See `docs/users/skills.md` for the end-user `/plan` reference and
   never matched, and the **retirement pass demands positive proof** — the property, or
   Jira naming Koan's account as author. A stale part left standing is recoverable; a
   human's comment blanked by the retirement pass is not.
-- **A create that reported success is never repeated.** Jira's comment listing is not
-  read-your-writes, so a successful create whose read-back has not replicated must not
-  be posted again — that is the duplicate this whole path exists to prevent. Later
-  attempts may only re-verify, or update in place once the comment does appear; if it
-  never does, the publish reports `created_unverified` and leaves the stage for the
-  next run.
+- **A create that was *attempted* is never repeated.** Jira's comment listing is not
+  read-your-writes, and its write path cannot tell "rejected" from "created, response
+  lost" — a POST that times out is reported as a failure for a comment that exists. So
+  the attempt itself, not its reported result, disqualifies a second create; that is the
+  duplicate this whole path exists to prevent. Later attempts may only re-verify, or
+  update in place once the comment does appear; if it never does, the publish reports
+  `created_unverified` and leaves the stage for the next run. A genuinely rejected
+  create therefore also stops retrying within the run, which costs nothing: the stage is
+  kept and the next mission run re-verifies before writing.
 - A failed comment **lookup** must never trigger a write. An empty comment list is
   indistinguishable from a failed read, so every upsert path reads through
   `jira_list_comments_checked`, which raises instead of degrading to `[]`. There is

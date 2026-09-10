@@ -77,12 +77,25 @@ def test_publish_creates_then_verifies_and_clears_stage(tmp_path):
     assert load_staged_plan(URL, str(tmp_path)) is None
 
 
-def test_publish_false_without_readback_retries_and_keeps_stage(tmp_path):
-    stage_plan(URL, "plan", str(tmp_path))
+def test_update_false_without_readback_retries_and_keeps_stage(tmp_path):
+    """Re-editing the plan comment we already own is idempotent, so it retries."""
+    stage_plan(URL, "revised plan", str(tmp_path))
+    koan_part = {
+        "id": "10",
+        "body": _rendered("original plan"),
+        "properties": {"koan.jira.plan": {"revision": _revision("original plan"),
+                                          "part": 1, "parts": 1}},
+    }
 
     with (
-        patch("app.jira_plan_publish.jira_list_comments_checked", return_value=[]),
-        patch("app.jira_plan_publish.jira_add_comment", return_value=False) as add_comment,
+        patch(
+            "app.jira_plan_publish.jira_list_comments_checked",
+            side_effect=lambda _k: [koan_part],
+        ),
+        patch(
+            "app.jira_plan_publish.jira_edit_comment", return_value=False
+        ) as edit_comment,
+        patch("app.jira_plan_publish.jira_add_comment") as add_comment,
         patch("app.jira_plan_publish.time.sleep"),
         patch("app.jira_plan_publish.log_event"),
     ):
@@ -90,8 +103,9 @@ def test_publish_false_without_readback_retries_and_keeps_stage(tmp_path):
 
     assert ok is False
     assert reason == "verification_failed"
-    assert add_comment.call_count == 3
-    assert load_staged_plan(URL, str(tmp_path)) == "plan"
+    assert edit_comment.call_count == 3
+    add_comment.assert_not_called()
+    assert load_staged_plan(URL, str(tmp_path)) == "revised plan"
 
 
 def test_lookup_failure_never_blind_posts_a_duplicate(tmp_path):
@@ -391,6 +405,54 @@ def test_a_created_part_is_not_created_again_when_the_listing_lags(tmp_path):
     assert load_staged_plan(URL, str(tmp_path)) == "plan"
 
 
+def test_a_create_whose_response_was_lost_is_not_posted_again(tmp_path):
+    """`jira_add_comment` returning False does not mean nothing was written.
+
+    A POST whose response is lost (socket timeout) is reported as a failure for
+    a comment Jira did create, so the attempt — not its reported result — has to
+    disqualify a second create.
+    """
+    stage_plan(URL, "plan", str(tmp_path))
+
+    with (
+        patch("app.jira_plan_publish.jira_list_comments_checked", return_value=[]),
+        patch(
+            "app.jira_plan_publish.jira_add_comment", return_value=False
+        ) as add_comment,
+        patch("app.jira_plan_publish.jira_edit_comment") as edit_comment,
+        patch("app.jira_plan_publish.time.sleep"),
+        patch("app.jira_plan_publish.log_event"),
+    ):
+        ok, reason = publish_staged_plan(URL, str(tmp_path))
+
+    assert ok is False
+    assert reason == "created_unverified"
+    assert add_comment.call_count == 1
+    edit_comment.assert_not_called()
+    assert load_staged_plan(URL, str(tmp_path)) == "plan"
+
+
+def test_a_create_that_raised_is_not_posted_again(tmp_path):
+    """A write that raised mid-flight is just as ambiguous as one that timed out."""
+    stage_plan(URL, "plan", str(tmp_path))
+
+    with (
+        patch("app.jira_plan_publish.jira_list_comments_checked", return_value=[]),
+        patch(
+            "app.jira_plan_publish.jira_add_comment",
+            side_effect=RuntimeError("connection reset"),
+        ) as add_comment,
+        patch("app.jira_plan_publish.time.sleep"),
+        patch("app.jira_plan_publish.log_event"),
+    ):
+        ok, reason = publish_staged_plan(URL, str(tmp_path))
+
+    assert ok is False
+    assert reason == "created_unverified"
+    assert add_comment.call_count == 1
+    assert load_staged_plan(URL, str(tmp_path)) == "plan"
+
+
 def test_a_lagging_create_verifies_on_a_later_attempt_without_a_second_post(tmp_path):
     """Once the replica catches up, the same attempt loop verifies the comment."""
     stage_plan(URL, "plan", str(tmp_path))
@@ -438,7 +500,7 @@ def test_repeated_failed_runs_eventually_abandon_the_stage(tmp_path):
         for _ in range(_MAX_PUBLISH_SESSIONS - 1):
             ok, reason = publish_staged_plan(URL, str(tmp_path))
             assert ok is False
-            assert reason == "verification_failed"
+            assert reason == "created_unverified"
             assert load_staged_plan(URL, str(tmp_path)) == "plan"
 
         ok, reason = publish_staged_plan(URL, str(tmp_path))
@@ -676,7 +738,7 @@ def test_split_part_failure_reports_which_part(tmp_path):
         ok, reason = publish_staged_plan(URL, str(tmp_path))
 
     assert ok is False
-    assert reason == "part_1_of_3_verification_failed"
+    assert reason == "part_1_of_3_created_unverified"
 
 
 def test_split_inside_a_code_fence_keeps_the_footer_verifiable():
@@ -813,7 +875,7 @@ def test_clear_failure_does_not_claim_the_stage_was_abandoned(tmp_path):
 
     assert ok is False
     # The stage survived, so "abandoned" would be a lie.
-    assert reason == "verification_failed"
+    assert reason == "created_unverified"
     assert load_staged_plan(URL, str(tmp_path)) == "plan"
 
 

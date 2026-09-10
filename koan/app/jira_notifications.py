@@ -1347,7 +1347,8 @@ def jira_self_identity() -> Tuple[str, str]:
     try:
         base_url, auth_header = _jira_auth_from_config()
         data = _jira_get(base_url, auth_header, "/rest/api/3/myself")
-    except Exception:
+    except Exception as e:
+        log.warning("Jira self-identity lookup failed: %s", e)
         return "", ""
     if not isinstance(data, dict):
         return "", ""
