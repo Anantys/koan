@@ -574,6 +574,30 @@ def get_mcp_tools_allow_destructive() -> bool:
     return value is True
 
 
+MCP_TRANSPORTS = frozenset({"stdio", "http"})
+
+
+def get_mcp_transport() -> str:
+    """Which MCP transport is selected (mcp.transport). Defaults to ``stdio``.
+
+    Unknown or malformed values fall back to ``stdio`` so provider-side legacy
+    configuration never silently launches a network listener.
+    """
+    value = str(_get_mcp_server_config().get("transport", "stdio")).strip().lower()
+    return value if value in MCP_TRANSPORTS else "stdio"
+
+
+def get_mcp_host() -> str:
+    """HTTP bind host (mcp.host). Defaults to loopback ``127.0.0.1``."""
+    value = str(_get_mcp_server_config().get("host", "127.0.0.1")).strip()
+    return value or "127.0.0.1"
+
+
+def get_mcp_port() -> int:
+    """HTTP listen port (mcp.port). Defaults to ``8421``."""
+    return _safe_int(_get_mcp_server_config().get("port", 8421), 8421)
+
+
 # Named role identifiers for MCP opt-in. Call sites must use these constants
 # (not bare strings) so typos fail at import/grep time rather than silently
 # fail-closed with MCP disabled.

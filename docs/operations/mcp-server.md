@@ -1,7 +1,7 @@
 ---
 type: doc
 title: "MCP Server"
-description: "Configure Kōan's opt-in stdio MCP server for Claude Code, Claude Desktop, and other local MCP clients."
+description: "Configure Kōan's MCP server for local stdio clients or remote Streamable HTTP clients: shared bearer auth, TLS proxying, audits, and lifecycle."
 tags: [operations]
 created: 2026-09-09
 updated: 2026-09-10
@@ -9,10 +9,12 @@ updated: 2026-09-10
 
 # MCP Server
 
-Kōan can expose a curated part of its REST API as local MCP tools. MCP clients
-launch this server as a subprocess and communicate over stdio. No new port or
-network service gets created; tool calls go through the existing REST API and
-appear in `logs/api.log`.
+Kōan can expose a curated part of its REST API as MCP tools. Two transports are
+available. By default MCP clients launch the server as a subprocess over
+**stdio** (no new port). Opt-in **Streamable HTTP** serves the same tools over
+`/mcp` on a loopback listener for remote clients. Either way tool calls go
+through the existing REST API and appear in `logs/api.log`; HTTP requests are
+additionally audited in `logs/mcp.log`.
 
 Both layers default off. Enable the REST API, configure its bearer token, and
 then enable MCP:
@@ -50,6 +52,76 @@ the checkout's current directory.
 Use `make mcp` to run the server in a terminal while debugging. MCP clients
 normally launch `bin/koan-mcp` using the checkout virtual environment, as shown
 by `make mcp-config`.
+
+## Streamable HTTP
+
+HTTP mode is opt-in:
+
+```yaml
+api:
+  enabled: true
+  host: "127.0.0.1"
+  port: 8420
+
+mcp:
+  enabled: true
+  transport: "http"
+  host: "127.0.0.1"
+  port: 8421
+  tools_allow_destructive: false
+```
+
+Install the optional runtime once with `make mcp-setup`, then `make start`.
+The endpoint is `http://127.0.0.1:8421/mcp`.
+
+Every HTTP request requires the same token as the REST API:
+
+```http
+Authorization: Bearer <KOAN_API_TOKEN>
+```
+
+Missing or empty credentials return 401; incorrect credentials return 403.
+HTTP startup refuses to listen when no API token is configured. Request audits
+appear in `logs/mcp.log` without headers, bodies, query strings, or tokens.
+
+`make mcp-config` prints a transport-appropriate client block. In HTTP mode
+the JSON contains the bearer token, so do not paste it into a tracked file or
+attach it to an issue.
+
+## TLS and reverse proxy
+
+Kōan does not terminate TLS or apply public-network rate limits. Keep
+`mcp.host` on loopback and expose it through a hardened reverse proxy:
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name koan.example.com;
+
+    ssl_certificate     /etc/ssl/certs/koan.pem;
+    ssl_certificate_key /etc/ssl/private/koan.key;
+
+    location /mcp {
+        proxy_pass http://127.0.0.1:8421;
+        proxy_http_version 1.1;
+        proxy_buffering off;
+        proxy_read_timeout 3600s;
+        proxy_set_header Host 127.0.0.1:8421;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        limit_req zone=koan_api burst=20 nodelay;
+    }
+}
+```
+
+Remote clients connect to `https://koan.example.com/mcp` and send the bearer
+header on every request. Nginx forwards `Authorization` by default. The
+loopback `Host` override preserves the MCP SDK's DNS-rebinding protection.
+
+Binding MCP directly to a non-loopback address emits a warning. It does not
+add TLS, rate limiting, or firewall rules.
+
+Rotate `KOAN_API_TOKEN` as one credential for both hops, then restart the REST
+API and MCP daemon so the outbound MCP REST client uses the new value.
 
 ## Optional dependency
 

@@ -201,6 +201,9 @@ SECTION_SCHEMAS: Dict[str, Dict[str, str]] = {
     },
     "mcp": {
         "enabled": "bool",
+        "transport": "str",
+        "host": "str",
+        "port": "int",
         "tools_allow_destructive": "bool",
         "configs": "list",
     },
@@ -600,6 +603,20 @@ def validate_config(config: dict) -> List[Tuple[str, str]]:
                     key,
                     f"'{key}' should be {exp_label}, got {type(value).__name__}",
                 ))
+
+    # Semantic check: reject an unknown mcp.transport value so a typo fails
+    # loudly instead of silently selecting stdio.
+    mcp = config.get("mcp")
+    if isinstance(mcp, dict):
+        transport = mcp.get("transport")
+        if (
+            isinstance(transport, str)
+            and transport.strip().lower() not in {"stdio", "http"}
+        ):
+            warnings.append((
+                "mcp.transport",
+                f"'mcp.transport' must be one of http/stdio, got {transport!r}",
+            ))
 
     # Semantic check: deep-validate optimizations.caveman when it's a dict.
     optimizations = config.get("optimizations")

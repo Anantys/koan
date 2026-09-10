@@ -1,7 +1,7 @@
 ---
 type: component-spec
 title: "Component Spec — MCP Server"
-description: "Defines Kōan's opt-in stdio MCP front-end, curated REST operation tools, destructive-tool gate, and shared OpenAPI HTTP client boundary."
+description: "Defines Kōan's opt-in MCP front-end over stdio or Streamable HTTP, curated REST operation tools, destructive-tool gate, shared OpenAPI HTTP client boundary, and HTTP authentication/audit invariants."
 tags: [web]
 created: 2026-09-09
 updated: 2026-09-10
@@ -13,10 +13,10 @@ updated: 2026-09-10
 
 ## Purpose
 
-Kōan offers an optional MCP server for local LLM clients. It translates stdio
-tool calls into authenticated requests to Kōan's REST API. It never reads or
-mutates Kōan runtime state directly: every call crosses the HTTP API and keeps
-its authentication, validation, and `logs/api.log` audit trail.
+Kōan offers an optional MCP server for LLM clients. It translates tool calls
+into authenticated requests to Kōan's REST API. It never reads or mutates Kōan
+runtime state directly: every call crosses the HTTP API and keeps its
+authentication, validation, and `logs/api.log` audit trail.
 
 ## Architecture
 
@@ -30,7 +30,41 @@ CLI user  ─────────────> app/cli/ ──> app/apiclien
 `app/apiclient/` owns OpenAPI loading, operation discovery, request planning,
 and synchronous HTTP execution. `app/cli/` owns terminal parsing, profiles,
 confirmation, output, and exit codes. `app/mcp/` owns curation, MCP schemas,
-annotations, configuration gates, and stdio lifecycle.
+annotations, configuration gates, and transport lifecycle.
+
+## Transports
+
+`mcp.transport` accepts `stdio` or `http` and defaults to `stdio`.
+
+- `stdio` is client-launched, creates no listener, and keeps its existing
+  behavior.
+- `http` serves MCP Streamable HTTP at `/mcp`, binds `mcp.host` and
+  `mcp.port`, and is managed as the `mcp` daemon.
+- Both transports construct tools only through `create_server()` and
+  `build_tool_definitions()`.
+
+HTTP requests require `Authorization: Bearer <api-token>`. Authentication
+resolves the same secret as the REST API through `get_api_token()` and calls
+`app.api.auth.check_token()`, which fails closed and compares tokens with
+`hmac.compare_digest`.
+
+HTTP request audits are written to `logs/mcp.log` as:
+
+`YYYY-MM-DDTHH:MM:SS <peer-ip> METHOD /path STATUS`
+
+Authorization headers, bearer tokens, request bodies, and query strings are
+never written to the audit line.
+
+## HTTP safety invariants
+
+- HTTP binds `127.0.0.1:8421` by default.
+- A non-loopback IP bind emits a TLS/reverse-proxy warning.
+- No configured API token prevents HTTP startup; the middleware also rejects
+  requests fail-closed if the token becomes unavailable.
+- Missing or empty bearer credentials return 401; invalid credentials return 403.
+- HTTP mode holds `.koan-pid-mcp` under `fcntl.flock()` for its lifetime.
+- TLS and rate limiting remain reverse-proxy responsibilities.
+- Legacy SSE endpoints are not exposed.
 
 ## Configuration and startup
 
@@ -58,10 +92,12 @@ uphold that, and both are required:
    which shapes are legal, because a value one accepts and the other rejects
    turns a working config into a boot failure.
 
-MCP has no credential or address settings. Its bearer token comes from
+MCP has no credential setting of its own. Its bearer token comes from
 `config.get_api_token()` and its base URL comes from `api.host` plus `api.port`.
-An unspecified/wildcard bind host resolves to loopback for client requests.
-Consequently `api.enabled` must also be true and the REST server must run.
+In stdio mode an unspecified/wildcard bind host resolves to loopback for client
+requests. HTTP mode introduces `mcp.transport`, `mcp.host`, and `mcp.port`
+(loopback 8421 by default). Consequently `api.enabled` must also be true and
+the REST server must run.
 
 The server performs a best-effort health probe at startup. An unreachable API
 produces a stderr warning but does not terminate the server. Each failed tool
@@ -117,7 +153,9 @@ capability; clients may apply a single conservative approval policy to it.
 - Read tools carry `readOnlyHint`; mission deletion carries `destructiveHint`.
 - Named writes do not claim read-only or destructive behavior.
 - MCP never bypasses REST bearer authentication or server-side secret masking.
-- stdio remains the only transport; no network listener belongs to this component.
+- In HTTP mode, the outer ASGI layer authenticates every request before MCP
+  parsing; missing credentials produce 401 and invalid credentials 403.
+- stdio remains the default transport and is never daemonized.
 
 ## Change protocol
 

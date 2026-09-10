@@ -258,7 +258,7 @@ def check_pidfile(koan_root: Path, process_name: str) -> Optional[int]:
     return None
 
 
-PROCESS_NAMES = ("run", "awake", "ollama", "dashboard", "api")
+PROCESS_NAMES = ("run", "awake", "ollama", "dashboard", "api", "mcp")
 
 # Process startup verification timeouts
 DEFAULT_VERIFY_TIMEOUT = 3.0
@@ -317,7 +317,14 @@ def _launch_python_process(
     while time.monotonic() < deadline:
         new_pid = check_pidfile(koan_root, process_name)
         if new_pid:
-            label = "Agent loop" if process_name == "run" else "Bridge"
+            labels = {
+                "run": "Agent loop",
+                "awake": "Bridge",
+                "dashboard": "Dashboard",
+                "api": "REST API",
+                "mcp": "MCP HTTP",
+            }
+            label = labels.get(process_name, process_name.capitalize())
             return True, f"{label} started (PID {new_pid})"
         time.sleep(0.3)
 
@@ -480,6 +487,35 @@ def start_api(koan_root: Path, verify_timeout: float = DEFAULT_VERIFY_TIMEOUT) -
     return _launch_python_process(koan_root, "app/api/server.py", "api", verify_timeout)
 
 
+def start_mcp(
+    koan_root: Path,
+    verify_timeout: float = DEFAULT_VERIFY_TIMEOUT,
+) -> tuple:
+    """Start the MCP Streamable HTTP daemon as a detached subprocess.
+
+    Only launched when ``mcp.enabled: true`` and ``mcp.transport: http`` —
+    stdio mode is client-launched and never daemonized.
+    Returns (success: bool, message: str).
+    """
+    return _launch_python_process(
+        koan_root, "app/mcp/__main__.py", "mcp", verify_timeout,
+    )
+
+
+def _is_mcp_http_enabled() -> bool:
+    """Whether the MCP HTTP daemon should be managed by the process manager.
+
+    Only HTTP mode is daemon-managed; stdio is launched by MCP clients and is
+    never started by ``make start``.
+    """
+    try:
+        from app.config import get_mcp_enabled, get_mcp_transport
+
+        return get_mcp_enabled() and get_mcp_transport() == "http"
+    except (ImportError, OSError, ValueError):
+        return False
+
+
 def _is_api_enabled() -> bool:
     """Check if REST API is enabled in config.yaml and allowed by the deploy gate.
 
@@ -521,6 +557,7 @@ def get_status_processes(koan_root: Path) -> tuple:
     provider = _detect_provider(koan_root)
     dashboard = _is_dashboard_enabled()
     api = _is_api_enabled()
+    mcp = _is_mcp_http_enabled()
     names = list(PROCESS_NAMES)
     if not _needs_ollama(provider):
         names.remove("ollama")
@@ -528,6 +565,8 @@ def get_status_processes(koan_root: Path) -> tuple:
         names.remove("dashboard")
     if not api:
         names.remove("api")
+    if not mcp:
+        names.remove("mcp")
     return tuple(names)
 
 
@@ -685,6 +724,14 @@ def format_status_all(koan_root: Path) -> list:
         else:
             lines.append("  dashboard: not running")
 
+    # --- MCP HTTP (conditional) ---
+    if "mcp" in process_names:
+        mcp_pid = check_pidfile(koan_root, "mcp")
+        if mcp_pid:
+            lines.append(f"  mcp: running (PID {mcp_pid})")
+        else:
+            lines.append("  mcp: not running")
+
     return lines
 
 
@@ -791,6 +838,11 @@ def start_all(koan_root: Path, provider: str = None, show_banner: bool = True) -
     if _is_api_enabled():
         ok, msg = start_api(koan_root)
         results["api"] = (ok, msg)
+
+    # 6. Start MCP HTTP daemon after the API it depends on
+    if _is_mcp_http_enabled():
+        ok, msg = start_mcp(koan_root)
+        results["mcp"] = (ok, msg)
 
     return results
 
@@ -1050,7 +1102,7 @@ def stop_process(koan_root: Path, name: str, timeout: float = 5.0) -> str:
 def _print_stack_results(results: dict) -> int:
     """Print stack start results and return exit code (0=ok, 1=failure)."""
     any_failed = False
-    for name in ("ollama", "awake", "run", "dashboard"):
+    for name in ("ollama", "awake", "run", "dashboard", "api", "mcp"):
         if name not in results:
             continue
         ok, msg = results[name]

@@ -1,17 +1,11 @@
 import asyncio
 import builtins
 import json
-from pathlib import Path
 
 import pytest
 
 from app.apiclient import ApiClientError
 from app.mcp.server import create_server
-
-
-@pytest.fixture
-def api_spec_path():
-    return Path(__file__).resolve().parents[1] / "openapi.yaml"
 
 
 def _tools(server):
@@ -172,3 +166,73 @@ def test_unreachable_startup_probe_warns_but_runs(monkeypatch, capsys):
     warning = capsys.readouterr().err
     assert "warning" in warning
     assert "/v1/health" in warning
+
+
+def test_http_entrypoint_serves_with_pid_lock(monkeypatch, tmp_path):
+    from app.mcp import __main__ as entrypoint
+
+    calls = []
+    lock = object()
+
+    monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+    monkeypatch.setattr(entrypoint, "get_mcp_enabled", lambda: True)
+    monkeypatch.setattr(entrypoint, "get_mcp_transport", lambda: "http")
+    monkeypatch.setattr(entrypoint, "get_mcp_host", lambda: "127.0.0.1")
+    monkeypatch.setattr(entrypoint, "get_mcp_port", lambda: 8421)
+    monkeypatch.setattr(entrypoint, "get_api_token", lambda: "secret")
+    monkeypatch.setattr(entrypoint, "_load_server", lambda: object())
+    monkeypatch.setattr(entrypoint, "_probe_api", lambda: None)
+    monkeypatch.setattr(
+        "app.pid_manager.acquire_pidfile",
+        lambda root, name: calls.append(("acquire", root, name)) or lock,
+    )
+    monkeypatch.setattr(
+        "app.pid_manager.release_pidfile",
+        lambda value, root, name: calls.append(("release", value, root, name)),
+    )
+    monkeypatch.setattr(
+        "app.mcp.http.serve_http",
+        lambda server, **kwargs: calls.append(("serve", kwargs)),
+    )
+
+    assert entrypoint.main() == 0
+    assert calls[0] == ("acquire", tmp_path, "mcp")
+    assert calls[1][0] == "serve"
+    assert calls[1][1]["host"] == "127.0.0.1"
+    assert calls[1][1]["port"] == 8421
+    assert calls[2] == ("release", lock, tmp_path, "mcp")
+
+
+def test_http_entrypoint_refuses_missing_token(monkeypatch, tmp_path, capsys):
+    from app.mcp import __main__ as entrypoint
+
+    monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+    monkeypatch.setattr(entrypoint, "get_mcp_enabled", lambda: True)
+    monkeypatch.setattr(entrypoint, "get_mcp_transport", lambda: "http")
+    monkeypatch.setattr(entrypoint, "get_api_token", lambda: "")
+    monkeypatch.setattr(
+        "app.mcp.http.serve_http",
+        lambda server, **kwargs: pytest.fail("listener must not start"),
+    )
+
+    assert entrypoint.main() == 1
+    assert "refuses to start without a bearer token" in capsys.readouterr().err
+
+
+def test_http_entrypoint_warns_for_non_loopback(monkeypatch, tmp_path, capsys):
+    from app.mcp import __main__ as entrypoint
+
+    monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+    monkeypatch.setattr(entrypoint, "get_mcp_enabled", lambda: True)
+    monkeypatch.setattr(entrypoint, "get_mcp_transport", lambda: "http")
+    monkeypatch.setattr(entrypoint, "get_mcp_host", lambda: "0.0.0.0")
+    monkeypatch.setattr(entrypoint, "get_mcp_port", lambda: 8421)
+    monkeypatch.setattr(entrypoint, "get_api_token", lambda: "secret")
+    monkeypatch.setattr(entrypoint, "_load_server", lambda: object())
+    monkeypatch.setattr(entrypoint, "_probe_api", lambda: None)
+    monkeypatch.setattr("app.pid_manager.acquire_pidfile", lambda root, name: object())
+    monkeypatch.setattr("app.pid_manager.release_pidfile", lambda lock, root, name: None)
+    monkeypatch.setattr("app.mcp.http.serve_http", lambda server, **kwargs: None)
+
+    assert entrypoint.main() == 0
+    assert "non-loopback" in capsys.readouterr().err

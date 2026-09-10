@@ -499,7 +499,11 @@ cli_provider: "claude"
 # .claude/settings.local.json (see docs/providers/claude.md).
 # Per-project overrides available in projects.yaml (replaces global list).
 # mcp:
-#   enabled: false                    # bool; allow stdio MCP server startup; default false
+#   enabled: false                    # bool; allow MCP server startup; default false
+#   transport: "stdio"                # stdio | http; default stdio. 'http' serves
+#                                     #   Streamable HTTP at /mcp as the 'mcp' daemon.
+#   host: "127.0.0.1"                 # str; HTTP bind host; default loopback
+#   port: 8421                        # int; HTTP listen port
 #   tools_allow_destructive: false    # bool; expose mission delete; default false
 #   configs:                          # list[str]; optional provider MCP JSON paths; default []
 #     - "/path/to/mcp-servers.json"
