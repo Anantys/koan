@@ -203,6 +203,23 @@ control flow, lifecycle, or quota decisions.
 - **CLI credentials fail closed.** Tokens come from a mode-0600 or mode-0400
   profile or `KOAN_API_TOKEN`, never from argv. Destructive requests require
   confirmation on a TTY and `--yes` in non-interactive execution.
+- **Command names are unique by construction, not by luck.** Several naming
+  branches derive a command from the path alone, so two methods on one path
+  would collapse onto one name and a `SpecError` would abort *every* invocation,
+  `--help` included. Same-path collisions are resolved deterministically with a
+  `-<method>` suffix before the uniqueness check runs; the check still guards
+  cross-path collisions, reserved roots, and alias clashes.
+- **An absent response is never reported as an absent request.** The response
+  timeout is operator-controlled (`--timeout`, `KOAN_TIMEOUT`, profile
+  `timeout`) and defaults above the budget of the handlers that do their work
+  synchronously inside the request. A timeout is reported distinctly from a
+  transport failure and states that the operation may already have been applied,
+  because several exposed operations are not idempotent.
+- **Structured schemas keep their shape at the CLI boundary.** A body property
+  typed `object` or `array` produces a JSON-parsing flag that rejects malformed
+  or wrongly-shaped input locally; it is never coerced to a string the server
+  cannot accept. `requestBody.required` (must a body be sent) and
+  `schema.required` (which properties, if one is) stay separate facts.
 
 ## Integration points
 

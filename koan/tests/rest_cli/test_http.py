@@ -5,7 +5,7 @@ import requests
 
 from app.cli import EXIT_AUTH, EXIT_LOCAL, EXIT_NOT_FOUND, EXIT_OK, EXIT_SERVER, CliError
 from app.cli.commands import RequestPlan
-from app.cli.config import Settings
+from app.cli.config import DEFAULT_TIMEOUT, Settings
 from app.cli.http import confirm_destructive, execute, verify_configuration
 
 
@@ -78,7 +78,7 @@ def test_request_sends_auth_query_and_json(session_factory, response_factory):
         {
             "params": {"trace": "test"},
             "headers": {"Accept": "application/json", "Authorization": "Bearer secret"},
-            "timeout": 10,
+            "timeout": DEFAULT_TIMEOUT,
             "json": {"command": "/review"},
         },
     )]
@@ -120,12 +120,40 @@ def test_other_request_failure_is_local(session_factory):
     code = execute(
         request_plan(),
         Settings("default", "http://localhost", "token"),
-        session_factory([requests.Timeout("slow")]),
+        session_factory([requests.TooManyRedirects("looping")]),
         stdout=io.StringIO(),
         stderr=stderr,
     )
     assert code == EXIT_LOCAL
     assert "request failed" in stderr.getvalue()
+
+
+def test_timeout_says_the_request_may_have_been_applied(session_factory):
+    stderr = io.StringIO()
+    code = execute(
+        request_plan(),
+        Settings("default", "http://localhost", "token", 45.0),
+        session_factory([requests.Timeout("slow")]),
+        stdout=io.StringIO(),
+        stderr=stderr,
+    )
+    assert code == EXIT_LOCAL
+    message = stderr.getvalue()
+    assert "no response within 45s" in message
+    assert "may still have been applied" in message
+    assert "request failed" not in message
+
+
+def test_settings_timeout_reaches_the_transport(session_factory, response_factory):
+    session = session_factory([response_factory(200, {})])
+    execute(
+        request_plan(),
+        Settings("default", "http://127.0.0.1:8420", "token", 7.5),
+        session,
+        stdout=io.StringIO(),
+        stderr=io.StringIO(),
+    )
+    assert session.calls[0][2]["timeout"] == 7.5
 
 
 def test_dns_connection_error_does_not_claim_refusal(session_factory):
@@ -207,3 +235,11 @@ def test_configuration_probe_reports_rejected_token(session_factory, response_fa
     result = verify_configuration("http://localhost", "bad", session)
     assert result.message == "reachable; token was rejected"
     assert result.exit_code == EXIT_AUTH
+
+
+def test_unreachable_verification_names_the_cause(session_factory):
+    session = session_factory([requests.exceptions.MissingSchema("bad url")])
+    result = verify_configuration("htps://koan.example", "token", session)
+    assert result.exit_code == EXIT_LOCAL
+    assert "htps://koan.example" in result.message
+    assert "bad url" in result.message

@@ -26,6 +26,8 @@ def openapi_operation(
     query_parameters: tuple[dict, ...] = (),
 ) -> Callable:
     """Attach request-side OpenAPI metadata to a Flask view."""
+    if request_schema is None and not request_required:
+        raise ValueError("request_required has no effect without request_schema")
 
     def decorate(view):
         if request_schema is not None:

@@ -6,14 +6,19 @@ from pathlib import Path
 
 import requests
 
-from app.cli import EXIT_LOCAL, CliError
+from app.cli import EXIT_LOCAL, EXIT_OK, CliError
 from app.cli.commands import (
     build_operation_request,
     build_parser,
     build_raw_request,
     expand_alias,
 )
-from app.cli.config import CONFIG_PATH, load_settings, write_profile
+from app.cli.config import (
+    CONFIG_PATH,
+    load_settings,
+    resolve_timeout,
+    write_profile,
+)
 from app.cli.http import confirm_destructive, execute, verify_configuration
 from app.cli.spec import load_operations, load_server_default, load_spec
 
@@ -44,8 +49,15 @@ def main(
             base_url = (entered_url or default_url).rstrip("/")
             token = getpass.getpass("Bearer token: ").strip()
             write_profile(path, profile, base_url, token)
-            verification = verify_configuration(base_url, token, session)
-            print(verification.message)
+            verification = verify_configuration(
+                base_url,
+                token,
+                session,
+                timeout=resolve_timeout(cli_timeout=args.timeout),
+            )
+            # stdout carries valid JSON only; a failed probe is a diagnostic.
+            stream = sys.stdout if verification.exit_code == EXIT_OK else sys.stderr
+            print(verification.message, file=stream)
             return verification.exit_code
 
         settings = load_settings(
@@ -53,6 +65,7 @@ def main(
             server_default,
             cli_profile=args.profile,
             cli_base_url=args.base_url,
+            cli_timeout=args.timeout,
         )
         if getattr(args, "_builtin", None) == "raw":
             plan = build_raw_request(

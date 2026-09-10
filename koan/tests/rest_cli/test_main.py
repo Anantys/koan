@@ -1,5 +1,6 @@
 import stat
 import subprocess
+import sys
 from pathlib import Path
 
 import requests
@@ -77,12 +78,16 @@ def test_destructive_non_tty_stops_before_request(
 
 def test_executable_help():
     executable = Path(__file__).resolve().parents[3] / "bin" / "koan-cli"
+    # Run under the interpreter executing the tests, not whichever python3 the
+    # shebang finds on PATH -- the documented `.venv/bin/pytest ...` invocation
+    # does not put the venv on PATH, so `env python3` would miss the deps. This
+    # still exercises the sys.path bootstrap inside bin/koan-cli.
     result = subprocess.run(
-        [executable, "--help"],
+        [sys.executable, str(executable), "--help"],
         check=False,
         capture_output=True,
         text=True,
     )
-    assert result.returncode == 0
+    assert result.returncode == 0, result.stderr
     assert "configure" in result.stdout
     assert "raw" in result.stdout

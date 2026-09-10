@@ -35,10 +35,12 @@ bin/koan-cli --profile prod status
 
 Settings resolve in this order:
 
-1. `--profile` and `--base-url` command-line options.
-2. Non-empty `KOAN_PROFILE`, `KOAN_BASE_URL`, and `KOAN_API_TOKEN` values.
-3. Values in the selected profile.
-4. The first server URL in `koan/openapi.yaml` for the base URL.
+1. `--profile`, `--base-url`, and `--timeout` command-line options.
+2. Non-empty `KOAN_PROFILE`, `KOAN_BASE_URL`, `KOAN_API_TOKEN`, and
+   `KOAN_TIMEOUT` values.
+3. Values in the selected profile (`base_url`, `token`, `timeout`).
+4. The first server URL in `koan/openapi.yaml` for the base URL, and a
+   120-second response timeout.
 
 Empty environment values are ignored. Without any configuration, the public
 `health` command uses the specification's default local server and needs no
@@ -78,6 +80,38 @@ Each OpenAPI `operationId` also works as a hidden root-level alias for scripts
 that prefer specification identifiers. Public command names and aliases are
 validated at startup so ambiguous specification changes fail locally.
 
+Most command names come from the path, not the method. When one path exposes
+two methods that would otherwise share a name, each gains a `-<method>` suffix
+(`admin pause-get`, `admin pause-post`) instead of aborting the whole client.
+Collection and item paths keep their readable names: `missions list`,
+`missions create`, `missions get`, `missions update`, `missions delete`.
+
+## Response timeout
+
+`--timeout SECONDS` bounds how long the client waits for a response. The
+default is 120 seconds because several handlers do their work synchronously
+inside the request — `admin update` runs `git fetch` plus `git pull`, and
+`projects create` clones a repository.
+
+```bash
+bin/koan-cli --timeout 600 admin update --yes
+KOAN_TIMEOUT=600 bin/koan-cli admin update --yes
+```
+
+`configure` does not write a timeout. Add `timeout = 600` under a profile
+section by hand to make a larger budget the default for that profile.
+
+A timeout is reported distinctly from a failed request, because the server may
+already have applied a non-idempotent operation:
+
+```
+no response within 120s: HTTPConnectionPool(...): Read timed out.
+POST http://127.0.0.1:8420/v1/update may still have been applied; verify before
+retrying, or raise --timeout.
+```
+
+Check the outcome before retrying such a command.
+
 ## Generic input
 
 Every operation accepts JSON through `--data`, from either inline text or an
@@ -96,10 +130,19 @@ schemas, and will override a generic query value with the same name. The typed
 flags use clean metavars (`COMMAND`, `TEXT`, `PROJECT`, …) and their `--help`
 shows the schema's description where the spec provides one.
 
+A flag whose schema is an `object` or `array` takes JSON (metavar `JSON`) and
+is parsed before dispatch, so a structured field arrives as structure rather
+than as a quoted string. Invalid JSON, or JSON of the wrong shape, fails
+locally without sending a request:
+
+```bash
+bin/koan-cli projects update my-toolkit --patch '{"focus": true}'
+```
+
 Path parameters are positional and percent-encoded before dispatch:
 
 ```bash
-bin/koan-cli projects update my-toolkit --data '{"auto_merge":false}'
+bin/koan-cli projects update my-toolkit --data '{"patch":{"focus":false}}'
 ```
 
 ## Raw requests
@@ -148,3 +191,7 @@ bin/koan-cli missions delete MISSION_ID --yes
   `api.enabled`, configure a generated token, then run `make api`.
 - Invalid JSON, malformed query pairs, and missing required values fail locally
   without sending a request.
+- `no response within Ns` means the request was delivered but no reply arrived.
+  Verify the server-side outcome, then retry with a larger `--timeout`.
+- `saved; cannot reach <url>: <error>` names the transport failure, so a
+  malformed URL or a TLS problem is distinguishable from a stopped server.

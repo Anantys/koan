@@ -17,7 +17,7 @@ from app.cli import (
     CliError,
 )
 from app.cli.commands import RequestPlan
-from app.cli.config import Settings
+from app.cli.config import DEFAULT_TIMEOUT, Settings
 
 
 @dataclass(frozen=True)
@@ -105,7 +105,7 @@ def execute(
     headers = {"Accept": "application/json"}
     if settings.token:
         headers["Authorization"] = f"Bearer {settings.token}"
-    kwargs = {"params": plan.query, "headers": headers, "timeout": 10}
+    kwargs = {"params": plan.query, "headers": headers, "timeout": settings.timeout}
     if plan.has_body:
         kwargs["json"] = plan.body
 
@@ -119,6 +119,19 @@ def execute(
             print("3. Start the server with make api", file=stderr)
         else:
             print(f"request failed: {exc}", file=stderr)
+        return EXIT_LOCAL
+    except requests.Timeout as exc:
+        # The request was delivered; only the response is missing. Say so, or a
+        # script keying off the exit code re-issues a non-idempotent operation.
+        print(
+            f"no response within {settings.timeout:g}s: {exc}",
+            file=stderr,
+        )
+        print(
+            f"{plan.method} {plan.url} may still have been applied; "
+            "verify before retrying, or raise --timeout.",
+            file=stderr,
+        )
         return EXIT_LOCAL
     except requests.RequestException as exc:
         print(f"request failed: {exc}", file=stderr)
@@ -141,15 +154,20 @@ def verify_configuration(
     base_url: str,
     token: str,
     session=requests,
+    *,
+    timeout: float = DEFAULT_TIMEOUT,
 ) -> VerificationResult:
     try:
         health = session.request(
             "GET",
             f"{base_url.rstrip('/')}/v1/health",
-            timeout=10,
+            timeout=timeout,
         )
-    except requests.RequestException:
-        return VerificationResult("saved; server unreachable", EXIT_LOCAL)
+    except requests.RequestException as exc:
+        # A malformed URL and a TLS failure are RequestExceptions too; reporting
+        # every one as "unreachable" sends the operator to start a server that
+        # was never the problem.
+        return VerificationResult(f"saved; cannot reach {base_url}: {exc}", EXIT_LOCAL)
 
     if not health.ok:
         return VerificationResult(
@@ -164,11 +182,11 @@ def verify_configuration(
             "GET",
             f"{base_url.rstrip('/')}/v1/status",
             headers={"Authorization": f"Bearer {token}"},
-            timeout=10,
+            timeout=timeout,
         )
-    except requests.RequestException:
+    except requests.RequestException as exc:
         return VerificationResult(
-            "reachable; authentication probe failed to connect",
+            f"reachable; authentication probe failed: {exc}",
             EXIT_LOCAL,
         )
 

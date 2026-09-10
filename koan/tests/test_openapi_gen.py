@@ -5,8 +5,8 @@ request metadata, that generation is deterministic, and that the drift check
 works — testing observable outputs, never source text.
 """
 
-import re
 import inspect
+import re
 from contextlib import ExitStack
 from unittest.mock import patch
 
@@ -440,3 +440,9 @@ def test_tags_cover_blueprints(app):
     for path in spec["paths"]:
         for name in re.findall(r"{([^{}]+)}", path):
             assert name.isidentifier()
+
+
+def test_request_required_without_a_schema_is_rejected():
+    """The flag is only stored alongside a schema; alone it would be a silent no-op."""
+    with pytest.raises(ValueError, match="request_required"):
+        openapi_operation(request_required=False)

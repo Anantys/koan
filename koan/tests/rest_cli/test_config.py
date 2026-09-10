@@ -3,7 +3,12 @@ import stat
 import pytest
 
 from app.cli import CliError
-from app.cli.config import load_settings, write_profile
+from app.cli.config import (
+    DEFAULT_TIMEOUT,
+    load_settings,
+    resolve_timeout,
+    write_profile,
+)
 
 
 def test_empty_environment_values_are_unset(tmp_path):
@@ -93,3 +98,38 @@ def test_write_profile_is_mode_600_and_preserves_profiles(tmp_path):
 def test_empty_profile_name_cannot_be_written(tmp_path):
     with pytest.raises(CliError, match="profile name cannot be empty"):
         write_profile(tmp_path / "koan-cli.cfg", "  ", "http://localhost", "token")
+
+
+def test_timeout_defaults_then_yields_to_profile_env_and_flag(tmp_path):
+    path = tmp_path / "koan-cli.cfg"
+    path.write_text("[default]\nbase_url = https://file.example\ntimeout = 30\n")
+    path.chmod(0o600)
+
+    assert load_settings(path, "http://d", environ={}).timeout == 30.0
+    assert (
+        load_settings(path, "http://d", environ={"KOAN_TIMEOUT": "45"}).timeout == 45.0
+    )
+    assert (
+        load_settings(
+            path, "http://d", cli_timeout=5.0, environ={"KOAN_TIMEOUT": "45"}
+        ).timeout
+        == 5.0
+    )
+
+
+def test_timeout_defaults_when_nothing_configures_it(tmp_path):
+    settings = load_settings(tmp_path / "missing.cfg", "http://d", environ={})
+    assert settings.timeout == DEFAULT_TIMEOUT
+
+
+@pytest.mark.parametrize("value", ["abc", "0", "-3"])
+def test_invalid_timeout_fails_locally(tmp_path, value):
+    with pytest.raises(CliError, match="invalid KOAN_TIMEOUT"):
+        load_settings(
+            tmp_path / "missing.cfg", "http://d", environ={"KOAN_TIMEOUT": value}
+        )
+
+
+def test_configure_path_validates_a_nonpositive_timeout_flag():
+    with pytest.raises(CliError, match=r"invalid --timeout"):
+        resolve_timeout(cli_timeout=-5.0, environ={})

@@ -1,6 +1,7 @@
 from dataclasses import replace
 
 import pytest
+import yaml
 
 from app.cli.spec import (
     SpecError,
@@ -97,3 +98,32 @@ def test_invalid_server_default_is_rejected(servers):
     spec = {} if servers is None else {"servers": servers}
     with pytest.raises(SpecError, match="servers"):
         load_server_default(spec)
+
+
+def test_same_path_methods_get_distinct_commands(api_spec_path):
+    """A GET+POST pair on one path must not collapse onto a single command.
+
+    The path-derived naming branches ignore the method, so without
+    disambiguation ``assert_unique`` would reject the document and every
+    invocation -- ``--help`` included -- would die at parse time.
+    """
+    spec = yaml.safe_load(api_spec_path.read_text())
+    item = spec["paths"]["/v1/pause"]
+    item["get"] = {
+        "operationId": "admin_probe_pause",
+        "tags": ["admin"],
+        "summary": "Report pause state.",
+        "responses": {"200": {"description": "ok"}},
+    }
+
+    commands = {op.path + op.method: op.command for op in load_operations(spec)}
+    assert commands["/v1/pauseGET"] == ("admin", "pause-get")
+    assert commands["/v1/pausePOST"] == ("admin", "pause-post")
+
+
+def test_disambiguation_leaves_unique_commands_untouched(api_spec_path):
+    spec = yaml.safe_load(api_spec_path.read_text())
+    commands = {op.operation_id: op.command for op in load_operations(spec)}
+    assert commands["missions_list_missions_route_get"] == ("missions", "list")
+    assert commands["missions_create_mission_post"] == ("missions", "create")
+    assert all("-get" not in leaf for command in commands.values() for leaf in command)

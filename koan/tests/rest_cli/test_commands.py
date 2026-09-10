@@ -334,3 +334,69 @@ def test_every_operation_accepts_generic_data_and_query(api_spec_path):
         )
         assert request.body == body
         assert request.query["trace"] == "test"
+
+
+def test_object_body_flag_sends_a_json_object(api_spec_path):
+    """``--patch`` is declared ``type: object``; a JSON *string* can never satisfy it."""
+    operations = load_operations(load_spec(api_spec_path))
+    parser = build_parser(operations)
+    args = parser.parse_args(
+        ["projects", "update", "my-toolkit", "--patch", '{"focus": true}']
+    )
+    request = build_operation_request(args._operation, args, "http://localhost:8420")
+    assert request.body == {"patch": {"focus": True}}
+
+
+def test_object_body_flag_rejects_non_json_locally(api_spec_path, capsys):
+    operations = load_operations(load_spec(api_spec_path))
+    parser = build_parser(operations)
+    with pytest.raises(SystemExit):
+        parser.parse_args(["projects", "update", "my-toolkit", "--patch", "focus=true"])
+    assert "expected JSON" in capsys.readouterr().err
+
+
+def test_object_body_flag_rejects_a_json_scalar(api_spec_path, capsys):
+    operations = load_operations(load_spec(api_spec_path))
+    parser = build_parser(operations)
+    with pytest.raises(SystemExit):
+        parser.parse_args(["projects", "update", "my-toolkit", "--patch", '"focus"'])
+    assert "expected a JSON object" in capsys.readouterr().err
+
+
+def test_optional_body_does_not_inherit_schema_required(api_spec_path):
+    """``requestBody.required`` and ``schema.required`` are separate facts."""
+    spec = load_spec(api_spec_path)
+    body = spec["paths"]["/v1/pause"]["post"].setdefault("requestBody", {})
+    body["required"] = False
+    body["content"] = {
+        "application/json": {
+            "schema": {
+                "type": "object",
+                "required": ["reason"],
+                "properties": {"reason": {"type": "string"}},
+            }
+        }
+    }
+    operations = load_operations(spec)
+    parser = build_parser(operations)
+
+    args = parser.parse_args(["admin", "pause"])
+    request = build_operation_request(args._operation, args, "http://localhost:8420")
+    assert request.has_body is False
+
+    args = parser.parse_args(["admin", "pause", "--data", "{}"])
+    with pytest.raises(CliError, match="missing required body field: reason"):
+        build_operation_request(args._operation, args, "http://localhost:8420")
+
+
+def test_timeout_flag_precedes_an_operation_id_alias(api_spec_path):
+    operations = load_operations(load_spec(api_spec_path))
+    assert expand_alias(["--timeout", "5", "health_get"], operations) == [
+        "--timeout",
+        "5",
+        "health",
+    ]
+    assert expand_alias(["--timeout=5", "health_get"], operations) == [
+        "--timeout=5",
+        "health",
+    ]

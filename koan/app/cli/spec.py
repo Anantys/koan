@@ -96,6 +96,13 @@ def resolve_local_ref(spec: dict[str, Any], value: Any) -> Any:
 
 
 def command_name(method: str, path: str, tag: str, tag_count: int) -> tuple[str, ...]:
+    """Derive one operation's command tuple.
+
+    Several branches below are method-independent — they name the command after
+    the path alone. Two methods on the same path therefore produce the same
+    tuple; ``disambiguate_by_method()`` suffixes those before ``assert_unique()``
+    would reject the whole document.
+    """
     segments = path.removeprefix("/v1/").strip("/").split("/")
     first = segments[0].replace("_", "-")
     if len(segments) == 1:
@@ -116,6 +123,31 @@ def command_name(method: str, path: str, tag: str, tag_count: int) -> tuple[str,
     return (tag, segments[-1].replace("_", "-"))
 
 
+def disambiguate_by_method(
+    named: list[tuple[str, str, tuple[str, ...]]],
+) -> dict[tuple[str, str], tuple[str, ...]]:
+    """Suffix same-path commands that a method-independent rule collapsed.
+
+    ``named`` holds ``(path, method, command)`` triples. When one path yields the
+    same command for more than one method, every colliding entry gains a
+    ``-<method>`` suffix on its last segment, so the result stays deterministic
+    and independent of document order. Commands that are already unique within
+    their path are returned untouched.
+    """
+    grouped: dict[tuple[str, tuple[str, ...]], list[str]] = {}
+    for path, method, command in named:
+        grouped.setdefault((path, command), []).append(method)
+
+    resolved: dict[tuple[str, str], tuple[str, ...]] = {}
+    for (path, command), methods in grouped.items():
+        for method in methods:
+            if len(methods) == 1:
+                resolved[(path, method)] = command
+            else:
+                resolved[(path, method)] = (*command[:-1], f"{command[-1]}-{method}")
+    return resolved
+
+
 def load_operations(spec: dict[str, Any]) -> list[Operation]:
     raw = []
     tag_counts: dict[str, int] = {}
@@ -133,6 +165,13 @@ def load_operations(spec: dict[str, Any]) -> list[Operation]:
             tag = tags[0]
             tag_counts[tag] = tag_counts.get(tag, 0) + 1
             raw.append((path, path_item, method, operation, tag))
+
+    commands = disambiguate_by_method(
+        [
+            (path, method, command_name(method, path, tag, tag_counts[tag]))
+            for path, _, method, _, tag in raw
+        ]
+    )
 
     operations = []
     for path, path_item, method, operation, tag in raw:
@@ -165,7 +204,7 @@ def load_operations(spec: dict[str, Any]) -> list[Operation]:
                 method=method.upper(),
                 path=path,
                 operation_id=operation_id,
-                command=command_name(method, path, tag, tag_counts[tag]),
+                command=commands[(path, method)],
                 parameters=tuple(params),
                 body_schema=body_schema,
                 body_required=bool(request_body.get("required")),

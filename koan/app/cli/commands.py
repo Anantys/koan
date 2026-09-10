@@ -9,6 +9,7 @@ from typing import Any
 from urllib.parse import quote
 
 from app.cli import CliError
+from app.cli.config import DEFAULT_TIMEOUT
 from app.cli.spec import Operation, load_tag_descriptions
 
 # One executable example per group, shown in that group's --help epilog.
@@ -105,7 +106,30 @@ def _boolean(value: str) -> bool:
     raise argparse.ArgumentTypeError("expected true or false")
 
 
+def _structured(schema: dict[str, Any]):
+    """Build an argparse type that parses one JSON object/array flag value.
+
+    Falling back to ``str`` here would transmit ``--patch '{"focus": true}'`` as
+    a JSON *string*, which no object-typed server field can ever accept.
+    """
+    expected = dict if schema.get("type") == "object" else list
+
+    def parse(value: str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise argparse.ArgumentTypeError(f"expected JSON: {exc.msg}") from exc
+        if not isinstance(parsed, expected):
+            raise argparse.ArgumentTypeError(f"expected a JSON {schema['type']}")
+        return parsed
+
+    parse.__name__ = schema.get("type", "json")
+    return parse
+
+
 def _schema_type(schema: dict[str, Any]):
+    if schema.get("type") in {"object", "array"}:
+        return _structured(schema)
     return {
         "integer": int,
         "number": float,
@@ -143,6 +167,8 @@ def _add_common_request_flags(parser: argparse.ArgumentParser) -> None:
 def _metavar(schema: dict[str, Any], fallback: str) -> str:
     if schema.get("type") == "boolean":
         return "true|false"
+    if schema.get("type") in {"object", "array"}:
+        return "JSON"
     return str(schema.get("title") or fallback).upper()
 
 
@@ -214,6 +240,15 @@ def build_parser(
     parser.description = "Command-line client for the Kōan REST API."
     parser.add_argument("--profile")
     parser.add_argument("--base-url")
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        metavar="SECONDS",
+        help=(
+            "Seconds to wait for a response. Overrides KOAN_TIMEOUT and the "
+            f"profile's timeout key (default {DEFAULT_TIMEOUT:g})."
+        ),
+    )
     roots = parser.add_subparsers(dest="_root", required=True)
 
     configure = roots.add_parser(
@@ -279,10 +314,10 @@ def expand_alias(argv: list[str], operations: list[Operation]) -> list[str]:
     index = 0
     while index < len(argv):
         value = argv[index]
-        if value in {"--profile", "--base-url"}:
+        if value in {"--profile", "--base-url", "--timeout"}:
             index += 2
             continue
-        if value.startswith("--profile=") or value.startswith("--base-url="):
+        if value.split("=", 1)[0] in {"--profile", "--base-url", "--timeout"}:
             index += 1
             continue
         break
@@ -371,12 +406,15 @@ def build_operation_request(
         body.update(body_values)
         has_body = True
 
-    required = set((operation.body_schema or {}).get("required", []))
-    missing = required - set(body) if isinstance(body, dict) else required
     if operation.body_required and not has_body:
         raise CliError("this operation requires a JSON request body")
-    if missing:
-        raise CliError(f"missing required body field: {sorted(missing)[0]}")
+    # schema.required lists what must be present *if* a body is sent; it does
+    # not make an optional requestBody mandatory.
+    if has_body:
+        required = set((operation.body_schema or {}).get("required", []))
+        missing = required - set(body) if isinstance(body, dict) else required
+        if missing:
+            raise CliError(f"missing required body field: {sorted(missing)[0]}")
 
     rendered = _render_path(operation, args)
     return RequestPlan(

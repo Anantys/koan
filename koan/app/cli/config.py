@@ -13,6 +13,11 @@ from app.cli import CliError
 
 CONFIG_PATH = Path.home() / ".config" / "koan-cli.cfg"
 ALLOWED_MODES = {0o600, 0o400}
+# Several handlers run their work synchronously inside the request: POST
+# /v1/update shells out to git fetch + git pull, POST /v1/projects clones a
+# repository. A budget under those routinely reports a completed, non-idempotent
+# action as a failure, so default well above them and let the operator raise it.
+DEFAULT_TIMEOUT = 120.0
 
 
 @dataclass(frozen=True)
@@ -20,6 +25,7 @@ class Settings:
     profile: str
     base_url: str
     token: str
+    timeout: float = DEFAULT_TIMEOUT
 
 
 def _nonempty(mapping: Mapping[str, str], name: str) -> str | None:
@@ -28,6 +34,33 @@ def _nonempty(mapping: Mapping[str, str], name: str) -> str | None:
         return None
     value = value.strip()
     return value or None
+
+
+def _parse_timeout(value: str, source: str) -> float:
+    try:
+        timeout = float(value)
+    except ValueError as exc:
+        raise CliError(f"invalid {source}: {value!r} is not a number") from exc
+    if timeout <= 0:
+        raise CliError(f"invalid {source}: {value!r} must be greater than zero")
+    return timeout
+
+
+def resolve_timeout(
+    *,
+    cli_timeout: float | None = None,
+    section: Mapping[str, str] | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> float:
+    """Resolve the response timeout: flag, then environment, then profile."""
+    env = os.environ if environ is None else environ
+    if cli_timeout is not None:
+        return _parse_timeout(str(cli_timeout), "--timeout")
+    if (raw := _nonempty(env, "KOAN_TIMEOUT")) is not None:
+        return _parse_timeout(raw, "KOAN_TIMEOUT")
+    if section is not None and (raw := _nonempty(section, "timeout")) is not None:
+        return _parse_timeout(raw, "profile timeout")
+    return DEFAULT_TIMEOUT
 
 
 def _read_config(path: Path) -> configparser.ConfigParser:
@@ -54,6 +87,7 @@ def load_settings(
     *,
     cli_profile: str | None = None,
     cli_base_url: str | None = None,
+    cli_timeout: float | None = None,
     environ: Mapping[str, str] | None = None,
 ) -> Settings:
     env = os.environ if environ is None else environ
@@ -69,7 +103,8 @@ def load_settings(
         or server_default
     )
     token = _nonempty(env, "KOAN_API_TOKEN") or str(section.get("token", "")).strip()
-    return Settings(profile, base_url.rstrip("/"), token)
+    timeout = resolve_timeout(cli_timeout=cli_timeout, section=section, environ=env)
+    return Settings(profile, base_url.rstrip("/"), token, timeout)
 
 
 def write_profile(path: Path, profile: str, base_url: str, token: str) -> None:
