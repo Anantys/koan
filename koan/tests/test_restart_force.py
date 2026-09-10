@@ -327,9 +327,11 @@ class TestForcedMarkerFallback:
         ``popen_cli``), so stubbing ``popen_cli`` does not bypass it —
         ``koan_tmp_dir`` is redirected here so the lock file is per-test.
         """
-        def fake_popen_cli(cmd, provider=None, cli_lock=None, **kwargs):
+        def fake_popen_cli(cmd, provider=None, launcher=None, cli_lock=None,
+                           **kwargs):
             kwargs.pop("stdin", None)
-            proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, **kwargs)
+            argv = list(launcher) + list(cmd) if launcher else cmd
+            proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, **kwargs)
             return proc, lambda: (cli_lock.release() if cli_lock else None)
 
         monkeypatch.setattr("app.utils.koan_tmp_dir", lambda: str(tmp_path))

@@ -3,6 +3,7 @@
 import contextlib
 import fcntl
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -2381,3 +2382,61 @@ class TestStopProcessesReachesDescendants:
             assert _signal_process(own, 15) is True
         killpg.assert_not_called()
         single.assert_called_once_with(own, 15)
+
+
+class TestSignalProcessIdentityCheck:
+    """`signal_process` sends SIGUSR1/SIGUSR2 — fatal to a wrong target."""
+
+    def _no_proc(self):
+        """Force the ps fallback: pretend /proc/<pid>/cmdline is unavailable."""
+        return patch(
+            "app.pid_manager.Path.read_bytes", side_effect=FileNotFoundError
+        )
+
+    def test_a_long_argv_is_not_truncated_by_ps(self, tmp_path):
+        """Without `-ww` ps clips argv at the terminal width and the runner
+        looks like a stranger — the signal would be silently withheld."""
+        from app.pid_manager import _cmdline_matches
+        long_argv = ".venv/bin/python " + "x" * 400 + " app/run.py\n"
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=long_argv, stderr="",
+        )
+        with self._no_proc(), \
+             patch("app.pid_manager.subprocess.run",
+                   return_value=completed) as run:
+            assert _cmdline_matches(4242, "run.py") is True
+        assert "-ww" in run.call_args[0][0]
+
+    def test_a_dead_pid_is_a_definite_mismatch(self):
+        from app.pid_manager import _cmdline_matches
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="",
+        )
+        with self._no_proc(), \
+             patch("app.pid_manager.subprocess.run", return_value=completed):
+            assert _cmdline_matches(4242, "run.py") is False
+
+    def test_an_unverifiable_pid_is_neither_match_nor_mismatch(self):
+        from app.pid_manager import _cmdline_matches
+        with self._no_proc(), \
+             patch("app.pid_manager.subprocess.run",
+                   side_effect=FileNotFoundError("no ps")):
+            assert _cmdline_matches(4242, "run.py") is None
+
+    def test_an_unverifiable_pid_is_not_signalled(self, tmp_path, capsys):
+        """Fail closed, and name the cause — the caller only sees False."""
+        from app.pid_manager import signal_process
+        with patch("app.pid_manager.check_pidfile", return_value=4242), \
+             patch("app.pid_manager._cmdline_matches", return_value=None), \
+             patch("app.pid_manager.os.kill") as kill:
+            assert signal_process(tmp_path, "run", signal.SIGUSR2) is False
+        kill.assert_not_called()
+        assert "cannot verify PID 4242" in capsys.readouterr().err
+
+    def test_a_verified_pid_is_signalled(self, tmp_path):
+        from app.pid_manager import signal_process
+        with patch("app.pid_manager.check_pidfile", return_value=4242), \
+             patch("app.pid_manager._cmdline_matches", return_value=True), \
+             patch("app.pid_manager.os.kill") as kill:
+            assert signal_process(tmp_path, "run", signal.SIGUSR2) is True
+        kill.assert_called_once_with(4242, signal.SIGUSR2)

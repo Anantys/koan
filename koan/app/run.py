@@ -556,10 +556,16 @@ def run_claude_task(
                 exit_code = 127
                 return exit_code
             except BaseException:
-                # popen_cli releases the lock on its own failures; this covers
-                # the paths that never reach it (e.g. SystemExit raised by a
-                # deferred forced restart replaying on block exit). release()
-                # is idempotent.
+                # Covers the paths popen_cli's own failure handling never
+                # reaches — notably SystemExit raised by a deferred forced
+                # restart replaying when _sigusr2_deferred exits, *after*
+                # popen_cli returned. That success return handed us the
+                # cleanup that owns the prompt temp file (under koan_tmp_dir(),
+                # so no mission-TMPDIR reap or stray sweep covers it) and the
+                # stdin fd, plus the invocation lock. Both are idempotent.
+                if cleanup is not None:
+                    with contextlib.suppress(Exception):
+                        cleanup()
                 cli_lock.release()
                 raise
 
