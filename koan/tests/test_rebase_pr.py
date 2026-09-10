@@ -695,6 +695,38 @@ class TestBuildRebaseComment:
         # Callout comes before the collapsed Actions section.
         assert result.index("[!WARNING]") < result.index("<details>")
 
+    def test_reviewer_refs_do_not_autolink(self):
+        # The feedback agent numbers reviewer points after the review comment's
+        # own finding IDs. A bare "#5" would auto-link to issue/PR 5 in this
+        # repo, which is a different, unrelated thing.
+        result = _build_rebase_comment(
+            "42", "koan/fix", "main",
+            ["Rebased onto origin/main", "Applied review feedback"],
+            {"title": "Fix bug", "review_comments": "please fix the typo"},
+            change_summary=(
+                "APPLIED:\n"
+                "- `koan/app/mcp/http.py` \u2014 audit write failure now logs (reviewer #5).\n"
+                "SKIPPED:\n"
+                "- #7 (transport fallback): intentional fail-closed design."
+            ),
+        )
+        assert "reviewer \uFF035" in result
+        assert "\uFF037 (transport fallback)" in result
+        assert "#5" not in result
+        assert "#7" not in result
+
+    def test_escaping_keeps_headings_and_code_intact(self):
+        result = _build_rebase_comment(
+            "42", "koan/fix", "main",
+            ["Rebased onto origin/main", "Applied review feedback"],
+            {"title": "Fix bug"},
+            diffstat="22 files changed, 811 insertions(+), 66 deletions(-)",
+            change_summary="Reverted the `#3` marker verbatim.",
+        )
+        assert "### Stats" in result
+        assert "## Rebase with requested adjustments" in result
+        assert "`#3`" in result
+
     def test_feedback_failed_warning_has_default_reason(self):
         result = _build_rebase_comment(
             "42", "koan/fix", "main",

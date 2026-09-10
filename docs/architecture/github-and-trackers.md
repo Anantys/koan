@@ -4,7 +4,7 @@ title: "GitHub And Trackers"
 description: "Covers GitHub/Jira notification flow, PR workflows (footer, receiving-code-review protocol), review issue-tracker enrichment, and the instance/ tracker files used to dedupe work."
 tags: [architecture]
 created: 2026-05-28
-updated: 2026-08-14
+updated: 2026-09-10
 ---
 
 # GitHub And Trackers
@@ -54,6 +54,24 @@ request is incorrect — while complying when the human insists. Trivial/mechani
 feedback takes a fast-path. The review-learning extraction additionally records
 pushback outcomes (validated vs. overridden) so the agent learns which pushbacks to
 trust.
+
+### Reviewer references never auto-link
+
+A review comment numbers its findings (`1.`, `2.`, … and `warning #3` in the
+checklist), and the rebase feedback agent echoes those numbers back in its
+summary — "reviewer #5", "#7 (transport fallback)". GitHub auto-links any bare
+`#N` in comment prose to the issue or PR with that number, so those references
+used to render as links to unrelated repository issues.
+
+`app.github.escape_issue_refs` neutralizes them: every bare `#N` (including the
+`owner/repo#N` cross-repo form) becomes a fullwidth `＃N` (U+FF03), which
+reads the same but is not a GitHub reference. Fenced code blocks, inline code
+spans, and URLs are left verbatim, so a `…/pull/12#issuecomment-9` fragment or a
+`#1f2937` hex colour survives untouched. The rebase PR comment
+(`rebase_pr._build_rebase_comment`) runs its whole rendered body through it —
+nothing that comment emits is ever a deliberate issue link. Comments that *do*
+link real issues on purpose (the already-solved close notice's "linked to PR
+#N") are not passed through it.
 
 ### Force-push content-preservation guard
 

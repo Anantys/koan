@@ -45,6 +45,61 @@ def sanitize_github_comment(text: Optional[str]) -> Optional[str]:
     return _BOT_MENTION_RE.sub(r'`@\1`', text)
 
 
+# ---------------------------------------------------------------------------
+# Issue/PR cross-reference escaping
+# ---------------------------------------------------------------------------
+#
+# GitHub auto-links any bare ``#123`` (and ``owner/repo#123``) in comment prose
+# to an issue or PR in the target repository. Bot comments that number their own
+# items — a review's "warning #5", a rebase summary echoing "reviewer #7" — then
+# render as links to unrelated issues, which is actively misleading. Escaping the
+# hash keeps the reference readable while breaking the auto-link.
+
+# Regions whose contents must never be rewritten: fenced code blocks, inline code
+# spans, and URLs (a ``…/pull/12#issuecomment-9`` fragment or a ``#rrggbb``-style
+# anchor must survive verbatim).
+_PROTECTED_SPAN_RE = re.compile(
+    r"```.*?```"            # fenced code block (``` … ```)
+    r"|~~~.*?~~~"           # fenced code block (~~~ … ~~~)
+    r"|`[^`\n]*`"           # inline code span
+    r"|<https?://[^>\s]+>"  # autolink
+    r"|https?://\S+",       # bare or markdown-target URL
+    re.DOTALL,
+)
+
+# A bare cross-reference: ``#`` followed only by digits. ``\b`` keeps hex colors
+# (``#1f2937``) and heading markers (``## Stats``) out, and the ``&`` lookbehind
+# leaves HTML entities such as ``&#39;`` alone.
+_ISSUE_REF_RE = re.compile(r"(?<!&)#(\d+)\b")
+
+# Fullwidth number sign (U+FF03) — visually a hash, but not a GitHub reference.
+FULLWIDTH_HASH = "＃"
+
+
+def escape_issue_refs(text: Optional[str]) -> Optional[str]:
+    """Neutralize bare ``#123`` refs so GitHub does not auto-link them.
+
+    Replaces the ASCII ``#`` of every bare numeric cross-reference with the
+    fullwidth number sign ``＃`` (U+FF03), outside of code spans, fenced code
+    blocks and URLs. Use on generated bot prose that numbers its own items;
+    do NOT use on text where ``#123`` is a deliberate link to a real issue.
+    """
+    if not text:
+        return text
+
+    def _escape(chunk: str) -> str:
+        return _ISSUE_REF_RE.sub(FULLWIDTH_HASH + r"\1", chunk)
+
+    out: List[str] = []
+    pos = 0
+    for match in _PROTECTED_SPAN_RE.finditer(text):
+        out.append(_escape(text[pos:match.start()]))
+        out.append(match.group(0))
+        pos = match.end()
+    out.append(_escape(text[pos:]))
+    return "".join(out)
+
+
 class SSOAuthRequired(RuntimeError):
     """Raised when a GitHub API call fails due to missing SSO authorization.
 

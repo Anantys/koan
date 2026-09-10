@@ -15,6 +15,7 @@ from app.github import (
     _upstream_remote_repo,
     origin_repo, _parse_remote_url,
     sanitize_github_comment,
+    escape_issue_refs,
     find_bot_comment,
 )
 import app.github as github_module
@@ -1775,3 +1776,63 @@ class TestIssueLabelToggle:
         assert seen[0][:5] == ("label", "create", "koan:working",
                                "--repo", "o/r")
         assert "--force" in seen[0]
+
+
+# ---------------------------------------------------------------------------
+# escape_issue_refs
+# ---------------------------------------------------------------------------
+
+class TestEscapeIssueRefs:
+    """Bare ``#N`` refs must stop auto-linking to unrelated issues/PRs."""
+
+    def test_escapes_bare_ref(self):
+        assert escape_issue_refs("reviewer #5 asked for this") == (
+            "reviewer \uFF035 asked for this"
+        )
+
+    def test_escapes_every_ref_in_a_line(self):
+        result = escape_issue_refs("Points #5, #6 and #7 remain.")
+        assert result == "Points \uFF035, \uFF036 and \uFF037 remain."
+        assert "#" not in result
+
+    def test_escapes_ref_in_parentheses(self):
+        assert escape_issue_refs("(reviewer #12)") == "(reviewer \uFF0312)"
+
+    def test_escapes_cross_repo_ref(self):
+        assert escape_issue_refs("owner/repo#5") == "owner/repo\uFF035"
+
+    def test_leaves_inline_code_span_alone(self):
+        assert escape_issue_refs("see `#7` here") == "see `#7` here"
+
+    def test_leaves_fenced_code_block_alone(self):
+        text = "before #1\n```\nfix #2\n```\nafter #3"
+        assert escape_issue_refs(text) == "before \uFF031\n```\nfix #2\n```\nafter \uFF033"
+
+    def test_leaves_tilde_fence_alone(self):
+        assert escape_issue_refs("~~~\nfix #2\n~~~") == "~~~\nfix #2\n~~~"
+
+    def test_leaves_url_fragment_alone(self):
+        url = "https://github.com/o/r/pull/12#issuecomment-999"
+        assert escape_issue_refs(f"see {url} now") == f"see {url} now"
+
+    def test_leaves_autolink_alone(self):
+        text = "<https://example.com/p#1> ok"
+        assert escape_issue_refs(text) == text
+
+    def test_leaves_markdown_headings_alone(self):
+        assert escape_issue_refs("## Stats\n### CI status") == "## Stats\n### CI status"
+
+    def test_leaves_hex_color_alone(self):
+        assert escape_issue_refs("color #1f2937 stays") == "color #1f2937 stays"
+
+    def test_leaves_html_entity_alone(self):
+        assert escape_issue_refs("it&#39;s fine") == "it&#39;s fine"
+
+    def test_no_refs_is_unchanged(self):
+        assert escape_issue_refs("nothing to escape") == "nothing to escape"
+
+    def test_empty_string(self):
+        assert escape_issue_refs("") == ""
+
+    def test_none(self):
+        assert escape_issue_refs(None) is None

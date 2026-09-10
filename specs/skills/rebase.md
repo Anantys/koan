@@ -92,6 +92,13 @@ See `docs/users/skills.md` for the end-user `/rebase` reference and
   before continuing. Its per-round agent budget is `rebase_conflict_timeout`
   (600 seconds by default); exhaustion aborts the rebase and preserves the
   existing recreate fallback.
+- **The rebase PR comment never auto-links a reviewer reference.** The feedback
+  agent numbers reviewer points after the review comment's own finding IDs
+  ("reviewer #5", "#7"). The rendered body is passed through
+  `app.github.escape_issue_refs`, which rewrites every bare `#N` (and the
+  `owner/repo#N` form) to a fullwidth `＃N` outside code spans, fenced blocks and
+  URLs — so a reviewer point never renders as a link to an unrelated repository
+  issue or PR. Nothing this comment emits is ever a deliberate issue link.
 - **Force pushes are guarded, not gated.** The content-preservation guard runs
   after the pipeline's last push (private-gate re-pushes included — the gate
   feeds its own pre-push observations and pushed SHA back into the guard's

@@ -57,7 +57,7 @@ from app.config import (
     get_skill_timeout,
 )
 from app.git_utils import ordered_remotes as _ordered_remotes
-from app.github import run_gh, sanitize_github_comment
+from app.github import escape_issue_refs, run_gh, sanitize_github_comment
 from app.prompts import load_prompt, load_prompt_or_skill, load_skill_prompt  # noqa: F401 — safety import
 from app.retry import retry_with_backoff
 from app.utils import (
@@ -2803,7 +2803,11 @@ def _build_rebase_comment(
 
     parts.append("---\n_Automated by Kōan_")
 
-    return "\n".join(parts)
+    # The feedback agent numbers reviewer points ("reviewer #5", "#7") after the
+    # review comment's own finding IDs. GitHub would auto-link those to unrelated
+    # issues/PRs in this repo, so neutralize every bare #N in the rendered body.
+    # Nothing this comment emits is ever a deliberate issue link.
+    return escape_issue_refs("\n".join(parts))
 
 
 def _extract_change_items(
