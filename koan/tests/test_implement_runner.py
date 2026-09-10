@@ -271,6 +271,67 @@ class TestExtractLatestPlan:
         assert "focusedCommentId" not in result
         assert "Koan current plan (rev" not in result
 
+    def _koan_multipart_plan(self):
+        """Two published parts of one plan, plus the footer a human can copy."""
+        from app.jira_plan_publish import _revision
+
+        plan = "## Summary\nfirst half\nsecond half"
+        stamp = "2026-07-31T12:00:00.000+0000"
+        part1 = self._published_part(plan, 1, 2, stamp)
+        part2 = self._published_part(plan, 2, 2, stamp)
+        part1["body"] = part1["body"].replace("\nsecond half", "")
+        part2["body"] = part2["body"].replace("## Summary\nfirst half\n", "")
+        footer = part2["body"].rstrip().splitlines()[-1]
+        return _revision(plan), part1, part2, footer
+
+    def test_a_quoted_footer_cannot_take_over_a_plan_part(self):
+        """A reviewer quoting a plan's tail must not become that part.
+
+        The footer is plain text and the later comment wins its slot, so
+        without an authorship check the reviewer's prose replaces part 2 —
+        and nothing is *missing*, so the incompleteness banner never fires.
+        """
+        revision, part1, part2, footer = self._koan_multipart_plan()
+        part1["properties"] = {"koan.jira.plan": {"revision": revision, "part": 1}}
+        part2["properties"] = {"koan.jira.plan": {"revision": revision, "part": 2}}
+        impostor = {
+            "body": f"Why not use a queue here instead?\n\n{footer}",
+            "updated": "2026-07-31T18:00:00.000+0000",
+            "properties": {},
+            "author_account_id": "human-account",
+        }
+
+        result = _extract_latest_plan("Issue body", [part1, part2, impostor])
+
+        assert "first half" in result
+        assert "second half" in result
+        assert "Why not use a queue" not in result
+
+    def test_a_quoted_footer_is_refused_on_authorship_when_properties_are_absent(self):
+        """A deployment that drops comment properties still spares the reader.
+
+        With no property anywhere, every comment falls into the footer-only
+        path — Jira's own authorship is then the only thing separating Koan's
+        part from the human comment that quotes its footer.
+        """
+        _revision_hex, part1, part2, footer = self._koan_multipart_plan()
+        part1["author_account_id"] = "koan-account"
+        part2["author_account_id"] = "koan-account"
+        impostor = {
+            "body": f"Why not use a queue here instead?\n\n{footer}",
+            "updated": "2026-07-31T18:00:00.000+0000",
+            "author_account_id": "human-account",
+        }
+
+        with patch(
+            "app.jira_notifications.jira_self_identity",
+            return_value=("koan-account", ""),
+        ):
+            result = _extract_latest_plan("Issue body", [part1, part2, impostor])
+
+        assert "second half" in result
+        assert "Why not use a queue" not in result
+
 
 # ---------------------------------------------------------------------------
 # fetch_issue_with_comments (now in github.py)

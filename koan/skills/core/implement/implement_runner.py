@@ -27,7 +27,11 @@ from app.issue_tracker import (
     project_name_for_path,
 )
 from app.issue_tracker.config import resolve_code_repository
-from app.jira_plan_publish import parse_plan_comment, strip_plan_envelope
+from app.jira_plan_publish import (
+    koan_authorship_check,
+    parse_plan_comment,
+    strip_plan_envelope,
+)
 from app.pr_submit import (
     get_commit_subjects,
     get_current_branch,
@@ -447,11 +451,20 @@ def _extract_jira_multipart_plan_scored(
     beats refusing to work — but never silently: the footer carries the expected
     count, so a gap is announced in the returned text and the log rather than
     letting the agent implement a truncated plan believing it is whole.
+
+    Only comments Koan is entitled to claim may occupy a part slot. The footer
+    is plain text a reviewer reproduces by quoting the tail of a plan, and the
+    later comment wins its slot outright — so without the authorship check a
+    reviewer's question silently *becomes* part N, and the incompleteness
+    banner never fires because nothing is missing, only substituted.
     """
+    authored_by_koan = koan_authorship_check(comments)
     groups: dict[str, dict[int, str]] = {}
     group_counts: dict[str, int] = {}
     group_scores: dict[str, tuple[str, int]] = {}
     for index, comment in enumerate(comments):
+        if not authored_by_koan(comment):
+            continue
         comment_body = str(comment.get("body", "") or "")
         parsed = parse_plan_comment(comment_body)
         if parsed is None:

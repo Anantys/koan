@@ -20,7 +20,7 @@ import re
 import time
 from contextlib import suppress
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 from app.github_url_parser import parse_jira_url
 from app.jira_notifications import (
@@ -229,33 +229,44 @@ def _provably_koan(comment: dict) -> bool:
     )
 
 
+def koan_authorship_check(comments) -> Callable[[dict], bool]:
+    """Return "did Koan write this comment?" for one issue's comment listing.
+
+    The predicate is built from the whole listing because the strongest
+    available evidence depends on it. The ``koan.jira.plan`` entity property is
+    proof — it cannot be produced from the comment editor, only through the
+    REST comment payload — so when *any* comment carries it, only comments that
+    carry it count.
+
+    When *no* comment on the issue does, the property is not available evidence
+    at all: a Jira deployment may drop properties on write, or ignore
+    ``expand=properties`` when listing, and Koan must still recognise the plan
+    comment it published. There the check falls back to Jira's own authorship
+    and excludes only comments Jira positively attributes to someone else —
+    "cannot tell" stays admissible, a foreign account does not.
+    """
+    if any(_authored_by_koan(comment) for comment in comments or []):
+        return _authored_by_koan
+    return lambda comment: jira_comment_authored_by_self(comment) is not False
+
+
 def _find_plan_comments(comments) -> List[Tuple[dict, str, int, int]]:
     """Return every Koan plan comment as ``(comment, revision, part, count)``.
 
-    Identity is the ``koan.jira.plan`` entity property *and* the trailing
-    footer. The property answers "is this ours?" — a reviewer who pastes the
-    tail of a plan into their own comment ends it with the footer, and without
-    the authorship guard that comment becomes what the next revision edits and
+    Identity is authorship (see :func:`koan_authorship_check`) *and* the
+    trailing footer. Authorship answers "is this ours?" — a reviewer who pastes
+    the tail of a plan into their own comment ends it with the footer, and
+    without the guard that comment becomes what the next revision edits and
     what the retirement pass blanks out. The footer answers "which revision and
     part?" and is still matched at the end of the body, so a plan quoted
     mid-body is not mistaken for a plan comment either.
-
-    When *no* comment on the issue carries the property, the footer is all
-    there is — a Jira deployment that drops properties on write, or ignores
-    ``expand=properties`` when listing, must still be able to find, update and
-    retire the plan comment it published. Comments Jira attributes to someone
-    other than Koan's own account are excluded even then: matching them would
-    make a human's quoted plan the comment the next revision overwrites.
     """
-    pool = [comment for comment in comments or [] if _authored_by_koan(comment)]
-    if not pool:
-        pool = [
-            comment for comment in comments or []
-            if jira_comment_authored_by_self(comment) is not False
-        ]
+    authored_by_koan = koan_authorship_check(comments)
 
     found = []
-    for comment in pool:
+    for comment in comments or []:
+        if not authored_by_koan(comment):
+            continue
         match = _FOOTER_RE.search((comment.get("body") or "").rstrip())
         if match:
             revision, part, count = match.group(1), match.group(2), match.group(3)

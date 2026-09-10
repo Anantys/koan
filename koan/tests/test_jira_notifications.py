@@ -692,7 +692,13 @@ class TestJiraIssueHelpers:
 
         assert title == "Fix widget"
         assert "Details" in body
-        assert fetched_comments == [{"author": "Reviewer", "body": "Please fix"}]
+        assert fetched_comments == [{
+            "author": "Reviewer",
+            "body": "Please fix",
+            "properties": {},
+            "author_account_id": "",
+            "author_email": "",
+        }]
 
     def test_fetch_jira_issue_preserves_rich_adf_and_updated_metadata(self):
         from contextlib import ExitStack
@@ -702,7 +708,12 @@ class TestJiraIssueHelpers:
         issue = {"fields": {"summary": "Plan", "description": None}}
         comments = {
             "comments": [{
-                "author": {"displayName": "Koan"},
+                "author": {
+                    "displayName": "Koan",
+                    "accountId": "koan-account",
+                    "emailAddress": "koan@example.com",
+                },
+                "properties": [{"key": "koan.jira.plan", "value": {"revision": "abc"}}],
                 "updated": "2026-07-31T12:00:00.000+0000",
                 "body": {
                     "type": "doc",
@@ -727,6 +738,11 @@ class TestJiraIssueHelpers:
         assert fetched_comments == [{
             "author": "Koan",
             "body": "## Summary\n\n```python\nprint('ok')\n```",
+            # Authorship evidence must survive the fetch: readers assembling a
+            # multipart plan need proof the plain-text footer cannot give them.
+            "properties": {"koan.jira.plan": {"revision": "abc"}},
+            "author_account_id": "koan-account",
+            "author_email": "koan@example.com",
             "updated": "2026-07-31T12:00:00.000+0000",
         }]
 

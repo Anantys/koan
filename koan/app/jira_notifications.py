@@ -1159,6 +1159,22 @@ def _get_issue_comments(
     return comments
 
 
+def _normalize_comment_properties(raw_properties: Any) -> Dict[str, Any]:
+    """Flatten Jira's ``[{"key": ..., "value": ...}]`` expansion into a dict.
+
+    Anything that is not a well-formed, non-empty-keyed entry is dropped: a
+    malformed expansion must read as "no properties", never as a key a caller
+    could mistake for authorship proof.
+    """
+    if not isinstance(raw_properties, list):
+        return {}
+    return {
+        str(item["key"]): item.get("value")
+        for item in raw_properties
+        if isinstance(item, dict) and str(item.get("key", "")).strip()
+    }
+
+
 def fetch_jira_issue(
     issue_key: str,
 ) -> Tuple[str, str, List[dict]]:
@@ -1244,7 +1260,9 @@ def fetch_jira_issue(
             break
 
         for comment in batch:
-            author_data = comment.get("author", {})
+            author_data = comment.get("author")
+            if not isinstance(author_data, dict):
+                author_data = {}
             author_name = (
                 author_data.get("displayName")
                 or author_data.get("emailAddress")
@@ -1256,6 +1274,15 @@ def fetch_jira_issue(
                 entry = {
                     "author": author_name,
                     "body": comment_text,
+                    # Authorship evidence, not decoration: readers that treat a
+                    # comment as one of Koan's own plan parts need proof the
+                    # trailing footer cannot give them — a human can reproduce
+                    # the footer by quoting the tail of a plan.
+                    "properties": _normalize_comment_properties(
+                        comment.get("properties")
+                    ),
+                    "author_account_id": str(author_data.get("accountId") or ""),
+                    "author_email": str(author_data.get("emailAddress") or ""),
                 }
                 if comment.get("updated"):
                     entry["updated"] = str(comment["updated"])
@@ -1383,9 +1410,13 @@ def jira_comment_authored_by_self(comment: dict) -> Optional[bool]:
     must treat "cannot tell" as "not mine", while a read-only lookup can stay
     permissive.
     """
-    account_id, email = jira_self_identity()
     comment_account = str(comment.get("author_account_id") or "")
     comment_email = str(comment.get("author_email") or "")
+    # Nothing to compare against — don't spend a `/myself` round trip (or log a
+    # config warning) on a comment that came from a non-Jira tracker.
+    if not comment_account and not comment_email:
+        return None
+    account_id, email = jira_self_identity()
     if account_id and comment_account:
         return account_id == comment_account
     if email and comment_email:
@@ -1464,14 +1495,7 @@ def _list_comments_result(issue_key: str) -> Tuple[bool, List[dict]]:
                 continue
             body_node = comment.get("body")
             body_text = _adf_to_text(body_node) if body_node else ""
-            raw_properties = comment.get("properties", [])
-            if not isinstance(raw_properties, list):
-                raw_properties = []
-            properties = {
-                str(item["key"]): item.get("value")
-                for item in raw_properties
-                if isinstance(item, dict) and str(item.get("key", "")).strip()
-            }
+            properties = _normalize_comment_properties(comment.get("properties"))
             author = comment.get("author")
             if not isinstance(author, dict):
                 author = {}

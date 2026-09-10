@@ -4,7 +4,7 @@ title: "Skill Spec — plan"
 description: "Documents the `/plan` skill that deep-thinks an idea (or iterates an existing issue) into a structured tracker-issue plan via a critic→regenerate loop, covered by the deterministic eval harness."
 tags: [skill]
 created: 2026-06-27
-updated: 2026-09-09
+updated: 2026-09-10
 ---
 
 # Skill Spec — `plan`
@@ -80,6 +80,15 @@ See `docs/users/skills.md` for the end-user `/plan` reference and
   never matched, and the **retirement pass demands positive proof** — the property, or
   Jira naming Koan's account as author. A stale part left standing is recoverable; a
   human's comment blanked by the retirement pass is not.
+- **The same authorship rule binds the reader.** `/implement` reassembles a multipart
+  plan by footer, and the later comment claiming a part number wins it outright — so a
+  reviewer who ends their reply with a quoted footer would *substitute* their prose for
+  that part rather than appear to be missing one, and the incompleteness banner would
+  stay silent. A comment may therefore occupy a part slot only under the same test the
+  write side applies: the `koan.jira.plan` property when any comment on the issue
+  carries one, otherwise Jira's authorship excluding foreign accounts. This obliges the
+  issue-fetch path to carry that evidence — a comment listing that returns only author
+  display name and body cannot answer the question.
 - **A create that was *attempted* is never repeated.** Jira's comment listing is not
   read-your-writes, and its write path cannot tell "rejected" from "created, response
   lost" — a POST that times out is reported as a failure for a comment that exists. So

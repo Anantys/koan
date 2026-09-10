@@ -4,7 +4,7 @@ title: "Component Spec — Issue Tracking"
 description: "Design contract for the provider-neutral issue-tracker abstraction (GitHub/Jira) that routes fetch/comment/create calls through one service layer."
 tags: [issue-tracking]
 created: 2026-06-27
-updated: 2026-09-09
+updated: 2026-09-10
 ---
 
 # Component Spec — Issue Tracking
@@ -108,6 +108,12 @@ issue_cli.py          → CLI entry point (fetch/comment/create) used by prompts
   published once a read-back observes one of the two identities on a comment;
   an accepted write that left neither is reported as unverified rather than as
   success.
+- **Every Jira comment read carries its authorship evidence.** Both comment-read
+  paths — the notification-side listing and the full issue fetch — normalize
+  `expand=properties` into a `{key: value}` map and surface the author's
+  account id and email alongside the body. Readers decide whether a comment is
+  Koan's own before acting on its contents, and a fetch shape that drops that
+  evidence silently downgrades every such decision to trusting prose.
 
 ## Integration points
 
