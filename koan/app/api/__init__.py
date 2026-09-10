@@ -50,7 +50,10 @@ def create_app(koan_root: Path = None, instance_dir: Path = None) -> Flask:
     app.register_blueprint(observability_bp)
 
     # Health endpoint — unauthenticated liveness probe
+    from app.api.openapi_metadata import openapi_operation
+
     @app.route("/v1/health")
+    @openapi_operation(mcp=True)
     def health():
         """Liveness probe; public, no token required."""
         try:

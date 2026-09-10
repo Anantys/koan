@@ -9,6 +9,7 @@
 * [Memory footprint: process RSS vs cgroup memory.current](memory-footprint.md) - Why the container memory graph plateaus high after missions (page cache + slab, not a leak), the /tmp leftovers that inflate it, the post-mission sweep, the per-mission cgroup scope that kills leaked build daemons, and the anon-first triage rule.
 * [Memory watchdog (#2232)](memory-watchdog.md) - Explains the memory watchdog that restarts the agent loop between missions when RSS stays over a threshold, its config knobs, and health-endpoint observability.
 * [Mission-queue break-glass CLI](mission-cli.md) - Terminal commands (make missions / make mission-rm, or python -m app.mission_ctl) to inspect and edit the SQLite mission store directly when the Telegram bridge is unresponsive.
+* [MCP Server](mcp-server.md) - Configure Kōan's opt-in stdio MCP server for Claude Code, Claude Desktop, and other local MCP clients.
 * [PR Activity Reports](pr-reports.md) - Documents the `/report` skill that posts per-project and global GitHub PR activity digests (created/merged/interacted metrics) over weekly/monthly windows.
 * [REST API](rest-api.md) - Documents Kōan's optional, token-authenticated HTTP control layer (missions, projects, pause/resume, config, admin, usage/metrics/logs endpoints), its generated OpenAPI spec + drift guard, and its security model.
 * [RTK integration](rtk.md) - Explains the optional rtk CLI-proxy integration (detection, awareness injection, hook setup) that compresses dev-command output for token savings.

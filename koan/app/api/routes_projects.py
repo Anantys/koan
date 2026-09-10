@@ -92,6 +92,7 @@ def _run_skill(command: str, args: str = "") -> tuple:
 
 
 @bp.route("/v1/projects", methods=["GET"])
+@openapi_operation(mcp=True)
 @require_token
 def list_projects():
     """List watched projects."""

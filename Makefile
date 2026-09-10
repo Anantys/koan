@@ -3,7 +3,7 @@ export
 
 .PHONY: install onboard setup start stop status restart
 .PHONY: clean say missions mission-rm migrate test test-skills test-strict coverage lint sync-instance rename-project release
-.PHONY: awake run errand-run errand-awake dashboard koan api api-token openapi openapi-check webhook
+.PHONY: awake run errand-run errand-awake dashboard koan api api-token openapi openapi-check webhook mcp mcp-setup mcp-config
 .PHONY: ollama logs ssh-forward
 .PHONY: install-systemctl-service uninstall-systemctl-service
 .PHONY: install-user-service uninstall-user-service
@@ -89,6 +89,12 @@ $(VENV)/.installed: koan/requirements.txt
 	$(VENV)/bin/pip install -r koan/requirements.txt
 	@touch $@
 
+mcp-setup: $(VENV)/.mcp-installed
+
+$(VENV)/.mcp-installed: $(VENV)/.installed koan/requirements-mcp.txt
+	$(VENV)/bin/pip install -r koan/requirements-mcp.txt
+	@touch $@
+
 awake: setup
 	$(KOAN_RUN) app/awake.py
 
@@ -167,6 +173,12 @@ api-token:
 		echo "Or set in instance/config.yaml:" && \
 		echo "  api:" && \
 		echo "    token: \"$$token\""
+
+mcp: mcp-setup
+	$(KOAN_RUN) -m app.mcp
+
+mcp-config: setup
+	@$(KOAN_RUN) -m app.mcp.config_cli
 
 # Regenerate the committed OpenAPI document (koan/openapi.yaml) from the live
 # REST API route table. Run this after adding/removing/modifying an API endpoint,

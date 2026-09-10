@@ -6,6 +6,7 @@ from pathlib import Path
 
 import requests
 
+from app.apiclient import ApiClientError
 from app.cli import EXIT_LOCAL, EXIT_OK, CliError
 from app.cli.commands import (
     build_operation_request,
@@ -97,7 +98,7 @@ def main(
             compact=args.compact,
             pretty=args.pretty,
         )
-    except CliError as exc:
+    except (ApiClientError, CliError) as exc:
         print(f"koan-cli: {exc}", file=sys.stderr)
         return EXIT_LOCAL
 

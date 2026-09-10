@@ -10,7 +10,7 @@ updated: 2026-09-09
 # Component Spec — Web Dashboard & REST API
 
 **Packages:** `koan/app/dashboard/`, `koan/app/dashboard_service/`, `koan/app/api/`,
-`koan/app/cli/`
+`koan/app/cli/`, `koan/app/apiclient/`
 + shared `usage_service.py`, `log_reader.py`
 
 ## Purpose
@@ -40,11 +40,16 @@ api/  (Flask blueprints via create_app())
   auth (require_token) · mission_index (sidecar) · routes_missions/projects/status/
   admin/observability · server.py (waitress entrypoint) · openapi_gen.py (spec generator)
 
-cli/  (runtime OpenAPI REST client)
+apiclient/  (shared OpenAPI REST client)
   ├─ spec.py      operation discovery, stable command names, collision checks
+  ├─ request.py   path rendering and transport-neutral request plans
+  ├─ http.py      authenticated synchronous HTTP transport
+  └─ client.py    operationId execution for non-interactive front-ends
+
+cli/  (terminal front-end)
   ├─ config.py    mode-0600 named profiles and environment overrides
-  ├─ commands.py  argparse generation and generic request construction
-  ├─ http.py      confirmation, transport, JSON output, exit-code mapping
+  ├─ commands.py  argparse generation and generic input conversion
+  ├─ http.py      confirmation, JSON output, exit-code mapping
   └─ main.py      generated commands plus configure/raw built-ins
 ```
 
@@ -62,7 +67,8 @@ cli/  (runtime OpenAPI REST client)
 | `usage_service.build_usage_payload()` | Shared usage payload (week/month buckets) for dashboard **and** `GET /v1/usage`. |
 | `log_reader.tail_log()/read_logs()` | Shared log tailing for dashboard **and** `GET /v1/logs`. |
 | `api/server.py` | Validates token at startup (fail-closed), warns on non-loopback bind, serves via waitress. |
-| `api/openapi_metadata.py` | Defines route-adjacent request-schema and query-parameter declarations. `openapi_operation()` stores metadata on the registered view, mirroring the auth marker pattern without performing runtime validation. |
+| `api/openapi_metadata.py` | Defines route-adjacent request-schema, query-parameter, and MCP opt-in declarations. `openapi_operation()` stores metadata on the registered view, mirroring the auth marker pattern without performing runtime validation. |
+| `apiclient/` | Shared OpenAPI loading, operation request planning, and bearer-authenticated HTTP execution used by both CLI and MCP front-ends. |
 | `api/openapi_gen.py` | Generates the committed OpenAPI 3.1 document from the live route table plus metadata attached to each view. Paths, methods, path parameters, auth, JSON request bodies, and query parameters are code-derived; response schemas remain a separate enrichment. |
 
 ## Mission record: typed structured `result`
@@ -194,6 +200,10 @@ control flow, lifecycle, or quota decisions.
   those markers and never maintains a second method/path schema map. Handler-access tests
   guard the declared field names, and numeric defaults used by both metadata and parsing come
   from the same constants.
+- **MCP exposure metadata stays beside the handler.** `openapi_operation(mcp=True)` makes
+  the generator emit `x-koan-mcp: true`; missing markers remain absent and therefore
+  fail closed. Marker meaning and the additional fixed curation gate belong to the
+  [MCP server contract](mcp.md).
 - **The REST CLI consumes the committed OpenAPI document at runtime.** It does
   not commit generated client code. Every documented operation must map to one
   collision-free public command and its hidden `operationId` alias.
@@ -241,3 +251,6 @@ New endpoints add the pure logic to `dashboard_service/` (or a shared service), 
 thin route, and — if observability — expose it on both surfaces. For **API** changes, also
 run `make openapi` and commit the regenerated `koan/openapi.yaml` in the same change. Update
 `docs/operations/rest-api.md` for API changes and this spec for structural ones.
+
+See [Component Spec — MCP Server](mcp.md) for the stdio front-end consuming this
+OpenAPI contract through the shared HTTP client.

@@ -492,13 +492,17 @@ cli_provider: "claude"
 # See docs/provider-claude.md and docs/provider-codex.md for details.
 # skip_permissions: false
 
-# MCP server configuration — paths to MCP config JSON files.
-# Passed as --mcp-config to the Claude CLI.
+# MCP configuration. Kōan's stdio server defaults off and refuses to run until
+# enabled. Destructive named tools remain separately hidden by default.
+# Optional configs list: paths passed as --mcp-config to the Claude CLI.
 # For autonomous mode, pre-approve MCP tools in the project's
 # .claude/settings.local.json (see docs/providers/claude.md).
 # Per-project overrides available in projects.yaml (replaces global list).
 # mcp:
-#   - "/path/to/mcp-servers.json"
+#   enabled: false                    # bool; allow stdio MCP server startup; default false
+#   tools_allow_destructive: false    # bool; expose mission delete; default false
+#   configs:                          # list[str]; optional provider MCP JSON paths; default []
+#     - "/path/to/mcp-servers.json"
 
 # Which execution roles may load MCP servers (--mcp-config). Loading a server
 # is NOT the same as granting its tools — MCP tools must still be allowlisted

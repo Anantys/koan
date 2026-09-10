@@ -4,7 +4,7 @@ title: "Claude Code CLI Provider"
 description: "Setup and configuration guide for Kōan's default Claude Code CLI provider, including models, tools, per-role CLI config, MCP, and devcontainer mode."
 tags: [providers]
 created: 2026-05-28
-updated: 2026-08-19
+updated: 2026-09-09
 ---
 
 # Claude Code CLI Provider
@@ -242,7 +242,8 @@ databases, APIs). Add MCP config file paths to `config.yaml`:
 ```yaml
 # config.yaml — global MCP servers for all projects
 mcp:
-  - "/path/to/mcp-config.json"
+  configs:
+    - "/path/to/mcp-config.json"
 ```
 
 Per-project overrides are supported in `projects.yaml` — a project-level
@@ -256,6 +257,11 @@ projects:
     mcp:
       - "/path/to/project-specific-mcp.json"
 ```
+
+Legacy `mcp: ["/path/to/mcp-config.json"]` syntax remains accepted. Mapping
+syntax permits these provider inputs to coexist with Kōan's own opt-in
+[MCP server](../operations/mcp-server.md), whose settings are `mcp.enabled` and
+`mcp.tools_allow_destructive`.
 
 The MCP config files use the standard Claude Code JSON format (same as
 `~/.claude/mcp.json` or `--mcp-config` flag).
@@ -317,14 +323,14 @@ output under `permission_denials`.
 **Setup checklist for each project using MCP:**
 
 1. Add the MCP config path to `projects.yaml` (under the project's
-   `mcp:` key) or globally in `config.yaml`
+   `mcp:` key) or globally under `mcp.configs` in `config.yaml`
 2. Create `<project-path>/.claude/settings.local.json` with the
    tool allowlist
 3. Restart Koan (`systemctl restart koan.service`)
 
 ### Per-role MCP access (`mcp_roles`)
 
-MCP servers listed under `mcp:` are loaded per **execution role**, controlled by
+MCP servers listed under `mcp.configs` are loaded per **execution role**, controlled by
 `mcp_roles` (default `["mission", "contemplative", "plan"]`). This lets, e.g.,
 `@bot plan` consult Jira/internal-docs MCP servers while conversational replies
 stay isolated.

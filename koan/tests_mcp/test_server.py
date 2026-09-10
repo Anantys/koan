@@ -1,0 +1,174 @@
+import asyncio
+import builtins
+import json
+from pathlib import Path
+
+import pytest
+
+from app.apiclient import ApiClientError
+from app.mcp.server import create_server
+
+
+@pytest.fixture
+def api_spec_path():
+    return Path(__file__).resolve().parents[1] / "openapi.yaml"
+
+
+def _tools(server):
+    return asyncio.run(server.list_tools())
+
+
+def test_sdk_registers_curated_tools(api_spec_path):
+    server = create_server(spec_path=api_spec_path, allow_destructive=False)
+    tools = {tool.name: tool for tool in _tools(server)}
+
+    assert "koan_status" in tools
+    assert "koan_missions_delete" not in tools
+    assert tools["koan_status"].annotations.read_only_hint is True
+    assert tools["koan_missions_create"].annotations.read_only_hint is False
+
+
+def test_sdk_registers_destructive_annotation(api_spec_path):
+    server = create_server(spec_path=api_spec_path, allow_destructive=True)
+    tools = {tool.name: tool for tool in _tools(server)}
+
+    assert tools["koan_missions_delete"].annotations.destructive_hint is True
+
+
+def test_all_fifteen_named_tools_dispatch(api_spec_path):
+    calls = []
+
+    class Client:
+        def execute_operation(self, operation_id, **kwargs):
+            calls.append(operation_id)
+            return {"operation_id": operation_id}
+
+    server = create_server(
+        spec_path=api_spec_path,
+        allow_destructive=True,
+        client=Client(),
+    )
+    arguments = {
+        "koan_health": {},
+        "koan_status": {},
+        "koan_missions_list": {},
+        "koan_missions_get": {"mission_id": "mission-1"},
+        "koan_missions_result": {"mission_id": "mission-1"},
+        "koan_projects_list": {},
+        "koan_usage": {},
+        "koan_metrics": {},
+        "koan_logs": {},
+        "koan_config": {},
+        "koan_missions_create": {"command": "/status"},
+        "koan_missions_reorder": {
+            "mission_id": "mission-1",
+            "target_position": 1,
+        },
+        "koan_pause": {},
+        "koan_resume": {},
+        "koan_missions_delete": {"mission_id": "mission-1"},
+    }
+
+    for name, tool_arguments in arguments.items():
+        result = asyncio.run(server.call_tool(name, tool_arguments))
+        assert result.is_error is False
+
+    assert len(calls) == 15
+
+
+def test_exec_operation_reaches_unnamed_operation(api_spec_path):
+    calls = []
+
+    class Client:
+        def execute_operation(self, operation_id, **kwargs):
+            calls.append((operation_id, kwargs))
+            return {"ok": True}
+
+    server = create_server(
+        spec_path=api_spec_path,
+        allow_destructive=False,
+        client=Client(),
+    )
+    result = asyncio.run(
+        server.call_tool(
+            "exec_operation",
+            {
+                "operation_id": "admin_shutdown_post",
+                "path": {},
+                "query": {},
+                "body": {},
+            },
+        )
+    )
+
+    assert calls == [("admin_shutdown_post", {"path": {}, "query": {}, "body": {}})]
+    assert json.loads(result.content[0].text) == {"ok": True}
+
+
+def test_api_failure_becomes_actionable_tool_error(api_spec_path):
+    class Client:
+        def execute_operation(self, operation_id, **kwargs):
+            raise ApiClientError.connection(
+                "http://127.0.0.1:8420/v1/status",
+                "connection refused",
+            )
+
+    server = create_server(spec_path=api_spec_path, client=Client())
+    with pytest.raises(Exception, match="api.enabled.*make api-token.*make api"):
+        asyncio.run(server.call_tool("koan_status", {}))
+
+
+def test_disabled_entrypoint_refuses_to_run(monkeypatch, capsys):
+    from app.mcp import __main__ as entrypoint
+
+    monkeypatch.setattr(entrypoint, "get_mcp_enabled", lambda: False)
+
+    assert entrypoint.main() == 1
+    assert "mcp.enabled: true" in capsys.readouterr().err
+
+
+def test_missing_sdk_prints_setup_command(monkeypatch, capsys):
+    from app.mcp import __main__ as entrypoint
+
+    real_import = builtins.__import__
+
+    def missing_mcp(name, *args, **kwargs):
+        if name == "app.mcp.server":
+            error = ModuleNotFoundError("No module named 'mcp'")
+            error.name = "mcp"
+            raise error
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(entrypoint, "get_mcp_enabled", lambda: True)
+    monkeypatch.setattr(builtins, "__import__", missing_mcp)
+
+    assert entrypoint.main() == 1
+    assert "make mcp-setup" in capsys.readouterr().err
+
+
+def test_unreachable_startup_probe_warns_but_runs(monkeypatch, capsys):
+    from app.mcp import __main__ as entrypoint
+
+    ran = []
+
+    class Server:
+        def run(self, transport):
+            ran.append(transport)
+
+    class Probe:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def execute_operation(self, operation_id):
+            raise ApiClientError.connection("http://127.0.0.1:8420/v1/health", "refused")
+
+    monkeypatch.setattr(entrypoint, "get_mcp_enabled", lambda: True)
+    monkeypatch.setattr(entrypoint, "get_mcp_tools_allow_destructive", lambda: False)
+    monkeypatch.setattr("app.mcp.server.create_server", lambda **kwargs: Server())
+    monkeypatch.setattr("app.apiclient.RestApiClient", Probe)
+
+    assert entrypoint.main() == 0
+    assert ran == ["stdio"]
+    warning = capsys.readouterr().err
+    assert "warning" in warning
+    assert "/v1/health" in warning

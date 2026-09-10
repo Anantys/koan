@@ -1,6 +1,5 @@
 """HTTP transport, confirmation, output, and configuration probes."""
 
-import errno
 import json
 import sys
 from dataclasses import dataclass
@@ -8,6 +7,9 @@ from typing import TextIO
 
 import requests
 
+from app.apiclient import ApiClientError
+from app.apiclient.http import send_request
+from app.apiclient.request import RequestPlan
 from app.cli import (
     EXIT_AUTH,
     EXIT_LOCAL,
@@ -16,7 +18,6 @@ from app.cli import (
     EXIT_SERVER,
     CliError,
 )
-from app.cli.commands import RequestPlan
 from app.cli.config import DEFAULT_TIMEOUT, Settings
 
 
@@ -54,36 +55,6 @@ def confirm_destructive(
         raise CliError("aborted")
 
 
-def _json_payload(response):
-    try:
-        return response.json()
-    except ValueError:
-        return {"body": response.text}
-
-
-def _is_connection_refused(exc: BaseException) -> bool:
-    pending = [exc]
-    seen = set()
-    while pending:
-        current = pending.pop()
-        if id(current) in seen:
-            continue
-        seen.add(id(current))
-        if isinstance(current, OSError) and current.errno == errno.ECONNREFUSED:
-            return True
-        if "refused" in str(current).lower():
-            return True
-        pending.extend(
-            item
-            for item in getattr(current, "args", ())
-            if isinstance(item, BaseException)
-        )
-        cause = current.__cause__ or current.__context__
-        if cause is not None:
-            pending.append(cause)
-    return False
-
-
 def execute(
     plan: RequestPlan,
     settings: Settings,
@@ -94,50 +65,14 @@ def execute(
     stdout: TextIO = sys.stdout,
     stderr: TextIO = sys.stderr,
 ) -> int:
-    if plan.requires_auth and not settings.token:
-        print(
-            "authentication required; run `koan-cli configure` or set "
-            "KOAN_API_TOKEN",
-            file=stderr,
-        )
-        return EXIT_LOCAL
-
-    headers = {"Accept": "application/json"}
-    if settings.token:
-        headers["Authorization"] = f"Bearer {settings.token}"
-    kwargs = {"params": plan.query, "headers": headers, "timeout": settings.timeout}
-    if plan.has_body:
-        kwargs["json"] = plan.body
-
     try:
-        response = session.request(plan.method, plan.url, **kwargs)
-    except requests.ConnectionError as exc:
-        if _is_connection_refused(exc):
-            print(f"connection refused: {plan.url}", file=stderr)
-            print("1. Set api.enabled: true in instance/config.yaml", file=stderr)
-            print("2. Run make api-token and configure the token", file=stderr)
-            print("3. Start the server with make api", file=stderr)
-        else:
-            print(f"request failed: {exc}", file=stderr)
-        return EXIT_LOCAL
-    except requests.Timeout as exc:
-        # The request was delivered; only the response is missing. Say so, or a
-        # script keying off the exit code re-issues a non-idempotent operation.
-        print(
-            f"no response within {settings.timeout:g}s: {exc}",
-            file=stderr,
+        response = send_request(
+            plan, settings.token, session, timeout=settings.timeout
         )
-        print(
-            f"{plan.method} {plan.url} may still have been applied; "
-            "verify before retrying, or raise --timeout.",
-            file=stderr,
-        )
-        return EXIT_LOCAL
-    except requests.RequestException as exc:
-        print(f"request failed: {exc}", file=stderr)
+    except ApiClientError as exc:
+        print(str(exc), file=stderr)
         return EXIT_LOCAL
 
-    payload = _json_payload(response)
     code = exit_for_status(response.status_code)
     target = stdout if code == EXIT_OK else stderr
     indent = (
@@ -146,7 +81,10 @@ def execute(
         or (not compact and getattr(stdout, "isatty", lambda: False)())
         else None
     )
-    print(json.dumps(payload, ensure_ascii=False, indent=indent), file=target)
+    print(
+        json.dumps(response.payload, ensure_ascii=False, indent=indent),
+        file=target,
+    )
     return code
 
 

@@ -76,7 +76,7 @@ CONFIG_SCHEMA: Dict[str, Any] = {
     "skip_permissions": "bool",
     "strip_co_authored_by": "bool",
     "cli_provider": "str",
-    "mcp": "list",
+    "mcp": _NESTED,
     "telegram": _NESTED,
     "budget": _NESTED,
     "tools": _NESTED,
@@ -198,6 +198,11 @@ SECTION_SCHEMAS: Dict[str, Dict[str, str]] = {
     },
     "ollama_launch": {
         "model": "str",
+    },
+    "mcp": {
+        "enabled": "bool",
+        "tools_allow_destructive": "bool",
+        "configs": "list",
     },
     "usage": {
         "session_token_limit": "int",
@@ -482,6 +487,11 @@ def validate_config(config: dict) -> List[Tuple[str, str]]:
         # Nested section
         if expected == _NESTED:
             if value is None:
+                continue
+            # Preserve legacy ``mcp: [config.json]`` while supporting MCP server
+            # settings in a mapping. New client config paths belong in
+            # ``mcp.configs`` when mapping syntax is used.
+            if key == "mcp" and isinstance(value, list):
                 continue
             # Some keys accept both a scalar shorthand and a dict form
             # (e.g. effort: "high" vs effort: {review: low, deep: high}).

@@ -325,6 +325,33 @@ def test_security_scheme_and_error_component(app):
     assert error["properties"]["error"]["required"] == ["code", "message"]
 
 
+def test_mcp_markers_match_curated_routes(app):
+    spec = openapi_gen.build_spec(app)
+    marked = {
+        (method.upper(), path)
+        for path, path_item in spec["paths"].items()
+        for method, operation in path_item.items()
+        if operation.get("x-koan-mcp") is True
+    }
+    assert marked == {
+        ("GET", "/v1/health"),
+        ("GET", "/v1/status"),
+        ("GET", "/v1/missions"),
+        ("POST", "/v1/missions"),
+        ("POST", "/v1/missions/reorder"),
+        ("GET", "/v1/missions/{mission_id}"),
+        ("DELETE", "/v1/missions/{mission_id}"),
+        ("GET", "/v1/missions/{mission_id}/result"),
+        ("GET", "/v1/projects"),
+        ("POST", "/v1/pause"),
+        ("POST", "/v1/resume"),
+        ("GET", "/v1/config"),
+        ("GET", "/v1/usage"),
+        ("GET", "/v1/metrics"),
+        ("GET", "/v1/logs"),
+    }
+
+
 def test_known_non_default_success_codes(app):
     spec = openapi_gen.build_spec(app)
     assert "202" in spec["paths"]["/v1/missions"]["post"]["responses"]

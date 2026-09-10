@@ -12,10 +12,13 @@ Note: load_config() itself lives in utils.py to avoid circular imports.
 Functions here call it via import to ensure mocks propagate correctly.
 """
 
+import logging
 import os
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
+log = logging.getLogger("koan.config")
 
 
 def _load_config() -> dict:
@@ -511,8 +514,13 @@ def get_mcp_configs(project_name: str = "") -> List[str]:
 
     Resolution order:
     1. projects.yaml mcp list for the project (replaces global if set)
-    2. config.yaml mcp list
+    2. config.yaml mcp.configs list (or legacy top-level mcp list)
     3. Empty list (no MCP servers)
+
+    ``mcp`` accepts either a legacy list of config JSON paths or (since the MCP
+    server settings arrived) a mapping whose ``configs`` key holds those paths.
+    Kōan's own opt-in MCP server settings (``mcp.enabled``,
+    ``mcp.tools_allow_destructive``) live beside it in the same mapping.
 
     Args:
         project_name: Optional project name for per-project overrides.
@@ -522,7 +530,20 @@ def get_mcp_configs(project_name: str = "") -> List[str]:
     """
     config = _load_config()
     result = config.get("mcp", [])
+    if isinstance(result, dict):
+        client_configs = result.get("configs", [])
+        if not isinstance(client_configs, list):
+            log.warning(
+                "mcp.configs should be a list, got %s; treating as empty",
+                type(client_configs).__name__,
+            )
+            client_configs = []
+        result = client_configs
     if not isinstance(result, list):
+        log.warning(
+            "mcp should be a list or mapping, got %s; treating as empty",
+            type(result).__name__,
+        )
         result = []
 
     # Per-project override replaces global list entirely
@@ -532,6 +553,25 @@ def get_mcp_configs(project_name: str = "") -> List[str]:
         result = project_mcp if isinstance(project_mcp, list) else []
 
     return [entry for entry in result if isinstance(entry, str) and entry]
+
+
+def _get_mcp_server_config() -> dict:
+    value = _load_config().get("mcp", {})
+    if not isinstance(value, dict):
+        return {}
+    return value
+
+
+def get_mcp_enabled() -> bool:
+    """Whether Kōan's opt-in stdio MCP server may run (mcp.enabled)."""
+    value = _get_mcp_server_config().get("enabled", False)
+    return value is True
+
+
+def get_mcp_tools_allow_destructive() -> bool:
+    """Whether the named destructive mission-delete tool is exposed (mcp.tools_allow_destructive)."""
+    value = _get_mcp_server_config().get("tools_allow_destructive", False)
+    return value is True
 
 
 # Named role identifiers for MCP opt-in. Call sites must use these constants

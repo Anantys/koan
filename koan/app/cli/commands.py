@@ -2,12 +2,10 @@
 
 import argparse
 import json
-import re
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
 
+from app.apiclient.request import RequestPlan, is_destructive, render_operation_request
 from app.cli import CliError
 from app.cli.config import DEFAULT_TIMEOUT
 from app.cli.spec import Operation, load_tag_descriptions
@@ -66,14 +64,6 @@ def _root_epilog() -> str:
         "`koan-cli configure` to write one."
     )
     return "\n".join(lines)
-
-
-DESTRUCTIVE = {
-    ("POST", "/v1/restart"),
-    ("POST", "/v1/shutdown"),
-    ("POST", "/v1/update"),
-    ("POST", "/v1/update_release"),
-}
 
 
 class _RawHelp(argparse.RawDescriptionHelpFormatter):
@@ -332,17 +322,6 @@ def expand_alias(argv: list[str], operations: list[Operation]) -> list[str]:
     return [*argv[:index], *command, *argv[index + 1 :]]
 
 
-@dataclass(frozen=True)
-class RequestPlan:
-    method: str
-    url: str
-    query: dict[str, Any]
-    body: Any
-    has_body: bool
-    requires_auth: bool
-    destructive: bool
-
-
 def _load_json(value: str) -> Any:
     if value.startswith("@"):
         try:
@@ -367,17 +346,6 @@ def _query_pairs(values: list[str]) -> dict[str, str]:
             raise CliError("query key cannot be empty")
         result[key] = item
     return result
-
-
-def _render_path(operation: Operation, args: argparse.Namespace) -> str:
-    path = operation.path
-    for parameter in operation.parameters:
-        if parameter.location == "path":
-            encoded = quote(str(getattr(args, parameter.name)), safe="")
-            path = path.replace(f"{{{parameter.name}}}", encoded)
-    if re.search(r"{[^{}]+}", path):
-        raise CliError(f"unresolved path parameter in {path}")
-    return path
 
 
 def build_operation_request(
@@ -418,21 +386,19 @@ def build_operation_request(
         if missing:
             raise CliError(f"missing required body field: {sorted(missing)[0]}")
 
-    rendered = _render_path(operation, args)
-    return RequestPlan(
-        method=operation.method,
-        url=f"{base_url.rstrip('/')}/{rendered.lstrip('/')}",
+    path = {
+        parameter.name: getattr(args, parameter.name)
+        for parameter in operation.parameters
+        if parameter.location == "path"
+    }
+    return render_operation_request(
+        operation,
+        base_url,
+        path=path,
         query=query,
         body=body,
         has_body=has_body,
-        requires_auth=operation.requires_auth,
-        destructive=is_destructive(operation.method, operation.path),
     )
-
-
-def is_destructive(method: str, path: str) -> bool:
-    normalized = (method.upper(), path.split("?", 1)[0])
-    return normalized[0] == "DELETE" or normalized in DESTRUCTIVE
 
 
 def build_raw_request(

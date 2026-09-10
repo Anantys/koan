@@ -55,6 +55,7 @@ paths:
       summary: Get the effective config, with secrets masked out.
       tags:
       - admin
+      x-koan-mcp: true
   /v1/health:
     get:
       operationId: health_get
@@ -71,6 +72,7 @@ paths:
       summary: Liveness probe; public, no token required.
       tags:
       - health
+      x-koan-mcp: true
   /v1/logs:
     get:
       operationId: observability_logs_get
@@ -125,6 +127,7 @@ paths:
       summary: Tail recent agent logs, optionally filtered by source.
       tags:
       - observability
+      x-koan-mcp: true
   /v1/metrics:
     get:
       operationId: observability_metrics_get
@@ -168,6 +171,7 @@ paths:
       summary: Mission throughput and success metrics over a window.
       tags:
       - observability
+      x-koan-mcp: true
   /v1/missions:
     get:
       operationId: missions_list_missions_route_get
@@ -214,6 +218,7 @@ paths:
       summary: List missions, newest first, optionally filtered.
       tags:
       - missions
+      x-koan-mcp: true
     post:
       operationId: missions_create_mission_post
       requestBody:
@@ -271,6 +276,7 @@ paths:
       summary: Queue a new mission.
       tags:
       - missions
+      x-koan-mcp: true
   /v1/missions/reorder:
     post:
       operationId: missions_reorder_mission_route_post
@@ -315,6 +321,7 @@ paths:
       summary: Move a pending mission to a new position.
       tags:
       - missions
+      x-koan-mcp: true
   /v1/missions/{mission_id}:
     delete:
       operationId: missions_delete_mission_delete
@@ -348,6 +355,7 @@ paths:
       summary: Remove a pending mission.
       tags:
       - missions
+      x-koan-mcp: true
     get:
       operationId: missions_get_mission_route_get
       parameters:
@@ -380,6 +388,7 @@ paths:
       summary: Fetch one mission by id.
       tags:
       - missions
+      x-koan-mcp: true
     patch:
       operationId: missions_edit_mission_patch
       parameters:
@@ -457,6 +466,7 @@ paths:
       summary: Fetch a finished mission's result.
       tags:
       - missions
+      x-koan-mcp: true
   /v1/pause:
     post:
       operationId: admin_pause_post
@@ -494,6 +504,7 @@ paths:
       summary: Pause the agent, optionally for a duration like "2h" or "30m".
       tags:
       - admin
+      x-koan-mcp: true
   /v1/projects:
     get:
       operationId: projects_list_projects_get
@@ -521,6 +532,7 @@ paths:
       summary: List watched projects.
       tags:
       - projects
+      x-koan-mcp: true
     post:
       operationId: projects_add_project_post
       requestBody:
@@ -721,6 +733,7 @@ paths:
       summary: Resume the agent after a pause.
       tags:
       - admin
+      x-koan-mcp: true
   /v1/shutdown:
     post:
       operationId: admin_shutdown_post
@@ -775,6 +788,7 @@ paths:
       summary: Get current agent state, execution and mission counters.
       tags:
       - status
+      x-koan-mcp: true
   /v1/update:
     post:
       operationId: admin_update_post
@@ -898,6 +912,7 @@ paths:
       summary: Daily agent usage totals, optionally split by project.
       tags:
       - observability
+      x-koan-mcp: true
 security:
 - bearerAuth: []
 servers:

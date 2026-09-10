@@ -63,7 +63,7 @@ def _mask_secrets(obj, depth: int = 0):
 
 
 @bp.route("/v1/pause", methods=["POST"])
-@openapi_operation(request_schema=_PAUSE_SCHEMA, request_required=False)
+@openapi_operation(request_schema=_PAUSE_SCHEMA, request_required=False, mcp=True)
 @require_token
 def pause():
     """Pause the agent, optionally for a duration like \"2h\" or \"30m\"."""
@@ -88,6 +88,7 @@ def pause():
 
 
 @bp.route("/v1/resume", methods=["POST"])
+@openapi_operation(mcp=True)
 @require_token
 def resume():
     """Resume the agent after a pause."""
@@ -97,6 +98,7 @@ def resume():
 
 
 @bp.route("/v1/config", methods=["GET"])
+@openapi_operation(mcp=True)
 @require_token
 def get_config():
     """Get the effective config, with secrets masked out."""

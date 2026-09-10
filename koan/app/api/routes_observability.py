@@ -127,7 +127,7 @@ def _int_param(name: str, default: str) -> int:
 
 
 @bp.route("/v1/usage")
-@openapi_operation(query_parameters=_USAGE_QUERY_PARAMETERS)
+@openapi_operation(query_parameters=_USAGE_QUERY_PARAMETERS, mcp=True)
 @require_token
 def usage():
     """Daily agent usage totals, optionally split by project."""
@@ -150,7 +150,7 @@ def usage():
 
 
 @bp.route("/v1/metrics")
-@openapi_operation(query_parameters=_METRICS_QUERY_PARAMETERS)
+@openapi_operation(query_parameters=_METRICS_QUERY_PARAMETERS, mcp=True)
 @require_token
 def metrics():
     """Mission throughput and success metrics over a window."""
@@ -188,7 +188,7 @@ def metrics():
 
 
 @bp.route("/v1/logs")
-@openapi_operation(query_parameters=_LOGS_QUERY_PARAMETERS)
+@openapi_operation(query_parameters=_LOGS_QUERY_PARAMETERS, mcp=True)
 @require_token
 def logs():
     """Tail recent agent logs, optionally filtered by source."""

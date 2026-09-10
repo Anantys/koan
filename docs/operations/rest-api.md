@@ -81,6 +81,10 @@ query schemas are being enriched. See the
 [Kōan REST CLI](../users/koan-cli.md) guide for secure profiles, examples,
 output guarantees, and exit codes.
 
+Kōan also provides an opt-in [stdio MCP server](mcp-server.md) over this same
+OpenAPI-driven HTTP client. MCP requires this REST API to remain enabled and
+running; it shares the bearer token and audit trail.
+
 ---
 
 ## OpenAPI specification
@@ -545,6 +549,7 @@ Tokens are never written to the log.
 
 ## See also
 
+- [`docs/operations/mcp-server.md`](mcp-server.md) — curated stdio MCP front-end
 - [`docs/operations/dashboard.md`](dashboard.md) — web dashboard (separate process, same config pattern)
 - [`instance.example/config.yaml`](../../instance.example/config.yaml) — documented `api:` section
 - [`koan/openapi.yaml`](../../koan/openapi.yaml) — generated OpenAPI 3.1 document (`make openapi`) · [render in Swagger Editor](https://editor.swagger.io/?url=https://raw.githubusercontent.com/Anantys-oss/koan/main/koan/openapi.yaml)

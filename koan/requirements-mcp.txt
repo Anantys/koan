@@ -1,0 +1,2 @@
+# Optional stdio MCP server runtime only. Core Kōan stays lean.
+mcp>=2.0,<3

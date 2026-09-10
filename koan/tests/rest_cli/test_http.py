@@ -176,17 +176,36 @@ def test_dns_connection_error_does_not_claim_refusal(session_factory):
     assert "api.enabled" not in stderr.getvalue()
 
 
-def test_non_json_response_remains_json(session_factory, response_factory):
-    stdout = io.StringIO()
-    execute(
+def test_non_json_success_body_reports_failure(session_factory, response_factory):
+    """A 2xx response with a non-JSON body masks a protocol failure; report it."""
+    stdout, stderr = io.StringIO(), io.StringIO()
+    code = execute(
         request_plan(),
         Settings("default", "http://localhost", "token"),
         session_factory([response_factory(200, ValueError(), text="plain")]),
         compact=True,
         stdout=stdout,
-        stderr=io.StringIO(),
+        stderr=stderr,
     )
-    assert stdout.getvalue() == '{"body": "plain"}\n'
+    assert code == EXIT_LOCAL
+    assert stdout.getvalue() == ""
+    assert "non-JSON body" in stderr.getvalue()
+
+
+def test_non_json_error_body_remains_json(session_factory, response_factory):
+    """Non-2xx non-JSON bodies keep raw text so diagnostics stay readable."""
+    stdout, stderr = io.StringIO(), io.StringIO()
+    code = execute(
+        request_plan(),
+        Settings("default", "http://localhost", "token"),
+        session_factory([response_factory(502, ValueError(), text="gateway")]),
+        compact=True,
+        stdout=stdout,
+        stderr=stderr,
+    )
+    assert code == EXIT_SERVER
+    assert stdout.getvalue() == ""
+    assert '{"body": "gateway"}' in stderr.getvalue()
 
 
 def test_destructive_confirmation_requires_yes_without_tty():
