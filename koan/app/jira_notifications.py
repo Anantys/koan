@@ -404,7 +404,10 @@ def _strip_html_comments_outside_code(text: str) -> str:
 
             if inline_ticks == 0 and body.startswith("<!--", i):
                 if "-->" not in body[i + 4:] and not closer_after_line[line_number]:
-                    # Malformed comments must not consume later user-visible prose.
+                    # An opener with no closer anywhere is not a comment, so it
+                    # is not metadata to hide: keep the rest of the line verbatim
+                    # rather than deleting prose the author meant to publish.
+                    output.append(body[i:])
                     i = len(body)
                     continue
                 in_comment = True

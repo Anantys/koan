@@ -63,9 +63,15 @@ SENSITIVE_CONTENT_PATTERNS = [
     (r"(?i)yaml\.(?:unsafe_load\s*\(|load\s*\((?!.*SafeLoader))", "unsafe YAML deserialization"),
     (r"BEGIN[ \t]+(?:RSA |DSA |EC |OPENSSH )?PRIVATE KEY", "private key in source"),
     # Mirrors bandit B324: a call that declares usedforsecurity=False is a
-    # non-cryptographic use (checksums, dedup keys) and is not flagged.
+    # non-cryptographic use (checksums, dedup keys) and is not flagged. The
+    # lookahead is bounded to *this* call's own argument list (one level of
+    # nesting, so `hashlib.sha1(x.encode("utf-8"), usedforsecurity=False)`
+    # still matches) — an unbounded `.*` would let the literal appear anywhere
+    # later on the line, so a trailing comment or a second annotated call would
+    # silently exempt a genuinely security-relevant hash.
     (
-        r"(?i)hashlib\.(?:md5|sha1)\s*\((?!.*usedforsecurity\s*=\s*False)",
+        r"(?i)hashlib\.(?:md5|sha1)\s*\("
+        r"(?!(?:[^()]|\([^()]*\))*usedforsecurity\s*=\s*False)",
         "weak cryptographic hash",
     ),
     (r"(?i)tempfile\.mktemp\s*\(", "insecure temp file creation"),

@@ -385,19 +385,33 @@ def _extract_latest_plan(body: Optional[str], comments: List[dict]) -> str:
     Returns:
         The plan text, or empty string if no plan found.
     """
-    multipart_plan = _extract_jira_multipart_plan(comments)
-    if multipart_plan:
-        return multipart_plan
+    multipart_plan, multipart_score = _extract_jira_multipart_plan_scored(comments)
 
     # Check comments from newest to oldest. Never treat an individual Jira
     # multipart fragment as a standalone plan when no group was assembled.
-    for comment in reversed(comments):
+    for index in range(len(comments) - 1, -1, -1):
+        comment = comments[index]
         comment_body = comment.get("body", "")
         parsed = parse_plan_comment(comment_body or "")
         if parsed is not None and parsed[2] > 1:
             continue
         if _is_plan_content(comment_body):
+            # A leftover group from an older revision must not beat a newer
+            # single-part plan: a shrinking plan reuses part 1 and retires the
+            # rest, and a retirement Jira accepted but never applied would
+            # otherwise strand the agent on the superseded parts.
+            single_score = (str(comment.get("updated", "")), index)
+            if multipart_plan and multipart_score >= single_score:
+                return multipart_plan
+            if multipart_plan:
+                logger.warning(
+                    "Ignoring stale multipart Jira plan — a newer single-part "
+                    "plan comment supersedes it",
+                )
             return comment_body
+
+    if multipart_plan:
+        return multipart_plan
 
     # Fall back to issue body if it has plan markers
     if _is_plan_content(body):
@@ -410,7 +424,18 @@ def _extract_latest_plan(body: Optional[str], comments: List[dict]) -> str:
 
 
 def _extract_jira_multipart_plan(comments: List[dict]) -> str:
-    """Return the newest split Jira plan, if the comments contain one.
+    """Return the newest split Jira plan text, discarding its recency score."""
+    return _extract_jira_multipart_plan_scored(comments)[0]
+
+
+def _extract_jira_multipart_plan_scored(
+    comments: List[dict],
+) -> Tuple[str, Tuple[str, int]]:
+    """Return the newest split Jira plan and its recency score.
+
+    The score is the winning group's newest ``(updated, index)`` pair, so the
+    caller can weigh the group against a standalone plan comment instead of
+    preferring a multipart group unconditionally.
 
     Every part of one plan carries the same ``rev`` in its footer, so parts are
     grouped by revision rather than inferred from ordering — the publisher
@@ -440,7 +465,7 @@ def _extract_jira_multipart_plan(comments: List[dict]) -> str:
         group_scores[revision] = max(group_scores.get(revision, ("", -1)), score)
 
     if not group_scores:
-        return ""
+        return "", ("", -1)
 
     newest = max(group_scores, key=lambda rev: group_scores[rev])
     parts = groups[newest]
@@ -461,7 +486,7 @@ def _extract_jira_multipart_plan(comments: List[dict]) -> str:
             f"were not found on the issue; the sections below are what is available.\n\n"
             f"{assembled}"
         )
-    return assembled
+    return assembled, group_scores[newest]
 
 
 def _plan_hash(plan: str) -> str:

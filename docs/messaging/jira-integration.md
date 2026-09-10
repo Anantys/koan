@@ -294,7 +294,8 @@ HTML comments are removed before ordinary Jira prose is converted. This
 prevents internal markers such as `<!-- koan-jira-outcome:… -->` from becoming
 visible text. Comment syntax inside inline code spans, fenced code blocks, or
 indented (4-space/tab) code blocks is preserved verbatim because it is example
-code rather than hidden metadata.
+code rather than hidden metadata. An opener with no `-->` anywhere is not a
+comment either — the rest of the line is kept verbatim rather than discarded.
 
 Jira has no collapsible-section equivalent. Koan removes GitHub `<details>`
 wrappers, renders their `<summary>` as a visible label, and keeps the contained
