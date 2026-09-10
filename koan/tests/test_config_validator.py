@@ -1002,6 +1002,50 @@ class TestValidateConfigOrRaise:
         self._write_config(tmp_path, "unknown_key: 42\n")
         validate_config_or_raise(str(tmp_path))
 
+    def test_legacy_mcp_list_accepted(self, tmp_path):
+        """A pre-MCP-server ``mcp: [paths]`` list must not hard-stop startup.
+
+        Runtime still honors it, and app.config_migration reshapes it — but an
+        unmigrated file (read-only mount, manual rollback) must still boot.
+        """
+        from app.config_validator import validate_config_or_raise
+        self._write_config(tmp_path, "mcp:\n- /a.json\n")
+        validate_config_or_raise(str(tmp_path))
+
+    def test_mcp_mapping_form_accepted(self, tmp_path):
+        from app.config_validator import validate_config_or_raise
+        self._write_config(
+            tmp_path, "mcp:\n  enabled: true\n  configs:\n    - /a.json\n"
+        )
+        validate_config_or_raise(str(tmp_path))
+
+    def test_mcp_scalar_still_rejected(self, tmp_path):
+        from app.config_validator import validate_config_or_raise
+        self._write_config(tmp_path, 'mcp: "/a.json"\n')
+        with pytest.raises(ValueError, match="'mcp' must be a mapping"):
+            validate_config_or_raise(str(tmp_path))
+
+    def test_shorthands_agree_with_the_advisory_validator(self, tmp_path):
+        """Every shape the strict check accepts must also be warning-free.
+
+        The two validators disagreeing is what turned a working ``mcp:`` list
+        into a hard startup stop; this pins them together.
+        """
+        import yaml
+
+        from app.config_validator import validate_config, validate_config_or_raise
+
+        for snippet in (
+            "mcp:\n- /a.json\n",
+            'effort: "high"\n',
+            "stagnation: false\n",
+            "ci_check: true\n",
+            "running_indicator: true\n",
+        ):
+            self._write_config(tmp_path, snippet)
+            validate_config_or_raise(str(tmp_path))
+            assert validate_config(yaml.safe_load(snippet)) == [], snippet
+
 
 class TestValidateModelsSection:
     """models: accepts flat roles AND per-provider blocks (models.<flavor>).
