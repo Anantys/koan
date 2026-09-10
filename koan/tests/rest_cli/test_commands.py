@@ -1,10 +1,13 @@
 import argparse
 import json
+import shlex
 
 import pytest
 
 from app.cli import CliError
 from app.cli.commands import (
+    GROUP_EXAMPLES,
+    _first_examples,
     build_operation_request,
     build_parser,
     build_raw_request,
@@ -400,3 +403,39 @@ def test_timeout_flag_precedes_an_operation_id_alias(api_spec_path):
         "--timeout=5",
         "health",
     ]
+
+
+def test_every_help_example_actually_runs(api_spec_path):
+    """Every example --help prints must parse and build a request.
+
+    --help is where a new user goes first; an example the tool itself printed
+    must not fail when pasted back. Nothing else pins these hand-written
+    strings to the generated interface.
+    """
+    operations = load_operations(load_spec(api_spec_path))
+    parser = build_parser(operations)
+
+    examples = list(_first_examples())
+    for group_examples in GROUP_EXAMPLES.values():
+        examples.extend(group_examples)
+
+    for line in examples:
+        argv = shlex.split(line)
+        assert argv[0] == "koan-cli", line
+        try:
+            args = parser.parse_args(argv[1:])
+        except SystemExit as exc:
+            raise AssertionError(f"--help example rejected by argparse: {line}") from exc
+        if getattr(args, "_builtin", None) is not None:
+            continue
+        try:
+            build_operation_request(args._operation, args, "http://localhost:8420")
+        except CliError as exc:
+            raise AssertionError(f"--help example builds no request: {line} ({exc})") from exc
+
+
+def test_help_examples_cover_every_command_group(api_spec_path):
+    """A new group must arrive with an example, or the epilog silently stays empty."""
+    operations = load_operations(load_spec(api_spec_path))
+    roots = {operation.command[0] for operation in operations}
+    assert roots <= set(GROUP_EXAMPLES), sorted(roots - set(GROUP_EXAMPLES))

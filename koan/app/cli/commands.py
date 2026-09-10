@@ -23,8 +23,8 @@ GROUP_EXAMPLES = {
     ],
     "projects": [
         "koan-cli projects list --pretty",
-        'koan-cli projects create --github_url https://github.com/acme/my-toolkit',
-        "koan-cli projects update my-toolkit",
+        "koan-cli projects create --github-url https://github.com/acme/my-toolkit",
+        "koan-cli projects update my-toolkit --patch '{\"focus\": true}'",
     ],
     "observability": [
         "koan-cli observability usage --days 30",
