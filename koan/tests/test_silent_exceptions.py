@@ -46,7 +46,7 @@ ALLOWLIST: Set[Tuple[str, str]] = {
 
 # Names that indicate diagnostic output when called as a function.
 _DIAG_CALL_NAMES: Set[str] = {
-    "print", "warn", "warning", "debug_log",
+    "print", "warn", "warning", "debug_log", "_log_runner", "log_safe",
 }
 
 # Attribute names that indicate diagnostic output (obj.method()).

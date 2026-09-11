@@ -7,13 +7,25 @@ import unittest
 os.environ.setdefault("KOAN_ROOT", "/tmp/test-koan")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from app.jira_notifications import markdown_to_adf
 from app.tracker_comment_format import (
     build_plan_comment_failure,
     build_plan_comment_success,
     build_pr_comment_failure,
     build_pr_comment_success,
+    flatten_github_markdown_for_jira,
     jira_readable_markdown,
 )
+
+
+def _walk_adf(value):
+    if isinstance(value, dict):
+        yield value
+        for child in value.get("content", []):
+            yield from _walk_adf(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _walk_adf(child)
 
 
 # ---------------------------------------------------------------------------
@@ -108,7 +120,30 @@ class TestStripMarkdownForJira(unittest.TestCase):
         result = jira_readable_markdown(md)
         assert "<summary>" not in result
         assert "Migration:" in result
-        assert "rest of step" in result
+
+
+class TestFlattenGitHubMarkdownForJira(unittest.TestCase):
+    def test_preserves_standard_markdown_while_removing_details_html(self):
+        result = flatten_github_markdown_for_jira(
+            "## Step\n<details><summary>Test code</summary>\n```python\npass\n```\n</details>"
+        )
+        assert "## Step" in result
+        assert "**Test code**" in result
+        assert "```python" in result
+        assert "<details>" not in result
+
+    def test_details_inside_a_code_fence_is_left_verbatim(self):
+        """`/plan` posts code examples; rewriting them corrupts the plan.
+
+        Only the GitHub `details` wrapper around content should be flattened —
+        the same text appearing *as* code must survive untouched.
+        """
+        result = flatten_github_markdown_for_jira(
+            "Example:\n\n```html\n<details><summary>x</summary>body</details>\n```\n"
+        )
+
+        assert "<details><summary>x</summary>body</details>" in result
+        assert "**x**" not in result
 
 
 # ---------------------------------------------------------------------------
@@ -130,15 +165,15 @@ class TestBuildPrCommentSuccessJira(unittest.TestCase):
 
     def test_basic_header(self):
         result = self._call()
-        assert "Koan update: Draft pull request created." in result
+        assert result.startswith("### Kōan · draft pull request created")
 
     def test_mission_from_skill_name(self):
         result = self._call(skill_name="implement")
-        assert "Mission: /implement" in result
+        assert "- **Mission**: `/implement`" in result
 
     def test_unknown_mission_when_empty_skill(self):
         result = self._call(skill_name="")
-        assert "Mission: (unknown)" in result
+        assert "- **Mission**: `(unknown)`" in result
 
     def test_pr_url_included(self):
         result = self._call()
@@ -146,15 +181,15 @@ class TestBuildPrCommentSuccessJira(unittest.TestCase):
 
     def test_pr_title_included(self):
         result = self._call(pr_title="fix: add index")
-        assert "PR title: fix: add index" in result
+        assert "[PR #42 — fix: add index]" in result
 
     def test_pr_title_omitted_when_empty(self):
         result = self._call(pr_title="")
-        assert "PR title:" not in result
+        assert "[PR #42](https://github.com/org/repo/pull/42)" in result
 
     def test_target_branch_included(self):
         result = self._call(base_branch="develop")
-        assert "Target branch: develop" in result
+        assert "- **Target branch**: `develop`" in result
 
     def test_target_branch_omitted_when_none(self):
         result = self._call(base_branch=None)
@@ -163,31 +198,31 @@ class TestBuildPrCommentSuccessJira(unittest.TestCase):
     def test_what_section_from_summary(self):
         body = "## Summary\n- Added foo\n- Fixed bar"
         result = self._call(pr_body=body)
-        assert "What changed:" in result
+        assert "**What changed**" in result
         assert "- Added foo" in result
         assert "- Fixed bar" in result
 
     def test_what_section_from_changes(self):
         body = "## Changes\n- Rewrote module"
         result = self._call(pr_body=body)
-        assert "What changed:" in result
+        assert "**What changed**" in result
         assert "- Rewrote module" in result
 
     def test_why_section(self):
         body = "## Why\nPerformance regression."
         result = self._call(pr_body=body)
-        assert "Why: Performance regression." in result
+        assert "**Why**\nPerformance regression." in result
 
     def test_how_section(self):
         body = "## How\n- Used caching\n- Added index"
         result = self._call(pr_body=body)
-        assert "How it was implemented:" in result
+        assert "**How it was implemented**" in result
         assert "- Used caching" in result
 
     def test_testing_section(self):
         body = "## Testing\n- Unit tests added\n- Manual QA"
         result = self._call(pr_body=body)
-        assert "Validation:" in result
+        assert "**Validation**" in result
         assert "- Unit tests added" in result
 
     def test_bullets_capped_at_eight(self):
@@ -199,13 +234,51 @@ class TestBuildPrCommentSuccessJira(unittest.TestCase):
 
     def test_next_section_present(self):
         result = self._call()
-        assert "Next:" in result
+        assert "**Next**" in result
         assert "Review the draft PR and merge when ready." in result
 
-    def test_no_markdown_formatting(self):
-        result = self._call(pr_body="## Summary\n- stuff")
-        assert "##" not in result
-        assert "```" not in result
+    def test_renders_structured_metadata_and_labelled_pr_link(self):
+        result = self._call(
+            pr_title="Repair widget validators",
+            pr_body="## Summary\n- Added regression coverage",
+            base_branch="140",
+        )
+        adf = markdown_to_adf(result)
+        nodes = list(_walk_adf(adf))
+
+        heading = adf["content"][0]
+        assert heading["type"] == "heading"
+        assert heading["attrs"]["level"] == 3
+        assert heading["content"][0]["text"] == (
+            "Kōan · draft pull request created"
+        )
+        assert any(node.get("type") == "bulletList" for node in nodes)
+
+        link = next(
+            node
+            for node in nodes
+            if any(mark["type"] == "link" for mark in node.get("marks", []))
+        )
+        assert link["text"] == "PR #42 — Repair widget validators"
+        assert link["marks"][0]["attrs"]["href"] == (
+            "https://github.com/org/repo/pull/42"
+        )
+
+        code_values = {
+            node["text"]
+            for node in nodes
+            if any(mark["type"] == "code" for mark in node.get("marks", []))
+        }
+        assert {"/fix", "140"} <= code_values
+
+    def test_pr_title_cannot_break_generated_link(self):
+        result = self._call(
+            pr_title="Fix [legacy] validation\nwithout coercion",
+        )
+        assert (
+            "[PR #42 — Fix (legacy) validation without coercion]"
+            "(https://github.com/org/repo/pull/42)"
+        ) in result
 
     def test_github_branch_uses_markdown(self):
         """Contrast: GitHub branch should use markdown headings."""
@@ -236,27 +309,27 @@ class TestBuildPrCommentFailureJira(unittest.TestCase):
 
     def test_basic_header(self):
         result = self._call()
-        assert "Koan update: Pull request creation failed." in result
+        assert result.startswith("### Kōan · pull request creation failed")
 
     def test_mission_name(self):
         result = self._call(skill_name="review")
-        assert "Mission: /review" in result
+        assert "- **Mission**: `/review`" in result
 
     def test_unknown_mission(self):
         result = self._call(skill_name="")
-        assert "Mission: (unknown)" in result
+        assert "- **Mission**: `(unknown)`" in result
 
     def test_reason_included(self):
         result = self._call(reason="Rate limit exceeded")
-        assert "Reason: Rate limit exceeded" in result
+        assert "- **Reason**: Rate limit exceeded" in result
 
     def test_reason_defaults_on_empty(self):
         result = self._call(reason="")
-        assert "Reason: Unknown error" in result
+        assert "- **Reason**: Unknown error" in result
 
     def test_branch_included(self):
         result = self._call(branch="koan/fix-auth")
-        assert "Current branch: koan/fix-auth" in result
+        assert "- **Current branch**: `koan/fix-auth`" in result
 
     def test_branch_omitted_when_empty(self):
         result = self._call(branch="")
@@ -264,7 +337,7 @@ class TestBuildPrCommentFailureJira(unittest.TestCase):
 
     def test_target_branch_included(self):
         result = self._call(base_branch="main")
-        assert "Target branch: main" in result
+        assert "- **Target branch**: `main`" in result
 
     def test_target_branch_omitted_when_none(self):
         result = self._call(base_branch=None)
@@ -272,14 +345,31 @@ class TestBuildPrCommentFailureJira(unittest.TestCase):
 
     def test_next_steps_present(self):
         result = self._call()
-        assert "Next:" in result
+        assert "**Next**" in result
         assert "Check branch state and repository permissions." in result
         assert "Re-run the mission after fixing the blocking issue." in result
 
-    def test_no_markdown_formatting(self):
-        result = self._call()
-        assert "##" not in result
-        assert "`" not in result
+    def test_renders_structured_failure_adf(self):
+        adf = markdown_to_adf(self._call(base_branch="main"))
+        nodes = list(_walk_adf(adf))
+
+        heading = adf["content"][0]
+        assert heading["type"] == "heading"
+        assert heading["attrs"] == {"level": 3}
+        assert heading["content"][0]["text"] == (
+            "Kōan · pull request creation failed"
+        )
+        assert any(node.get("type") == "bulletList" for node in nodes)
+        code_values = {
+            node["text"]
+            for node in nodes
+            if any(mark["type"] == "code" for mark in node.get("marks", []))
+        }
+        assert {"/fix", "koan/fix-widget", "main"} <= code_values
+        assert any(
+            any(mark["type"] == "strong" for mark in node.get("marks", []))
+            for node in nodes
+        )
 
     def test_github_branch_uses_markdown(self):
         result = build_pr_comment_failure(
@@ -299,17 +389,17 @@ class TestBuildPlanCommentSuccessJira(unittest.TestCase):
         result = build_plan_comment_success(
             "jira", "Plan: Widget Revamp", "## Steps\n- Do A\n- Do B"
         )
-        assert "Koan plan update" in result
-        assert "Title: Plan: Widget Revamp" in result
+        assert "## Plan: Widget Revamp" in result
         assert "Generated by Koan." in result
 
-    def test_body_stripped_of_markdown(self):
+    def test_body_keeps_markdown_for_rich_adf_conversion(self):
         result = build_plan_comment_success(
             "jira", "Plan", "## Overview\n**Bold text** and `code`"
         )
-        assert "##" not in result
-        assert "**" not in result
-        assert "`" not in result
+        assert "## Plan" in result
+        assert "## Overview" in result
+        assert "**Bold text**" in result
+        assert "`code`" in result
         assert "Bold text" in result
         assert "code" in result
 

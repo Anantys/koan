@@ -249,12 +249,28 @@ def submit_draft_pr(
                 try:
                     from app.jira_outcome_publish import upsert_jira_comment
 
-                    upsert_jira_comment(
+                    ok, reason = upsert_jira_comment(
                         issue_key, skill_name or "mission", body,
                     )
+                    if not ok:
+                        # `reason` distinguishes the two shapes of failure: a
+                        # `*_failed`/`lookup_failed` means nothing was posted,
+                        # while `*_unverified` means the comment *is* on the
+                        # issue but could not be re-identified afterwards. Both
+                        # need an operator's eyes, so log the reason verbatim
+                        # rather than asserting which one happened.
+                        logger.warning(
+                            "Jira comment upsert did not complete for %s: %s",
+                            issue_key, reason,
+                        )
                     return
                 except Exception as e:
-                    logger.debug("Failed to upsert Jira comment: %s", e)
+                    # An unhandled error leaves no status comment on the issue,
+                    # so it gets the same visibility as the `not ok` branch
+                    # above instead of hiding at debug level.
+                    logger.warning(
+                        "Jira comment upsert failed for %s: %s", issue_key, e,
+                    )
                     return
         try:
             from app.issue_tracker import add_comment

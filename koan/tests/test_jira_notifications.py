@@ -692,7 +692,59 @@ class TestJiraIssueHelpers:
 
         assert title == "Fix widget"
         assert "Details" in body
-        assert fetched_comments == [{"author": "Reviewer", "body": "Please fix"}]
+        assert fetched_comments == [{
+            "author": "Reviewer",
+            "body": "Please fix",
+            "properties": {},
+            "author_account_id": "",
+            "author_email": "",
+        }]
+
+    def test_fetch_jira_issue_preserves_rich_adf_and_updated_metadata(self):
+        from contextlib import ExitStack
+
+        from app.jira_notifications import fetch_jira_issue
+
+        issue = {"fields": {"summary": "Plan", "description": None}}
+        comments = {
+            "comments": [{
+                "author": {
+                    "displayName": "Koan",
+                    "accountId": "koan-account",
+                    "emailAddress": "koan@example.com",
+                },
+                "properties": [{"key": "koan.jira.plan", "value": {"revision": "abc"}}],
+                "updated": "2026-07-31T12:00:00.000+0000",
+                "body": {
+                    "type": "doc",
+                    "content": [
+                        {"type": "heading", "attrs": {"level": 2}, "content": [{"type": "text", "text": "Summary"}]},
+                        {"type": "codeBlock", "attrs": {"language": "python"}, "content": [{"type": "text", "text": "print('ok')"}]},
+                    ],
+                },
+            }],
+            "total": 1,
+        }
+
+        def get_side_effect(_base_url, _auth_header, path, _params=None):
+            return issue if path.endswith("/FOO-1") else comments
+
+        with ExitStack() as stack:
+            for cm in self._patch_enabled_config():
+                stack.enter_context(cm)
+            stack.enter_context(patch("app.jira_notifications._jira_get", side_effect=get_side_effect))
+            _title, _body, fetched_comments = fetch_jira_issue("FOO-1")
+
+        assert fetched_comments == [{
+            "author": "Koan",
+            "body": "## Summary\n\n```python\nprint('ok')\n```",
+            # Authorship evidence must survive the fetch: readers assembling a
+            # multipart plan need proof the plain-text footer cannot give them.
+            "properties": {"koan.jira.plan": {"revision": "abc"}},
+            "author_account_id": "koan-account",
+            "author_email": "koan@example.com",
+            "updated": "2026-07-31T12:00:00.000+0000",
+        }]
 
     def test_fetch_jira_issue_api_failure_raises(self):
         from contextlib import ExitStack
@@ -705,6 +757,30 @@ class TestJiraIssueHelpers:
             stack.enter_context(patch("app.jira_notifications._jira_get", return_value=None))
             with pytest.raises(RuntimeError, match="Failed to fetch"):
                 fetch_jira_issue("FOO-404")
+
+    def test_fetch_jira_issue_raises_when_comment_pagination_fails(self):
+        """A failed page must not masquerade as the end of the comment list.
+
+        `/implement` locates a (possibly multipart) plan in these comments; a
+        silently truncated list sends it back to stale issue-body content.
+        """
+        from contextlib import ExitStack
+
+        from app.jira_notifications import fetch_jira_issue
+
+        issue = {"fields": {"summary": "Plan", "description": None}}
+
+        def get_side_effect(_base_url, _auth_header, path, _params=None):
+            return issue if path.endswith("/FOO-1") else None
+
+        with ExitStack() as stack:
+            for cm in self._patch_enabled_config():
+                stack.enter_context(cm)
+            stack.enter_context(
+                patch("app.jira_notifications._jira_get", side_effect=get_side_effect)
+            )
+            with pytest.raises(RuntimeError, match="Failed to fetch comments"):
+                fetch_jira_issue("FOO-1")
 
     def test_jira_add_comment_posts_adf(self):
         from app.jira_notifications import jira_add_comment
@@ -719,6 +795,50 @@ class TestJiraIssueHelpers:
         assert payload["body"]["type"] == "doc"
         assert len(payload["body"]["content"]) == 2
 
+    def test_jira_add_comment_strips_html_comment_metadata(self):
+        from app.jira_notifications import jira_add_comment
+
+        with (
+            patch(
+                "app.jira_notifications._jira_auth_from_config",
+                return_value=("https://test", "Basic token"),
+            ),
+            patch(
+                "app.jira_notifications._jira_post",
+                return_value={"id": "1"},
+            ) as mock_post,
+        ):
+            assert jira_add_comment(
+                "FOO-1",
+                "Visible\n\n<!-- koan-jira-outcome:abc123 -->",
+            )
+
+        adf = mock_post.call_args.args[3]["body"]
+        assert "koan-jira-outcome" not in json.dumps(adf)
+        assert "Visible" in json.dumps(adf)
+
+    def test_jira_add_comment_includes_properties(self):
+        from app.jira_notifications import jira_add_comment
+
+        properties = [{
+            "key": "koan.jira.outcome",
+            "value": {"digest": "abc123", "command": "fix"},
+        }]
+        with (
+            patch(
+                "app.jira_notifications._jira_auth_from_config",
+                return_value=("https://test", "Basic token"),
+            ),
+            patch(
+                "app.jira_notifications._jira_post",
+                return_value={"id": "7"},
+            ) as mock_post,
+        ):
+            assert jira_add_comment("FOO-1", "body", properties=properties)
+
+        payload = mock_post.call_args.args[3]
+        assert payload == {"body": payload["body"], "properties": properties}
+
     def test_jira_edit_comment_posts_adf_via_put(self):
         from app.jira_notifications import jira_edit_comment
 
@@ -732,34 +852,30 @@ class TestJiraIssueHelpers:
         assert payload["body"]["type"] == "doc"
         assert "/rest/api/3/issue/FOO-1/comment/123" in mock_put.call_args.args[2]
 
-    def test_jira_list_comments_returns_id_and_body(self):
-        from app.jira_notifications import jira_list_comments
+    def test_jira_edit_comment_includes_properties(self):
+        from app.jira_notifications import jira_edit_comment
 
-        payload = {
-            "comments": [
-                {
-                    "id": "100",
-                    "body": {
-                        "type": "doc",
-                        "content": [
-                            {
-                                "type": "paragraph",
-                                "content": [{"type": "text", "text": "hello marker"}],
-                            },
-                        ],
-                    },
-                },
-            ],
-            "total": 1,
-        }
-
+        properties = [{
+            "key": "koan.jira.outcome",
+            "value": {"digest": "abc123", "command": "fix"},
+        }]
         with (
-            patch("app.jira_notifications._jira_auth_from_config", return_value=("https://test", "Basic token")),
-            patch("app.jira_notifications._jira_get", return_value=payload),
+            patch(
+                "app.jira_notifications._jira_auth_from_config",
+                return_value=("https://test", "Basic token"),
+            ),
+            patch(
+                "app.jira_notifications._jira_put",
+                return_value={"id": "7"},
+            ) as mock_put,
         ):
-            comments = jira_list_comments("FOO-1")
+            assert jira_edit_comment(
+                "FOO-1", "7", "body", properties=properties
+            )
 
-        assert comments == [{"id": "100", "body": "hello marker"}]
+        payload = mock_put.call_args.args[3]
+        assert payload == {"body": payload["body"], "properties": properties}
+
 
     def test_jira_create_issue_rejects_invalid_project_key(self):
         from app.jira_notifications import jira_create_issue
@@ -805,8 +921,8 @@ class TestJiraIssueHelpers:
         ]
         assert "strong" in marks
 
-    def test_jira_add_comment_stays_plain_text_adf(self):
-        """Comments must NOT be restructured by the rich converter (FR-009)."""
+    def test_jira_add_comment_uses_rich_markdown_adf(self):
+        """Comments retain their Markdown structure in Jira."""
         from app.jira_notifications import jira_add_comment
 
         body = "## Heading-looking line\n\n- bullet-looking line"
@@ -817,8 +933,7 @@ class TestJiraIssueHelpers:
             jira_add_comment("FOO-1", body)
 
         adf = mock_post.call_args.args[3]["body"]
-        # plain converter → only paragraph blocks, no heading/bulletList
-        assert {n["type"] for n in adf["content"]} == {"paragraph"}
+        assert {n["type"] for n in adf["content"]} == {"heading", "bulletList"}
 
     def test_jira_search_issues_rejects_unsafe_project_key(self):
         from app.jira_notifications import jira_search_issues
@@ -862,3 +977,272 @@ class TestJiraIssueHelpers:
 
         assert result == []
         mock_post.assert_not_called()
+
+
+def test_list_comments_rejects_a_shapeless_response():
+    """A JSON-valid `{}` must not read as "successfully fetched nothing".
+
+    That is the exact signal upsert callers use to decide it is safe to create.
+    """
+    from app.jira_notifications import _list_comments_result
+
+    with (
+        patch("app.jira_notifications._jira_auth_from_config",
+              return_value=("https://test", "Basic token")),
+        patch("app.jira_notifications._jira_get", return_value={}),
+    ):
+        ok, comments = _list_comments_result("FOO-1")
+
+    assert ok is False
+    assert comments == []
+
+
+def test_list_comments_accepts_a_genuinely_empty_page():
+    from app.jira_notifications import _list_comments_result
+
+    with (
+        patch("app.jira_notifications._jira_auth_from_config",
+              return_value=("https://test", "Basic token")),
+        patch("app.jira_notifications._jira_get",
+              return_value={"comments": [], "total": 0}),
+    ):
+        ok, comments = _list_comments_result("FOO-1")
+
+    assert ok is True
+    assert comments == []
+
+
+def test_list_comments_exposes_properties_by_key():
+    from app.jira_notifications import _list_comments_result
+
+    page = {
+        "comments": [{
+            "id": "7",
+            "body": {
+                "version": 1,
+                "type": "doc",
+                "content": [{
+                    "type": "paragraph",
+                    "content": [{"type": "text", "text": "body"}],
+                }],
+            },
+            "properties": [{
+                "key": "koan.jira.outcome",
+                "value": {"digest": "abc123", "command": "fix"},
+            }],
+        }],
+        "total": 1,
+    }
+    with (
+        patch(
+            "app.jira_notifications._jira_auth_from_config",
+            return_value=("https://test", "Basic token"),
+        ),
+        patch("app.jira_notifications._jira_get", return_value=page) as get,
+    ):
+        ok, comments = _list_comments_result("FOO-1")
+
+    assert ok is True
+    assert get.call_args.args[3]["expand"] == "properties"
+    assert comments[0]["properties"]["koan.jira.outcome"] == {
+        "digest": "abc123",
+        "command": "fix",
+    }
+
+
+@pytest.mark.parametrize("raw_properties", [None, {}, [None, {"value": 1}]])
+def test_list_comments_normalizes_malformed_properties(raw_properties):
+    from app.jira_notifications import _list_comments_result
+
+    page = {
+        "comments": [{
+            "id": "7",
+            "body": "body",
+            "properties": raw_properties,
+        }],
+        "total": 1,
+    }
+    with (
+        patch(
+            "app.jira_notifications._jira_auth_from_config",
+            return_value=("https://test", "Basic token"),
+        ),
+        patch("app.jira_notifications._jira_get", return_value=page),
+    ):
+        ok, comments = _list_comments_result("FOO-1")
+
+    assert ok is True
+    assert comments[0]["properties"] == {}
+
+
+def test_fetch_jira_issue_raises_on_a_shapeless_comment_page():
+    """A JSON-valid `{}` page must not read as "this issue has no comments".
+
+    /implement locates the plan here; silently dropping every comment sends it
+    back to stale issue-body content.
+    """
+    from contextlib import ExitStack
+
+    from app.jira_notifications import fetch_jira_issue
+
+    issue = {"fields": {"summary": "Plan", "description": None}}
+
+    def get_side_effect(_base_url, _auth_header, path, _params=None):
+        return issue if path.endswith("/FOO-1") else {}
+
+    with ExitStack() as stack:
+        for cm in TestJiraIssueHelpers()._patch_enabled_config():
+            stack.enter_context(cm)
+        stack.enter_context(
+            patch("app.jira_notifications._jira_get", side_effect=get_side_effect)
+        )
+        with pytest.raises(RuntimeError, match="Failed to fetch comments"):
+            fetch_jira_issue("FOO-1")
+
+
+def test_fetch_jira_issue_accepts_a_genuinely_empty_comment_page():
+    from contextlib import ExitStack
+
+    from app.jira_notifications import fetch_jira_issue
+
+    issue = {"fields": {"summary": "Plan", "description": None}}
+
+    def get_side_effect(_base_url, _auth_header, path, _params=None):
+        return issue if path.endswith("/FOO-1") else {"comments": [], "total": 0}
+
+    with ExitStack() as stack:
+        for cm in TestJiraIssueHelpers()._patch_enabled_config():
+            stack.enter_context(cm)
+        stack.enter_context(
+            patch("app.jira_notifications._jira_get", side_effect=get_side_effect)
+        )
+        _title, _body, comments = fetch_jira_issue("FOO-1")
+
+    assert comments == []
+
+
+def test_fetch_jira_issue_requests_comment_property_expansion():
+    from contextlib import ExitStack
+
+    from app.jira_notifications import fetch_jira_issue
+
+    issue = {"fields": {"summary": "Plan", "description": None}}
+    comment_params = {}
+
+    def get_side_effect(_base_url, _auth_header, path, params=None):
+        if path.endswith("/FOO-1"):
+            return issue
+        comment_params.update(params or {})
+        return {"comments": [], "total": 0}
+
+    with ExitStack() as stack:
+        for cm in TestJiraIssueHelpers()._patch_enabled_config():
+            stack.enter_context(cm)
+        stack.enter_context(
+            patch("app.jira_notifications._jira_get", side_effect=get_side_effect)
+        )
+        fetch_jira_issue("FOO-1")
+
+    assert comment_params["expand"] == "properties"
+
+
+
+def test_failed_self_identity_lookup_is_not_re_requested_per_comment():
+    """A `/myself` that never answers must cost one request, not one per comment.
+
+    Authorship is checked while scanning a comment listing, so re-issuing the
+    lookup on every failure turns an unreachable endpoint into a per-comment
+    30-second stall that outlives the mission timeout.
+    """
+    from contextlib import ExitStack
+
+    from app.jira_notifications import (
+        _SELF_IDENTITY_CACHE,
+        jira_comment_authored_by_self,
+    )
+
+    _SELF_IDENTITY_CACHE.clear()
+    try:
+        with ExitStack() as stack:
+            for cm in TestJiraIssueHelpers()._patch_enabled_config():
+                stack.enter_context(cm)
+            jira_get = stack.enter_context(
+                patch(
+                    "app.jira_notifications._jira_get",
+                    side_effect=RuntimeError("403 Forbidden"),
+                )
+            )
+            verdicts = [
+                jira_comment_authored_by_self({"author_account_id": f"acct-{i}"})
+                for i in range(20)
+            ]
+
+        assert verdicts == [None] * 20
+        assert jira_get.call_count == 1
+    finally:
+        _SELF_IDENTITY_CACHE.clear()
+
+
+def test_unusable_self_identity_payload_is_not_re_requested_per_comment():
+    """Same guarantee when Jira answers with a payload carrying no identity."""
+    from contextlib import ExitStack
+
+    from app.jira_notifications import (
+        _SELF_IDENTITY_CACHE,
+        jira_comment_authored_by_self,
+    )
+
+    _SELF_IDENTITY_CACHE.clear()
+    try:
+        with ExitStack() as stack:
+            for cm in TestJiraIssueHelpers()._patch_enabled_config():
+                stack.enter_context(cm)
+            jira_get = stack.enter_context(
+                patch("app.jira_notifications._jira_get", return_value={})
+            )
+            verdicts = [
+                jira_comment_authored_by_self({"author_account_id": f"acct-{i}"})
+                for i in range(20)
+            ]
+
+        assert verdicts == [None] * 20
+        assert jira_get.call_count == 1
+    finally:
+        _SELF_IDENTITY_CACHE.clear()
+
+
+def test_failed_self_identity_lookup_is_retried_after_the_backoff():
+    """A transient outage must not leave authorship unknowable until restart."""
+    from contextlib import ExitStack
+
+    from app.jira_notifications import (
+        _SELF_IDENTITY_CACHE,
+        _SELF_IDENTITY_RETRY_SECONDS,
+        jira_comment_authored_by_self,
+    )
+
+    _SELF_IDENTITY_CACHE.clear()
+    clock = [1000.0]
+    try:
+        with ExitStack() as stack:
+            for cm in TestJiraIssueHelpers()._patch_enabled_config():
+                stack.enter_context(cm)
+            stack.enter_context(
+                patch("app.jira_notifications.time.time", side_effect=lambda: clock[0])
+            )
+            jira_get = stack.enter_context(
+                patch(
+                    "app.jira_notifications._jira_get",
+                    side_effect=[
+                        RuntimeError("connection reset"),
+                        {"accountId": "koan-account"},
+                    ],
+                )
+            )
+            assert jira_comment_authored_by_self({"author_account_id": "koan-account"}) is None
+            clock[0] += _SELF_IDENTITY_RETRY_SECONDS + 1
+            assert jira_comment_authored_by_self({"author_account_id": "koan-account"}) is True
+
+        assert jira_get.call_count == 2
+    finally:
+        _SELF_IDENTITY_CACHE.clear()

@@ -4,7 +4,7 @@ title: "Kōan User Manual"
 description: "A tiered (beginner/intermediate/power-user) walkthrough of everything Kōan can do, from queuing your first mission through parallel sessions, deep exploration, and full configuration."
 tags: [users]
 created: 2026-05-28
-updated: 2026-09-09
+updated: 2026-09-11
 ---
 
 # Kōan User Manual
@@ -475,6 +475,8 @@ The master tracking issue then synthesizes the set with three optional sections:
 
 **`/plan`** — Deep-think an idea and produce a structured, task-level implementation plan as a tracker issue.
 
+For an existing Jira issue, Koan keeps one **current plan** comment, signed off with a `Koan current plan (rev …)` footer. A plan too big for one Jira comment becomes consecutive `Part N of M` comments linked with previous/next jump links — Jira's public API has no threaded replies — and shrinking a later plan retires the leftover parts. `/implement` reassembles such a plan before it starts work, joining the parts of the newest revision in numeric order; if some parts are missing it uses the ones available. It stages the generated plan locally, retries publishing three times, and reports success only after Jira hands that exact revision back on a read-back — so a write Jira accepted but never showed is reported as a failure rather than a ✅. If Jira remains unavailable the mission fails honestly, and the staged plan is retried on the next run without spending another model call to regenerate it; after three failed runs Koan drops the stage so the next `/plan` starts fresh.
+
 Plans include a **File Map** (table of every file to create/modify/test), **checkbox steps** within each phase (write test → implement → verify → commit), and **actual code blocks** in steps that change code. Each code block is wrapped in a collapsible `<details>` block so the plan stays scannable — readers see step descriptions first and expand the code only when needed. A built-in self-review pass checks spec coverage, scans for placeholders, and verifies name consistency across phases before output. Multi-subsystem ideas trigger a scope check suggesting separate plans per subsystem. Before posting, an advisory **assumptions audit** pressure-tests the plan's hidden assumptions and folds any unverified-critical ones into the plan's *Open Questions* section — so you can resolve them on the issue before `/implement` (which receives the same findings as "verify before coding" context; the audit never blocks either skill — toggle with `plan_review.assumptions_check`).
 
 - **Usage:** `/plan [--iterations N] <idea>`, `/plan <project> <idea>`, `/plan <issue-url>` (iterate on existing)
@@ -526,6 +528,8 @@ Use this before `/plan` when the idea is architecturally complex, when you want 
 </details>
 
 **`/implement`** — Queue an implementation mission for a GitHub or Jira issue. Never bails on ambiguity — resolves blockers with the simplest viable solution and retries once before surfacing a problem.
+
+For Jira plans split into `Part N of M` comments, `/implement` selects the newest verified plan generation and joins its available parts in numeric order before reviewing or implementing it. If it cannot verify a single part as Kōan's own — a tenant that drops comment properties plus a rotated API account, say — the plan text it works from opens with a warning naming the ignored parts, and the mission fails with "no plan found" when the issue holds no other plan text, rather than quietly implementing the pre-plan issue description.
 
 - **Usage:** `/implement <issue-url> [additional context]`
 - **Aliases:** `/impl`

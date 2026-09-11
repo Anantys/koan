@@ -531,11 +531,11 @@ class TestSubmitDraftPr:
             )
 
         comment_text = mock_upsert.call_args.args[2]
-        assert "Mission: /fix" in comment_text
-        assert "Pull request: https://pr/1" in comment_text
-        assert "Target branch: main" in comment_text
-        assert "What changed:" in comment_text
-        assert "Why: Needed for Jira flow" in comment_text
+        assert "- **Mission**: `/fix`" in comment_text
+        assert "- **Pull request**: [PR #1 — fix: bug](https://pr/1)" in comment_text
+        assert "- **Target branch**: `main`" in comment_text
+        assert "**What changed**" in comment_text
+        assert "**Why**\nNeeded for Jira flow" in comment_text
 
     def test_jira_push_failure_posts_failure_comment(self):
         notify = MagicMock()
@@ -556,6 +556,6 @@ class TestSubmitDraftPr:
         assert result is None
         notify.assert_called_once()
         comment_text = mock_upsert.call_args.args[2]
-        assert "Pull request creation failed" in comment_text
-        assert "Mission: /implement" in comment_text
+        assert comment_text.startswith("### Kōan · pull request creation failed")
+        assert "- **Mission**: `/implement`" in comment_text
         assert "auth denied" in comment_text

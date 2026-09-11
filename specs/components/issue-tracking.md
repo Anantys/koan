@@ -4,7 +4,7 @@ title: "Component Spec — Issue Tracking"
 description: "Design contract for the provider-neutral issue-tracker abstraction (GitHub/Jira) that routes fetch/comment/create calls through one service layer."
 tags: [issue-tracking]
 created: 2026-06-27
-updated: 2026-07-18
+updated: 2026-09-11
 ---
 
 # Component Spec — Issue Tracking
@@ -59,26 +59,81 @@ issue_cli.py          → CLI entry point (fetch/comment/create) used by prompts
   markdown subset (headings, unordered/ordered lists incl. `- [ ]`/`- [x]`,
   horizontal rules, blockquotes, fenced code, inline `**bold**`/`*em*`/`` `code` ``)
   into native ADF nodes; unmodeled lines degrade to a `paragraph` and empty input
-  yields one empty `paragraph` (matching the `_text_to_adf` fallback). This is the
-  **carve-out to the builder-layer rule below**: it applies to *issue
-  descriptions* only. Jira *comments* (`jira_add_comment`/`jira_edit_comment`)
-  stay on the plainer `_text_to_adf` path so human `/comment` blockquotes are never
-  mangled (FR-009 — no comment regression).
+  yields one empty `paragraph`. Jira *comments* (`jira_add_comment`/
+  `jira_edit_comment`) render through the **same** `markdown_to_adf` path: a plan
+  posted as flattened text loses the headings and code blocks `/implement` needs
+  to read back, so comments and descriptions share one renderer. This supersedes
+  the earlier FR-009 carve-out that pinned comments to `_text_to_adf`.
 - **Native master↔sub linkage is a Jira-only concern expressed through
   `link_issues`.** `brainstorm` links its master tracking issue to each created
   sub-issue via the neutral `link_issues` service; on Jira this creates real
   "Linked issues" relationships, on GitHub it is a no-op (`#N` refs + the master's
   task list already express the relationship). Linking is best-effort — a failed
   link is logged and skipped, never aborting issue creation.
-- **Jira-bound comment text is markdown-degraded at the builder layer, not the
-  transport layer.** `tracker_comment_format._flatten_github_alerts()` folds GitHub
-  `> [!TYPE]` alert blocks into plain `TYPE: text` before Jira output; it runs
-  inside `_strip_markdown_for_jira()` (plan comments) and the Jira branches of
-  `build_pr_comment_success/_failure` (PR comments). `jira_add_comment()` stays a
-  raw ADF poster so human `/comment` blockquotes are never mangled. The fold is
-  fence-aware (alert syntax inside a fenced code block is left verbatim) and
-  stops each block's body run at the next opener (adjacent blocks degrade
-  independently instead of merging).
+- **GitHub-only markdown extensions are folded at the transport layer, inside the
+  renderer.** `tracker_comment_format.flatten_github_markdown_for_jira()` runs from
+  `markdown_to_adf`, so every Jira-bound comment gets the same treatment however it
+  was built: `> [!TYPE]` alert blocks fold to plain `TYPE: text`, and GitHub
+  `<details>` wrappers are removed with their `<summary>` rendered as a visible
+  label. Both folds are **fence-aware** — alert syntax and `<details>` markup
+  inside a fenced code block are left verbatim, because there they are example
+  text the plan is trying to convey, not wrappers. Alert folding stops each
+  block's body run at the next opener (adjacent blocks degrade independently
+  instead of merging).
+- **Jira-bound text is sanitized and linked centrally.**
+  `markdown_to_adf()` removes HTML comments outside inline and fenced code,
+  preserves comment syntax inside those code scopes, and adds ADF `link`
+  marks to bare HTTP(S) URLs as well as explicit Markdown links. Outcome
+  templates express their heading, metadata list, section labels, code
+  values, and labelled PR link in Markdown; the transport remains the single
+  owner of ADF construction.
+- **Jira outcome identity survives a hostile transport.**
+  Mission-outcome comments carry the stable `(issue, command)` digest twice:
+  in the `koan.jira.outcome` comment property supplied atomically with comment
+  creation or update, and in a trailing visible `Kōan status · <digest>`
+  footer. Upsert matches on **either**. The property is the preferred key and
+  comment listing must return normalized properties so upsert can find the
+  existing status without inspecting prose — but it is an optimization, not
+  the identity. The footer is, because it is the only carrier the transport
+  cannot silently drop: HTML comments are stripped by the shared renderer, and
+  a Jira deployment that does not persist comment properties (or does not
+  honour `expand=properties` on the comment-list endpoint) would otherwise
+  leave the comment unfindable and stack one duplicate per mission. This is
+  the same reason `/plan` comments carry a visible `Koan current plan (rev …)`
+  footer.
+  Because that footer is plain text anyone can reproduce by quoting the tail of
+  a status, it identifies the status comment only together with **authorship**,
+  under the same rule the `/plan` path applies: the `koan.jira.outcome` property
+  is proof wherever it appears, and a comment without it is judged on Jira's own
+  attribution. The listing decides the *bar*, never eligibility — one
+  property-carrying comment must not disqualify the rest, or a status published
+  before properties existed becomes unrecognizable and is duplicated instead of
+  migrated.
+  An upsert overwrites a comment body outright, so the attribution fallback must
+  demand **proof** — Jira naming Koan's own account — and not merely the absence
+  of a foreign one. "Cannot tell who wrote this" is "not mine" for every
+  body-replacing write, so the guarantee that a reviewer's quoted footer is
+  never what Koan edits holds even on a tenant whose self-identity lookup
+  fails; the cost is a duplicate comment, which is recoverable, instead of a
+  destroyed human comment, which is not. Read-only matching may stay lenient
+  only while no comment on the issue carries the property; once one does, an
+  unattributable comment without it is not Koan's either.
+  Legacy `<!-- koan-jira-outcome:… -->` markers are lookup-only migration
+  inputs subject to the same authorship guard: the next update removes the
+  marker and writes the footer plus the property. Lookup failure remains
+  fail-closed and must never authorize creation of a potentially duplicate
+  comment. A write is only reported as published once a read-back observes one
+  of the two identities on a comment Koan can prove it wrote — the same bar the
+  next upsert applies, so verification never certifies an identity the next run
+  would refuse to act on; an accepted write that left neither is reported as
+  unverified rather than as success, and a quoted footer elsewhere on the issue
+  does not satisfy it.
+- **Every Jira comment read carries its authorship evidence.** Both comment-read
+  paths — the notification-side listing and the full issue fetch — normalize
+  `expand=properties` into a `{key: value}` map and surface the author's
+  account id and email alongside the body. Readers decide whether a comment is
+  Koan's own before acting on its contents, and a fetch shape that drops that
+  evidence silently downgrades every such decision to trusting prose.
 
 ## Integration points
 

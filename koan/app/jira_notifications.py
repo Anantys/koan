@@ -16,7 +16,7 @@ import time
 from base64 import b64encode
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from app.bounded_set import BoundedSet
 
@@ -189,6 +189,92 @@ def _adf_to_text(node: Any) -> str:
     return " ".join(parts)
 
 
+def _adf_inline_to_markdown(nodes: Any) -> str:
+    """Render inline ADF text nodes as the Markdown subset Koan emits."""
+    if not isinstance(nodes, list):
+        return ""
+    rendered: List[str] = []
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        if node.get("type") == "hardBreak":
+            rendered.append("\n")
+            continue
+        if node.get("type") == "mention":
+            rendered.append(str(node.get("attrs", {}).get("text", "")))
+            continue
+        if node.get("type") != "text":
+            continue
+        text = str(node.get("text", ""))
+        marks = {mark.get("type"): mark for mark in node.get("marks", [])}
+        if "code" in marks:
+            text = f"`{text}`"
+        if "strong" in marks:
+            text = f"**{text}**"
+        if "em" in marks:
+            text = f"*{text}*"
+        link = marks.get("link")
+        if link:
+            href = str(link.get("attrs", {}).get("href", ""))
+            if href and text != href:
+                text = f"[{text}]({href})"
+        rendered.append(text)
+    return "".join(rendered)
+
+
+def _adf_to_markdown(node: Any) -> str:
+    """Render Jira ADF as Markdown for tracker skill context.
+
+    This is deliberately separate from :func:`_adf_to_text`: mention polling
+    must ignore code, while plan extraction needs headings and code intact.
+    """
+    if not node:
+        return ""
+    if isinstance(node, list):
+        return "\n\n".join(filter(None, (_adf_to_markdown(item) for item in node)))
+    if not isinstance(node, dict):
+        return str(node)
+
+    node_type = node.get("type", "")
+    content = node.get("content", [])
+    if node_type == "text":
+        return _adf_inline_to_markdown([node])
+    if node_type in ("doc", "listItem"):
+        return _adf_to_markdown(content)
+    if node_type == "paragraph":
+        return _adf_inline_to_markdown(content)
+    if node_type == "heading":
+        level = max(1, min(6, int(node.get("attrs", {}).get("level", 1))))
+        return f"{'#' * level} {_adf_inline_to_markdown(content)}".rstrip()
+    if node_type == "codeBlock":
+        language = str(node.get("attrs", {}).get("language", ""))
+        return f"```{language}\n{_adf_inline_to_markdown(content)}\n```"
+    if node_type == "rule":
+        return "---"
+    if node_type == "blockquote":
+        body = _adf_to_markdown(content)
+        return "\n".join(f"> {line}" if line else ">" for line in body.splitlines())
+    if node_type in ("bulletList", "orderedList"):
+        lines: List[str] = []
+        for index, item in enumerate(content, 1):
+            item_body = _adf_to_markdown(item).replace("\n\n", "\n")
+            prefix = "- " if node_type == "bulletList" else f"{index}. "
+            lines.append(prefix + item_body)
+        return "\n".join(lines)
+    if node_type == "table":
+        rows: List[str] = []
+        for index, row in enumerate(content):
+            cells = [
+                _adf_to_markdown(cell).replace("\n", " ")
+                for cell in row.get("content", [])
+            ]
+            rows.append("| " + " | ".join(cells) + " |")
+            if index == 0:
+                rows.append("| " + " | ".join("---" for _ in cells) + " |")
+        return "\n".join(rows)
+    return _adf_to_markdown(content)
+
+
 def _text_to_adf(text: str) -> Dict[str, Any]:
     """Convert plain markdown-ish text to a simple Jira ADF document."""
     lines = (text or "").splitlines() or [""]
@@ -222,14 +308,231 @@ _MD_OLIST_RE = re.compile(r"^\s*\d+\.\s+(.*)$")
 _MD_RULE_RE = re.compile(r"^\s*([-*_])\1{2,}\s*$")
 _MD_FENCE_RE = re.compile(r"^\s*```(.*)$")
 _MD_QUOTE_RE = re.compile(r"^\s*>\s?(.*)$")
+_MD_INDENTED_CODE_RE = re.compile(r"^(?: {4}|\t)(.*)$")
+_MD_TABLE_DELIMITER_CELL_RE = re.compile(r"^:?-{3,}:?$")
+_BARE_URL_RE = re.compile(r"https?://[^\s<]+")
+_TRAILING_URL_PUNCTUATION = ".,;:!?"
 _MD_INLINE_RE = re.compile(
-    r"(?P<code>`[^`]+`)"
+    r"(?P<link>\[(?P<link_text>[^\]]+)\]\((?P<link_url>[^\s)]+)(?:\s+\"[^\"]*\")?\))"
+    r"|(?P<code>`[^`]+`)"
+    r"|(?P<bare_url>https?://[^\s<]+)"
     r"|(?P<bold>\*\*[^*]+\*\*)"
     # Underscore emphasis must be flanked by non-word boundaries so intra-word
     # underscores (snake_case identifiers, file paths like ``my_module.py``) are
     # left literal — matching CommonMark. Asterisk emphasis stays intra-word.
     r"|(?P<em>\*[^*\s][^*]*\*|(?<!\w)_[^_\s][^_]*_(?!\w))"
 )
+
+
+def _strip_html_comments_outside_code(text: str) -> str:
+    """Remove HTML comments except when they are literal code content."""
+    if not text:
+        return ""
+
+    lines = text.splitlines(keepends=True)
+    # A closer only counts when it is reachable as prose: a `-->` sitting inside
+    # a later code block does not close an earlier stray `<!--`, and treating it
+    # as one would delete every visible line up to that code block.
+    closer_after_line = [False] * len(lines)
+    closer_seen = False
+    for index in range(len(lines) - 1, -1, -1):
+        closer_after_line[index] = closer_seen
+        if _MD_FENCE_RE.match(lines[index]):
+            closer_seen = False
+        elif "-->" in lines[index]:
+            closer_seen = True
+
+    output: List[str] = []
+    in_fence = False
+    in_comment = False
+    in_indented_code = False
+    prev_blank = True
+
+    for line_number, raw_line in enumerate(lines):
+        body = raw_line.rstrip("\r\n")
+        ending = raw_line[len(body):]
+        inline_ticks = 0
+        was_blank, prev_blank = prev_blank, not body.strip()
+
+        if _MD_FENCE_RE.match(body):
+            # A fence terminates an open comment rather than being swallowed by
+            # it: a stray `<!--` in prose must never eat the code block below.
+            in_comment = False
+            in_fence = not in_fence
+            in_indented_code = False
+            output.append(raw_line)
+            continue
+
+        if in_fence:
+            output.append(raw_line)
+            continue
+
+        # `markdown_to_adf` renders indented blocks as code, so a marker shown
+        # as an indented example is content, not hidden metadata — stripping it
+        # would empty the very code block it illustrates. A blank line keeps an
+        # open block open (as CommonMark does); ordinary prose closes it.
+        if not in_comment and body.strip():
+            if _MD_INDENTED_CODE_RE.match(body) and (in_indented_code or was_blank):
+                in_indented_code = True
+                output.append(raw_line)
+                continue
+            in_indented_code = False
+
+        i = 0
+        while i < len(body):
+            if in_comment:
+                close = body.find("-->", i)
+                if close == -1:
+                    i = len(body)
+                    continue
+                in_comment = False
+                i = close + 3
+                continue
+
+            if body[i] == "`":
+                end = i + 1
+                while end < len(body) and body[end] == "`":
+                    end += 1
+                tick_count = end - i
+                if inline_ticks == 0:
+                    inline_ticks = tick_count
+                elif tick_count == inline_ticks:
+                    inline_ticks = 0
+                output.append(body[i:end])
+                i = end
+                continue
+
+            if inline_ticks == 0 and body.startswith("<!--", i):
+                if "-->" not in body[i + 4:] and not closer_after_line[line_number]:
+                    # An opener with no closer anywhere is not a comment, so it
+                    # is not metadata to hide: keep the rest of the line verbatim
+                    # rather than deleting prose the author meant to publish.
+                    output.append(body[i:])
+                    i = len(body)
+                    continue
+                in_comment = True
+                i += 4
+                continue
+
+            output.append(body[i])
+            i += 1
+
+        output.append(ending)
+
+    return "".join(output)
+
+
+def _normalise_jira_markdown(text: str) -> str:
+    """Sanitize shared Jira Markdown and flatten GitHub-only extensions.
+
+    Jira's ADF schema has no collapsible ``details`` node and does not
+    understand GitHub alert syntax.  Keep the useful content, but remove only
+    those wrappers before the standard Markdown parser sees the text.
+    """
+    from app.tracker_comment_format import flatten_github_markdown_for_jira
+
+    sanitized = _strip_html_comments_outside_code(text or "")
+    return flatten_github_markdown_for_jira(sanitized)
+
+
+def _split_table_row(line: str) -> List[str]:
+    """Split a simple GFM table row, preserving escaped pipe characters."""
+    stripped = line.strip()
+    if stripped.startswith("|"):
+        stripped = stripped[1:]
+    if stripped.endswith("|") and not stripped.endswith("\\|"):
+        stripped = stripped[:-1]
+
+    cells: List[str] = []
+    current: List[str] = []
+    escaped = False
+    for char in stripped:
+        if char == "|" and not escaped:
+            cells.append("".join(current).strip())
+            current = []
+            continue
+        if char == "\\" and not escaped:
+            escaped = True
+            current.append(char)
+            continue
+        escaped = False
+        current.append(char)
+    cells.append("".join(current).strip())
+    return cells
+
+
+def _is_table_delimiter(line: str, column_count: int) -> bool:
+    cells = _split_table_row(line)
+    return len(cells) == column_count and all(
+        _MD_TABLE_DELIMITER_CELL_RE.fullmatch(cell.replace(" ", ""))
+        for cell in cells
+    )
+
+
+def _adf_table_row(cells: List[str], header: bool) -> Dict[str, Any]:
+    cell_type = "tableHeader" if header else "tableCell"
+    return {
+        "type": "tableRow",
+        "content": [
+            {
+                "type": cell_type,
+                "content": [{"type": "paragraph", "content": _inline_to_adf(cell)}],
+            }
+            for cell in cells
+        ],
+    }
+
+
+def _split_bare_url_suffix(value: str) -> Tuple[str, str]:
+    """Separate prose punctuation from a detected URL."""
+    url = value
+    suffix = ""
+    while url and url[-1] in _TRAILING_URL_PUNCTUATION:
+        suffix = url[-1] + suffix
+        url = url[:-1]
+    for opener, closer in (("(", ")"), ("[", "]")):
+        while url.endswith(closer) and url.count(closer) > url.count(opener):
+            suffix = closer + suffix
+            url = url[:-1]
+    return url, suffix
+
+
+def _append_bare_url(
+    nodes: List[Dict[str, Any]],
+    value: str,
+    inherited_marks: Optional[List[Dict[str, Any]]] = None,
+) -> None:
+    url, suffix = _split_bare_url_suffix(value)
+    marks = list(inherited_marks or [])
+    if url:
+        nodes.append({
+            "type": "text",
+            "text": url,
+            "marks": marks + [{"type": "link", "attrs": {"href": url}}],
+        })
+    if suffix:
+        suffix_node: Dict[str, Any] = {"type": "text", "text": suffix}
+        if marks:
+            suffix_node["marks"] = marks
+        nodes.append(suffix_node)
+
+
+def _emphasized(value: str, mark_type: str) -> List[Dict[str, Any]]:
+    """Render emphasized content, keeping links inside it clickable.
+
+    The emphasis alternatives match the whole run, so without re-parsing the
+    content a link wrapped in emphasis — the Kōan footer, for one — renders as
+    literal ``[text](url)`` text.
+    """
+    mark = {"type": mark_type}
+    nodes = _inline_to_adf(value)
+    if not nodes:
+        return [{"type": "text", "text": value, "marks": [mark]}]
+    for node in nodes:
+        node["marks"] = [mark] + [
+            m for m in node.get("marks", []) if m.get("type") != mark_type
+        ]
+    return nodes
 
 
 def _inline_to_adf(text: str) -> List[Dict[str, Any]]:
@@ -250,18 +553,18 @@ def _inline_to_adf(text: str) -> List[Dict[str, Any]]:
                 "text": match.group("code")[1:-1],
                 "marks": [{"type": "code"}],
             })
+        elif match.group("link"):
+            nodes.append({
+                "type": "text",
+                "text": match.group("link_text"),
+                "marks": [{"type": "link", "attrs": {"href": match.group("link_url")}}],
+            })
+        elif match.group("bare_url"):
+            _append_bare_url(nodes, match.group("bare_url"))
         elif match.group("bold"):
-            nodes.append({
-                "type": "text",
-                "text": match.group("bold")[2:-2],
-                "marks": [{"type": "strong"}],
-            })
+            nodes.extend(_emphasized(match.group("bold")[2:-2], "strong"))
         else:  # em
-            nodes.append({
-                "type": "text",
-                "text": match.group("em")[1:-1],
-                "marks": [{"type": "em"}],
-            })
+            nodes.extend(_emphasized(match.group("em")[1:-1], "em"))
         pos = match.end()
     if pos < len(text):
         nodes.append({"type": "text", "text": text[pos:]})
@@ -297,11 +600,10 @@ def markdown_to_adf(text: str) -> Dict[str, Any]:
 
     Any line that matches none of the above degrades to paragraph text, so
     unmodeled markdown is readable rather than dropped. Empty input yields a
-    ``doc`` with a single empty paragraph (mirrors :func:`_text_to_adf`).
-    This is a superset of ``_text_to_adf`` and is used for issue descriptions;
-    comments deliberately keep the plainer converter.
+    ``doc`` with a single empty paragraph.  The converter is used for both
+    Jira issue descriptions and comments.
     """
-    lines = (text or "").splitlines()
+    lines = _normalise_jira_markdown(text).splitlines()
     content: List[Dict[str, Any]] = []
     paragraph: List[str] = []
 
@@ -339,6 +641,53 @@ def markdown_to_adf(text: str) -> Dict[str, Any]:
             content.append(node)
             continue
 
+        # CommonMark: an indented code block cannot interrupt a paragraph, and
+        # indented text under a list is that item's continuation. Without both
+        # guards, ordinary wrapped prose and nested bullets render as code —
+        # and every Jira comment Koan posts now goes through this renderer.
+        # A whitespace-only line matches the indent rule but is a blank line,
+        # not code: let it fall through to the blank-line handler below.
+        indented_code = (
+            _MD_INDENTED_CODE_RE.match(line)
+            if line.strip()
+            and not paragraph
+            and not (content and content[-1].get("type") in ("bulletList", "orderedList"))
+            else None
+        )
+        if indented_code:
+            flush_paragraph()
+            code_lines: List[str] = []
+            while i < len(lines):
+                indented_code = _MD_INDENTED_CODE_RE.match(lines[i])
+                if indented_code:
+                    code_lines.append(lines[i])
+                    i += 1
+                    continue
+                if not lines[i].strip() and i + 1 < len(lines) and _MD_INDENTED_CODE_RE.match(lines[i + 1]):
+                    code_lines.append("")
+                    i += 1
+                    continue
+                break
+            # A line of nothing but spaces matches the indent rule too, so the
+            # collected block can be entirely blank — `default` keeps that from
+            # raising ValueError and blaming Jira for an unpublishable comment.
+            indent = min(
+                (
+                    len(code_line) - len(code_line.lstrip(" \t"))
+                    for code_line in code_lines if code_line.strip()
+                ),
+                default=0,
+            )
+            code_text = "\n".join(
+                code_line[indent:] if code_line.strip() else ""
+                for code_line in code_lines
+            )
+            node = {"type": "codeBlock"}
+            if code_text:
+                node["content"] = [{"type": "text", "text": code_text}]
+            content.append(node)
+            continue
+
         if not line.strip():
             flush_paragraph()
             i += 1
@@ -348,6 +697,30 @@ def markdown_to_adf(text: str) -> Dict[str, Any]:
             flush_paragraph()
             content.append({"type": "rule"})
             i += 1
+            continue
+
+        # A table is a header row followed immediately by a GFM delimiter row.
+        # Preserve malformed tables as paragraphs rather than risking data loss.
+        header_cells = _split_table_row(line) if "|" in line else []
+        if (
+            len(header_cells) > 1
+            and i + 1 < len(lines)
+            and _is_table_delimiter(lines[i + 1], len(header_cells))
+        ):
+            flush_paragraph()
+            rows = [_adf_table_row(header_cells, header=True)]
+            i += 2
+            while i < len(lines) and "|" in lines[i]:
+                cells = _split_table_row(lines[i])
+                if len(cells) != len(header_cells):
+                    break
+                rows.append(_adf_table_row(cells, header=False))
+                i += 1
+            content.append({
+                "type": "table",
+                "attrs": {"isNumberColumnEnabled": False, "layout": "default"},
+                "content": rows,
+            })
             continue
 
         heading = _MD_HEADING_RE.match(line)
@@ -786,6 +1159,22 @@ def _get_issue_comments(
     return comments
 
 
+def _normalize_comment_properties(raw_properties: Any) -> Dict[str, Any]:
+    """Flatten Jira's ``[{"key": ..., "value": ...}]`` expansion into a dict.
+
+    Anything that is not a well-formed, non-empty-keyed entry is dropped: a
+    malformed expansion must read as "no properties", never as a key a caller
+    could mistake for authorship proof.
+    """
+    if not isinstance(raw_properties, list):
+        return {}
+    return {
+        str(item["key"]): item.get("value")
+        for item in raw_properties
+        if isinstance(item, dict) and str(item.get("key", "")).strip()
+    }
+
+
 def fetch_jira_issue(
     issue_key: str,
 ) -> Tuple[str, str, List[dict]]:
@@ -833,9 +1222,9 @@ def fetch_jira_issue(
     fields = data.get("fields", {})
     title = fields.get("summary", "")
 
-    # Description is ADF (Atlassian Document Format) on Jira Cloud
+    # Preserve Markdown structure for plan/implementation skill context.
     desc_node = fields.get("description")
-    body = _adf_to_text(desc_node) if desc_node else ""
+    body = _adf_to_markdown(desc_node) if desc_node else ""
 
     # Fetch all comments (no time filter — we want full context)
     all_comments = []
@@ -847,33 +1236,57 @@ def fetch_jira_issue(
             "startAt": start_at,
             "maxResults": max_results,
             "orderBy": "created",
+            "expand": "properties",
         }
         cdata = _jira_get(
             base_url, auth_header,
             f"/rest/api/3/issue/{issue_key}/comment",
             params,
         )
-        if not cdata or not isinstance(cdata, dict):
-            break
+        # Truncating here would look identical to "that was the last page".
+        # Callers use these comments to locate a plan — a partial list makes
+        # `/implement` fall back to stale issue-body content believing it saw
+        # everything. Fail the fetch the way a bad issue GET does. A shapeless
+        # but JSON-valid page ({}, or `comments` not a list) is a failure too:
+        # it is indistinguishable from a genuinely empty issue otherwise.
+        if not isinstance(cdata, dict) or not isinstance(cdata.get("comments"), list):
+            raise RuntimeError(
+                f"Failed to fetch comments for Jira issue {issue_key} "
+                f"(page at startAt={start_at})"
+            )
 
-        batch = cdata.get("comments", [])
+        batch = cdata["comments"]
         if not batch:
             break
 
         for comment in batch:
-            author_data = comment.get("author", {})
+            author_data = comment.get("author")
+            if not isinstance(author_data, dict):
+                author_data = {}
             author_name = (
                 author_data.get("displayName")
                 or author_data.get("emailAddress")
                 or "unknown"
             )
             comment_body_node = comment.get("body")
-            comment_text = _adf_to_text(comment_body_node) if comment_body_node else ""
+            comment_text = _adf_to_markdown(comment_body_node) if comment_body_node else ""
             if comment_text.strip():
-                all_comments.append({
+                entry = {
                     "author": author_name,
                     "body": comment_text,
-                })
+                    # Authorship evidence, not decoration: readers that treat a
+                    # comment as one of Koan's own plan parts need proof the
+                    # trailing footer cannot give them — a human can reproduce
+                    # the footer by quoting the tail of a plan.
+                    "properties": _normalize_comment_properties(
+                        comment.get("properties")
+                    ),
+                    "author_account_id": str(author_data.get("accountId") or ""),
+                    "author_email": str(author_data.get("emailAddress") or ""),
+                }
+                if comment.get("updated"):
+                    entry["updated"] = str(comment["updated"])
+                all_comments.append(entry)
 
         total = cdata.get("total", 0)
         start_at += len(batch)
@@ -945,20 +1358,160 @@ def _jira_auth_from_config() -> Tuple[str, str]:
     return base_url, _make_auth_header(email, api_token)
 
 
-def jira_add_comment(issue_key: str, body_text: str) -> bool:
-    """Post a plain-text/markdown comment to a Jira issue."""
+_SELF_IDENTITY_CACHE: Dict[str, str] = {}
+# How long a *failed* identity lookup is remembered. Long enough that an
+# unreachable `/myself` costs one request instead of one per comment, short
+# enough that a transient outage does not leave authorship unknowable for the
+# rest of the daemon's life. A successful lookup is cached without expiry.
+_SELF_IDENTITY_RETRY_SECONDS = 300
+
+
+def jira_self_identity() -> Tuple[str, str]:
+    """Return the ``(account_id, email)`` Koan comments as, ``("", "")`` if unknown.
+
+    Cached for the process: it is one extra round-trip and the answer is the
+    credential in ``config.yaml``, which cannot change under a running daemon.
+    Jira Cloud hides ``emailAddress`` on most accounts, so ``accountId`` is the
+    identity that actually resolves; the email is a fallback for Server/DC.
+
+    Failures are cached too, briefly. Callers ask per comment — authorship is
+    checked while scanning a whole comment listing — so a Jira whose ``/myself``
+    is forbidden or hanging would otherwise cost one 30-second request per
+    comment and stall the mission instead of degrading to "authorship unknown".
+    """
+    account_id = _SELF_IDENTITY_CACHE.get("account_id", "")
+    email = _SELF_IDENTITY_CACHE.get("email", "")
+    if account_id or email:
+        return account_id, email
+    failed_at = float(_SELF_IDENTITY_CACHE.get("failed_at") or 0)
+    if failed_at and time.time() - failed_at < _SELF_IDENTITY_RETRY_SECONDS:
+        return "", ""
+
+    data: Any = None
+    try:
+        base_url, auth_header = _jira_auth_from_config()
+        data = _jira_get(base_url, auth_header, "/rest/api/3/myself")
+    except Exception as e:
+        log.warning("Jira self-identity lookup failed: %s", e)
+    if isinstance(data, dict):
+        account_id = str(data.get("accountId") or "")
+        email = str(data.get("emailAddress") or "")
+    if account_id or email:
+        _SELF_IDENTITY_CACHE.update({"account_id": account_id, "email": email})
+    else:
+        _SELF_IDENTITY_CACHE["failed_at"] = str(time.time())
+    return account_id, email
+
+
+def jira_comment_authored_by_self(comment: dict) -> Optional[bool]:
+    """Whether Koan's own Jira account wrote ``comment`` — ``None`` if unknowable.
+
+    The tri-state matters: callers that are about to overwrite a comment body
+    must treat "cannot tell" as "not mine", while a read-only lookup can stay
+    permissive.
+    """
+    comment_account = str(comment.get("author_account_id") or "")
+    comment_email = str(comment.get("author_email") or "")
+    # Nothing to compare against — don't spend a `/myself` round trip (or log a
+    # config warning) on a comment that came from a non-Jira tracker.
+    if not comment_account and not comment_email:
+        return None
+    account_id, email = jira_self_identity()
+    if account_id and comment_account:
+        return account_id == comment_account
+    if email and comment_email:
+        return email.strip().lower() == comment_email.strip().lower()
+    return None
+
+
+def koan_authorship_check(
+    comments,
+    property_key: str,
+    strict: bool = False,
+) -> Callable[[dict], bool]:
+    """Return "did Koan write this comment?" for one issue's comment listing.
+
+    The predicate is built from the whole listing because the strongest
+    available evidence depends on it. A Jira comment entity property is proof —
+    it cannot be produced from the comment editor, only through the REST comment
+    payload — so a comment carrying ``property_key`` always counts.
+
+    A comment *without* the property still gets Jira's own authorship test: one
+    property-carrying comment must not disqualify the rest of the listing, or a
+    legacy comment written before properties existed becomes unrecognisable and
+    is duplicated instead of migrated. What the rest of the listing decides is
+    how much that test has to prove:
+
+    - Nothing on the issue carries ``property_key`` and ``strict=False``
+      (read-only matching): only comments Jira positively attributes to someone
+      else are excluded — "cannot tell" stays admissible, because a Jira
+      deployment may drop properties on write or ignore ``expand=properties``
+      when listing, and Koan must still recognise the comment it published.
+    - ``strict=True``, or any comment on the issue carries ``property_key``:
+      authorship must be *proven*, per
+      :func:`jira_comment_authored_by_self`'s contract. A caller about to
+      *replace a comment body* must treat "cannot tell" as "not mine", because
+      a tenant whose ``/myself`` is unreachable would otherwise let a
+      reviewer's quoted footer select their comment for the overwrite; and once
+      properties demonstrably survive on this issue, an unattributable comment
+      lacking one is not Koan's either. The cost of refusing is a duplicate
+      comment, which is recoverable; the cost of guessing is a destroyed human
+      comment, which is not.
+
+    Callers pair this with their own body marker: authorship answers "is this
+    ours?", the marker answers "which one is it?". Never overwrite a comment
+    body on the marker alone — the markers are plain text a reviewer reproduces
+    by quoting the tail of a comment Koan wrote.
+    """
+    def carries_property(comment: dict) -> bool:
+        properties = comment.get("properties")
+        return isinstance(properties, dict) and property_key in properties
+
+    if strict or any(carries_property(comment) for comment in comments or []):
+        return lambda comment: (
+            carries_property(comment)
+            or jira_comment_authored_by_self(comment) is True
+        )
+    return lambda comment: jira_comment_authored_by_self(comment) is not False
+
+
+def _jira_comment_payload(
+    body_text: str,
+    properties: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {"body": markdown_to_adf(body_text)}
+    if properties is not None:
+        payload["properties"] = properties
+    return payload
+
+
+def jira_add_comment(
+    issue_key: str,
+    body_text: str,
+    properties: Optional[List[Dict[str, Any]]] = None,
+) -> bool:
+    """Post a Markdown comment as native Jira ADF."""
     base_url, auth_header = _jira_auth_from_config()
     result = _jira_post(
         base_url,
         auth_header,
         f"/rest/api/3/issue/{issue_key}/comment",
-        {"body": _text_to_adf(body_text)},
+        _jira_comment_payload(body_text, properties),
     )
     return result is not None
 
 
-def jira_list_comments(issue_key: str) -> List[dict]:
-    """Fetch all comments for a Jira issue (id + extracted plain text body)."""
+class JiraCommentFetchError(RuntimeError):
+    """Raised when Jira's comment listing could not be retrieved."""
+
+
+def _list_comments_result(issue_key: str) -> Tuple[bool, List[dict]]:
+    """Fetch all comments for an issue, reporting whether the API call worked.
+
+    Returns ``(ok, comments)``. ``ok`` is False when Jira did not answer with a
+    usable payload, which callers must not confuse with "the issue has no
+    comments" — both look like an empty list.
+    """
     base_url, auth_header = _jira_auth_from_config()
     all_comments: List[dict] = []
     start_at = 0
@@ -969,6 +1522,7 @@ def jira_list_comments(issue_key: str) -> List[dict]:
             "startAt": start_at,
             "maxResults": max_results,
             "orderBy": "created",
+            "expand": "properties",
         }
         data = _jira_get(
             base_url,
@@ -976,10 +1530,13 @@ def jira_list_comments(issue_key: str) -> List[dict]:
             f"/rest/api/3/issue/{issue_key}/comment",
             params,
         )
-        if not data or not isinstance(data, dict):
-            break
+        # A JSON-valid but shapeless response ({} , or `comments` not a list)
+        # would otherwise read as "successfully fetched nothing" — the exact
+        # signal upsert callers use to decide it is safe to create.
+        if not isinstance(data, dict) or not isinstance(data.get("comments"), list):
+            return False, all_comments
 
-        batch = data.get("comments", [])
+        batch = data["comments"]
         if not batch:
             break
 
@@ -989,18 +1546,53 @@ def jira_list_comments(issue_key: str) -> List[dict]:
                 continue
             body_node = comment.get("body")
             body_text = _adf_to_text(body_node) if body_node else ""
-            all_comments.append({"id": comment_id, "body": body_text})
+            properties = _normalize_comment_properties(comment.get("properties"))
+            author = comment.get("author")
+            if not isinstance(author, dict):
+                author = {}
+            all_comments.append({
+                "id": comment_id,
+                "body": body_text,
+                "properties": properties,
+                # Authorship is what keeps a destructive edit off a human's
+                # comment when the deployment does not persist properties.
+                "author_account_id": str(author.get("accountId") or ""),
+                "author_email": str(author.get("emailAddress") or ""),
+            })
 
         total = data.get("total", 0)
         start_at += len(batch)
         if start_at >= total or len(batch) < max_results:
             break
 
-    return all_comments
+    return True, all_comments
 
 
-def jira_edit_comment(issue_key: str, comment_id: str, body_text: str) -> bool:
-    """Edit a Jira issue comment body."""
+def jira_list_comments_checked(issue_key: str) -> List[dict]:
+    """Fetch all comments for a Jira issue (id + extracted plain text body).
+
+    Raises rather than degrading to ``[]``: an empty list is indistinguishable
+    from a failed read, and a caller that creates on "nothing found" would
+    stack duplicate comments. There is deliberately no lenient variant.
+
+    Raises:
+        JiraCommentFetchError: the comment listing could not be retrieved.
+    """
+    ok, comments = _list_comments_result(issue_key)
+    if not ok:
+        raise JiraCommentFetchError(
+            f"Could not list comments for {issue_key}"
+        )
+    return comments
+
+
+def jira_edit_comment(
+    issue_key: str,
+    comment_id: str,
+    body_text: str,
+    properties: Optional[List[Dict[str, Any]]] = None,
+) -> bool:
+    """Edit a Jira issue comment body and optional entity properties."""
     if not str(comment_id).strip():
         return False
     base_url, auth_header = _jira_auth_from_config()
@@ -1008,7 +1600,7 @@ def jira_edit_comment(issue_key: str, comment_id: str, body_text: str) -> bool:
         base_url,
         auth_header,
         f"/rest/api/3/issue/{issue_key}/comment/{comment_id}",
-        {"body": _text_to_adf(body_text)},
+        _jira_comment_payload(body_text, properties),
     )
     return result is not None
 
@@ -1028,9 +1620,8 @@ def jira_create_issue(
         "fields": {
             "project": {"key": project_key},
             "summary": title,
-            # Rich ADF so brainstorm/plan markdown bodies (headings, lists,
-            # rules, marks) render natively. Comments keep _text_to_adf so
-            # human /comment content is never restructured.
+            # Markdown is converted to rich ADF for issue descriptions and
+            # comments so tracker output keeps its intended structure.
             "description": markdown_to_adf(body_text),
             "issuetype": {"name": issue_type or "Task"},
         }

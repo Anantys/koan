@@ -75,6 +75,39 @@ def _flatten_github_alerts(text: str) -> str:
     return "\n".join(out)
 
 
+def flatten_github_markdown_for_jira(text: str) -> str:
+    """Keep standard Markdown while flattening GitHub-only extensions.
+
+    The result is intentionally still Markdown: Jira's ADF renderer can turn
+    headings, lists, code fences, and marks into native nodes.  Only GitHub's
+    ``details`` and alert extensions are rewritten because Jira has no
+    equivalent representation for them.
+    """
+    if not text:
+        return ""
+
+    flattened = _flatten_github_alerts(text)
+    lines: List[str] = []
+    in_fence = False
+    for raw_line in flattened.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        if raw_line.strip().startswith("```"):
+            in_fence = not in_fence
+            lines.append(raw_line.rstrip())
+            continue
+        if in_fence:
+            # `/plan` posts code examples verbatim; rewriting details/summary
+            # inside a fence corrupts the very content it is meant to convey.
+            # Scoped to ``` fences on purpose: markdown_to_adf also treats a
+            # 4-space-indented block as code, but guarding that too would leave
+            # a genuine <details> wrapper nested under a list item unflattened.
+            lines.append(raw_line.rstrip())
+            continue
+        line = _SUMMARY_RE.sub(lambda m: f"**{m.group(1).strip()}**", raw_line)
+        line = _DETAILS_TAG_RE.sub("", line)
+        lines.append(line.rstrip())
+    return "\n".join(lines)
+
+
 def _parse_markdown_sections(markdown: str) -> Dict[str, List[str]]:
     """Parse ``##``-style markdown sections into lowercase section keys."""
     sections: Dict[str, List[str]] = {}
@@ -125,7 +158,7 @@ def _strip_markdown_for_jira(text: str) -> str:
 
     # Degrade GitHub alert blocks before line-by-line stripping so a
     # `> [!WARNING]` opener never survives as literal Jira text.
-    text = _flatten_github_alerts(text)
+    text = flatten_github_markdown_for_jira(text)
 
     out: List[str] = []
     in_fence = False
@@ -138,8 +171,13 @@ def _strip_markdown_for_jira(text: str) -> str:
             out.append(f"    {line}")
             continue
 
-        line = _SUMMARY_RE.sub(lambda m: f"{m.group(1).strip()}:", line)
-        line = _DETAILS_TAG_RE.sub("", line)
+        # The rich normalizer represents a details summary as bold Markdown;
+        # this legacy plain-text path keeps its historical ``Label:`` form.
+        line = re.sub(
+            r"^(\s*)\*\*(.+?)\*\*\s*$",
+            lambda m: f"{m.group(1)}{m.group(2)}:",
+            line,
+        )
         if not line.strip():
             out.append("")
             continue
@@ -167,6 +205,15 @@ def _strip_markdown_for_jira(text: str) -> str:
     return "\n".join(collapsed).strip()
 
 
+def _jira_pr_link_label(pr_url: str, pr_title: str) -> str:
+    pr_number = pr_url.rstrip("/").rsplit("/", 1)[-1]
+    prefix = f"PR #{pr_number}" if pr_number.isdigit() else "Pull request"
+    safe_title = " ".join(
+        (pr_title or "").replace("[", "(").replace("]", ")").split()
+    )
+    return f"{prefix} — {safe_title}" if safe_title else prefix
+
+
 def build_pr_comment_success(
     provider: str,
     pr_url: str,
@@ -192,28 +239,31 @@ def build_pr_comment_success(
     target_branch = (base_branch or "").strip()
 
     if provider == "jira":
+        link_label = _jira_pr_link_label(pr_url, pr_title)
         lines: List[str] = [
-            "Koan update: Draft pull request created.",
+            "### Kōan · draft pull request created",
             "",
-            f"Mission: {mission}",
-            f"Pull request: {pr_url}",
+            f"- **Mission**: `{mission}`",
+            f"- **Pull request**: [{link_label}]({pr_url})",
         ]
-        if pr_title:
-            lines.append(f"PR title: {pr_title}")
         if target_branch:
-            lines.append(f"Target branch: {target_branch}")
+            lines.append(f"- **Target branch**: `{target_branch}`")
         if what_bullets:
-            lines.extend(["", "What changed:"])
+            lines.extend(["", "**What changed**"])
             lines.extend(f"- {item}" for item in what_bullets[:8])
         if why_text:
-            lines.extend(["", f"Why: {why_text}"])
+            lines.extend(["", "**Why**", why_text])
         if how_bullets:
-            lines.extend(["", "How it was implemented:"])
+            lines.extend(["", "**How it was implemented**"])
             lines.extend(f"- {item}" for item in how_bullets[:8])
         if testing_bullets:
-            lines.extend(["", "Validation:"])
+            lines.extend(["", "**Validation**"])
             lines.extend(f"- {item}" for item in testing_bullets[:8])
-        lines.extend(["", "Next:", "- Review the draft PR and merge when ready."])
+        lines.extend([
+            "",
+            "**Next**",
+            "- Review the draft PR and merge when ready.",
+        ])
         return "\n".join(lines)
 
     # GitHub / generic markdown-capable trackers.
@@ -255,19 +305,19 @@ def build_pr_comment_failure(
     if provider == "jira":
         reason_text = _flatten_github_alerts(reason_text).strip()
         lines = [
-            "Koan update: Pull request creation failed.",
+            "### Kōan · pull request creation failed",
             "",
-            f"Mission: {mission}",
-            f"Reason: {reason_text}",
+            f"- **Mission**: `{mission}`",
+            f"- **Reason**: {reason_text}",
         ]
         if branch_text:
-            lines.append(f"Current branch: {branch_text}")
+            lines.append(f"- **Current branch**: `{branch_text}`")
         if target_branch:
-            lines.append(f"Target branch: {target_branch}")
+            lines.append(f"- **Target branch**: `{target_branch}`")
         lines.extend(
             [
                 "",
-                "Next:",
+                "**Next**",
                 "- Check branch state and repository permissions.",
                 "- Re-run the mission after fixing the blocking issue.",
             ],
@@ -290,11 +340,10 @@ def build_pr_comment_failure(
 def build_plan_comment_success(provider: str, title: str, body: str) -> str:
     """Format the `/plan` iteration comment for a target tracker."""
     if provider == "jira":
-        readable_body = _strip_markdown_for_jira(body)
         return (
-            "Koan plan update\n\n"
-            f"Title: {title}\n\n"
-            f"{readable_body}\n\n"
+            f"## {title}\n\n"
+            f"{body}\n\n"
+            "---\n\n"
             "Generated by Koan."
         ).strip()
 

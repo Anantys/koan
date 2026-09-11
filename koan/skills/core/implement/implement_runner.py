@@ -27,14 +27,19 @@ from app.issue_tracker import (
     project_name_for_path,
 )
 from app.issue_tracker.config import resolve_code_repository
+from app.jira_plan_publish import (
+    koan_authorship_check,
+    parse_plan_comment,
+    strip_plan_envelope,
+)
 from app.pr_submit import (
     get_commit_subjects,
     get_current_branch,
     guess_project_name,
     submit_draft_pr,
 )
-from app.prompts import load_prompt_or_skill
 from app.private_review_gate import format_gate_note, run_gate_for_skill
+from app.prompts import load_prompt_or_skill
 
 logger = logging.getLogger(__name__)
 
@@ -374,9 +379,15 @@ def _is_plan_content(text: str) -> bool:
 def _extract_latest_plan(body: Optional[str], comments: List[dict]) -> str:
     """Extract the most recent plan from issue body and comments.
 
-    Strategy: scan comments from newest to oldest. The first comment
-    that contains plan markers is the latest plan iteration. If no
-    comment has a plan, fall back to the issue body.
+    Multipart Jira plan comments are assembled first.  Other trackers retain
+    the existing newest-plan-comment behavior.
+
+    A split Jira plan whose parts are all unclaimable — the authorship check
+    refuses every one of them, so nothing is assembled — must not disappear
+    quietly: the same fragments are also skipped as standalone plans, so the
+    fallback would be the pre-plan issue body presented as the plan. The
+    incompleteness banner cannot fire for that case (no part was assembled, so
+    nothing reads as missing), hence the explicit warning here.
 
     Args:
         body: Issue body text.
@@ -385,11 +396,80 @@ def _extract_latest_plan(body: Optional[str], comments: List[dict]) -> str:
     Returns:
         The plan text, or empty string if no plan found.
     """
-    # Check comments from newest to oldest
-    for comment in reversed(comments):
+    multipart_plan, multipart_score = _extract_jira_multipart_plan_scored(comments)
+    plan = _select_latest_plan(body, comments, multipart_plan, multipart_score)
+    if multipart_plan:
+        return plan
+
+    unclaimed = _unclaimable_multipart_fragments(comments)
+    if not unclaimed:
+        return plan
+
+    logger.warning(
+        "%d split Jira plan comment(s) could not be verified as Koan's own — "
+        "they were excluded, so this plan may be stale",
+        unclaimed,
+    )
+    if not plan.strip():
+        # Nothing else on the issue reads as a plan, so there is no text to
+        # carry the warning. Report "no plan" and let the mission fail rather
+        # than hand the agent a banner to implement.
+        return ""
+    return (
+        f"> **Warning — a split plan on this issue was ignored.** {unclaimed} "
+        f"`Part N of M` comment(s) could not be verified as Koan's own, so the "
+        f"text below is whatever else the issue offers and may predate that "
+        f"plan. Verify it before implementing.\n\n{plan}"
+    )
+
+
+def _unclaimable_multipart_fragments(comments: List[dict]) -> int:
+    """Count comments shaped like a split Jira plan part.
+
+    Only meaningful when assembly returned nothing: every such comment was
+    rejected by the authorship check, yet still shadows the plan the agent
+    would otherwise run.
+    """
+    return sum(
+        1
+        for comment in comments or []
+        if (parsed := parse_plan_comment(str(comment.get("body", "") or "")))
+        is not None and parsed[2] > 1
+    )
+
+
+def _select_latest_plan(
+    body: Optional[str],
+    comments: List[dict],
+    multipart_plan: str,
+    multipart_score: Tuple[str, int],
+) -> str:
+    """Pick the newest plan text among the assembled group, comments and body."""
+    # Check comments from newest to oldest. Never treat an individual Jira
+    # multipart fragment as a standalone plan when no group was assembled.
+    for index in range(len(comments) - 1, -1, -1):
+        comment = comments[index]
         comment_body = comment.get("body", "")
+        parsed = parse_plan_comment(comment_body or "")
+        if parsed is not None and parsed[2] > 1:
+            continue
         if _is_plan_content(comment_body):
+            # A leftover group from an older revision must not beat a newer
+            # single-part plan: a shrinking plan reuses part 1 and retires the
+            # rest, and a retirement Jira accepted but never applied would
+            # otherwise strand the agent on the superseded parts.
+            single_score = (str(comment.get("updated", "")), index)
+            if multipart_plan and multipart_score >= single_score:
+                return multipart_plan
+            if multipart_plan:
+                logger.warning(
+                    "Ignoring stale multipart Jira plan — a newer single-part "
+                    "plan comment supersedes it",
+                )
             return comment_body
+
+    if multipart_plan:
+        return multipart_plan
 
     # Fall back to issue body if it has plan markers
     if _is_plan_content(body):
@@ -399,6 +479,81 @@ def _extract_latest_plan(body: Optional[str], comments: List[dict]) -> str:
     # (allows non-standard plan formats). Body may be None for issues
     # with an empty body — GitHub returns body=null in that case.
     return (body or "").strip()
+
+
+def _extract_jira_multipart_plan(comments: List[dict]) -> str:
+    """Return the newest split Jira plan text, discarding its recency score."""
+    return _extract_jira_multipart_plan_scored(comments)[0]
+
+
+def _extract_jira_multipart_plan_scored(
+    comments: List[dict],
+) -> Tuple[str, Tuple[str, int]]:
+    """Return the newest split Jira plan and its recency score.
+
+    The score is the winning group's newest ``(updated, index)`` pair, so the
+    caller can weigh the group against a standalone plan comment instead of
+    preferring a multipart group unconditionally.
+
+    Every part of one plan carries the same ``rev`` in its footer, so parts are
+    grouped by revision rather than inferred from ordering — the publisher
+    updates parts in place, which makes Jira's creation order meaningless as a
+    generation order. ``updated`` then picks the newest revision, falling back
+    to received order when Jira omits it.
+
+    An incomplete group still yields the parts that are present — a partial plan
+    beats refusing to work — but never silently: the footer carries the expected
+    count, so a gap is announced in the returned text and the log rather than
+    letting the agent implement a truncated plan believing it is whole.
+
+    Only comments Koan is entitled to claim may occupy a part slot. The footer
+    is plain text a reviewer reproduces by quoting the tail of a plan, and the
+    later comment wins its slot outright — so without the authorship check a
+    reviewer's question silently *becomes* part N, and the incompleteness
+    banner never fires because nothing is missing, only substituted.
+    """
+    authored_by_koan = koan_authorship_check(comments)
+    groups: dict[str, dict[int, str]] = {}
+    group_counts: dict[str, int] = {}
+    group_scores: dict[str, tuple[str, int]] = {}
+    for index, comment in enumerate(comments):
+        if not authored_by_koan(comment):
+            continue
+        comment_body = str(comment.get("body", "") or "")
+        parsed = parse_plan_comment(comment_body)
+        if parsed is None:
+            continue
+        revision, number, count = parsed
+        if count < 2 or not 1 <= number <= count:
+            continue
+        score = (str(comment.get("updated", "")), index)
+        groups.setdefault(revision, {})[number] = comment_body
+        group_counts[revision] = max(group_counts.get(revision, 0), count)
+        group_scores[revision] = max(group_scores.get(revision, ("", -1)), score)
+
+    if not group_scores:
+        return "", ("", -1)
+
+    newest = max(group_scores, key=lambda rev: group_scores[rev])
+    parts = groups[newest]
+    assembled = "\n\n".join(
+        strip_plan_envelope(parts[number]).strip() for number in sorted(parts)
+    ).strip()
+
+    expected = group_counts[newest]
+    missing = [n for n in range(1, expected + 1) if n not in parts]
+    if missing:
+        gap = ", ".join(str(n) for n in missing)
+        logger.warning(
+            "Jira plan rev %s is missing part(s) %s of %d — implementing a partial plan",
+            newest, gap, expected,
+        )
+        assembled = (
+            f"> **Warning — this plan is incomplete.** Part(s) {gap} of {expected} "
+            f"were not found on the issue; the sections below are what is available.\n\n"
+            f"{assembled}"
+        )
+    return assembled, group_scores[newest]
 
 
 def _plan_hash(plan: str) -> str:
