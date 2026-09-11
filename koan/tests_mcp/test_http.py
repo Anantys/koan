@@ -78,6 +78,60 @@ def test_rejected_request_is_audited(tmp_path):
     assert " GET /mcp 401" in line
 
 
+def test_audit_failure_is_reported_off_the_audit_sink(tmp_path):
+    """The warning must not go to the file that just refused a write.
+
+    The launcher redirects the daemon's stderr into `logs/mcp.log`, which is
+    `audit_path`, so stderr is the one place the operator cannot read it from.
+    """
+    audit_path = tmp_path / "mcp.log"
+    audit_path.mkdir()  # a directory: every append raises OSError
+    client = _client(audit_path)
+
+    assert client.get("/mcp").status_code == 401
+
+    assert "cannot write" in (tmp_path / "api.log").read_text()
+
+
+def test_unauditable_requests_are_refused_not_served(tmp_path):
+    """Fail closed: no audit trail, no service."""
+    audit_path = tmp_path / "mcp.log"
+    audit_path.mkdir()
+    client = _client(audit_path)
+
+    # The first request discovers the broken sink (only the write can), and
+    # latches. Everything after it is refused before reaching the app.
+    client.get("/mcp")
+    with patch("app.api.auth._get_token", return_value="secret-token"):
+        response = client.get(
+            "/mcp", headers={"Authorization": "Bearer secret-token"}
+        )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "audit_unavailable"
+
+
+def test_service_resumes_once_the_audit_sink_is_writable(tmp_path):
+    audit_path = tmp_path / "mcp.log"
+    audit_path.mkdir()
+    downstream = Starlette(routes=[Route("/mcp", _ok, methods=["GET"])])
+    middleware = BearerAuditMiddleware(downstream, audit_path)
+    client = TestClient(middleware)
+
+    client.get("/mcp")
+    assert middleware.audit_broken is True
+
+    audit_path.rmdir()
+    with patch("app.api.auth._get_token", return_value="secret-token"):
+        response = client.get(
+            "/mcp", headers={"Authorization": "Bearer secret-token"}
+        )
+
+    assert response.status_code == 200
+    assert middleware.audit_broken is False
+    assert " GET /mcp 200" in audit_path.read_text()
+
+
 def test_lifespan_scope_passes_through_unauthenticated(tmp_path):
     seen = []
 

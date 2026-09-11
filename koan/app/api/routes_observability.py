@@ -7,13 +7,15 @@ from flask import Blueprint, current_app, jsonify, request
 from app.api.auth import require_token
 from app.api.openapi_metadata import openapi_operation, query_parameter
 from app.log_reader import LOG_DEFAULT_LIMIT, LOG_MAX_LIMIT
+from app.usage_service import (
+    USAGE_DEFAULT_DAYS as _USAGE_DEFAULT_DAYS,
+    USAGE_MAX_DAYS as _USAGE_MAX_DAYS,
+    USAGE_MIN_DAYS as _USAGE_MIN_DAYS,
+    USAGE_MIN_OFFSET as _USAGE_DEFAULT_OFFSET,
+)
 
 bp = Blueprint("observability", __name__)
 
-_USAGE_DEFAULT_DAYS = 7
-_USAGE_DEFAULT_OFFSET = 0
-_USAGE_MIN_DAYS = 1
-_USAGE_MAX_DAYS = 100
 _METRICS_DEFAULT_DAYS = 30
 _METRICS_MIN_DAYS = 0
 _METRICS_MAX_DAYS = 365
@@ -34,7 +36,7 @@ _USAGE_QUERY_PARAMETERS = (
         {
             "type": "integer",
             "default": _USAGE_DEFAULT_OFFSET,
-            "minimum": 0,
+            "minimum": _USAGE_DEFAULT_OFFSET,
         },
         "Shift the window back by this many granularity units.",
     ),

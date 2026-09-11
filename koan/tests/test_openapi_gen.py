@@ -313,6 +313,44 @@ def test_docstring_body_and_mcp_metadata_are_emitted():
     )
 
 
+def test_metadata_survives_either_decorator_order():
+    """`openapi_operation` is not order-dependent, in either direction.
+
+    Flask's route decorator registers the function and returns that same
+    object, so metadata attached *above* it still lands on the registered view.
+    Below `require_token`, `functools.wraps` copies `__dict__` onto the
+    wrapper. Pinned because the alternative failure — a marker that silently
+    vanishes from `openapi.yaml` — has no lint, test, or CI signal.
+    """
+    from app.api.auth import require_token
+    from flask import Blueprint, Flask
+
+    above = Blueprint("above", __name__)
+
+    @openapi_operation(mcp=True, mcp_description="Above the route.")
+    @above.get("/widgets")
+    @require_token
+    def list_widgets_above():
+        """List widgets."""
+        return {}
+
+    below = Blueprint("below", __name__)
+
+    @below.get("/widgets")
+    @require_token
+    @openapi_operation(mcp=True, mcp_description="Below require_token.")
+    def list_widgets_below():
+        """List widgets."""
+        return {}
+
+    for blueprint in (above, below):
+        test_app = Flask(__name__)
+        test_app.register_blueprint(blueprint)
+        operation = openapi_gen.build_spec(test_app)["paths"]["/widgets"]["get"]
+        assert operation["x-koan-mcp"] is True
+        assert operation["x-koan-mcp-description"]
+
+
 def test_curated_openapi_operations_are_self_describing(app):
     spec = openapi_gen.build_spec(app)
     marked = [

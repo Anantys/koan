@@ -55,6 +55,11 @@ HTTP request audits are written to `logs/mcp.log` as:
 Authorization headers, bearer tokens, request bodies, and query strings are
 never written to the audit line.
 
+The audit trail fails closed. A failed audit write latches the middleware: the
+warning goes to `logs/api.log` (never the audit sink itself, which the launcher
+also redirects the daemon's stderr into), and every later request is refused
+with 503 `audit_unavailable` until the sink accepts a write again.
+
 ## HTTP safety invariants
 
 - HTTP binds `127.0.0.1:8421` by default.
@@ -172,6 +177,8 @@ capability; clients may apply a single conservative approval policy to it.
 - That layer allow-lists the scope types it forwards without a credential
   check: only `lifespan`. Any other non-HTTP scope is refused and audited, so a
   transport added later cannot inherit an unauthenticated path by default.
+- An unwritable audit sink stops service rather than degrading it: requests are
+  refused with 503 until the trail can be written again.
 - stdio remains the default transport and is never daemonized.
 
 ## Change protocol

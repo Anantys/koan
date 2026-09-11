@@ -10,6 +10,11 @@ on:
       # operations become named tools without touching koan/openapi.yaml.
       - 'koan/app/api/openapi_gen.py'
       - 'koan/app/api/openapi_metadata.py'
+      # BearerAuditMiddleware mirrors require_token's 401/403 contract, and
+      # tests_mcp/test_http.py is the only place that asserts the mirror holds.
+      - 'koan/app/api/auth.py'
+      # get_mcp_* decides which transport and tools the entrypoint selects.
+      - 'koan/app/config.py'
       - 'koan/tests_mcp/**'
       - 'koan/requirements-mcp.txt'
       - 'koan/openapi.yaml'

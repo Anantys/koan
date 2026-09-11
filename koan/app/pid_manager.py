@@ -512,7 +512,11 @@ def _is_mcp_http_enabled() -> bool:
         from app.config import get_mcp_enabled, get_mcp_transport
 
         return get_mcp_enabled() and get_mcp_transport() == "http"
-    except (ImportError, OSError, ValueError):
+    except (ImportError, OSError, ValueError) as e:
+        # Downgrading MCP to "not managed" hides a live daemon from `make
+        # status` and skips it in `make stop`, so say why rather than let a
+        # transient config-read failure orphan a listening process.
+        print(f"[pid_manager] MCP management check failed: {e}", file=sys.stderr)
         return False
 
 

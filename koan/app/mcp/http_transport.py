@@ -28,6 +28,40 @@ class BearerAuditMiddleware:
         self.app = app
         self.audit_path = audit_path
         self.audit_path.parent.mkdir(parents=True, exist_ok=True)
+        # Latched by the first failed audit write; cleared once the sink
+        # accepts a write again. While it is set the middleware serves nothing.
+        self.audit_broken = False
+
+    def _warn_off_audit_sink(self, message: str) -> None:
+        """Report an audit failure through a channel that is not the audit sink.
+
+        The launcher redirects this daemon's stderr into ``logs/mcp.log`` — the
+        same file ``audit_path`` points at — so a warning printed there lands in
+        the exact file that just refused a write. Try the REST API's log first,
+        and only fall back to stderr when that fails too.
+        """
+        fallback = self.audit_path.parent / "api.log"
+        if fallback != self.audit_path:
+            try:
+                with open(fallback, "a", encoding="utf-8") as handle:
+                    handle.write(message + "\n")
+                return
+            except OSError:
+                pass
+        print(message, file=sys.stderr)
+
+    def _audit_sink_usable(self) -> bool:
+        """Re-probe a latched-broken audit sink, clearing the latch on success."""
+        try:
+            with open(self.audit_path, "a", encoding="utf-8"):
+                pass
+        except OSError:
+            return False
+        self.audit_broken = False
+        self._warn_off_audit_sink(
+            f"Kōan MCP audit recovered: {self.audit_path} is writable again"
+        )
+        return True
 
     def _write_audit(self, scope: dict, status: int) -> None:
         client = scope.get("client")
@@ -42,12 +76,15 @@ class BearerAuditMiddleware:
             with open(self.audit_path, "a", encoding="utf-8") as handle:
                 handle.write(line)
         except OSError as exc:
-            # A failing audit path is a security-observability gap: surface it
-            # rather than silently losing the request trail.
-            print(
-                f"Kōan MCP audit warning: cannot write {self.audit_path}: {exc}",
-                file=sys.stderr,
-            )
+            # An unwritable audit path is a security-observability gap. Warn
+            # somewhere that is still readable, then latch: the next request is
+            # refused rather than served with no record of it.
+            if not self.audit_broken:
+                self.audit_broken = True
+                self._warn_off_audit_sink(
+                    f"Kōan MCP audit warning: cannot write {self.audit_path}: "
+                    f"{exc}; refusing further requests until it is writable"
+                )
 
     async def _reject_unsupported(self, scope, send) -> None:
         """Fail closed on a scope type this middleware cannot authenticate."""
@@ -64,6 +101,21 @@ class BearerAuditMiddleware:
             # Allow-list, not "anything but HTTP": a transport added later must
             # not inherit an unauthenticated, unaudited path by default.
             await self._reject_unsupported(scope, send)
+            return
+
+        if self.audit_broken and not self._audit_sink_usable():
+            # Fail closed: the spec promises every HTTP request is audited, so
+            # serve nothing while the trail cannot be written.
+            response = JSONResponse(
+                {
+                    "error": {
+                        "code": "audit_unavailable",
+                        "message": "Audit log is not writable",
+                    }
+                },
+                status_code=503,
+            )
+            await response(scope, receive, send)
             return
 
         logged = False

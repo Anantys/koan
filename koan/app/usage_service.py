@@ -8,6 +8,13 @@ import calendar as _calendar
 from datetime import date, timedelta
 from pathlib import Path
 
+# The window clamp `build_usage_payload` enforces. Exported so the REST API
+# publishes the bounds it actually applies instead of restating them.
+USAGE_MIN_DAYS = 1
+USAGE_MAX_DAYS = 100
+USAGE_DEFAULT_DAYS = 7
+USAGE_MIN_OFFSET = 0
+
 
 def _empty_project_bucket() -> dict:
     return {
@@ -153,7 +160,7 @@ def _resolve_window(today: date, days: int, granularity: str, offset: int):
 def build_usage_payload(
     instance_dir: Path,
     *,
-    days: int = 7,
+    days: int = USAGE_DEFAULT_DAYS,
     project: str = "",
     granularity: str = "day",
     stacked: bool = False,
@@ -172,13 +179,13 @@ def build_usage_payload(
     )
 
     try:
-        days = max(1, min(int(days), 100))
+        days = max(USAGE_MIN_DAYS, min(int(days), USAGE_MAX_DAYS))
     except (ValueError, TypeError):
-        days = 7
+        days = USAGE_DEFAULT_DAYS
     try:
-        offset = max(0, int(offset))
+        offset = max(USAGE_MIN_OFFSET, int(offset))
     except (ValueError, TypeError):
-        offset = 0
+        offset = USAGE_MIN_OFFSET
     if granularity not in ("day", "week", "month"):
         granularity = "day"
 

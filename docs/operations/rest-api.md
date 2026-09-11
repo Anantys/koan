@@ -53,6 +53,11 @@ make stop         # stops all managed processes including API
 make status       # shows API PID when running
 ```
 
+`make start` exits non-zero when the API fails to start, the same as for the
+other managed processes. Before the MCP server landed it only reported the
+failure and still exited 0, so a supervisor or CI script that treats a non-zero
+exit as a failed boot now sees API startup problems it used to ignore.
+
 ---
 
 ## Authentication

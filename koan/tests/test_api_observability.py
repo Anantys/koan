@@ -20,9 +20,13 @@ def _auth():
 
 
 def _query_default(spec, path, name):
+    return _query_schema(spec, path, name)["default"]
+
+
+def _query_schema(spec, path, name):
     parameters = spec["paths"][path]["get"]["parameters"]
     parameter = next(item for item in parameters if item["name"] == name)
-    return parameter["schema"]["default"]
+    return parameter["schema"]
 
 
 def test_usage_requires_token(client):
@@ -133,3 +137,22 @@ def test_numeric_query_defaults_match_openapi(client, monkeypatch):
     assert captured["usage_offset"] == _query_default(spec, "/v1/usage", "offset")
     assert captured["metrics_days"] == _query_default(spec, "/v1/metrics", "days")
     assert captured["logs_limit"] == _query_default(spec, "/v1/logs", "limit")
+
+
+def test_usage_bounds_match_the_enforced_clamp(client):
+    """The published window bounds are the ones `usage_service` enforces.
+
+    The defaults test above pins `default`, not `minimum`/`maximum`, so raising
+    the clamp in `usage_service` while the spec still advertises the old range
+    would leave every other test green — and both `koan-cli` and MCP models
+    read those bounds as the contract.
+    """
+    from app.api import openapi_gen
+    from app.usage_service import build_usage_payload
+
+    instance_dir = client.application.config["INSTANCE_DIR"]
+    spec = openapi_gen.build_spec(client.application)
+    schema = _query_schema(spec, "/v1/usage", "days")
+
+    assert build_usage_payload(instance_dir, days=10_000)["days"] == schema["maximum"]
+    assert build_usage_payload(instance_dir, days=0)["days"] == schema["minimum"]
