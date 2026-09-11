@@ -1424,7 +1424,11 @@ def jira_comment_authored_by_self(comment: dict) -> Optional[bool]:
     return None
 
 
-def koan_authorship_check(comments, property_key: str) -> Callable[[dict], bool]:
+def koan_authorship_check(
+    comments,
+    property_key: str,
+    strict: bool = False,
+) -> Callable[[dict], bool]:
     """Return "did Koan write this comment?" for one issue's comment listing.
 
     The predicate is built from the whole listing because the strongest
@@ -1436,9 +1440,18 @@ def koan_authorship_check(comments, property_key: str) -> Callable[[dict], bool]
     When *no* comment on the issue does, the property is not available evidence
     at all: a Jira deployment may drop properties on write, or ignore
     ``expand=properties`` when listing, and Koan must still recognise the
-    comment it published. There the check falls back to Jira's own authorship
-    and excludes only comments Jira positively attributes to someone else —
-    "cannot tell" stays admissible, a foreign account does not.
+    comment it published. There the check falls back to Jira's own authorship,
+    and ``strict`` decides what to do with "cannot tell":
+
+    - ``strict=False`` (read-only matching) excludes only comments Jira
+      positively attributes to someone else — "cannot tell" stays admissible.
+    - ``strict=True`` demands proof, per
+      :func:`jira_comment_authored_by_self`'s contract: a caller about to
+      *replace a comment body* must treat "cannot tell" as "not mine",
+      because a tenant whose ``/myself`` is unreachable would otherwise let a
+      reviewer's quoted footer select their comment for the overwrite. The
+      cost of refusing is a duplicate comment, which is recoverable; the cost
+      of guessing is a destroyed human comment, which is not.
 
     Callers pair this with their own body marker: authorship answers "is this
     ours?", the marker answers "which one is it?". Never overwrite a comment
@@ -1451,6 +1464,8 @@ def koan_authorship_check(comments, property_key: str) -> Callable[[dict], bool]
 
     if any(carries_property(comment) for comment in comments or []):
         return carries_property
+    if strict:
+        return lambda comment: jira_comment_authored_by_self(comment) is True
     return lambda comment: jira_comment_authored_by_self(comment) is not False
 
 

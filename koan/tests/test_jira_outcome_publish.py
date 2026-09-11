@@ -23,6 +23,19 @@ def _tagged(issue_key: str, command: str, comment_id: str = "1", body: str = "po
     }]
 
 
+def _as_koan():
+    """Make Jira attribute Koan's own account to comments marked with it.
+
+    Without the property, the visible footer only identifies a status comment
+    on a comment Jira positively attributes to Koan — the publisher is about to
+    replace that body, so "cannot tell" is not enough.
+    """
+    return patch(
+        "app.jira_notifications.jira_self_identity",
+        return_value=("koan-account", ""),
+    )
+
+
 class TestPublishJiraMissionOutcome:
     def test_skips_when_no_jira_url(self):
         from app.jira_outcome_publish import publish_jira_mission_outcome
@@ -108,8 +121,15 @@ class TestPublishJiraMissionOutcome:
         from app.jira_outcome_publish import _marker_for, publish_jira_mission_outcome
 
         marker = _marker_for("PROJ-42", "fix")
-        existing = [{"id": "99", "body": f"old\n\n{marker}"}]
+        existing = [
+            {
+                "id": "99",
+                "body": f"old\n\n{marker}",
+                "author_account_id": "koan-account",
+            },
+        ]
         with (
+            _as_koan(),
             patch(
                 "app.jira_outcome_publish.jira_list_comments_checked",
                 side_effect=[existing, _tagged("PROJ-42", "fix", comment_id="99")],
@@ -175,8 +195,15 @@ class TestPublishJiraMissionOutcome:
         from app.jira_outcome_publish import _marker_for, publish_jira_mission_outcome
 
         marker = _marker_for("PROJ-42", "fix")
-        existing = [{"id": "7", "body": f"old\n\n{marker}"}]
+        existing = [
+            {
+                "id": "7",
+                "body": f"old\n\n{marker}",
+                "author_account_id": "koan-account",
+            },
+        ]
         with (
+            _as_koan(),
             patch("app.jira_outcome_publish.jira_list_comments_checked", return_value=existing),
             patch("app.jira_outcome_publish.jira_edit_comment", return_value=False),
             patch("app.jira_outcome_publish._fetch_pr_details", return_value=("", "")),
@@ -364,6 +391,7 @@ class TestUpsertJiraComment:
             "id": "99",
             "body": f"old body\n\n{_marker_for('PROJ-1', 'fix')}",
             "properties": {},
+            "author_account_id": "koan-account",
         }]
         migrated = [{
             "id": "99",
@@ -373,6 +401,7 @@ class TestUpsertJiraComment:
             },
         }]
         with (
+            _as_koan(),
             patch(
                 "app.jira_outcome_publish.jira_list_comments_checked",
                 side_effect=[existing, migrated],
@@ -402,8 +431,10 @@ class TestUpsertJiraComment:
             "id": "1",
             "body": f"hello world\n\n{_footer_for(digest)}",
             "properties": {},
+            "author_account_id": "koan-account",
         }]
         with (
+            _as_koan(),
             patch(
                 "app.jira_outcome_publish.jira_list_comments_checked",
                 side_effect=[[], posted],
@@ -429,13 +460,16 @@ class TestUpsertJiraComment:
             "id": "1",
             "body": f"first status\n\n{_footer_for(digest)}",
             "properties": {},
+            "author_account_id": "koan-account",
         }]
         updated = [{
             "id": "1",
             "body": f"second status\n\n{_footer_for(digest)}",
             "properties": {},
+            "author_account_id": "koan-account",
         }]
         with (
+            _as_koan(),
             patch(
                 "app.jira_outcome_publish.jira_list_comments_checked",
                 side_effect=[on_issue, updated],
@@ -464,13 +498,16 @@ class TestUpsertJiraComment:
             "id": "5",
             "body": f"I saw this:\n\n{_footer_for(digest)}\n\nany idea why?",
             "properties": {},
+            "author_account_id": "human-account",
         }]
         posted = quoted + [{
             "id": "6",
             "body": f"status\n\n{_footer_for(digest)}",
             "properties": {},
+            "author_account_id": "koan-account",
         }]
         with (
+            _as_koan(),
             patch(
                 "app.jira_outcome_publish.jira_list_comments_checked",
                 side_effect=[quoted, posted],
@@ -516,6 +553,56 @@ class TestUpsertJiraComment:
                 side_effect=[on_issue, posted],
             ),
             patch("app.jira_outcome_publish.jira_add_comment", return_value=True) as add_comment,
+            patch("app.jira_outcome_publish.jira_edit_comment") as edit_comment,
+        ):
+            ok, mode = upsert_jira_comment("PROJ-1", "fix", "status")
+
+        assert (ok, mode) == (True, "created")
+        add_comment.assert_called_once()
+        edit_comment.assert_not_called()
+        assert on_issue[0]["body"] == human_body
+
+    def test_quoted_footer_survives_when_jira_cannot_resolve_identity(self):
+        """The overwrite guard must not depend on ``/myself`` answering.
+
+        On a tenant where the self-identity lookup is forbidden, Jira attributes
+        the reviewer's comment to an account Koan cannot compare itself to. That
+        is "cannot tell" — and a body replacement must read it as "not mine",
+        so the reviewer's question stays and a fresh status is posted instead.
+        """
+        from app.jira_outcome_publish import (
+            _footer_for,
+            _outcome_digest,
+            upsert_jira_comment,
+        )
+
+        digest = _outcome_digest("PROJ-1", "fix")
+        human_body = f"Is this still true?\n\n{_footer_for(digest)}"
+        on_issue = [{
+            "id": "5",
+            "body": human_body,
+            "properties": {},
+            "author_account_id": "human-account",
+        }]
+        posted = on_issue + [{
+            "id": "6",
+            "body": f"status\n\n{_footer_for(digest)}",
+            "properties": {
+                "koan.jira.outcome": {"digest": digest, "command": "fix"},
+            },
+            "author_account_id": "koan-account",
+        }]
+        with (
+            # `/myself` is 403 → identity unknown, so no comment on the issue
+            # can be positively attributed to Koan.
+            patch("app.jira_notifications.jira_self_identity", return_value=("", "")),
+            patch(
+                "app.jira_outcome_publish.jira_list_comments_checked",
+                side_effect=[on_issue, posted],
+            ),
+            patch(
+                "app.jira_outcome_publish.jira_add_comment", return_value=True,
+            ) as add_comment,
             patch("app.jira_outcome_publish.jira_edit_comment") as edit_comment,
         ):
             ok, mode = upsert_jira_comment("PROJ-1", "fix", "status")

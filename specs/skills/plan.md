@@ -76,10 +76,12 @@ See `docs/users/skills.md` for the end-user `/plan` reference and
   footer-only matching solely when no comment on the issue carries the property, since
   a deployment that drops properties (or ignores `expand=properties`) must still be
   able to update the plan it published. In that fallback the comment's Jira author is
-  the remaining guard: a comment Jira attributes to an account other than Koan's own is
-  never matched, and the **retirement pass demands positive proof** — the property, or
-  Jira naming Koan's account as author. A stale part left standing is recoverable; a
-  human's comment blanked by the retirement pass is not.
+  the remaining guard, and **every write that replaces a body demands positive proof** —
+  the property, or Jira naming Koan's account as author. That covers both selecting the
+  comment a new revision updates and the retirement pass that blanks an orphaned part.
+  "Cannot tell who wrote this" counts as "not mine", so the guard holds on a tenant
+  whose self-identity lookup fails rather than degrading to trusting the footer. A stale
+  or duplicated part is recoverable; a human's comment overwritten or blanked is not.
 - **The same authorship rule binds the reader.** `/implement` reassembles a multipart
   plan by footer, and the later comment claiming a part number wins it outright — so a
   reviewer who ends their reply with a quoted footer would *substitute* their prose for

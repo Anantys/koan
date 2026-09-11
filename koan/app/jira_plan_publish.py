@@ -230,16 +230,21 @@ def _provably_koan(comment: dict) -> bool:
     )
 
 
-def koan_authorship_check(comments) -> Callable[[dict], bool]:
+def koan_authorship_check(comments, strict: bool = False) -> Callable[[dict], bool]:
     """"Did Koan write this comment?", keyed on the plan entity property.
 
-    See :func:`app.jira_notifications.koan_authorship_check` for the rule; the
-    plan comment's proof of authorship is the ``koan.jira.plan`` property.
+    See :func:`app.jira_notifications.koan_authorship_check` for the rule and
+    for what ``strict`` buys a caller that is about to replace a comment body;
+    the plan comment's proof of authorship is the ``koan.jira.plan`` property.
     """
-    return _jira_notifications.koan_authorship_check(comments, _PLAN_PROPERTY_KEY)
+    return _jira_notifications.koan_authorship_check(
+        comments, _PLAN_PROPERTY_KEY, strict=strict,
+    )
 
 
-def _find_plan_comments(comments) -> List[Tuple[dict, str, int, int]]:
+def _find_plan_comments(
+    comments, strict: bool = False,
+) -> List[Tuple[dict, str, int, int]]:
     """Return every Koan plan comment as ``(comment, revision, part, count)``.
 
     Identity is authorship (see :func:`koan_authorship_check`) *and* the
@@ -249,8 +254,13 @@ def _find_plan_comments(comments) -> List[Tuple[dict, str, int, int]]:
     what the retirement pass blanks out. The footer answers "which revision and
     part?" and is still matched at the end of the body, so a plan quoted
     mid-body is not mistaken for a plan comment either.
+
+    ``strict`` is for callers selecting a comment to *overwrite*: it demands
+    proof of authorship rather than the absence of a foreign one, so a tenant
+    that answers neither ``expand=properties`` nor ``/myself`` costs a stray
+    plan part instead of a reviewer's text.
     """
-    authored_by_koan = koan_authorship_check(comments)
+    authored_by_koan = koan_authorship_check(comments, strict=strict)
 
     found = []
     for comment in comments or []:
@@ -268,8 +278,11 @@ def _locate_part(comments, part_number: int) -> Optional[dict]:
 
     Revision-agnostic on purpose: a new plan revision must *update* the comment
     holding that part rather than post a fresh one beside it.
+
+    Its only caller edits what it returns, so authorship must be proven
+    (``strict``) rather than merely unrefuted.
     """
-    for comment, _rev, part, _count in _find_plan_comments(comments):
+    for comment, _rev, part, _count in _find_plan_comments(comments, strict=True):
         if part == part_number:
             return comment
     return None
@@ -478,7 +491,12 @@ def _upsert_part(
             )
             return True, str(settled.get("id", ""))
 
-        existing = settled or _locate_part(comments, part_number)
+        # `settled` came from a read-only match, but from here on it is an edit
+        # target — the navigation pass rewrites the comment it already verified.
+        # Only a comment Koan can prove it wrote may be overwritten.
+        existing = settled if settled is not None and _provably_koan(settled) else None
+        if existing is None:
+            existing = _locate_part(comments, part_number)
         if existing is None and created_unverified:
             # An earlier attempt already tried to create this part and the
             # comment is still not in the listing. Jira's comment read path is

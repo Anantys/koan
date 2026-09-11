@@ -192,7 +192,13 @@ def test_transient_lookup_failure_then_success_posts_once(tmp_path):
 def test_existing_current_plan_is_updated_not_appended(tmp_path):
     body = "new plan"
     stage_plan(URL, body, str(tmp_path))
-    existing = {"id": "11", "body": _rendered("stale plan")}
+    # Property dropped by the deployment; Jira still names Koan as the author,
+    # which is the proof the in-place update requires.
+    existing = {
+        "id": "11",
+        "body": _rendered("stale plan"),
+        "author_account_id": "koan-account",
+    }
 
     def edit(_key, _comment_id, rendered, properties=None):
         existing["body"] = rendered
@@ -201,7 +207,14 @@ def test_existing_current_plan_is_updated_not_appended(tmp_path):
         return True
 
     with (
-        patch("app.jira_plan_publish.jira_list_comments_checked", side_effect=lambda _k: [existing]),
+        patch(
+            "app.jira_notifications.jira_self_identity",
+            return_value=("koan-account", ""),
+        ),
+        patch(
+            "app.jira_plan_publish.jira_list_comments_checked",
+            side_effect=lambda _k: [existing],
+        ),
         patch("app.jira_plan_publish.jira_edit_comment", side_effect=edit) as edit_comment,
         patch("app.jira_plan_publish.jira_add_comment") as add_comment,
         patch("app.jira_plan_publish.log_event"),
@@ -377,6 +390,51 @@ def test_property_less_fallback_still_spares_a_human_comment(tmp_path):
     add_comment.assert_not_called()
     assert human["body"] == human_body
     assert koan_part["body"].endswith(_footer("revised plan"))
+
+
+def test_unresolvable_identity_spares_a_human_comment(tmp_path):
+    """"Cannot tell who wrote this" must not authorise an overwrite.
+
+    With properties dropped *and* ``/myself`` unreachable, nothing on the issue
+    can be attributed to Koan — including a reviewer's quoted plan tail. The
+    publish posts a fresh part rather than editing the reviewer's comment.
+    """
+    stage_plan(URL, "revised plan", str(tmp_path))
+    human_body = f"Quoting the plan:\n\n{_footer_for(_revision('original plan'), 1, 1)}"
+    human = {
+        "id": "11",
+        "body": human_body,
+        "properties": {},
+        "author_account_id": "human-account",
+    }
+    comments = [human]
+
+    def add(_key, rendered, properties=None):
+        comments.append({
+            "id": "12",
+            "body": rendered,
+            "properties": _properties_map(properties or []),
+            "author_account_id": "koan-account",
+        })
+        return True
+
+    with (
+        patch("app.jira_notifications.jira_self_identity", return_value=("", "")),
+        patch(
+            "app.jira_plan_publish.jira_list_comments_checked",
+            side_effect=lambda _k: comments,
+        ),
+        patch("app.jira_plan_publish.jira_add_comment", side_effect=add) as add_comment,
+        patch("app.jira_plan_publish.jira_edit_comment") as edit_comment,
+        patch("app.jira_plan_publish.log_event"),
+    ):
+        ok, comment_id = publish_staged_plan(URL, str(tmp_path))
+
+    assert ok is True
+    assert comment_id == "12"
+    add_comment.assert_called_once()
+    edit_comment.assert_not_called()
+    assert human["body"] == human_body
 
 
 def test_a_created_part_is_not_created_again_when_the_listing_lags(tmp_path):

@@ -145,10 +145,12 @@ def _identifies_outcome(
 
     The entity property is proof on its own. The visible footer and the legacy
     marker are not: both are plain text a reviewer reproduces by quoting a
-    status Koan posted, so they only identify the status comment when Jira does
-    not attribute the comment to someone else. Without that guard the upsert
-    below overwrites the quoting reviewer's body — same reasoning, and the same
-    check, as the plan comment path.
+    status Koan posted, so they only identify the status comment when authorship
+    is *proven* — the property, or Jira naming Koan's own account as the author.
+    "Cannot tell" is not good enough here: the match selects the comment whose
+    body the upsert below replaces, and on a tenant where ``/myself`` is
+    unreachable the lenient rule would hand it the quoting reviewer's comment.
+    Same reasoning, and the same strictness, as the plan comment path.
     """
     if _has_outcome_property(comment, digest):
         return True
@@ -176,7 +178,10 @@ def _upsert_status_comment(
         # Creating on that signal is how one outcome becomes a pile of them.
         _log_runner("jira", f"Comment lookup failed for {issue_key}: {e}")
         return False, "lookup_failed"
-    authored_by_koan = koan_authorship_check(comments, _OUTCOME_PROPERTY_KEY)
+    # `strict`: whatever this predicate matches is about to be overwritten.
+    authored_by_koan = koan_authorship_check(
+        comments, _OUTCOME_PROPERTY_KEY, strict=True,
+    )
     existing = next(
         (
             comment
@@ -212,9 +217,11 @@ def _confirm_identity(issue_key: str, digest: str, action: str) -> Tuple[bool, s
     would therefore duplicate — say so loudly now rather than letting status
     comments quietly stack up.
 
-    The footer only counts on a comment Koan could have written: a reviewer
-    quoting the tail of an earlier status would otherwise satisfy verification
-    for a write that in fact landed without either identity.
+    The footer only counts on a comment Koan can *prove* it wrote, matching the
+    rule the next run will use to find this comment. A weaker rule here would
+    verify an identity the upsert then refuses to act on — and a reviewer
+    quoting the tail of an earlier status would satisfy verification for a write
+    that in fact landed without either identity.
     """
     try:
         comments = jira_list_comments_checked(issue_key)
@@ -222,7 +229,9 @@ def _confirm_identity(issue_key: str, digest: str, action: str) -> Tuple[bool, s
         _log_runner("jira", f"Outcome read-back failed for {issue_key}: {e}")
         return False, f"{action}_unverified"
 
-    authored_by_koan = koan_authorship_check(comments, _OUTCOME_PROPERTY_KEY)
+    authored_by_koan = koan_authorship_check(
+        comments, _OUTCOME_PROPERTY_KEY, strict=True,
+    )
     if any(
         _has_outcome_property(comment, digest)
         or (authored_by_koan(comment) and _has_outcome_footer(comment, digest))
