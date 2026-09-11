@@ -288,20 +288,28 @@ def popen_cli(
 
     *cli_lock* is an already-acquired :func:`acquire_provider_lock` result whose
     ownership transfers here — it is released by ``cleanup()`` (or immediately,
-    on failure), exactly like a lock taken internally.
+    on failure), exactly like a lock taken internally. The transfer covers
+    **every** exit path: the guard below opens before the first statement that
+    can fail, so a handed-over lock is never left held by a raising caller.
     """
     provider = provider or _get_cli_provider()
-    cmd, prompt_path, use_as_stdin = prepare_prompt_file(cmd, provider=provider)
-    if launcher:
-        cmd = list(launcher) + list(cmd)
-    if cli_lock is None:
-        cli_lock = _ProviderInvocationLock(provider.invocation_lock_name())
-        cli_lock.__enter__()
-    # One outer guard so the lock is released on ANY failure after acquisition —
-    # including open(prompt_path) below, which sits before the Popen try/except.
+    prompt_path: Optional[str] = None
+    # One outer guard so the lock is released on ANY failure — including
+    # prepare_prompt_file() (tempfile.mkstemp under koan_tmp_dir() raises
+    # OSError on a full/unwritable scratch dir) and open(prompt_path), both of
+    # which sit before the Popen try/except. A handed-over lock leaked here
+    # self-deadlocks the caller: mission_scope.launch_scoped catches OSError and
+    # retries the spawn unscoped, and the fresh flock on a second open-file
+    # description can never be granted against one this process already holds.
     # On the success path we return normally (no exception), so the lock stays
     # held until the returned cleanup()/release runs.
     try:
+        cmd, prompt_path, use_as_stdin = prepare_prompt_file(cmd, provider=provider)
+        if launcher:
+            cmd = list(launcher) + list(cmd)
+        if cli_lock is None:
+            cli_lock = _ProviderInvocationLock(provider.invocation_lock_name())
+            cli_lock.__enter__()
         if prompt_path and use_as_stdin:
             stdin_file = open(prompt_path)  # noqa: SIM115
             kwargs.pop("stdin", None)
@@ -329,11 +337,13 @@ def popen_cli(
 
         return proc, cleanup_prompt_file_only
     except Exception:
-        # Any failure after the lock was taken (open(), Popen, ...) must release
+        # Any failure (prepare_prompt_file(), open(), Popen, ...) must release
         # the lock and remove the temp prompt file. _cleanup_prompt_file tolerates
-        # a None path (the no-prompt branch).
+        # a None path (the no-prompt branch); cli_lock is None only when we failed
+        # before taking one of our own, and release() is a no-op on an unheld lock.
         _cleanup_prompt_file(prompt_path)
-        cli_lock.release()
+        if cli_lock is not None:
+            cli_lock.release()
         raise
 
 
