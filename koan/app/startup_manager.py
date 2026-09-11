@@ -144,6 +144,13 @@ def run_migrations(koan_root: str):
         log("init", f"[migration] {msg}")
 
 
+def run_config_migrations(koan_root: str):
+    """Reshape legacy config.yaml sections in place (one-shot, idempotent)."""
+    from app.config_migration import run_config_migrations as _run
+    for msg in _run(koan_root):
+        log("init", f"[migration] {msg}")
+
+
 def ensure_projects_yaml(koan_root: str) -> list[str]:
     """Create a minimal projects.yaml if it doesn't exist.
 
@@ -778,6 +785,11 @@ def run_startup(koan_root: str, instance: str, projects: list):
     from app.run import protected_phase
 
     with protected_phase("Startup checks"):
+        # Reshape any legacy config.yaml sections BEFORE strict validation, so
+        # an operator upgrading across a config shape change self-heals instead
+        # of hitting a hard stop.
+        _safe_run("Config migration", run_config_migrations, koan_root)
+
         # Strict config validation runs outside _safe_run so errors
         # propagate (hard stop) and reach the operator via Telegram.
         try:

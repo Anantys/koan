@@ -4,7 +4,7 @@ The catalog of all pages in this wiki. Each entry: a link to the page and a one-
 
 This wiki spans two content roots — `docs/` (operational "how to use", see [`docs/README.md`](docs/README.md)) and the durable half of `specs/` (design "why/contract", see [`specs/README.md`](../specs/README.md)) — reached from here via the `wiki/docs`, `wiki/specs-components`, `wiki/specs-skills` symlinks. Speckit's ephemeral per-feature folders (`specs/<NNN-slug>/`) are listed under "Specs — Active Features" below with a computed status, not frontmattered. See `SCHEMA.md` for the full rationale.
 
-~84 pages total — well under the ~150-page / 300-line shard threshold, so this stays flat.
+~85 pages total — well under the ~150-page / 300-line shard threshold, so this stays flat.
 
 ---
 
@@ -53,6 +53,7 @@ This wiki spans two content roots — `docs/` (operational "how to use", see [`d
 - [`operations/maint.md`](docs/operations/maint.md) — Covers Kōan's release process and branch philosophy (`main` vs `stable`), the `make release` procedure, versioning scheme, and recovery steps.
 - [`operations/memory-footprint.md`](docs/operations/memory-footprint.md) — Why the container memory graph plateaus high after missions (page cache + slab, not a leak), the /tmp leftovers that inflate it, the post-mission sweep, the per-mission cgroup scope that kills leaked build daemons, and the anon-first triage rule.
 - [`operations/memory-watchdog.md`](docs/operations/memory-watchdog.md) — Explains the memory watchdog that restarts the agent loop between missions when RSS stays over a threshold, its config knobs, and health-endpoint observability.
+- [`operations/mcp-server.md`](docs/operations/mcp-server.md) — Configures Kōan's MCP server over stdio or Streamable HTTP: curated REST tools, shared bearer auth, TLS proxying, audits, optional SDK, and the destructive-tool gate.
 - [`operations/mission-cli.md`](docs/operations/mission-cli.md) — Terminal commands (`make missions` / `make mission-rm`, or `python -m app.mission_ctl`) to inspect and edit the SQLite mission store directly when the Telegram bridge is unresponsive.
 - [`operations/pr-reports.md`](docs/operations/pr-reports.md) — Documents the `/report` skill that posts per-project and global GitHub PR activity digests (created/merged/interacted metrics) over weekly/monthly windows.
 - [`operations/rest-api.md`](docs/operations/rest-api.md) — Documents Kōan's optional, token-authenticated HTTP control layer (missions, projects, pause/resume, config, admin, usage/metrics/logs endpoints) and its security model.
@@ -92,6 +93,7 @@ This wiki spans two content roots — `docs/` (operational "how to use", see [`d
 
 ### Users
 - [`users/koan-md.md`](docs/users/koan-md.md) — Documents the optional project-root `KOAN.md` file and the `.koan/` directory (a second `.koan/KOAN.md`, per-skill `.koan/skills/<skill>/*.md` hooks, and a structured `.koan/config.yaml` with `review.always_check`): koan-only steering for the autonomous agent, 16k caps, runner `project_path` wiring, and this repo's dogfood quality-gate layout.
+- [`users/koan-cli.md`](docs/users/koan-cli.md) — Explains the runtime OpenAPI REST client, secure named profiles, generated commands, generic JSON/query input, output and exit-code contracts, and destructive-request confirmation.
 - [`users/model-configuration.md`](docs/users/model-configuration.md) — Explains how to configure which model handles each Koan role (mission, chat, lightweight, fallback, etc.) per provider via `config.yaml`, including resolution order and CLI-provider-per-role routing.
 - [`users/onboarding.md`](docs/users/onboarding.md) — Documents the interactive 12-step onboarding wizard that sets up a new Koan instance, its resumability, personality presets, and non-interactive/CI mode.
 - [`users/quickstart.md`](docs/users/quickstart.md) — A 5-minute guide to the commands for driving Koan from GitHub PRs/issues, Jira, and messaging apps (Telegram/Slack), with minimal and context-augmented examples for each.
@@ -111,6 +113,7 @@ This wiki spans two content roots — `docs/` (operational "how to use", see [`d
 - [`components/core.md`](specs-components/core.md) — Design contract for the foundation layer (mission queue contract, config resolution, atomic-write/lock primitives) that every other Kōan component depends on.
 - [`components/git-github.md`](specs-components/git-github.md) — Design contract for everything touching git history or the GitHub API: branch/PR creation, sync, webhook/notification handling, and rebase/recreate/CI-fix workflows.
 - [`components/issue-tracking.md`](specs-components/issue-tracking.md) — Design contract for the provider-neutral issue-tracker abstraction (GitHub/Jira) that routes fetch/comment/create calls through one service layer.
+- [`components/mcp.md`](specs-components/mcp.md) — Defines Kōan's opt-in MCP front-end over stdio or Streamable HTTP, curated REST operation tools, destructive-tool gate, shared OpenAPI HTTP client boundary, and HTTP authentication/audit invariants.
 - [`components/providers.md`](specs-components/providers.md) — Design contract for the CLI provider abstraction that decouples the agent loop from any single AI coding CLI (Claude, Cline, Codex, Copilot, Haze, Grok) behind one `CLIProvider` contract, including the MCP per-role safety boundary.
 - [`components/skills.md`](specs-components/skills.md) — Documents the skills system that discovers, routes, and executes `/command` skills (SKILL.md contract, dispatch, MCP access for skill runners, the new-skill checklist, and the eval harness).
 - [`components/web.md`](specs-components/web.md) — Documents the Flask dashboard and token-gated REST API, shared `dashboard_service` logic (including the live progress stream contract), OpenAPI drift guard, and surface-parity invariants.

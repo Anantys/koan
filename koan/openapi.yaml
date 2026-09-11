@@ -52,9 +52,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Get config
+      summary: Get the effective config, with secrets masked out.
       tags:
       - admin
+      x-koan-mcp: true
   /v1/health:
     get:
       operationId: health_get
@@ -68,12 +69,40 @@ paths:
                 $ref: '#/components/schemas/Error'
           description: Error response
       security: []
-      summary: Health
+      summary: Liveness probe; public, no token required.
       tags:
       - health
+      x-koan-mcp: true
   /v1/logs:
     get:
       operationId: observability_logs_get
+      parameters:
+      - description: Log source to read.
+        in: query
+        name: source
+        required: false
+        schema:
+          default: all
+          enum:
+          - run
+          - awake
+          - all
+          type: string
+      - description: Maximum lines returned per source.
+        in: query
+        name: limit
+        required: false
+        schema:
+          default: 200
+          maximum: 2000
+          minimum: 1
+          type: integer
+      - description: Case-insensitive substring filter.
+        in: query
+        name: q
+        required: false
+        schema:
+          type: string
       responses:
         '200':
           description: Successful response
@@ -95,12 +124,29 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Logs
+      summary: Tail recent agent logs, optionally filtered by source.
       tags:
       - observability
+      x-koan-mcp: true
   /v1/metrics:
     get:
       operationId: observability_metrics_get
+      parameters:
+      - description: Lookback window; values are clamped to the documented range.
+        in: query
+        name: days
+        required: false
+        schema:
+          default: 30
+          maximum: 365
+          minimum: 0
+          type: integer
+      - description: Return metrics and trend for one project.
+        in: query
+        name: project
+        required: false
+        schema:
+          type: string
       responses:
         '200':
           description: Successful response
@@ -122,12 +168,32 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Metrics
+      summary: Mission throughput and success metrics over a window.
       tags:
       - observability
+      x-koan-mcp: true
   /v1/missions:
     get:
       operationId: missions_list_missions_route_get
+      parameters:
+      - description: Restrict results to one mission status.
+        in: query
+        name: status
+        required: false
+        schema:
+          enum:
+          - pending
+          - in_progress
+          - done
+          - failed
+          - removed
+          type: string
+      - description: Restrict results to one project.
+        in: query
+        name: project
+        required: false
+        schema:
+          type: string
       responses:
         '200':
           description: Successful response
@@ -149,11 +215,43 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: List missions route
+      summary: List missions, newest first, optionally filtered.
       tags:
       - missions
+      x-koan-mcp: true
     post:
       operationId: missions_create_mission_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              anyOf:
+              - properties:
+                  command:
+                    pattern: \S
+                required:
+                - command
+              - properties:
+                  text:
+                    pattern: \S
+                required:
+                - text
+              properties:
+                command:
+                  description: Slash-command mission; takes precedence over text.
+                  type: string
+                project:
+                  description: Optional project name added as a project tag.
+                  type: string
+                text:
+                  description: Free-form mission text.
+                  type: string
+                urgent:
+                  default: false
+                  description: Insert the mission at the front of the pending queue.
+                  type: boolean
+              type: object
+        required: true
       responses:
         '202':
           description: Successful response
@@ -175,12 +273,30 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Create mission
+      summary: Queue a new mission.
       tags:
       - missions
+      x-koan-mcp: true
   /v1/missions/reorder:
     post:
       operationId: missions_reorder_mission_route_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              properties:
+                mission_id:
+                  pattern: \S
+                  type: string
+                target_position:
+                  description: One-indexed position in the pending queue.
+                  minimum: 1
+                  type: integer
+              required:
+              - mission_id
+              - target_position
+              type: object
+        required: true
       responses:
         '200':
           description: Successful response
@@ -202,9 +318,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Reorder mission route
+      summary: Move a pending mission to a new position.
       tags:
       - missions
+      x-koan-mcp: true
   /v1/missions/{mission_id}:
     delete:
       operationId: missions_delete_mission_delete
@@ -235,9 +352,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Delete mission
+      summary: Remove a pending mission.
       tags:
       - missions
+      x-koan-mcp: true
     get:
       operationId: missions_get_mission_route_get
       parameters:
@@ -267,9 +385,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Get mission route
+      summary: Fetch one mission by id.
       tags:
       - missions
+      x-koan-mcp: true
     patch:
       operationId: missions_edit_mission_patch
       parameters:
@@ -278,6 +397,18 @@ paths:
         required: true
         schema:
           type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              properties:
+                text:
+                  pattern: \S
+                  type: string
+              required:
+              - text
+              type: object
+        required: true
       responses:
         '200':
           description: Successful response
@@ -299,7 +430,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Edit mission
+      summary: Change a pending mission.
       tags:
       - missions
   /v1/missions/{mission_id}/result:
@@ -332,12 +463,23 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Get mission result route
+      summary: Fetch a finished mission's result.
       tags:
       - missions
+      x-koan-mcp: true
   /v1/pause:
     post:
       operationId: admin_pause_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              properties:
+                duration:
+                  description: Duration such as 2h, 30m, or 1h30m; omit for indefinite.
+                  type: string
+              type: object
+        required: false
       responses:
         '200':
           description: Successful response
@@ -359,9 +501,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Pause
+      summary: Pause the agent, optionally for a duration like "2h" or "30m".
       tags:
       - admin
+      x-koan-mcp: true
   /v1/projects:
     get:
       operationId: projects_list_projects_get
@@ -386,11 +529,26 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: List projects
+      summary: List watched projects.
       tags:
       - projects
+      x-koan-mcp: true
     post:
       operationId: projects_add_project_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              properties:
+                github_url:
+                  pattern: \S
+                  type: string
+                name:
+                  type: string
+              required:
+              - github_url
+              type: object
+        required: true
       responses:
         '201':
           description: Successful response
@@ -412,7 +570,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Add project
+      summary: Add a project to watch.
       tags:
       - projects
   /v1/projects/{name}:
@@ -445,7 +603,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Delete project
+      summary: Remove a watched project.
       tags:
       - projects
     patch:
@@ -456,6 +614,47 @@ paths:
         required: true
         schema:
           type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              properties:
+                patch:
+                  additionalProperties: false
+                  properties:
+                    autoreview:
+                      type: boolean
+                    cli_provider:
+                      type: string
+                    devcontainer:
+                      type: boolean
+                    exploration:
+                      type: boolean
+                    focus:
+                      type: boolean
+                    git_auto_merge.base_branch:
+                      type: string
+                    git_auto_merge.enabled:
+                      type: boolean
+                    git_auto_merge.strategy:
+                      enum:
+                      - squash
+                      - merge
+                      - rebase
+                      type: string
+                    github_url:
+                      type: string
+                    max_open_prs:
+                      type: integer
+                    max_pending_branches:
+                      type: integer
+                    rtk:
+                      type: boolean
+                  type: object
+              required:
+              - patch
+              type: object
+        required: true
       responses:
         '200':
           description: Successful response
@@ -477,7 +676,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Patch project
+      summary: Update a watched project's configuration.
       tags:
       - projects
   /v1/restart:
@@ -504,7 +703,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Restart
+      summary: Request a full agent restart.
       tags:
       - admin
   /v1/resume:
@@ -531,9 +730,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Resume
+      summary: Resume the agent after a pause.
       tags:
       - admin
+      x-koan-mcp: true
   /v1/shutdown:
     post:
       operationId: admin_shutdown_post
@@ -558,7 +758,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Shutdown
+      summary: Gracefully stop the agent.
       tags:
       - admin
   /v1/status:
@@ -585,9 +785,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Status
+      summary: Get current agent state, execution and mission counters.
       tags:
       - status
+      x-koan-mcp: true
   /v1/update:
     post:
       operationId: admin_update_post
@@ -612,7 +813,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Update
+      summary: Pull upstream changes and restart.
       tags:
       - admin
   /v1/update_release:
@@ -639,12 +840,54 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Update release
+      summary: Check out the latest tagged release and restart.
       tags:
       - admin
   /v1/usage:
     get:
       operationId: observability_usage_get
+      parameters:
+      - description: Window length; values are clamped to the documented range.
+        in: query
+        name: days
+        required: false
+        schema:
+          default: 7
+          maximum: 100
+          minimum: 1
+          type: integer
+      - description: Shift the window back by this many granularity units.
+        in: query
+        name: offset
+        required: false
+        schema:
+          default: 0
+          minimum: 0
+          type: integer
+      - description: Series bucketing granularity.
+        in: query
+        name: granularity
+        required: false
+        schema:
+          default: day
+          enum:
+          - day
+          - week
+          - month
+          type: string
+      - description: Include a per-project series breakdown.
+        in: query
+        name: stacked
+        required: false
+        schema:
+          default: false
+          type: boolean
+      - description: Restrict totals and series to one project.
+        in: query
+        name: project
+        required: false
+        schema:
+          type: string
       responses:
         '200':
           description: Successful response
@@ -666,18 +909,25 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Usage
+      summary: Daily agent usage totals, optionally split by project.
       tags:
       - observability
+      x-koan-mcp: true
 security:
 - bearerAuth: []
 servers:
 - description: Default loopback bind
   url: http://127.0.0.1:8420
 tags:
-- name: admin
-- name: health
-- name: missions
-- name: observability
-- name: projects
-- name: status
+- description: Config, pause/resume, restart, update and shutdown
+  name: admin
+- description: Liveness probe (no token required)
+  name: health
+- description: Queue, inspect, reorder and delete missions
+  name: missions
+- description: Logs, metrics and usage
+  name: observability
+- description: List, add, update and remove watched projects
+  name: projects
+- description: Current agent state, execution and mission counters
+  name: status

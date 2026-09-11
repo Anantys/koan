@@ -1,5 +1,6 @@
 # Users
 
+* [Kōan REST CLI](koan-cli.md) - Configure and use bin/koan-cli to call every operation in Kōan's token-authenticated REST API.
 * [KOAN.md — koan-only project instructions](koan-md.md) - Documents the optional project-root KOAN.md file and the .koan/ directory (a second .koan/KOAN.md, per-skill .koan/skills/<skill>/*.md hooks, and a structured .koan/config.yaml with review.always_check): koan-only steering injected into the autonomous agent's system prompt but never loaded by interactive Claude Code sessions, with precedence rules, the 16k-char cap, and this repo's dogfood layout.
 * [Model Configuration](model-configuration.md) - Explains how to configure which model handles each Koan role (mission, chat, lightweight, fallback, etc.) per provider via `config.yaml`, including resolution order and CLI-provider-per-role routing.
 * [Onboarding Guide](onboarding.md) - Documents the interactive 12-step onboarding wizard that sets up a new Koan instance, its resumability, personality presets, and non-interactive/CI mode.

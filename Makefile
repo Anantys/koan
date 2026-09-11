@@ -3,7 +3,7 @@ export
 
 .PHONY: install onboard setup start stop status restart
 .PHONY: clean say missions mission-rm migrate test test-skills test-strict coverage lint sync-instance rename-project release
-.PHONY: awake run errand-run errand-awake dashboard koan api api-token openapi openapi-check webhook
+.PHONY: awake run errand-run errand-awake dashboard koan api api-token openapi openapi-check webhook mcp mcp-setup mcp-config
 .PHONY: ollama logs ssh-forward
 .PHONY: install-systemctl-service uninstall-systemctl-service
 .PHONY: install-user-service uninstall-user-service
@@ -89,6 +89,12 @@ $(VENV)/.installed: koan/requirements.txt
 	$(VENV)/bin/pip install -r koan/requirements.txt
 	@touch $@
 
+mcp-setup: $(VENV)/.mcp-installed
+
+$(VENV)/.mcp-installed: $(VENV)/.installed koan/requirements-mcp.txt
+	$(VENV)/bin/pip install -r koan/requirements-mcp.txt
+	@touch $@
+
 awake: setup
 	$(KOAN_RUN) app/awake.py
 
@@ -167,6 +173,12 @@ api-token:
 		echo "Or set in instance/config.yaml:" && \
 		echo "  api:" && \
 		echo "    token: \"$$token\""
+
+mcp: mcp-setup
+	$(KOAN_RUN) -m app.mcp
+
+mcp-config: setup
+	@$(KOAN_RUN) -m app.mcp.config_cli
 
 # Regenerate the committed OpenAPI document (koan/openapi.yaml) from the live
 # REST API route table. Run this after adding/removing/modifying an API endpoint,
@@ -292,22 +304,27 @@ ollama: setup
 	@echo "→ Starting Kōan with Ollama stack..."
 	@$(KOAN_RUN) -m app.pid_manager start-stack $(PWD)
 
+KOAN_LOG_FILES := logs/run.log logs/awake.log logs/ollama.log \
+	logs/dashboard.log logs/api.log logs/mcp.log
+
 logs:
 	@mkdir -p logs
-	@if [ ! -f logs/run.log ] && [ ! -f logs/awake.log ] && [ ! -f logs/ollama.log ]; then \
+	@if [ ! -f logs/run.log ] && [ ! -f logs/awake.log ] && \
+	    [ ! -f logs/ollama.log ] && [ ! -f logs/dashboard.log ] && \
+	    [ ! -f logs/api.log ] && [ ! -f logs/mcp.log ]; then \
 		echo "No log files found. Start Kōan first with 'make start'."; \
 		exit 1; \
 	fi
 	@echo "→ Watching Kōan logs + live progress (Ctrl-C to stop watching — Kōan keeps running)"
 	@if [ "$(raw)" = "1" ]; then \
-		tail -F logs/run.log logs/awake.log logs/ollama.log instance/journal/pending.md 2>/dev/null; \
+		tail -F $(KOAN_LOG_FILES) instance/journal/pending.md 2>/dev/null; \
 	else \
 		fmt_py="$(PYTHON_ABS)"; \
 		[ -x "$$fmt_py" ] || fmt_py="$$(command -v python3 || command -v python)"; \
 		if [ -z "$$fmt_py" ]; then \
-			tail -F logs/run.log logs/awake.log logs/ollama.log instance/journal/pending.md 2>/dev/null; \
+			tail -F $(KOAN_LOG_FILES) instance/journal/pending.md 2>/dev/null; \
 		else \
-			tail -F logs/run.log logs/awake.log logs/ollama.log instance/journal/pending.md 2>/dev/null \
+			tail -F $(KOAN_LOG_FILES) instance/journal/pending.md 2>/dev/null \
 				| ( cd koan && PYTHONPATH=. "$$fmt_py" -m app.log_fmt ); \
 		fi; \
 	fi

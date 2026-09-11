@@ -1279,6 +1279,25 @@ class TestGetStatusProcesses:
             result = get_status_processes(tmp_path)
         assert isinstance(result, tuple)
 
+    def test_status_includes_only_http_mcp(self, tmp_path):
+        with patch("app.pid_manager._detect_provider", return_value="claude"), patch(
+            "app.pid_manager._is_dashboard_enabled", return_value=False
+        ), patch(
+            "app.pid_manager._is_api_enabled", return_value=False
+        ), patch(
+            "app.pid_manager._is_mcp_http_enabled", return_value=True
+        ):
+            assert "mcp" in get_status_processes(tmp_path)
+
+        with patch("app.pid_manager._detect_provider", return_value="claude"), patch(
+            "app.pid_manager._is_dashboard_enabled", return_value=False
+        ), patch(
+            "app.pid_manager._is_api_enabled", return_value=False
+        ), patch(
+            "app.pid_manager._is_mcp_http_enabled", return_value=False
+        ):
+            assert "mcp" not in get_status_processes(tmp_path)
+
 
 # ---------------------------------------------------------------------------
 # start_all
@@ -1376,6 +1395,43 @@ class TestStartAll:
             ok, msg = results[name]
             assert ok is False
             assert "already running" in msg.lower()
+
+    def test_start_all_starts_api_before_http_mcp(self, tmp_path):
+        order = []
+        with patch("app.pid_manager._is_dashboard_enabled", return_value=False), patch(
+            "app.pid_manager._is_api_enabled", return_value=True
+        ), patch(
+            "app.pid_manager._is_mcp_http_enabled", return_value=True
+        ), patch(
+            "app.pid_manager.start_awake", return_value=(True, "ok")
+        ), patch(
+            "app.pid_manager.start_runner", return_value=(True, "ok")
+        ), patch(
+            "app.pid_manager.start_api",
+            side_effect=lambda root: (order.append("api"), (True, "ok"))[1],
+        ), patch(
+            "app.pid_manager.start_mcp",
+            side_effect=lambda root: (order.append("mcp"), (True, "ok"))[1],
+        ):
+            results = start_all(tmp_path, provider="claude")
+
+        assert order == ["api", "mcp"]
+        assert results["mcp"] == (True, "ok")
+
+    def test_start_all_does_not_daemonize_stdio_mcp(self, tmp_path):
+        with patch("app.pid_manager._is_dashboard_enabled", return_value=False), patch(
+            "app.pid_manager._is_api_enabled", return_value=False
+        ), patch(
+            "app.pid_manager._is_mcp_http_enabled", return_value=False
+        ), patch(
+            "app.pid_manager.start_awake", return_value=(True, "ok")
+        ), patch(
+            "app.pid_manager.start_runner", return_value=(True, "ok")
+        ), patch("app.pid_manager.start_mcp") as start_mcp:
+            results = start_all(tmp_path, provider="claude")
+
+        assert "mcp" not in results
+        start_mcp.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -2072,6 +2128,10 @@ class TestDashboardConfig:
     def test_process_names_includes_dashboard(self):
         """PROCESS_NAMES tuple includes dashboard."""
         assert "dashboard" in PROCESS_NAMES
+
+    def test_process_names_includes_mcp(self):
+        """PROCESS_NAMES tuple includes mcp."""
+        assert "mcp" in PROCESS_NAMES
 
     def test_is_dashboard_enabled_false_by_default(self):
         """Dashboard is disabled when config has no dashboard section."""

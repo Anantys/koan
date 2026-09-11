@@ -1,4 +1,13 @@
-# Community CLI wrappers (`bin/`)
+# Checkout-local command-line tools (`bin/`)
+
+## REST client
+
+`koan-cli` is a spec-driven client for Kōan's REST API. It reads the committed
+OpenAPI document, manages secure named profiles, and exposes every documented
+operation. It is independent from the provider wrappers below; do not set it as
+`KOAN_CLAUDE_CLI_PATH`. See the [Kōan REST CLI guide](../docs/users/koan-cli.md).
+
+## Community provider wrappers
 
 These are small, self-contained wrapper scripts that make Koan's **Claude
 provider** drive an alternative model backend, without any Koan code changes.

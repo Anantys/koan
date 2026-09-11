@@ -6,10 +6,48 @@ from pathlib import Path
 from flask import Blueprint, current_app, jsonify, request
 
 from app.api.auth import require_token
+from app.api.openapi_metadata import openapi_operation
 
 log = logging.getLogger("koan.api")
 
 bp = Blueprint("projects", __name__)
+
+_ADD_PROJECT_SCHEMA = {
+    "type": "object",
+    "required": ["github_url"],
+    "properties": {
+        "github_url": {"type": "string", "pattern": r"\S"},
+        "name": {"type": "string"},
+    },
+}
+
+_PATCH_PROJECT_SCHEMA = {
+    "type": "object",
+    "required": ["patch"],
+    "properties": {
+        "patch": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "cli_provider": {"type": "string"},
+                "autoreview": {"type": "boolean"},
+                "focus": {"type": "boolean"},
+                "exploration": {"type": "boolean"},
+                "rtk": {"type": "boolean"},
+                "devcontainer": {"type": "boolean"},
+                "max_open_prs": {"type": "integer"},
+                "max_pending_branches": {"type": "integer"},
+                "github_url": {"type": "string"},
+                "git_auto_merge.enabled": {"type": "boolean"},
+                "git_auto_merge.base_branch": {"type": "string"},
+                "git_auto_merge.strategy": {
+                    "type": "string",
+                    "enum": ["squash", "merge", "rebase"],
+                },
+            },
+        },
+    },
+}
 
 
 def _koan_root() -> Path:
@@ -54,8 +92,10 @@ def _run_skill(command: str, args: str = "") -> tuple:
 
 
 @bp.route("/v1/projects", methods=["GET"])
+@openapi_operation(mcp=True)
 @require_token
 def list_projects():
+    """List watched projects."""
     from app.utils import get_known_projects
     projects = get_known_projects()
     result = []
@@ -76,8 +116,10 @@ def list_projects():
 
 
 @bp.route("/v1/projects", methods=["POST"])
+@openapi_operation(request_schema=_ADD_PROJECT_SCHEMA)
 @require_token
 def add_project():
+    """Add a project to watch."""
     data = request.get_json(silent=True) or {}
     github_url = data.get("github_url", "").strip()
     if not github_url:
@@ -97,6 +139,7 @@ def add_project():
 @bp.route("/v1/projects/<name>", methods=["DELETE"])
 @require_token
 def delete_project(name: str):
+    """Remove a watched project."""
     ok, result = _run_skill("delete_project", name)
     if not ok:
         return jsonify({"error": {"code": "skill_error", "message": result}}), 500
@@ -104,8 +147,10 @@ def delete_project(name: str):
 
 
 @bp.route("/v1/projects/<name>", methods=["PATCH"])
+@openapi_operation(request_schema=_PATCH_PROJECT_SCHEMA)
 @require_token
 def patch_project(name: str):
+    """Update a watched project's configuration."""
     from app.projects_config import apply_project_patch
 
     data = request.get_json(silent=True)

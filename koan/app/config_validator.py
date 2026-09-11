@@ -76,7 +76,7 @@ CONFIG_SCHEMA: Dict[str, Any] = {
     "skip_permissions": "bool",
     "strip_co_authored_by": "bool",
     "cli_provider": "str",
-    "mcp": "list",
+    "mcp": _NESTED,
     "telegram": _NESTED,
     "budget": _NESTED,
     "tools": _NESTED,
@@ -198,6 +198,14 @@ SECTION_SCHEMAS: Dict[str, Dict[str, str]] = {
     },
     "ollama_launch": {
         "model": "str",
+    },
+    "mcp": {
+        "enabled": "bool",
+        "transport": "str",
+        "host": "str",
+        "port": "int",
+        "tools_allow_destructive": "bool",
+        "configs": "list",
     },
     "usage": {
         "session_token_limit": "int",
@@ -355,6 +363,39 @@ _SIMILARITY_CUTOFF = 0.6
 # Validation logic
 # ---------------------------------------------------------------------------
 
+def accepts_non_mapping(key: str, value: Any) -> bool:
+    """Whether a ``_NESTED`` key legitimately accepts this non-mapping value.
+
+    Several sections accept a shorthand beside their dict form, and one
+    (``mcp``) accepts a legacy list. Both the advisory validator
+    (``validate_config``) and the strict startup validator
+    (``validate_config_or_raise``) must agree on that set — a value one accepts
+    and the other rejects turns a working config into a hard startup stop.
+    Keeping the set here, in one place, is what stops them drifting apart.
+
+    Level validation for ``effort`` stays in ``validate_config``: this predicate
+    answers "is the SHAPE allowed", not "is the value sane".
+    """
+    # Legacy ``mcp: [config.json]``. Migrated to ``mcp.configs`` by
+    # app.config_migration at startup, still honored by get_mcp_configs().
+    if key == "mcp" and isinstance(value, list):
+        return True
+    # effort accepts a scalar shorthand (effort: "high") applying to every
+    # mission, alongside the per-mission-type dict form.
+    if key == "effort" and isinstance(value, str):
+        return True
+    # ci_check accepts a bare bool shorthand — is_ci_check_enabled honors both.
+    if key == "ci_check" and isinstance(value, bool):
+        return True
+    # running_indicator likewise — get_running_indicator_config honors both.
+    if key == "running_indicator" and isinstance(value, bool):
+        return True
+    # stagnation: false is the documented off switch.
+    if key == "stagnation" and value is False:
+        return True
+    return False
+
+
 def _check_type(value: Any, expected: Any) -> bool:
     """Check if value matches expected type spec.
 
@@ -483,29 +524,22 @@ def validate_config(config: dict) -> List[Tuple[str, str]]:
         if expected == _NESTED:
             if value is None:
                 continue
-            # Some keys accept both a scalar shorthand and a dict form
-            # (e.g. effort: "high" vs effort: {review: low, deep: high}).
-            # Accept strings silently for these keys.
+            # Some keys accept a shorthand beside their dict form (e.g.
+            # effort: "high" vs effort: {review: low, deep: high}, or the
+            # legacy mcp: [config.json] list). accepts_non_mapping owns that
+            # set so this validator and validate_config_or_raise stay in step.
             if not isinstance(value, dict):
-                # effort accepts a scalar shorthand (effort: "high") that
-                # applies to every mission — but validate the level so a typo
-                # (effort: "hihg") warns instead of silently dropping the flag,
-                # mirroring the per-key validation below.
-                if key == "effort" and isinstance(value, str):
-                    if value.strip().lower() not in _VALID_EFFORT_LEVELS:
-                        warnings.append((
-                            key,
-                            f"'effort' invalid effort '{value}' "
-                            f"(expected low/medium/high/max)",
-                        ))
-                    continue
-                # ci_check accepts a bare bool shorthand (ci_check: true) in
-                # addition to the dict form — is_ci_check_enabled honors both.
-                if key == "ci_check" and isinstance(value, bool):
-                    continue
-                # running_indicator likewise accepts a bare bool shorthand
-                # (running_indicator: true) — get_running_indicator_config honors both.
-                if key == "running_indicator" and isinstance(value, bool):
+                if accepts_non_mapping(key, value):
+                    # The shape is fine — but still validate effort's LEVEL so a
+                    # typo (effort: "hihg") warns instead of silently dropping
+                    # the flag, mirroring the per-key validation below.
+                    if key == "effort" and isinstance(value, str):
+                        if value.strip().lower() not in _VALID_EFFORT_LEVELS:
+                            warnings.append((
+                                key,
+                                f"'effort' invalid effort '{value}' "
+                                f"(expected low/medium/high/max)",
+                            ))
                     continue
                 warnings.append((key, f"'{key}' should be a mapping, got {type(value).__name__}"))
                 continue
@@ -569,6 +603,20 @@ def validate_config(config: dict) -> List[Tuple[str, str]]:
                     key,
                     f"'{key}' should be {exp_label}, got {type(value).__name__}",
                 ))
+
+    # Semantic check: reject an unknown mcp.transport value so a typo fails
+    # loudly instead of silently selecting stdio.
+    mcp = config.get("mcp")
+    if isinstance(mcp, dict):
+        transport = mcp.get("transport")
+        if (
+            isinstance(transport, str)
+            and transport.strip().lower() not in {"stdio", "http"}
+        ):
+            warnings.append((
+                "mcp.transport",
+                f"'mcp.transport' must be one of http/stdio, got {transport!r}",
+            ))
 
     # Semantic check: deep-validate optimizations.caveman when it's a dict.
     optimizations = config.get("optimizations")
@@ -1013,16 +1061,9 @@ def validate_config_or_raise(koan_root: str) -> None:
             continue
         expected = CONFIG_SCHEMA[key]
         if expected == _NESTED:
-            if key == "effort" and isinstance(value, str):
-                continue
-            if key == "stagnation" and value is False:
-                continue
-            # ci_check accepts a bare bool shorthand (ci_check: true) in addition
-            # to the dict form — is_ci_check_enabled honors both. Mirror the
-            # warning validator so the strict startup path does not regress it.
-            if key == "ci_check" and isinstance(value, bool):
-                continue
-            if key == "running_indicator" and isinstance(value, bool):
+            # Shared with validate_config so a shorthand accepted there can
+            # never be a hard startup stop here.
+            if accepts_non_mapping(key, value):
                 continue
             if not isinstance(value, dict):
                 errors.append(

@@ -4,7 +4,7 @@ title: "REST API"
 description: "Documents Kōan's optional, token-authenticated HTTP control layer (missions, projects, pause/resume, config, admin, usage/metrics/logs endpoints), its generated OpenAPI spec + drift guard, and its security model."
 tags: [operations]
 created: 2026-05-31
-updated: 2026-07-10
+updated: 2026-09-09
 ---
 
 # REST API
@@ -72,6 +72,21 @@ Token comparison uses `hmac.compare_digest` to prevent timing attacks. If no tok
 
 ---
 
+## Command-line client
+
+[`bin/koan-cli`](../../bin/koan-cli) is the checkout-local REST client. It
+reads this repository's committed OpenAPI document at runtime, supports all
+documented operations, and retains generic JSON/query flags while body and
+query schemas are being enriched. See the
+[Kōan REST CLI](../users/koan-cli.md) guide for secure profiles, examples,
+output guarantees, and exit codes.
+
+Kōan also provides an opt-in [stdio MCP server](mcp-server.md) over this same
+OpenAPI-driven HTTP client. MCP requires this REST API to remain enabled and
+running; it shares the bearer token and audit trail.
+
+---
+
 ## OpenAPI specification
 
 The API ships a machine-readable **OpenAPI 3.1 document** at
@@ -125,10 +140,14 @@ but **only when an API-defining file changes** (`koan/app/api/**`, `koan/openapi
 CI time on it. If the check
 fails, the log tells you to run `make openapi` and commit the result.
 
-> **Scope (iteration 1):** the document precisely covers **paths, methods, path parameters,
-> and bearer-auth security** for every route. Per-operation request/response **body** schemas
-> are a planned enrichment and are not yet included. Two known non-`200` successes are
-> reflected: `POST /v1/missions` → `202`, `POST /v1/projects` → `201`.
+> **Request coverage:** the generated document covers paths, methods, path
+> parameters, bearer-auth security, JSON request bodies, and query parameters
+> for every current route. Body schemas and query declarations live beside
+> their Flask views through `openapi_operation()`, while
+> `app.api.openapi_gen` reads those declarations from the registered route.
+> Response body schemas remain a planned enrichment and are not included in
+> this iteration. Two known non-`200` successes remain explicit:
+> `POST /v1/missions` → `202` and `POST /v1/projects` → `201`.
 
 ---
 
@@ -530,6 +549,7 @@ Tokens are never written to the log.
 
 ## See also
 
+- [`docs/operations/mcp-server.md`](mcp-server.md) — curated stdio MCP front-end
 - [`docs/operations/dashboard.md`](dashboard.md) — web dashboard (separate process, same config pattern)
 - [`instance.example/config.yaml`](../../instance.example/config.yaml) — documented `api:` section
 - [`koan/openapi.yaml`](../../koan/openapi.yaml) — generated OpenAPI 3.1 document (`make openapi`) · [render in Swagger Editor](https://editor.swagger.io/?url=https://raw.githubusercontent.com/Anantys-oss/koan/main/koan/openapi.yaml)

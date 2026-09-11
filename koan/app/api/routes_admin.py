@@ -6,6 +6,7 @@ from pathlib import Path
 from flask import Blueprint, current_app, jsonify, request
 
 from app.api.auth import require_token
+from app.api.openapi_metadata import openapi_operation
 
 bp = Blueprint("admin", __name__)
 
@@ -23,6 +24,16 @@ _SECRET_SUBSTRINGS = (
     "signing_key",
     "encryption_key",
 )
+
+_PAUSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "duration": {
+            "type": "string",
+            "description": "Duration such as 2h, 30m, or 1h30m; omit for indefinite.",
+        },
+    },
+}
 
 
 def _koan_root() -> Path:
@@ -52,8 +63,10 @@ def _mask_secrets(obj, depth: int = 0):
 
 
 @bp.route("/v1/pause", methods=["POST"])
+@openapi_operation(request_schema=_PAUSE_SCHEMA, request_required=False, mcp=True)
 @require_token
 def pause():
+    """Pause the agent, optionally for a duration like \"2h\" or \"30m\"."""
     data = request.get_json(silent=True) or {}
     duration_str = data.get("duration", "").strip()
 
@@ -75,16 +88,20 @@ def pause():
 
 
 @bp.route("/v1/resume", methods=["POST"])
+@openapi_operation(mcp=True)
 @require_token
 def resume():
+    """Resume the agent after a pause."""
     from app.pause_manager import remove_pause
     remove_pause(str(_koan_root()))
     return jsonify({"status": "resumed"})
 
 
 @bp.route("/v1/config", methods=["GET"])
+@openapi_operation(mcp=True)
 @require_token
 def get_config():
+    """Get the effective config, with secrets masked out."""
     from app.utils import load_config
     from app.utils import get_known_projects
     try:
@@ -100,6 +117,7 @@ def get_config():
 @bp.route("/v1/restart", methods=["POST"])
 @require_token
 def restart():
+    """Request a full agent restart."""
     # Route through request_restart() so both per-consumer markers are written
     # and the restart actually fires. Touching legacy .koan-restart was a
     # no-op — no consumer polls it.
@@ -114,6 +132,7 @@ def restart():
 @bp.route("/v1/shutdown", methods=["POST"])
 @require_token
 def shutdown():
+    """Gracefully stop the agent."""
     from app.signals import STOP_FILE
     stop_file = _koan_root() / STOP_FILE
     try:
@@ -126,6 +145,7 @@ def shutdown():
 @bp.route("/v1/update", methods=["POST"])
 @require_token
 def update():
+    """Pull upstream changes and restart."""
     try:
         from app.update_manager import check_update_safety, pull_upstream
         safety_msg = check_update_safety(_koan_root())
@@ -142,6 +162,7 @@ def update():
 @bp.route("/v1/update_release", methods=["POST"])
 @require_token
 def update_release():
+    """Check out the latest tagged release and restart."""
     try:
         from app.update_manager import checkout_latest_tag
         result = checkout_latest_tag(_koan_root())

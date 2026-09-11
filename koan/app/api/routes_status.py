@@ -6,6 +6,7 @@ from pathlib import Path
 from flask import Blueprint, current_app, jsonify
 
 from app.api.auth import require_token
+from app.api.openapi_metadata import openapi_operation
 
 log = logging.getLogger("koan.api")
 
@@ -128,8 +129,10 @@ def _execution_truth(agent: dict, missions: dict, koan_root: Path) -> dict:
 
 
 @bp.route("/v1/status")
+@openapi_operation(mcp=True)
 @require_token
 def status():
+    """Get current agent state, execution and mission counters."""
     agent = _get_agent_state()
     missions = _mission_counts()
     return jsonify(

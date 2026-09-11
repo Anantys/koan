@@ -26,6 +26,12 @@ process launch if it fails.
 bridge. `make stop` asks managed processes to exit and escalates only when a
 process does not stop cleanly.
 
+When `mcp.enabled: true` and `mcp.transport: http`, `make start` also launches
+the MCP Streamable HTTP daemon after the REST API. It owns
+`.koan-pid-mcp`, writes process and audit output to `logs/mcp.log`, and is
+included in `make stop`, `make status`, and `make logs`. The default stdio
+transport is launched by MCP clients and is never daemonized by `make start`.
+
 ## Bridge Loop
 
 See `specs/components/bridge.md` for the design contract behind this process

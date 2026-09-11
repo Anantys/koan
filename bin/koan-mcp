@@ -1,0 +1,14 @@
+#!/usr/bin/env python3
+"""Run Kōan's MCP server directly from a source checkout."""
+
+import sys
+from pathlib import Path
+
+
+repository = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(repository / "koan"))
+
+from app.mcp.__main__ import main
+
+
+raise SystemExit(main())
