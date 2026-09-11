@@ -4,7 +4,7 @@ title: "Component Spec — Issue Tracking"
 description: "Design contract for the provider-neutral issue-tracker abstraction (GitHub/Jira) that routes fetch/comment/create calls through one service layer."
 tags: [issue-tracking]
 created: 2026-06-27
-updated: 2026-09-10
+updated: 2026-09-11
 ---
 
 # Component Spec — Issue Tracking
@@ -104,14 +104,20 @@ issue_cli.py          → CLI entry point (fetch/comment/create) used by prompts
   Because that footer is plain text anyone can reproduce by quoting the tail of
   a status, it identifies the status comment only together with **authorship**,
   under the same rule the `/plan` path applies: the `koan.jira.outcome` property
-  when any comment on the issue carries one, otherwise Jira's own attribution.
+  is proof wherever it appears, and a comment without it is judged on Jira's own
+  attribution. The listing decides the *bar*, never eligibility — one
+  property-carrying comment must not disqualify the rest, or a status published
+  before properties existed becomes unrecognizable and is duplicated instead of
+  migrated.
   An upsert overwrites a comment body outright, so the attribution fallback must
   demand **proof** — Jira naming Koan's own account — and not merely the absence
   of a foreign one. "Cannot tell who wrote this" is "not mine" for every
   body-replacing write, so the guarantee that a reviewer's quoted footer is
   never what Koan edits holds even on a tenant whose self-identity lookup
   fails; the cost is a duplicate comment, which is recoverable, instead of a
-  destroyed human comment, which is not. Read-only matching may stay lenient.
+  destroyed human comment, which is not. Read-only matching may stay lenient
+  only while no comment on the issue carries the property; once one does, an
+  unattributable comment without it is not Koan's either.
   Legacy `<!-- koan-jira-outcome:… -->` markers are lookup-only migration
   inputs subject to the same authorship guard: the next update removes the
   marker and writes the footer plus the property. Lookup failure remains

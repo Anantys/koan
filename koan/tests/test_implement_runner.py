@@ -332,6 +332,42 @@ class TestExtractLatestPlan:
         assert "second half" in result
         assert "Why not use a queue" not in result
 
+    def test_unclaimable_split_plan_warns_instead_of_passing_the_issue_body_off(self):
+        """Rejecting every part must not look like "this issue has no plan".
+
+        The fragments are skipped as standalone plans too, so the fallback is
+        the pre-plan issue body — and the incompleteness banner cannot fire
+        because no part was assembled. The text itself has to say so.
+        """
+        _revision_hex, part1, part2, _footer = self._koan_multipart_plan()
+        # Properties dropped by the tenant, and the account that published the
+        # plan has since been rotated out: authorship refuses both parts.
+        part1["author_account_id"] = "old-koan-account"
+        part2["author_account_id"] = "old-koan-account"
+        body = "## Summary\nthe pre-plan issue description"
+
+        with patch(
+            "app.jira_notifications.jira_self_identity",
+            return_value=("new-koan-account", ""),
+        ):
+            result = _extract_latest_plan(body, [part1, part2])
+
+        assert "the pre-plan issue description" in result
+        assert "split plan on this issue was ignored" in result
+        assert "second half" not in result
+
+    def test_unclaimable_split_plan_with_no_other_plan_reports_nothing_found(self):
+        """No fallback text means no plan — fail rather than ship a banner."""
+        _revision_hex, part1, part2, _footer = self._koan_multipart_plan()
+        part1["author_account_id"] = "old-koan-account"
+        part2["author_account_id"] = "old-koan-account"
+
+        with patch(
+            "app.jira_notifications.jira_self_identity",
+            return_value=("new-koan-account", ""),
+        ):
+            assert _extract_latest_plan("", [part1, part2]) == ""
+
 
 # ---------------------------------------------------------------------------
 # fetch_issue_with_comments (now in github.py)

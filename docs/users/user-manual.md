@@ -4,7 +4,7 @@ title: "Kōan User Manual"
 description: "A tiered (beginner/intermediate/power-user) walkthrough of everything Kōan can do, from queuing your first mission through parallel sessions, deep exploration, and full configuration."
 tags: [users]
 created: 2026-05-28
-updated: 2026-09-09
+updated: 2026-09-11
 ---
 
 # Kōan User Manual
@@ -529,7 +529,7 @@ Use this before `/plan` when the idea is architecturally complex, when you want 
 
 **`/implement`** — Queue an implementation mission for a GitHub or Jira issue. Never bails on ambiguity — resolves blockers with the simplest viable solution and retries once before surfacing a problem.
 
-For Jira plans split into `Part N of M` comments, `/implement` selects the newest verified plan generation and joins its available parts in numeric order before reviewing or implementing it.
+For Jira plans split into `Part N of M` comments, `/implement` selects the newest verified plan generation and joins its available parts in numeric order before reviewing or implementing it. If it cannot verify a single part as Kōan's own — a tenant that drops comment properties plus a rotated API account, say — the plan text it works from opens with a warning naming the ignored parts, and the mission fails with "no plan found" when the issue holds no other plan text, rather than quietly implementing the pre-plan issue description.
 
 - **Usage:** `/implement <issue-url> [additional context]`
 - **Aliases:** `/impl`

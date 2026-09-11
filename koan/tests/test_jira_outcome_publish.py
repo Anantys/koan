@@ -418,6 +418,66 @@ class TestUpsertJiraComment:
         assert "koan-jira-outcome" not in edit_comment.call_args.args[2]
         assert edit_comment.call_args.kwargs["properties"]
 
+    def test_legacy_marker_migrates_even_when_another_comment_has_a_property(self):
+        """One property-carrying comment must not disqualify the rest.
+
+        The issue already has a post-upgrade `/plan` status comment, so the
+        property is demonstrably supported here — but the `/fix` status still
+        predates it and carries only the legacy marker. Gating the whole
+        listing on "some comment has the property" would skip it, post a
+        second `/fix` status, and leave two contradictory outcomes on the
+        issue.
+        """
+        from app.jira_outcome_publish import (
+            _OUTCOME_PROPERTY_KEY,
+            _footer_for,
+            _marker_for,
+            _outcome_digest,
+            upsert_jira_comment,
+        )
+
+        digest = _outcome_digest("PROJ-1", "fix")
+        plan_digest = _outcome_digest("PROJ-1", "plan")
+        existing = [
+            {
+                "id": "1",
+                "body": f"plan status\n\n{_footer_for(plan_digest)}",
+                "properties": {
+                    _OUTCOME_PROPERTY_KEY: {"digest": plan_digest, "command": "plan"},
+                },
+            },
+            {
+                "id": "99",
+                "body": f"old body\n\n{_marker_for('PROJ-1', 'fix')}",
+                "properties": {},
+                "author_account_id": "koan-account",
+            },
+        ]
+        migrated = [{
+            "id": "99",
+            "body": f"new body\n\n{_footer_for(digest)}",
+            "properties": {
+                _OUTCOME_PROPERTY_KEY: {"digest": digest, "command": "fix"},
+            },
+        }]
+        with (
+            _as_koan(),
+            patch(
+                "app.jira_outcome_publish.jira_list_comments_checked",
+                side_effect=[existing, migrated],
+            ),
+            patch(
+                "app.jira_outcome_publish.jira_edit_comment",
+                return_value=True,
+            ) as edit_comment,
+            patch("app.jira_outcome_publish.jira_add_comment") as add_comment,
+        ):
+            ok, mode = upsert_jira_comment("PROJ-1", "fix", "new body")
+
+        assert (ok, mode) == (True, "updated")
+        assert edit_comment.call_args.args[:2] == ("PROJ-1", "99")
+        add_comment.assert_not_called()
+
     def test_dropped_property_still_verifies_via_visible_footer(self):
         """A Jira that does not persist the property must not fail the publish.
 

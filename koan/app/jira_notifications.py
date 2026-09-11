@@ -1434,24 +1434,29 @@ def koan_authorship_check(
     The predicate is built from the whole listing because the strongest
     available evidence depends on it. A Jira comment entity property is proof —
     it cannot be produced from the comment editor, only through the REST comment
-    payload — so when *any* comment carries ``property_key``, only comments that
-    carry it count.
+    payload — so a comment carrying ``property_key`` always counts.
 
-    When *no* comment on the issue does, the property is not available evidence
-    at all: a Jira deployment may drop properties on write, or ignore
-    ``expand=properties`` when listing, and Koan must still recognise the
-    comment it published. There the check falls back to Jira's own authorship,
-    and ``strict`` decides what to do with "cannot tell":
+    A comment *without* the property still gets Jira's own authorship test: one
+    property-carrying comment must not disqualify the rest of the listing, or a
+    legacy comment written before properties existed becomes unrecognisable and
+    is duplicated instead of migrated. What the rest of the listing decides is
+    how much that test has to prove:
 
-    - ``strict=False`` (read-only matching) excludes only comments Jira
-      positively attributes to someone else — "cannot tell" stays admissible.
-    - ``strict=True`` demands proof, per
-      :func:`jira_comment_authored_by_self`'s contract: a caller about to
-      *replace a comment body* must treat "cannot tell" as "not mine",
-      because a tenant whose ``/myself`` is unreachable would otherwise let a
-      reviewer's quoted footer select their comment for the overwrite. The
-      cost of refusing is a duplicate comment, which is recoverable; the cost
-      of guessing is a destroyed human comment, which is not.
+    - Nothing on the issue carries ``property_key`` and ``strict=False``
+      (read-only matching): only comments Jira positively attributes to someone
+      else are excluded — "cannot tell" stays admissible, because a Jira
+      deployment may drop properties on write or ignore ``expand=properties``
+      when listing, and Koan must still recognise the comment it published.
+    - ``strict=True``, or any comment on the issue carries ``property_key``:
+      authorship must be *proven*, per
+      :func:`jira_comment_authored_by_self`'s contract. A caller about to
+      *replace a comment body* must treat "cannot tell" as "not mine", because
+      a tenant whose ``/myself`` is unreachable would otherwise let a
+      reviewer's quoted footer select their comment for the overwrite; and once
+      properties demonstrably survive on this issue, an unattributable comment
+      lacking one is not Koan's either. The cost of refusing is a duplicate
+      comment, which is recoverable; the cost of guessing is a destroyed human
+      comment, which is not.
 
     Callers pair this with their own body marker: authorship answers "is this
     ours?", the marker answers "which one is it?". Never overwrite a comment
@@ -1462,10 +1467,11 @@ def koan_authorship_check(
         properties = comment.get("properties")
         return isinstance(properties, dict) and property_key in properties
 
-    if any(carries_property(comment) for comment in comments or []):
-        return carries_property
-    if strict:
-        return lambda comment: jira_comment_authored_by_self(comment) is True
+    if strict or any(carries_property(comment) for comment in comments or []):
+        return lambda comment: (
+            carries_property(comment)
+            or jira_comment_authored_by_self(comment) is True
+        )
     return lambda comment: jira_comment_authored_by_self(comment) is not False
 
 

@@ -382,6 +382,13 @@ def _extract_latest_plan(body: Optional[str], comments: List[dict]) -> str:
     Multipart Jira plan comments are assembled first.  Other trackers retain
     the existing newest-plan-comment behavior.
 
+    A split Jira plan whose parts are all unclaimable — the authorship check
+    refuses every one of them, so nothing is assembled — must not disappear
+    quietly: the same fragments are also skipped as standalone plans, so the
+    fallback would be the pre-plan issue body presented as the plan. The
+    incompleteness banner cannot fire for that case (no part was assembled, so
+    nothing reads as missing), hence the explicit warning here.
+
     Args:
         body: Issue body text.
         comments: List of comment dicts with keys: author, date, body.
@@ -390,7 +397,54 @@ def _extract_latest_plan(body: Optional[str], comments: List[dict]) -> str:
         The plan text, or empty string if no plan found.
     """
     multipart_plan, multipart_score = _extract_jira_multipart_plan_scored(comments)
+    plan = _select_latest_plan(body, comments, multipart_plan, multipart_score)
+    if multipart_plan:
+        return plan
 
+    unclaimed = _unclaimable_multipart_fragments(comments)
+    if not unclaimed:
+        return plan
+
+    logger.warning(
+        "%d split Jira plan comment(s) could not be verified as Koan's own — "
+        "they were excluded, so this plan may be stale",
+        unclaimed,
+    )
+    if not plan.strip():
+        # Nothing else on the issue reads as a plan, so there is no text to
+        # carry the warning. Report "no plan" and let the mission fail rather
+        # than hand the agent a banner to implement.
+        return ""
+    return (
+        f"> **Warning — a split plan on this issue was ignored.** {unclaimed} "
+        f"`Part N of M` comment(s) could not be verified as Koan's own, so the "
+        f"text below is whatever else the issue offers and may predate that "
+        f"plan. Verify it before implementing.\n\n{plan}"
+    )
+
+
+def _unclaimable_multipart_fragments(comments: List[dict]) -> int:
+    """Count comments shaped like a split Jira plan part.
+
+    Only meaningful when assembly returned nothing: every such comment was
+    rejected by the authorship check, yet still shadows the plan the agent
+    would otherwise run.
+    """
+    return sum(
+        1
+        for comment in comments or []
+        if (parsed := parse_plan_comment(str(comment.get("body", "") or "")))
+        is not None and parsed[2] > 1
+    )
+
+
+def _select_latest_plan(
+    body: Optional[str],
+    comments: List[dict],
+    multipart_plan: str,
+    multipart_score: Tuple[str, int],
+) -> str:
+    """Pick the newest plan text among the assembled group, comments and body."""
     # Check comments from newest to oldest. Never treat an individual Jira
     # multipart fragment as a standalone plan when no group was assembled.
     for index in range(len(comments) - 1, -1, -1):
