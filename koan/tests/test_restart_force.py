@@ -5,6 +5,7 @@ the request on disk and signals the runner (SIGUSR2) so it kills the in-flight
 mission and exits with RESTART_EXIT_CODE immediately.
 """
 
+import contextlib
 import os
 import signal
 import subprocess
@@ -584,3 +585,154 @@ class TestForcedRestartWhileProviderLockContended:
         assert acquired.wait(5), "exit 127 leaked the lock; the next mission hangs"
         assert retry.acquired
         retry.release()
+
+    def test_retry_spawn_does_not_wait_for_the_lock_while_deferred(
+            self, tmp_path, monkeypatch):
+        """launch_scoped's unscoped retry must take its lock outside the window.
+
+        The retry needs a *fresh* provider lock (popen_cli released the
+        handed-over one). Taking it inside the armed forced-restart deferral
+        would suppress /restart --force for as long as a peer Kōan holds the
+        lock — a whole peer mission — while the skill already replied that the
+        in-flight mission was killed.
+        """
+        import fcntl
+
+        from app import mission_scope, run
+        from app.provider.codex import CodexProvider
+
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        monkeypatch.setattr("app.utils.koan_tmp_dir", lambda: str(tmp_path))
+        monkeypatch.setattr("app.utils.sweep_stray_tmp_dirs", lambda *a, **k: [])
+        monkeypatch.setattr("app.page_cache.run_reclaim", lambda *a, **k: None)
+        # Force the systemd-run branch so the first spawn can fail and
+        # launch_scoped falls back to the unscoped retry.
+        monkeypatch.setattr(mission_scope, "systemd_run", lambda: ("/bin/true", []))
+
+        # A peer takes the lock only *between* the two attempts — before that
+        # the runner's own hoisted acquire (already outside the window) would
+        # absorb the wait and the retry would never be exercised. flock is
+        # per open-file-description, so a second open in this process contends
+        # exactly like another Kōan would.
+        peer = open(tmp_path / "codex-cli.lock", "a+")
+        released = threading.Event()
+        attempts = []
+
+        def flaky_popen_cli(cmd, provider=None, launcher=None, cli_lock=None,
+                            **kwargs):
+            from app.cli_exec import acquire_provider_lock
+            attempts.append(launcher)
+            if cli_lock is not None:
+                cli_lock.release()  # popen_cli owns the handover on every exit
+            if len(attempts) == 1:
+                fcntl.flock(peer.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                raise OSError("scope spawn failed")
+            # No handover on the retry means the real popen_cli would take the
+            # lock itself, here, inside the caller's deferral window. Emulate
+            # that so a regression blocks on the peer exactly as it would live.
+            if cli_lock is None:
+                acquire_provider_lock(provider)
+            kwargs.pop("stdin", None)
+            argv = list(launcher) + list(cmd) if launcher else cmd
+            proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, **kwargs)
+            return proc, lambda: None
+
+        monkeypatch.setattr("app.cli_exec.popen_cli", flaky_popen_cli)
+
+        def hold_then_release():
+            # Safety valve: a regression waits the whole peer mission out, so
+            # let go eventually and let the elapsed-time assertion fail loudly
+            # instead of hanging the suite.
+            released.wait(timeout=5)
+            with contextlib.suppress(OSError, ValueError):
+                fcntl.flock(peer.fileno(), fcntl.LOCK_UN)
+
+        def send_force_restart():
+            time.sleep(0.3)
+            os.kill(os.getpid(), signal.SIGUSR2)
+
+        releaser = threading.Thread(target=hold_then_release, daemon=True)
+        sender = threading.Thread(target=send_force_restart, daemon=True)
+        previous = signal.signal(signal.SIGUSR2, run._on_sigusr2)
+        started = time.monotonic()
+        try:
+            releaser.start()
+            sender.start()
+            with pytest.raises(SystemExit) as exc:
+                run.run_claude_task(
+                    cmd=["sleep", "30"],
+                    stdout_file=str(tmp_path / "out.txt"),
+                    stderr_file=str(tmp_path / "err.txt"),
+                    cwd=str(tmp_path),
+                    provider=CodexProvider(),
+                )
+        finally:
+            elapsed = time.monotonic() - started
+            sender.join(timeout=5)
+            signal.signal(signal.SIGUSR2, previous)
+            released.set()
+            releaser.join(timeout=2)
+            peer.close()
+
+        assert exc.value.code == RESTART_EXIT_CODE
+        assert len(attempts) == 1, "the retry spawned despite a forced restart"
+        # Honoured during the retry's wait, not after the peer let go at 5s.
+        assert elapsed < 3
+
+
+class TestForcedRestartKillAttribution:
+    """The forced restart's own SIGKILL is not a memory-cap hit.
+
+    ``mission_scope`` reads a ``-9`` exit under a memory cap as the cap firing
+    unless told Kōan delivered the kill itself. A cap hit is never retried, so
+    a force-restarted mission attributed that way is mislabelled and then
+    refused both retry paths.
+    """
+
+    def test_teardown_is_told_the_forced_kill_was_ours(
+            self, tmp_path, monkeypatch):
+        from app import mission_scope, run
+
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        monkeypatch.setattr("app.utils.koan_tmp_dir", lambda: str(tmp_path))
+        monkeypatch.setattr("app.utils.sweep_stray_tmp_dirs", lambda *a, **k: [])
+        monkeypatch.setattr("app.page_cache.run_reclaim", lambda *a, **k: None)
+        monkeypatch.setattr(run, "MISSION_POLL_INTERVAL", 0.2)
+        run._sig.task_running = False
+
+        def fake_popen_cli(cmd, provider=None, launcher=None, cli_lock=None,
+                           **kwargs):
+            kwargs.pop("stdin", None)
+            argv = list(launcher) + list(cmd) if launcher else cmd
+            proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, **kwargs)
+            return proc, lambda: (cli_lock.release() if cli_lock else None)
+
+        monkeypatch.setattr("app.cli_exec.popen_cli", fake_popen_cli)
+
+        recorded = {}
+        real_launch = mission_scope.launch_scoped
+
+        def recording_launch(*args, **kwargs):
+            scoped = real_launch(*args, **kwargs)
+            real_teardown = scoped.teardown
+
+            def teardown(*, koan_initiated_kill=False):
+                recorded["koan_initiated_kill"] = koan_initiated_kill
+                return real_teardown(koan_initiated_kill=koan_initiated_kill)
+
+            scoped.teardown = teardown
+            return scoped
+
+        monkeypatch.setattr(mission_scope, "launch_scoped", recording_launch)
+
+        request_restart(str(tmp_path), force=True)
+        with pytest.raises(SystemExit) as exc:
+            run.run_claude_task(
+                cmd=["sleep", "30"],
+                stdout_file=str(tmp_path / "out.txt"),
+                stderr_file=str(tmp_path / "err.txt"),
+                cwd=str(tmp_path),
+            )
+
+        assert exc.value.code == RESTART_EXIT_CODE
+        assert recorded.get("koan_initiated_kill") is True

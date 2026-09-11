@@ -304,6 +304,35 @@ def _sigusr2_deferred():
             _force_restart_now(reason)
 
 
+@contextlib.contextmanager
+def _sigusr2_undeferred():
+    """Lift an armed :func:`_sigusr2_deferred` window for an unbounded wait.
+
+    The deferral window must stay *short*, but ``mission_scope.launch_scoped``
+    retries the spawn unscoped after a failure, and that retry has to take a
+    **fresh** provider invocation lock (``popen_cli`` already released the
+    handed-over one) — the same contended, peer-held flock the first acquire
+    was hoisted out of. Taking it while deferred would suppress a forced
+    restart for as long as a peer Kōan holds the lock, potentially a whole peer
+    mission. Wrapping it here honours the restart at once instead, safe for the
+    same reason the first acquire is: nothing has been forked yet, so there is
+    nothing to orphan.
+
+    A request recorded before the lift is replayed immediately on entry rather
+    than waited out. Only ever used *inside* an armed window, so the exit
+    unconditionally re-arms.
+    """
+    _sig.defer_force_restart = False
+    try:
+        reason = _sig.pending_force_restart
+        if reason:
+            _sig.pending_force_restart = ""
+            _force_restart_now(reason)
+        yield
+    finally:
+        _sig.defer_force_restart = True
+
+
 def _force_restart_now(reason: str):
     """Kill any in-flight mission and exit for re-launch — never returns.
 
@@ -314,9 +343,16 @@ def _force_restart_now(reason: str):
     re-queued by crash recovery on the next startup — or failed by it, once
     the mission has exhausted ``max_crash_retries``.
     """
+    global _last_mission_aborted
     log("koan", f"{reason} — killing current mission and restarting now")
     proc = _sig.claude_proc
     if proc is not None and proc.poll() is None:
+        # Record it the way /abort does (_on_sigusr1) *before* the kill: the
+        # SIGKILL below is ours, and the mission-scope teardown that runs as
+        # the SystemExit unwinds must not read the resulting -9 exit as the
+        # memory cap firing — a cap hit is never retried, so a force-restarted
+        # mission would be mislabelled and then refused both retry paths.
+        _last_mission_aborted = True
         _kill_process_group(proc)
     elif _sig.task_running:
         # A mission is in flight but its subprocess is not published yet (or
@@ -513,10 +549,18 @@ def run_claude_task(
                 # The pre-acquired lock transfers on the FIRST attempt only:
                 # launch_scoped retries unscoped after a spawn failure, and
                 # popen_cli has already released it by then, so the retry must
-                # take a fresh one instead of running unserialized.
+                # take a fresh one instead of running unserialized. That second
+                # acquire is the same unbounded contended wait the first one was
+                # hoisted out of the deferral for, so it is taken with the
+                # window lifted — otherwise a forced restart stays suppressed
+                # for as long as a peer Kōan holds the provider lock.
                 nonlocal cleanup, lock_handed_over
-                handover = None if lock_handed_over else cli_lock
-                lock_handed_over = True
+                if lock_handed_over:
+                    with _sigusr2_undeferred():
+                        handover = acquire_provider_lock(provider)
+                else:
+                    handover = cli_lock
+                    lock_handed_over = True
                 spawned, cleanup = popen_cli(
                     argv, provider=provider, launcher=launcher,
                     cli_lock=handover, **kwargs,

@@ -414,6 +414,9 @@ heuristic:
   `popen_cli(cli_lock=...)`, because that flock is contended by every other Kōan on
   the host and can be held for a whole peer mission. Honouring a forced restart while
   waiting for it is safe — nothing has been forked yet, so there is nothing to orphan.
+  The same applies to `launch_scoped`'s unscoped retry, which must take a *fresh*
+  lock because `popen_cli` already released the handed-over one: that second acquire
+  happens with the window lifted (`_sigusr2_undeferred`), never inside it.
   Correspondingly, `_ProviderInvocationLock` waits with `LOCK_EX | LOCK_NB` plus a
   `LOCK_POLL_INTERVAL` sleep rather than a blocking `LOCK_EX`: a blocking flock parks
   the main thread in the kernel, where CPython cannot run Python-level signal handlers
