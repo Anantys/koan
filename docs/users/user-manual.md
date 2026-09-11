@@ -1979,12 +1979,26 @@ fresh install — no `/english` needed.
 - `/reset` — Resume from a max_runs pause without losing current state
 </details>
 
-**`/restart`** — Restart both agent and bridge processes without pulling new code.
+**`/restart [--force]`** — Restart both agent and bridge processes without pulling new code.
+
+Plain `/restart` is polite: the bridge re-execs right away, and the agent loop
+finishes the mission it is on before exiting for re-launch. `/restart --force`
+(also `-f`) does not wait — it kills the in-flight mission immediately and
+restarts. The killed mission is usually not lost: crash recovery moves it back
+to Pending on the next startup, with its `pending.md` context. A mission that
+has already exhausted its crash retries (`max_crash_retries`, default 3) is
+escalated to Failed instead — repeated forced restarts on the same mission
+eventually stop re-queueing it.
+
+Right after an update, the agent loop may still be running the older code while
+it finishes its current mission. Forcing it then is unsafe, so Kōan detects that
+case and falls back to a polite restart, telling you that in the reply.
 
 <details>
 <summary>Use cases</summary>
 
-- `/restart` — Force a restart when Kōan is already up to date but you need a fresh start
+- `/restart` — Restart when Kōan is already up to date but you need a fresh start
+- `/restart --force` — The run loop is wedged on a mission and `/abort` isn't landing; restart both daemons now
 </details>
 
 **`/snapshot`** — Export memory state to a portable snapshot file for backup or migration.
@@ -2484,7 +2498,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/update` | `/upgrade` | P | Update to latest commit on main, restart |
 | `/update_last_release` | — | P | Update to most recent release tag, restart |
 | `/reset` | — | P | Reset run counter to 0 |
-| `/restart` | — | P | Restart processes (no code pull) |
+| `/restart [--force]` | — | P | Restart processes (no code pull); `--force` kills the in-flight mission |
 | `/snapshot` | — | P | Export memory state |
 | `/add_project <url>` | `/add_project` | P | Add a project from GitHub |
 | `/delete_project <name>` | `/delete`, `/del` | P | Remove a project from workspace |

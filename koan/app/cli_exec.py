@@ -31,6 +31,12 @@ STDIN_PLACEHOLDER = "@stdin"
 # explicit timeout, but this guards against future callers forgetting.
 DEFAULT_TIMEOUT = 600  # 10 minutes
 
+# Granularity of the provider-invocation-lock wait. Contention is unbounded
+# (a peer Kōan can hold the lock for a whole mission), so the wait must never
+# park the calling thread in an uninterruptible kernel wait — see
+# _ProviderInvocationLock.__enter__.
+LOCK_POLL_INTERVAL = 0.25
+
 _FALLBACK_PROVIDER = CLIProvider()
 
 
@@ -90,7 +96,26 @@ class _ProviderInvocationLock:
             lock_path = _lock_path(self._lock_name)
             Path(lock_path).parent.mkdir(parents=True, exist_ok=True)
             self._fh = open(lock_path, "a+")  # noqa: SIM115
-            fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX)
+            # LOCK_NB + sleep rather than a blocking LOCK_EX. A blocking flock
+            # parks the thread in the kernel, and CPython only runs Python-level
+            # signal handlers from the main thread's eval loop: a
+            # process-directed kill() may be accepted by any other thread, so
+            # the blocked flock never even sees EINTR. With unbounded contention
+            # that makes the whole process deaf to SIGUSR1 / SIGUSR2 (/abort,
+            # /restart --force) for as long as the peer holds the lock. Polling
+            # bounds that deafness to LOCK_POLL_INTERVAL.
+            try:
+                while True:
+                    try:
+                        fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except BlockingIOError:
+                        time.sleep(LOCK_POLL_INTERVAL)
+            except (KeyboardInterrupt, SystemExit):
+                # A signal handler firing during the poll sleep (forced restart,
+                # CTRL-C) must not leak the lock file descriptor.
+                self._close()
+                raise
             self.acquired = True
         except OSError as exc:
             # Degrade loudly but do not abort the invocation: failing to lock
@@ -225,10 +250,29 @@ def run_cli(
                 _cleanup_prompt_file(prompt_path)
 
 
+def acquire_provider_lock(
+    provider: Optional[CLIProvider] = None,
+) -> _ProviderInvocationLock:
+    """Take the provider's invocation lock now, for a later :func:`popen_cli`.
+
+    Callers that must not sit inside ``popen_cli`` for an unbounded time hoist
+    the wait out with this and hand the result back via ``cli_lock=``; the
+    returned ``cleanup()`` then owns the release. The runner does this so the
+    contended wait happens *outside* its forced-restart deferral window (see
+    ``app.run._sigusr2_deferred``), where a ``/restart --force`` can still be
+    honoured immediately because no child process exists yet.
+    """
+    provider = provider or _get_cli_provider()
+    lock = _ProviderInvocationLock(provider.invocation_lock_name())
+    lock.__enter__()
+    return lock
+
+
 def popen_cli(
     cmd,
     provider: Optional[CLIProvider] = None,
     launcher: Optional[List[str]] = None,
+    cli_lock: Optional[_ProviderInvocationLock] = None,
     **kwargs,
 ) -> Tuple[subprocess.Popen, Callable[[], None]]:
     """Start a :class:`~subprocess.Popen` process with the prompt via temp-file stdin.
@@ -241,18 +285,31 @@ def popen_cli(
     --scope`` invocation. Prefixing before :func:`prepare_prompt_file` would
     hide the provider's own argv from the rewrite, so the prefix is deliberately
     applied at the last moment, immediately before the spawn.
+
+    *cli_lock* is an already-acquired :func:`acquire_provider_lock` result whose
+    ownership transfers here — it is released by ``cleanup()`` (or immediately,
+    on failure), exactly like a lock taken internally. The transfer covers
+    **every** exit path: the guard below opens before the first statement that
+    can fail, so a handed-over lock is never left held by a raising caller.
     """
     provider = provider or _get_cli_provider()
-    cmd, prompt_path, use_as_stdin = prepare_prompt_file(cmd, provider=provider)
-    if launcher:
-        cmd = list(launcher) + list(cmd)
-    cli_lock = _ProviderInvocationLock(provider.invocation_lock_name())
-    cli_lock.__enter__()
-    # One outer guard so the lock is released on ANY failure after acquisition —
-    # including open(prompt_path) below, which sits before the Popen try/except.
+    prompt_path: Optional[str] = None
+    # One outer guard so the lock is released on ANY failure — including
+    # prepare_prompt_file() (tempfile.mkstemp under koan_tmp_dir() raises
+    # OSError on a full/unwritable scratch dir) and open(prompt_path), both of
+    # which sit before the Popen try/except. A handed-over lock leaked here
+    # self-deadlocks the caller: mission_scope.launch_scoped catches OSError and
+    # retries the spawn unscoped, and the fresh flock on a second open-file
+    # description can never be granted against one this process already holds.
     # On the success path we return normally (no exception), so the lock stays
     # held until the returned cleanup()/release runs.
     try:
+        cmd, prompt_path, use_as_stdin = prepare_prompt_file(cmd, provider=provider)
+        if launcher:
+            cmd = list(launcher) + list(cmd)
+        if cli_lock is None:
+            cli_lock = _ProviderInvocationLock(provider.invocation_lock_name())
+            cli_lock.__enter__()
         if prompt_path and use_as_stdin:
             stdin_file = open(prompt_path)  # noqa: SIM115
             kwargs.pop("stdin", None)
@@ -280,11 +337,13 @@ def popen_cli(
 
         return proc, cleanup_prompt_file_only
     except Exception:
-        # Any failure after the lock was taken (open(), Popen, ...) must release
+        # Any failure (prepare_prompt_file(), open(), Popen, ...) must release
         # the lock and remove the temp prompt file. _cleanup_prompt_file tolerates
-        # a None path (the no-prompt branch).
+        # a None path (the no-prompt branch); cli_lock is None only when we failed
+        # before taking one of our own, and release() is a no-op on an unheld lock.
         _cleanup_prompt_file(prompt_path)
-        cli_lock.release()
+        if cli_lock is not None:
+            cli_lock.release()
         raise
 
 

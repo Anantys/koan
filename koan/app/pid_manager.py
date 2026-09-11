@@ -258,6 +258,106 @@ def check_pidfile(koan_root: Path, process_name: str) -> Optional[int]:
     return None
 
 
+def _cmdline_matches(pid: int, needle: str) -> Optional[bool]:
+    """Best-effort check that *pid*'s command line contains *needle*.
+
+    Mitigates the PID-reuse race between :func:`check_pidfile` and
+    :func:`os.kill`: if the OS recycled a daemon's PID for an unrelated
+    process, SIGUSR1/SIGUSR2's default disposition would terminate it.
+
+    On Linux, reads ``/proc/<pid>/cmdline``. On macOS/BSD (no ``/proc``),
+    falls back to ``ps -ww -p <pid> -o command=`` — ``-ww`` defeats the
+    terminal-width truncation that would otherwise cut a long argv
+    (``.venv/bin/python app/run.py`` under a deep root) before *needle*
+    and report a false mismatch.
+
+    Tri-state: True (matches), False (definitely a different process, or
+    gone), None (could not verify — hardened ``/proc``, no ``ps``). Callers
+    must fail closed on None, but can report it as a distinct cause.
+    """
+    try:
+        return needle.encode() in Path(f"/proc/{pid}/cmdline").read_bytes()
+    except FileNotFoundError:
+        # Either no /proc at all (macOS/BSD) or the process is gone; ps tells
+        # the two apart.
+        pass
+    except OSError as exc:
+        print(
+            f"[pid_manager] cannot read /proc/{pid}/cmdline ({exc})",
+            file=sys.stderr,
+        )
+    try:
+        result = subprocess.run(
+            ["ps", "-ww", "-p", str(pid), "-o", "command="],
+            capture_output=True, text=True, timeout=2,
+        )
+    except (subprocess.SubprocessError, OSError) as exc:
+        print(f"[pid_manager] cannot run ps for PID {pid} ({exc})", file=sys.stderr)
+        return None
+    if result.returncode == 0:
+        return needle in result.stdout
+    if not result.stdout.strip():
+        # ps exits non-zero with no output when the PID does not exist.
+        return False
+    print(
+        f"[pid_manager] ps failed for PID {pid} (rc={result.returncode})",
+        file=sys.stderr,
+    )
+    return None
+
+
+def signal_process(
+    koan_root: Path, process_name: str, sig: int, script: Optional[str] = None,
+) -> bool:
+    """Send *sig* to the running ``process_name`` daemon.
+
+    Verifies the PID still belongs to that daemon (``script``, defaulting to
+    ``<process_name>.py``) before signalling, so a recycled PID is never hit.
+    An *unverifiable* command line also blocks the signal — SIGUSR1/SIGUSR2
+    kill a process that does not handle them — but is reported separately so
+    the operator sees why the signal was withheld.
+
+    Returns True when the signal was delivered.
+    """
+    script = script or f"{process_name}.py"
+    try:
+        pid = check_pidfile(koan_root, process_name)
+    except (OSError, ValueError) as exc:
+        print(
+            f"[pid_manager] cannot read the {process_name} pidfile ({exc})",
+            file=sys.stderr,
+        )
+        return False
+    if not pid:
+        return False
+    verified = _cmdline_matches(pid, script)
+    if verified is None:
+        print(
+            f"[pid_manager] cannot verify PID {pid} runs {script}; "
+            f"withholding signal {sig}",
+            file=sys.stderr,
+        )
+        return False
+    if not verified:
+        return False
+    try:
+        os.kill(pid, sig)
+    except ProcessLookupError:
+        # Raced with the daemon exiting — the caller's file-marker fallback
+        # covers it, and there is nothing an operator could act on.
+        return False
+    except (OSError, ValueError) as exc:
+        # Notably EPERM: the daemon runs as another uid (systemd-run vs.
+        # interactive split). That is a permanent misconfiguration, so it must
+        # not look like "no runner" on every /abort and /restart --force.
+        print(
+            f"[pid_manager] cannot signal PID {pid} with {sig} ({exc})",
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+
 PROCESS_NAMES = ("run", "awake", "ollama", "dashboard", "api")
 
 # Process startup verification timeouts

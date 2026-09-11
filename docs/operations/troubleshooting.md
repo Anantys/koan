@@ -31,7 +31,8 @@ Run `/doctor` first — it catches many common problems and can auto-repair with
 1. **Stagnation detection** — if enabled, the agent auto-kills sessions stuck in a loop. Check the stagnation config in `config.yaml`: `stagnation.check_interval_seconds`, `abort_after_cycles`, and `max_retry_on_stagnation`.
 2. **Manual abort** — `/abort` kills the current mission and marks it Failed. The next mission in the queue picks up.
 3. **Check `/live`** — see if the agent is producing output or silently hung.
-4. **Bridge unresponsive? Break-glass CLI.** When the loop is truly stuck the Telegram bridge may stop answering `/list`, `/cancel`, and `/abort`. Interrogate and edit the queue straight from the terminal — no bridge, no run loop needed — with `make missions` (list) and `make mission-rm sel=i1` (abort the stuck one). See [Mission-queue break-glass CLI](mission-cli.md). Then `make stop && make start` to restart the loop clean (recovery will skip the aborted mission).
+4. **Forced restart** — `/restart --force` kills the in-flight mission and restarts both daemons immediately, instead of waiting for the mission to end like plain `/restart`. The mission is re-queued to Pending by crash recovery on the next startup — unless it has exhausted its crash retries (`max_crash_retries`), in which case recovery moves it to Failed. Reach for it when `/abort` doesn't land or the runner ignores a polite restart.
+5. **Bridge unresponsive? Break-glass CLI.** When the loop is truly stuck the Telegram bridge may stop answering `/list`, `/cancel`, and `/abort`. Interrogate and edit the queue straight from the terminal — no bridge, no run loop needed — with `make missions` (list) and `make mission-rm sel=i1` (abort the stuck one). See [Mission-queue break-glass CLI](mission-cli.md). Then `make stop && make start` to restart the loop clean (recovery will skip the aborted mission).
 
 ### "Quota exhausted" when quota is actually available
 

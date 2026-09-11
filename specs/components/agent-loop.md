@@ -381,6 +381,69 @@ heuristic:
   mistaken for a quota/auth message. Keep that default for new dispatch pathways.
 - **Every termination pathway needs a retry guard.** Stagnation kill, timeout kill,
   and CLI error all route through `_maybe_retry_mission`'s RETRYABLE check.
+  The forced-restart exit (below) is the ONE sanctioned exception: it never returns
+  to the retry guard at all, and hands the mission to crash recovery instead.
+- **Forced restart (`/restart --force`) unwinds the process; it does not return an
+  exit code.** `run_claude_task` is normally the only thing that decides a mission's
+  outcome, and every other kill path returns to `_finalize_mission`. The forced path
+  does not: `_force_restart_now` kills the provider process group and raises
+  `SystemExit(RESTART_EXIT_CODE)` from the main thread, so `run_claude_task` **never
+  returns** and `_maybe_retry_mission`/`_finalize_mission` never run. The mission is
+  deliberately left In Progress and owned by `recover.py`, which re-queues it to
+  Pending on the next startup — or escalates it to Failed once the mission has
+  exhausted `max_crash_retries`, since the forced kill counts as a crash. Code added
+  after `run_claude_task` returns is therefore NOT reached on this path; anything that
+  must happen on a forced restart belongs in a `finally` (which the `SystemExit`
+  unwind does run) or in recovery.
+  Two mechanisms drive it, and both are load-bearing: (1) SIGUSR2, handled by
+  `_on_sigusr2`, installed in `main_loop`; (2) the `force` line in `.koan-restart-run`,
+  re-read every `MISSION_POLL_INTERVAL` inside the mission wait loop as the fallback
+  for a lost signal, filtered by `_runner_start_time` so a marker from a previous
+  incarnation cannot force a restart. Across the window between spawning the CLI
+  subprocess and publishing it on `_sig.claude_proc`, `_sigusr2_deferred` records the
+  request and replays it on exit instead of acting on it — otherwise a forced restart
+  in that window would kill nothing and orphan the just-spawned session. The deferral
+  MUST live in `_on_sigusr2`, not in a `pthread_sigmask` block: a signal mask is *per
+  thread*, a process-directed `kill()` is accepted by any of the runner's threads that
+  has not blocked it (journal tail, watchdog, stagnation monitor), and CPython then
+  runs the Python-level handler on the main thread regardless of that thread's own
+  mask. Only a check inside the handler is independent of the thread topology.
+  The deferral window MUST stay bounded: anything inside it suppresses forced
+  restarts for its whole duration. `run_claude_task` therefore calls
+  `cli_exec.acquire_provider_lock` *before* `_sigusr2_deferred` and hands the lock to
+  `popen_cli(cli_lock=...)`, because that flock is contended by every other Kōan on
+  the host and can be held for a whole peer mission. Honouring a forced restart while
+  waiting for it is safe — nothing has been forked yet, so there is nothing to orphan.
+  The same applies to `launch_scoped`'s unscoped retry, which must take a *fresh*
+  lock because `popen_cli` already released the handed-over one: that second acquire
+  happens with the window lifted (`_sigusr2_undeferred`), never inside it.
+  Correspondingly, `_ProviderInvocationLock` waits with `LOCK_EX | LOCK_NB` plus a
+  `LOCK_POLL_INTERVAL` sleep rather than a blocking `LOCK_EX`: a blocking flock parks
+  the main thread in the kernel, where CPython cannot run Python-level signal handlers
+  at all (the process-directed signal may be taken by another thread, so the flock
+  never sees `EINTR`), leaving the runner deaf to `/abort` and `/restart --force`.
+- **SIGUSR2 is capability-gated, never sent optimistically.** Its default disposition
+  is *terminate*, so a runner without `_on_sigusr2` is hard-killed by it: no `finally`
+  runs, and the provider subprocess — spawned `start_new_session=True`, hence outside
+  the runner's process group — survives as an orphan mutating the worktree while the
+  relaunched runner starts the next mission in the same repo. A PID/cmdline check
+  (`pid_manager.signal_process`) cannot detect this, because the stale runner *is*
+  `run.py`. The runner therefore publishes `.koan-run-caps` (its PID, that process's
+  start time, and a `sigusr2` line) immediately after installing the handler and
+  clears it in `main_loop`'s exit `finally`; the `/restart` skill signals only when
+  `runner_supports_force_signal` matches that marker to the live process, and
+  otherwise degrades to the polite restart and reports the degradation. **The marker
+  identifies a process, not a PID** — `main_loop`'s `finally` cannot run for a
+  SIGKILLed or OOM-killed runner, so the file outlives it; the recorded start time
+  (same `_process_start_time` source, same 30 s tolerance as `mission_scope`'s
+  `pid-<n>` records) is what stops a corpse's marker from vouching for a later runner
+  that reused the PID — including a rollback to an image with no handler, which is
+  exactly the case the gate exists to prevent. Every uncertainty fails closed: no
+  start time in the body, an unreadable live start time, or an unparseable value all
+  mean "not supported". This is not hypothetical: `/update` re-execs the bridge
+  at once but lets the runner finish its mission (`CYCLE_FILE` → exit 42), so a new
+  bridge routinely drives a pre-upgrade runner. Any future runner-directed signal
+  whose default disposition is lethal MUST be gated the same way.
 - **Mission-failure notifications route their emoji through `_mission_fail_icon()`.**
   CI-related missions (`/ci_check`, ci_dispatch `Fix CI failure:`) surface 🚦 — a
   status signal, not an alarm, per operator preference; all other failures surface ❌.
@@ -423,6 +486,9 @@ heuristic:
   faster than post-kill JSON-completeness checks.
 - Retry-guard gaps: introducing a new kill/abort mechanism without a `_maybe_retry_mission`
   guard silently drops retryable missions.
+  The forced-restart exit is the single sanctioned exception (see the invariant
+  above) — it bypasses the guard by design and delegates to `recover.py`. Do not
+  read it as precedent: any *other* new kill path still needs the guard.
 - `_run_iteration` is large; the dispatch layer was extracted to `mission_executor` to
   keep `run.py` focused on the execution host. Resist re-merging them.
 
