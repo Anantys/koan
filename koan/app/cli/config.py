@@ -8,16 +8,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
+from app.apiclient import DEFAULT_TIMEOUT
 from app.cli import CliError
 
 
 CONFIG_PATH = Path.home() / ".config" / "koan-cli.cfg"
 ALLOWED_MODES = {0o600, 0o400}
-# Several handlers run their work synchronously inside the request: POST
-# /v1/update shells out to git fetch + git pull, POST /v1/projects clones a
-# repository. A budget under those routinely reports a completed, non-idempotent
-# action as a failure, so default well above them and let the operator raise it.
-DEFAULT_TIMEOUT = 120.0
 
 
 @dataclass(frozen=True)

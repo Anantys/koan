@@ -32,6 +32,9 @@ mcp:
 
 MCP derives its URL from `api.host` and `api.port`. It gets the token from
 `KOAN_API_TOKEN`, falling back to `api.token`; no MCP-specific secret exists.
+Because the client spawns the server itself rather than going through `make`,
+the entrypoint loads `$KOAN_ROOT/.env` at startup, so a token kept there (the
+documented preference) reaches it without being repeated in the client's `env`.
 With `mcp.enabled: false` or no `mcp` mapping, the subprocess refuses to run and
 prints the setting needed to enable it.
 

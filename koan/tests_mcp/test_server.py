@@ -5,6 +5,7 @@ import json
 import pytest
 
 from app.apiclient import ApiClientError
+from app.cli.config import DEFAULT_TIMEOUT
 from app.mcp.server import create_server
 
 
@@ -99,6 +100,25 @@ def test_exec_operation_reaches_unnamed_operation(api_spec_path):
     assert json.loads(result.content[0].text) == {"ok": True}
 
 
+def test_default_client_uses_the_cli_request_budget(monkeypatch, api_spec_path):
+    """exec_operation reaches slow synchronous handlers; 10s would mis-report them."""
+    captured = {}
+
+    class Recorder:
+        def __init__(self, spec_path, base_url, token, **kwargs):
+            captured.update(kwargs)
+
+        def execute_operation(self, operation_id, **kwargs):
+            return {"ok": True}
+
+    monkeypatch.setattr("app.mcp.server.RestApiClient", Recorder)
+    monkeypatch.setattr("app.config.get_api_token", lambda: "secret")
+
+    server = create_server(spec_path=api_spec_path)
+    assert asyncio.run(server.call_tool("koan_status", {})).is_error is False
+    assert captured["timeout"] == DEFAULT_TIMEOUT
+
+
 def test_api_failure_becomes_actionable_tool_error(api_spec_path):
     class Client:
         def execute_operation(self, operation_id, **kwargs):
@@ -166,6 +186,38 @@ def test_unreachable_startup_probe_warns_but_runs(monkeypatch, capsys):
     warning = capsys.readouterr().err
     assert "warning" in warning
     assert "/v1/health" in warning
+
+
+def test_entrypoint_reads_api_token_from_dotenv(monkeypatch, tmp_path):
+    """Clients spawn this process with a bare env, so `.env` must still apply."""
+    from app.mcp import __main__ as entrypoint
+
+    (tmp_path / ".env").write_text('KOAN_API_TOKEN="from-dotenv"\n')
+    monkeypatch.setenv("KOAN_API_TOKEN", "placeholder")
+    monkeypatch.delenv("KOAN_API_TOKEN")
+    monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
+
+    tokens = []
+
+    class Probe:
+        def __init__(self, spec_path, base_url, token, **kwargs):
+            tokens.append(token)
+
+        def execute_operation(self, operation_id):
+            return {"status": "ok"}
+
+    class Server:
+        def run(self, transport):
+            pass
+
+    monkeypatch.setattr(entrypoint, "get_mcp_enabled", lambda: True)
+    monkeypatch.setattr(entrypoint, "get_mcp_transport", lambda: "stdio")
+    monkeypatch.setattr(entrypoint, "get_mcp_tools_allow_destructive", lambda: False)
+    monkeypatch.setattr("app.mcp.server.create_server", lambda **kwargs: Server())
+    monkeypatch.setattr("app.apiclient.RestApiClient", Probe)
+
+    assert entrypoint.main() == 0
+    assert tokens == ["from-dotenv"]
 
 
 def test_http_entrypoint_serves_with_pid_lock(monkeypatch, tmp_path):

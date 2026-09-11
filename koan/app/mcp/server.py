@@ -7,7 +7,7 @@ from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations as SdkToolAnnotations
 
-from app.apiclient import ApiClientError, RestApiClient
+from app.apiclient import DEFAULT_TIMEOUT, ApiClientError, RestApiClient
 from app.apiclient.spec import load_operations, load_spec
 from app.mcp.catalog import ToolDefinition, build_tool_definitions
 from app.mcp.config import get_api_base_url
@@ -36,7 +36,15 @@ def create_server(
     if client is None:
         from app.config import get_api_token
 
-        client = RestApiClient(resolved_spec, get_api_base_url(), get_api_token())
+        # exec_operation can reach the synchronous, non-idempotent handlers
+        # (POST /v1/update, POST /v1/projects), so share the budget the CLI
+        # settled on rather than reporting a completed action as a failure.
+        client = RestApiClient(
+            resolved_spec,
+            get_api_base_url(),
+            get_api_token(),
+            timeout=DEFAULT_TIMEOUT,
+        )
     server = MCPServer(
         "koan",
         description="Curated Kōan REST API tools",

@@ -11,6 +11,13 @@ from app.apiclient.request import render_operation_request
 from app.apiclient.spec import load_operations, load_spec
 
 
+# Several handlers run their work synchronously inside the request: POST
+# /v1/update shells out to git fetch + git pull, POST /v1/projects clones a
+# repository. A budget under those routinely reports a completed, non-idempotent
+# action as a failure, so default well above them and let the caller raise it.
+DEFAULT_TIMEOUT = 120.0
+
+
 class RestApiClient:
     def __init__(
         self,
@@ -19,7 +26,7 @@ class RestApiClient:
         token: str,
         *,
         session=requests,
-        timeout: float = 10,
+        timeout: float = DEFAULT_TIMEOUT,
     ):
         operations = load_operations(load_spec(spec_path))
         self._operations = {operation.operation_id: operation for operation in operations}

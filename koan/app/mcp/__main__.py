@@ -13,6 +13,7 @@ from app.config import (
     get_mcp_tools_allow_destructive,
     get_mcp_transport,
 )
+from app.utils import load_dotenv
 
 
 def _load_server():
@@ -108,6 +109,10 @@ def _run_http(koan_root: Path) -> int:
 
 
 def main() -> int:
+    # MCP clients spawn this process themselves with a minimal env, so nothing
+    # has sourced `.env` the way `make` does — and `.env` is where the docs tell
+    # operators to keep KOAN_API_TOKEN. Load it before any token is read.
+    load_dotenv()
     if not get_mcp_enabled():
         print(
             "Kōan MCP server disabled; set mcp.enabled: true in instance/config.yaml",
