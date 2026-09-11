@@ -166,11 +166,15 @@ survive as an orphan — still burning quota and editing the worktree while the
 relaunched runner picks up the next mission in the same repo. This is a real
 window, because `/update` re-execs the bridge immediately but lets the runner
 finish its current mission, so a new bridge routinely drives an older runner.
-The runner therefore writes `.koan-run-caps` (its PID plus a `sigusr2` line)
-right after installing the handler and removes it on exit; `/restart --force`
-signals only when that file vouches for the live PID. Otherwise it degrades to
-the polite restart — the behavior every runner understands — and says so in the
-reply.
+The runner therefore writes `.koan-run-caps` (its PID, that process's start time,
+and a `sigusr2` line) right after installing the handler and removes it on exit;
+`/restart --force` signals only when that file vouches for the live process. The
+start time matters because a runner that is SIGKILLed or OOM-killed never gets to
+remove the file: without it, a later runner that happened to reuse the PID —
+including one rolled back to a version with no handler — would be vouched for by
+the dead one's marker. Whenever the marker cannot be matched to the live process,
+`/restart --force` degrades to the polite restart — the behavior every runner
+understands — and says so in the reply.
 
 The loop writes real-time state to status files so the bridge, dashboard, and
 commands can report progress without directly controlling the runner.

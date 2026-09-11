@@ -1,6 +1,7 @@
 """Tests for pid_manager — exclusive PID file enforcement."""
 
 import contextlib
+import errno
 import fcntl
 import os
 import signal
@@ -2440,3 +2441,27 @@ class TestSignalProcessIdentityCheck:
              patch("app.pid_manager.os.kill") as kill:
             assert signal_process(tmp_path, "run", signal.SIGUSR2) is True
         kill.assert_called_once_with(4242, signal.SIGUSR2)
+
+    def test_a_refused_signal_names_the_errno(self, tmp_path, capsys):
+        """EPERM (daemon owned by another uid) is a permanent misconfiguration.
+
+        Returning a bare False makes it indistinguishable from "no runner", so
+        every /abort and /restart --force would report a benign marker-poll
+        fallback forever with nothing pointing at the real cause.
+        """
+        from app.pid_manager import signal_process
+        with patch("app.pid_manager.check_pidfile", return_value=4242), \
+             patch("app.pid_manager._cmdline_matches", return_value=True), \
+             patch("app.pid_manager.os.kill",
+                   side_effect=PermissionError(errno.EPERM, "not permitted")):
+            assert signal_process(tmp_path, "run", signal.SIGUSR2) is False
+        assert "cannot signal PID 4242" in capsys.readouterr().err
+
+    def test_a_pid_dying_before_the_kill_is_not_logged(self, tmp_path, capsys):
+        """A race with the daemon exiting — nothing an operator can act on."""
+        from app.pid_manager import signal_process
+        with patch("app.pid_manager.check_pidfile", return_value=4242), \
+             patch("app.pid_manager._cmdline_matches", return_value=True), \
+             patch("app.pid_manager.os.kill", side_effect=ProcessLookupError):
+            assert signal_process(tmp_path, "run", signal.SIGUSR2) is False
+        assert capsys.readouterr().err == ""

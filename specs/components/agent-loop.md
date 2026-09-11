@@ -425,11 +425,19 @@ heuristic:
   the runner's process group — survives as an orphan mutating the worktree while the
   relaunched runner starts the next mission in the same repo. A PID/cmdline check
   (`pid_manager.signal_process`) cannot detect this, because the stale runner *is*
-  `run.py`. The runner therefore publishes `.koan-run-caps` (its PID + a `sigusr2`
-  line) immediately after installing the handler and clears it in `main_loop`'s exit
-  `finally`; the `/restart` skill signals only when `runner_supports_force_signal`
-  matches that marker to the live PID, and otherwise degrades to the polite restart
-  and reports the degradation. This is not hypothetical: `/update` re-execs the bridge
+  `run.py`. The runner therefore publishes `.koan-run-caps` (its PID, that process's
+  start time, and a `sigusr2` line) immediately after installing the handler and
+  clears it in `main_loop`'s exit `finally`; the `/restart` skill signals only when
+  `runner_supports_force_signal` matches that marker to the live process, and
+  otherwise degrades to the polite restart and reports the degradation. **The marker
+  identifies a process, not a PID** — `main_loop`'s `finally` cannot run for a
+  SIGKILLed or OOM-killed runner, so the file outlives it; the recorded start time
+  (same `_process_start_time` source, same 30 s tolerance as `mission_scope`'s
+  `pid-<n>` records) is what stops a corpse's marker from vouching for a later runner
+  that reused the PID — including a rollback to an image with no handler, which is
+  exactly the case the gate exists to prevent. Every uncertainty fails closed: no
+  start time in the body, an unreadable live start time, or an unparseable value all
+  mean "not supported". This is not hypothetical: `/update` re-execs the bridge
   at once but lets the runner finish its mission (`CYCLE_FILE` → exit 42), so a new
   bridge routinely drives a pre-upgrade runner. Any future runner-directed signal
   whose default disposition is lethal MUST be gated the same way.

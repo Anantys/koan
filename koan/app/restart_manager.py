@@ -31,11 +31,14 @@ burning quota and mutating the worktree while the relaunched runner starts a
 new mission in the same repo. That is a live window, not a theoretical one:
 ``/update`` re-execs the bridge immediately but lets the runner finish its
 mission first, so a new bridge routinely drives an older runner. The runner
-therefore publishes ``.koan-run-caps`` (its PID + one line per capability)
-*after* installing the handler and removes it on exit; ``/restart --force``
-only signals when :func:`runner_supports_force_signal` confirms the live PID
-advertises ``sigusr2``, and otherwise degrades to the polite restart the old
-runner does understand.
+therefore publishes ``.koan-run-caps`` (its PID, that process's start time, and
+one line per capability) *after* installing the handler and removes it on exit;
+``/restart --force`` only signals when :func:`runner_supports_force_signal`
+confirms the live process — PID *and* start time — advertises ``sigusr2``, and
+otherwise degrades to the polite restart the old runner does understand. The
+start time is what makes the marker safe against its writer being SIGKILLed:
+that runner never reaches ``clear_runner_caps``, so a PID-only marker would
+vouch for whatever later reused the PID.
 
 Legacy ``.koan-restart`` (DEPRECATED): the single combined marker is no
 longer *written* by Kōan. It is read by nothing in-tree (both consumers poll
@@ -77,6 +80,16 @@ RUN_CAPS_FILE = ".koan-run-caps"
 # Capability name meaning "I have a SIGUSR2 handler installed; signalling me
 # triggers a forced restart instead of killing me".
 FORCE_SIGNAL_CAP = "sigusr2"
+
+# The caps body also records the declaring process's start time, because a PID
+# alone does not identify a process: a SIGKILL/OOM-killed runner never reaches
+# its ``clear_runner_caps``, so the file outlives it, and a later runner that
+# happens to reuse that PID — including one rolled back to an image with no
+# ``_on_sigusr2`` — would otherwise be vouched for by the corpse's marker.
+# Tolerance is generous only against coarse ``ps etime`` granularity and clock
+# nudges; declare-to-write latency is milliseconds. Mirrors
+# ``mission_scope._record_still_names_its_process``.
+CAPS_START_TOLERANCE = 30.0
 
 # One-shot guard so an unreadable marker logs once, not every poll tick.
 _force_read_error_logged = False
@@ -163,18 +176,49 @@ def is_force_restart(koan_root: str, target: str, since: float = 0) -> bool:
         return False
 
 
+def _runner_start_time(pid: int) -> Optional[float]:
+    """Epoch seconds when *pid* started, or None when it cannot be determined.
+
+    Thin seam over ``mission_scope._process_start_time`` (``/proc/<pid>/stat``
+    on Linux, ``ps -o etime=`` elsewhere) so the caps protocol and the mission
+    scope registry identify a process the same way. Imported lazily: this
+    module is imported by the bridge and by skill handlers, which have no other
+    reason to pull in the mission-scope machinery.
+    """
+    try:
+        from app.mission_scope import _process_start_time
+    except ImportError:
+        return None
+    return _process_start_time(pid)
+
+
 def declare_runner_caps(koan_root: str, pid: int) -> None:
     """Publish what the runner incarnation owning *pid* can be signalled with.
 
-    Called once the SIGUSR2 handler is installed. The PID is part of the body
-    so a stale file (crash, or a rollback to a runner that predates this
-    protocol) can never be mistaken for the live runner's capabilities.
+    Called once the SIGUSR2 handler is installed. The body carries the PID
+    *and* that process's start time, so a marker that outlived its writer (a
+    SIGKILLed or OOM-killed runner never runs ``clear_runner_caps``) cannot
+    vouch for a later process that merely inherited the PID — including a
+    rollback to a runner image that predates this protocol.
+
+    A host where the start time cannot be read publishes the marker without
+    one; :func:`runner_supports_force_signal` then fails closed and
+    ``/restart --force`` degrades to the polite restart.
     """
     from app.utils import atomic_write
 
-    atomic_write(
-        Path(koan_root) / RUN_CAPS_FILE, f"pid={pid}\n{FORCE_SIGNAL_CAP}\n",
-    )
+    body = f"pid={pid}\n"
+    started_at = _runner_start_time(pid)
+    if started_at is None:
+        from app.run_log import log
+        log(
+            "warning",
+            f"Cannot read start time for runner PID {pid}; /restart --force "
+            "will degrade to a polite restart",
+        )
+    else:
+        body += f"start={started_at}\n"
+    atomic_write(Path(koan_root) / RUN_CAPS_FILE, body + f"{FORCE_SIGNAL_CAP}\n")
 
 
 def clear_runner_caps(koan_root: str) -> None:
@@ -186,16 +230,34 @@ def clear_runner_caps(koan_root: str) -> None:
 def runner_supports_force_signal(koan_root: str, pid: int) -> bool:
     """True when the runner at *pid* advertises the SIGUSR2 forced-restart cap.
 
-    Fails closed: a missing, stale (different PID), or unreadable marker means
-    "assume not supported", so ``/restart --force`` degrades to the polite
-    restart instead of hard-killing a runner from a pre-upgrade image.
+    Verifies the *process*, not just the PID: the marker's recorded start time
+    must still match the live one, so a marker orphaned by a killed runner
+    cannot vouch for whatever later reused its PID.
+
+    Fails closed on every uncertainty — missing, unreadable, or stale marker,
+    a start time that is absent from the body or unreadable from the live
+    process — so ``/restart --force`` degrades to the polite restart instead
+    of hard-killing a runner that has no SIGUSR2 handler.
     """
     try:
         with open(os.path.join(koan_root, RUN_CAPS_FILE), encoding="utf-8") as fh:
             lines = {line.strip() for line in fh}
     except OSError:
         return False
-    return f"pid={pid}" in lines and FORCE_SIGNAL_CAP in lines
+    if f"pid={pid}" not in lines or FORCE_SIGNAL_CAP not in lines:
+        return False
+    declared = next(
+        (line[len("start="):] for line in lines if line.startswith("start=")), None,
+    )
+    if declared is None:
+        return False
+    live = _runner_start_time(pid)
+    if live is None:
+        return False
+    try:
+        return abs(live - float(declared)) <= CAPS_START_TOLERANCE
+    except ValueError:
+        return False
 
 
 def check_restart(

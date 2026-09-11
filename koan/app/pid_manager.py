@@ -322,22 +322,40 @@ def signal_process(
     script = script or f"{process_name}.py"
     try:
         pid = check_pidfile(koan_root, process_name)
-        if not pid:
-            return False
-        verified = _cmdline_matches(pid, script)
-        if verified is None:
-            print(
-                f"[pid_manager] cannot verify PID {pid} runs {script}; "
-                f"withholding signal {sig}",
-                file=sys.stderr,
-            )
-            return False
-        if not verified:
-            return False
-        os.kill(pid, sig)
-        return True
-    except (OSError, ValueError):
+    except (OSError, ValueError) as exc:
+        print(
+            f"[pid_manager] cannot read the {process_name} pidfile ({exc})",
+            file=sys.stderr,
+        )
         return False
+    if not pid:
+        return False
+    verified = _cmdline_matches(pid, script)
+    if verified is None:
+        print(
+            f"[pid_manager] cannot verify PID {pid} runs {script}; "
+            f"withholding signal {sig}",
+            file=sys.stderr,
+        )
+        return False
+    if not verified:
+        return False
+    try:
+        os.kill(pid, sig)
+    except ProcessLookupError:
+        # Raced with the daemon exiting — the caller's file-marker fallback
+        # covers it, and there is nothing an operator could act on.
+        return False
+    except (OSError, ValueError) as exc:
+        # Notably EPERM: the daemon runs as another uid (systemd-run vs.
+        # interactive split). That is a permanent misconfiguration, so it must
+        # not look like "no runner" on every /abort and /restart --force.
+        print(
+            f"[pid_manager] cannot signal PID {pid} with {sig} ({exc})",
+            file=sys.stderr,
+        )
+        return False
+    return True
 
 
 PROCESS_NAMES = ("run", "awake", "ollama", "dashboard", "api")

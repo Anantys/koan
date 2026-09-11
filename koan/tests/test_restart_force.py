@@ -15,9 +15,11 @@ from unittest.mock import patch
 
 import pytest
 from app.restart_manager import (
+    FORCE_SIGNAL_CAP,
     RESTART_BRIDGE_FILE,
     RESTART_EXIT_CODE,
     RESTART_RUN_FILE,
+    RUN_CAPS_FILE,
     clear_runner_caps,
     declare_runner_caps,
     is_force_restart,
@@ -25,6 +27,20 @@ from app.restart_manager import (
     runner_supports_force_signal,
 )
 from app.skills import SkillContext
+
+# Caps records are start-time-verified, so the tests below — which use PIDs
+# that do not exist on the test host — need a deterministic, per-PID stand-in
+# for the live start time. Distinct per PID so a "recycled PID" case can be
+# expressed by simply moving the answer for that PID.
+_FAKE_START = 1_700_000_000.0
+
+
+@pytest.fixture(autouse=True)
+def fake_process_start_times(monkeypatch):
+    """Give every PID a stable, distinct fake start time."""
+    monkeypatch.setattr(
+        "app.restart_manager._runner_start_time", lambda pid: _FAKE_START + pid,
+    )
 
 
 class TestForceMarker:
@@ -114,6 +130,54 @@ class TestRunnerCaps:
         declare_runner_caps(str(tmp_path), 4242)
         with patch("builtins.open", side_effect=PermissionError("EACCES")):
             assert runner_supports_force_signal(str(tmp_path), 4242) is False
+
+    def test_marker_outliving_its_writer_does_not_vouch_for_a_reused_pid(
+            self, tmp_path, monkeypatch):
+        """The one case the gate exists for: OOM-kill, then a PID reuse.
+
+        A SIGKILLed runner never reaches ``clear_runner_caps``, so its marker
+        survives. If a later runner — possibly a rollback with no SIGUSR2
+        handler — starts on the same PID, only the start time tells them apart.
+        """
+        declare_runner_caps(str(tmp_path), 4242)
+        monkeypatch.setattr(
+            "app.restart_manager._runner_start_time",
+            lambda pid: _FAKE_START + pid + 3600,
+        )
+        assert runner_supports_force_signal(str(tmp_path), 4242) is False
+
+    def test_start_time_within_tolerance_still_vouches(
+            self, tmp_path, monkeypatch):
+        """Coarse `ps etime` granularity must not break a live runner."""
+        declare_runner_caps(str(tmp_path), 4242)
+        monkeypatch.setattr(
+            "app.restart_manager._runner_start_time",
+            lambda pid: _FAKE_START + pid + 2,
+        )
+        assert runner_supports_force_signal(str(tmp_path), 4242) is True
+
+    def test_marker_without_a_start_time_fails_closed(self, tmp_path):
+        """A host that could not read its own start time gets no forced path."""
+        (tmp_path / RUN_CAPS_FILE).write_text(f"pid=4242\n{FORCE_SIGNAL_CAP}\n")
+        assert runner_supports_force_signal(str(tmp_path), 4242) is False
+
+    def test_declare_omits_an_unreadable_start_time(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "app.restart_manager._runner_start_time", lambda pid: None)
+        declare_runner_caps(str(tmp_path), 4242)
+        assert "start=" not in (tmp_path / RUN_CAPS_FILE).read_text()
+        assert runner_supports_force_signal(str(tmp_path), 4242) is False
+
+    def test_unparseable_start_time_fails_closed(self, tmp_path):
+        (tmp_path / RUN_CAPS_FILE).write_text(
+            f"pid=4242\nstart=not-a-number\n{FORCE_SIGNAL_CAP}\n")
+        assert runner_supports_force_signal(str(tmp_path), 4242) is False
+
+    def test_live_start_time_unreadable_fails_closed(self, tmp_path, monkeypatch):
+        declare_runner_caps(str(tmp_path), 4242)
+        monkeypatch.setattr(
+            "app.restart_manager._runner_start_time", lambda pid: None)
+        assert runner_supports_force_signal(str(tmp_path), 4242) is False
 
 
 class TestRestartHandler:
@@ -438,9 +502,15 @@ class TestForcedRestartWhileProviderLockContended:
                 )
         finally:
             elapsed = time.monotonic() - started
+            # Join the sender BEFORE restoring the handler. If the body returns
+            # early (the regression this test targets: the lock is not waited
+            # on, so unreachable_popen_cli raises at ~0s), restoring first would
+            # let the in-flight SIGUSR2 land on the default disposition and
+            # terminate pytest itself — killing the session instead of
+            # reporting a failure.
+            sender.join(timeout=5)
             signal.signal(signal.SIGUSR2, previous)
             released.set()
-            sender.join(timeout=2)
             releaser.join(timeout=2)
             holder.close()
 
