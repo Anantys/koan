@@ -92,10 +92,20 @@ def _run_skill(command: str, args: str = "") -> tuple:
 
 
 @bp.route("/v1/projects", methods=["GET"])
-@openapi_operation(mcp=True)
+@openapi_operation(
+    mcp=True,
+    mcp_description=(
+        "Use the returned project names as `project` values when creating or "
+        "filtering missions."
+    ),
+)
 @require_token
 def list_projects():
-    """List watched projects."""
+    """List watched projects.
+
+    Returns each configured project name, local path, and GitHub URL when one
+    is available.
+    """
     from app.utils import get_known_projects
     projects = get_known_projects()
     result = []

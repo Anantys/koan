@@ -4,7 +4,7 @@ title: "Component Spec — MCP Server"
 description: "Defines Kōan's opt-in MCP front-end over stdio or Streamable HTTP, curated REST operation tools, destructive-tool gate, shared OpenAPI HTTP client boundary, and HTTP authentication/audit invariants."
 tags: [web]
 created: 2026-09-09
-updated: 2026-09-10
+updated: 2026-09-11
 ---
 
 # Component Spec — MCP Server
@@ -133,14 +133,27 @@ Named tools use prefix `koan_`:
 | `koan_resume` | `POST /v1/resume` | write |
 | `koan_missions_delete` | `DELETE /v1/missions/{mission_id}` | destructive, separately gated |
 
-Write-operation input schemas stay hand-authored until OpenAPI request schemas
-fully replace them. Read-operation query and path schemas come from OpenAPI.
+Named-tool input schemas come from Python signatures through MCP SDK. Before
+registration, Kōan augments each signature with Pydantic `Field` metadata from
+matching OpenAPI path, query, or request-body properties. Supported numeric and
+pattern bounds become both advertised and enforced. Python defaults remain
+authoritative; OpenAPI defaults never replace them.
+
+Every published tool has a title, a non-empty description, parameter
+descriptions, and explicit `idempotentHint` and `openWorldHint` values.
+Read-only tools, resume, and mission deletion count as idempotent. Timed pause,
+mission creation/reordering, and `exec_operation` remain conservatively
+non-idempotent. Curated tools remain closed-world; `exec_operation` stays
+open-world because it can reach broader REST operations.
 
 `exec_operation` accepts an OpenAPI `operation_id`, path arguments, query
 object, and optional JSON body. It can invoke every documented operation,
 including admin and project-management operations intentionally absent from the
 named tool set. This explicit escape hatch mirrors the REST CLI's `raw`
 capability; clients may apply a single conservative approval policy to it.
+
+`DENIED_NAMED_OPERATIONS` limits named-tool publication only.
+`exec_operation` continues to reach every documented operation.
 
 ## Safety invariants
 
@@ -151,6 +164,7 @@ capability; clients may apply a single conservative approval policy to it.
   never receive named tools.
 - Mission deletion stays absent unless `mcp.tools_allow_destructive` is true.
 - Read tools carry `readOnlyHint`; mission deletion carries `destructiveHint`.
+- Every tool explicitly publishes idempotence and open-world semantics.
 - Named writes do not claim read-only or destructive behavior.
 - MCP never bypasses REST bearer authentication or server-side secret masking.
 - In HTTP mode, the outer ASGI layer authenticates every request before MCP

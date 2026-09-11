@@ -30,6 +30,66 @@ def test_sdk_registers_destructive_annotation(api_spec_path):
     assert tools["koan_missions_delete"].annotations.destructive_hint is True
 
 
+def test_all_sixteen_tools_are_self_describing(api_spec_path):
+    server = create_server(
+        spec_path=api_spec_path,
+        allow_destructive=True,
+    )
+    tools = {tool.name: tool for tool in _tools(server)}
+
+    assert len(tools) == 16
+    for tool in tools.values():
+        assert tool.title
+        assert tool.description.strip()
+        assert tool.annotations.idempotent_hint is not None
+        assert tool.annotations.open_world_hint is not None
+        for name, schema in tool.input_schema["properties"].items():
+            assert schema.get("description", "").strip(), (
+                f"{tool.name}.{name} has no description"
+            )
+
+    create = tools["koan_missions_create"]
+    assert "exactly one of `command` or `text`" in create.description
+    assert create.input_schema["properties"]["command"]["description"] == (
+        "Slash-command mission; takes precedence over text."
+    )
+
+
+def test_server_publishes_lifecycle_instructions(api_spec_path):
+    server = create_server(spec_path=api_spec_path)
+
+    assert "koan_status" in server.instructions
+    assert "pending" in server.instructions
+    assert "in_progress" in server.instructions
+    assert "koan_missions_result" in server.instructions
+    assert "do not poll `koan_missions_list`" in server.instructions
+
+
+def test_openapi_bounds_are_enforced_before_dispatch(api_spec_path):
+    calls = []
+
+    class Client:
+        def execute_operation(self, operation_id, **kwargs):
+            calls.append((operation_id, kwargs))
+            return {"ok": True}
+
+    server = create_server(
+        spec_path=api_spec_path,
+        allow_destructive=True,
+        client=Client(),
+    )
+
+    with pytest.raises(Exception, match="greater than or equal to 1"):
+        asyncio.run(
+            server.call_tool(
+                "koan_missions_reorder",
+                {"mission_id": "mission-1", "target_position": 0},
+            )
+        )
+
+    assert calls == []
+
+
 def test_all_fifteen_named_tools_dispatch(api_spec_path):
     calls = []
 

@@ -186,6 +186,20 @@ def test_every_operation_contributes_help(api_spec_path):
         )
 
 
+def test_leaf_help_contains_summary_and_docstring_body(api_spec_path):
+    operations = load_operations(load_spec(api_spec_path))
+    parser = build_parser(operations)
+    leaf = next(
+        sub
+        for sub in _walk_leaf_parsers(parser)
+        if sub.prog == "koan-cli missions create"
+    )
+
+    help_text = leaf.format_help()
+    assert "Queue a new mission." in help_text
+    assert "appended to the pending queue" in help_text
+
+
 def _walk_leaf_parsers(parser):
     """Yield every leaf argparse parser (deeper than the root subparser set)."""
     # Find the root subparsers action, then recurse through group subparsers.

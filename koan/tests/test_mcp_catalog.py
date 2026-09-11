@@ -114,10 +114,10 @@ def test_deny_list_overrides_a_curated_entry(monkeypatch, api_spec_path):
     spec["paths"]["/v1/shutdown"]["post"]["x-koan-mcp"] = True
     smuggled = CuratedTool(
         "koan_shutdown",
+        "Shut Kōan down",
         "POST",
         "/v1/shutdown",
         ToolAnnotations(),
-        {"type": "object", "properties": {}},
     )
     monkeypatch.setattr(
         catalog_module,
@@ -131,23 +131,45 @@ def test_deny_list_overrides_a_curated_entry(monkeypatch, api_spec_path):
     assert ("POST", "/v1/shutdown") not in {tool.operation_key for tool in tools}
 
 
-def test_write_schemas_describe_model_inputs(operations):
-    tools = {
-        tool.name: tool
-        for tool in build_tool_definitions(operations, allow_destructive=True)
-    }
+def test_curated_tools_have_titles_and_explicit_hints(operations):
+    tools = build_tool_definitions(operations, allow_destructive=True)
+    by_name = {tool.name: tool for tool in tools}
 
-    create = tools["koan_missions_create"].input_schema
-    assert set(create["properties"]) == {"command", "text", "project", "urgent"}
-    assert {tuple(branch["required"]) for branch in create["anyOf"]} == {
-        ("command",),
-        ("text",),
-    }
-    assert set(tools["koan_missions_reorder"].input_schema["required"]) == {
-        "mission_id",
-        "target_position",
-    }
-    assert tools["koan_pause"].input_schema["properties"]["duration"]["type"] == "string"
+    assert len(by_name) == 15
+    assert all(tool.title for tool in tools)
+    assert all(tool.annotations.open_world is False for tool in tools)
+
+    for name in {
+        "koan_health",
+        "koan_status",
+        "koan_missions_list",
+        "koan_missions_get",
+        "koan_missions_result",
+        "koan_projects_list",
+        "koan_usage",
+        "koan_metrics",
+        "koan_logs",
+        "koan_config",
+        "koan_resume",
+        "koan_missions_delete",
+    }:
+        assert by_name[name].annotations.idempotent is True
+
+    for name in {
+        "koan_missions_create",
+        "koan_missions_reorder",
+        "koan_pause",
+    }:
+        assert by_name[name].annotations.idempotent is False
+
+
+def test_curated_descriptions_compose_all_openapi_layers(operations):
+    tools = build_tool_definitions(operations, allow_destructive=True)
+
+    for tool in tools:
+        assert tool.operation.summary in tool.description
+        assert tool.operation.description in tool.description
+        assert tool.operation.mcp_description in tool.description
 
 
 def test_new_marked_operation_stays_hidden_without_curated_entry(operations):

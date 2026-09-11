@@ -1,11 +1,13 @@
 """MCP SDK adapter exposing curated REST operations over stdio."""
 
+from inspect import signature
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations as SdkToolAnnotations
+from pydantic import Field
 
 from app.apiclient import DEFAULT_TIMEOUT, ApiClientError, RestApiClient
 from app.apiclient.spec import load_operations, load_spec
@@ -15,9 +17,58 @@ from app.mcp.config import get_api_base_url
 
 DEFAULT_SPEC = Path(__file__).resolve().parents[2] / "openapi.yaml"
 
+SERVER_INSTRUCTIONS = (
+    "Use `koan_status` as the inexpensive orientation call. Missions move "
+    "from `pending` to `in_progress`, then to `done` or `failed`. After "
+    "queueing work, poll `koan_missions_get` for that mission id. When it is "
+    "done, read `koan_missions_result`; do not poll `koan_missions_list` "
+    "for results."
+)
+
+_FIELD_CONSTRAINTS = {
+    "minimum": "ge",
+    "maximum": "le",
+    "exclusiveMinimum": "gt",
+    "exclusiveMaximum": "lt",
+    "pattern": "pattern",
+}
+
 
 def _present(**values) -> dict:
     return {key: value for key, value in values.items() if value is not None}
+
+
+def _parameter_metadata(
+    definition: ToolDefinition,
+    name: str,
+) -> tuple[dict[str, Any], str]:
+    for parameter in definition.operation.parameters:
+        if parameter.name == name:
+            return parameter.schema, parameter.description
+
+    properties = (definition.operation.body_schema or {}).get("properties", {})
+    schema = properties.get(name, {})
+    return schema, str(schema.get("description") or "").strip()
+
+
+def _annotate_inputs(function, definition: ToolDefinition) -> None:
+    annotations = dict(function.__annotations__)
+    for name in signature(function).parameters:
+        schema, description = _parameter_metadata(definition, name)
+        if not description:
+            raise ValueError(
+                f"{definition.name}.{name} has no OpenAPI description"
+            )
+        constraints = {
+            field_name: schema[openapi_name]
+            for openapi_name, field_name in _FIELD_CONSTRAINTS.items()
+            if openapi_name in schema
+        }
+        annotations[name] = Annotated[
+            annotations[name],
+            Field(description=description, **constraints),
+        ]
+    function.__annotations__ = annotations
 
 
 def create_server(
@@ -48,6 +99,7 @@ def create_server(
     server = MCPServer(
         "koan",
         description="Curated Kōan REST API tools",
+        instructions=SERVER_INSTRUCTIONS,
     )
     by_name = {definition.name: definition for definition in definitions}
 
@@ -65,13 +117,17 @@ def create_server(
 
     def register(name: str, function) -> None:
         definition: ToolDefinition = by_name[name]
+        _annotate_inputs(function, definition)
         annotations = SdkToolAnnotations(
             readOnlyHint=definition.annotations.read_only,
             destructiveHint=definition.annotations.destructive,
+            idempotentHint=definition.annotations.idempotent,
+            openWorldHint=definition.annotations.open_world,
         )
         server.tool(
             name=name,
-            description=definition.operation.summary,
+            title=definition.title,
+            description=definition.description,
             annotations=annotations,
         )(function)
 
@@ -217,20 +273,38 @@ def create_server(
 
     @server.tool(
         name="exec_operation",
+        title="Execute an OpenAPI operation",
         description=(
             "Execute any operationId from Kōan's committed OpenAPI document. "
-            "Use only when no curated koan_* tool fits."
+            "Prefer the curated `koan_*` tools whenever one fits. This escape "
+            "hatch can reach operations intentionally denied named tools, "
+            "including shutdown, restart, update, release update, and project "
+            "mutation; use it only with explicit approval."
         ),
         annotations=SdkToolAnnotations(
             readOnlyHint=False,
             destructiveHint=True,
+            idempotentHint=False,
+            openWorldHint=True,
         ),
     )
     def exec_operation(
-        operation_id: str,
-        path: dict[str, Any] | None = None,
-        query: dict[str, Any] | None = None,
-        body: Any = None,
+        operation_id: Annotated[
+            str,
+            Field(description="OpenAPI operationId to execute."),
+        ],
+        path: Annotated[
+            dict[str, Any] | None,
+            Field(description="Values for path-template parameters."),
+        ] = None,
+        query: Annotated[
+            dict[str, Any] | None,
+            Field(description="Query-string parameters for the request."),
+        ] = None,
+        body: Annotated[
+            Any,
+            Field(description="Optional JSON request body."),
+        ] = None,
     ) -> Any:
         try:
             return client.execute_operation(

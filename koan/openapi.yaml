@@ -30,6 +30,7 @@ openapi: 3.1.0
 paths:
   /v1/config:
     get:
+      description: The response also includes the configured project names and local paths.
       operationId: admin_get_config_get
       responses:
         '200':
@@ -52,12 +53,16 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Get the effective config, with secrets masked out.
+      summary: Get the effective configuration with secrets masked.
       tags:
       - admin
       x-koan-mcp: true
+      x-koan-mcp-description: Use to inspect effective settings and known projects. Secret-looking values are masked and cannot be recovered through this tool.
   /v1/health:
     get:
+      description: 'This public endpoint returns the service name and version without
+
+        checking authentication or agent execution state.'
       operationId: health_get
       responses:
         '200':
@@ -69,12 +74,16 @@ paths:
                 $ref: '#/components/schemas/Error'
           description: Error response
       security: []
-      summary: Liveness probe; public, no token required.
+      summary: Check whether the REST API is alive.
       tags:
       - health
       x-koan-mcp: true
+      x-koan-mcp-description: Use this only to check REST API reachability. Use `koan_status` for normal orientation and agent readiness.
   /v1/logs:
     get:
+      description: 'Returns bounded run, bridge, or combined log lines without following the
+
+        files continuously.'
       operationId: observability_logs_get
       parameters:
       - description: Log source to read.
@@ -128,8 +137,10 @@ paths:
       tags:
       - observability
       x-koan-mcp: true
+      x-koan-mcp-description: Use for recent diagnostic context. Keep `limit` small first, then narrow with `source` or the case-insensitive `q` filter.
   /v1/metrics:
     get:
+      description: An optional project filter returns project-specific metrics and trend.
       operationId: observability_metrics_get
       parameters:
       - description: Lookback window; values are clamped to the documented range.
@@ -168,12 +179,16 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Mission throughput and success metrics over a window.
+      summary: Report mission throughput and success metrics over a window.
       tags:
       - observability
       x-koan-mcp: true
+      x-koan-mcp-description: Use for throughput, success-rate, trend, and security-block measurements rather than raw token consumption.
   /v1/missions:
     get:
+      description: 'Status and project filters narrow the response. Each record is reconciled
+
+        against `missions.md` before it is returned.'
       operationId: missions_list_missions_route_get
       parameters:
       - description: Restrict results to one mission status.
@@ -219,7 +234,11 @@ paths:
       tags:
       - missions
       x-koan-mcp: true
+      x-koan-mcp-description: Use this to browse or filter queues. Do not poll it for one mission's completion; use `koan_missions_get` with that mission id.
     post:
+      description: 'The mission is appended to the pending queue for a later agent cycle.
+
+        Setting `urgent` inserts it at the front instead.'
       operationId: missions_create_mission_post
       requestBody:
         content:
@@ -277,8 +296,10 @@ paths:
       tags:
       - missions
       x-koan-mcp: true
+      x-koan-mcp-description: Supply exactly one of `command` or `text`; a call with neither is rejected. The returned id identifies queued work, not a completed result. Poll `koan_missions_get`, then call `koan_missions_result` after status becomes `done`.
   /v1/missions/reorder:
     post:
+      description: Reordering changes queue priority without editing the mission text.
       operationId: missions_reorder_mission_route_post
       requestBody:
         content:
@@ -286,6 +307,7 @@ paths:
             schema:
               properties:
                 mission_id:
+                  description: Identifier of the pending mission to move.
                   pattern: \S
                   type: string
                 target_position:
@@ -322,11 +344,14 @@ paths:
       tags:
       - missions
       x-koan-mcp: true
+      x-koan-mcp-description: Only pending missions can be reordered. Obtain the mission id from `koan_missions_list` and use a one-indexed target position.
   /v1/missions/{mission_id}:
     delete:
+      description: The mission is removed from the queue and its API record is cancelled.
       operationId: missions_delete_mission_delete
       parameters:
-      - in: path
+      - description: Mission identifier returned when the mission was queued.
+        in: path
         name: mission_id
         required: true
         schema:
@@ -356,10 +381,15 @@ paths:
       tags:
       - missions
       x-koan-mcp: true
+      x-koan-mcp-description: This destructive tool is available only when `mcp.tools_allow_destructive` is enabled, and it accepts pending missions only.
     get:
+      description: 'Returns lifecycle state, outcome metadata, result references, and
+
+        aggregated usage for the selected mission.'
       operationId: missions_get_mission_route_get
       parameters:
-      - in: path
+      - description: Mission identifier returned when the mission was queued.
+        in: path
         name: mission_id
         required: true
         schema:
@@ -389,6 +419,7 @@ paths:
       tags:
       - missions
       x-koan-mcp: true
+      x-koan-mcp-description: Use this to poll one queued mission. When its status is `done`, fetch the complete structured result with `koan_missions_result`.
     patch:
       operationId: missions_edit_mission_patch
       parameters:
@@ -435,9 +466,13 @@ paths:
       - missions
   /v1/missions/{mission_id}/result:
     get:
+      description: 'Inline and spilled results use the same HTTP response, so clients never
+
+        need filesystem access.'
       operationId: missions_get_mission_result_route_get
       parameters:
-      - in: path
+      - description: Mission identifier returned when the mission was queued.
+        in: path
         name: mission_id
         required: true
         schema:
@@ -467,8 +502,12 @@ paths:
       tags:
       - missions
       x-koan-mcp: true
+      x-koan-mcp-description: Call this after `koan_missions_get` reports `done`. It returns the complete structured result and reports not found when no structured result is available.
   /v1/pause:
     post:
+      description: 'Supported durations include `2h`, `30m`, and combined forms such as
+
+        `1h30m`.'
       operationId: admin_pause_post
       requestBody:
         content:
@@ -501,12 +540,16 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Pause the agent, optionally for a duration like "2h" or "30m".
+      summary: Pause the agent indefinitely or for a relative duration.
       tags:
       - admin
       x-koan-mcp: true
+      x-koan-mcp-description: Omit `duration` for an indefinite pause. A timed retry computes a fresh deadline and can extend the pause, so do not retry it automatically after an ambiguous timeout.
   /v1/projects:
     get:
+      description: 'Returns each configured project name, local path, and GitHub URL when one
+
+        is available.'
       operationId: projects_list_projects_get
       responses:
         '200':
@@ -533,6 +576,7 @@ paths:
       tags:
       - projects
       x-koan-mcp: true
+      x-koan-mcp-description: Use the returned project names as `project` values when creating or filtering missions.
     post:
       operationId: projects_add_project_post
       requestBody:
@@ -708,6 +752,7 @@ paths:
       - admin
   /v1/resume:
     post:
+      description: Removes the active pause marker and leaves queued missions unchanged.
       operationId: admin_resume_post
       responses:
         '200':
@@ -734,6 +779,7 @@ paths:
       tags:
       - admin
       x-koan-mcp: true
+      x-koan-mcp-description: Use after a manual or timed pause when work should resume. Repeating this call has no additional effect.
   /v1/shutdown:
     post:
       operationId: admin_shutdown_post
@@ -763,6 +809,9 @@ paths:
       - admin
   /v1/status:
     get:
+      description: 'Combines execution state, queue counts, signal flags, pause details, and
+
+        attention count in one response.'
       operationId: status_status_get
       responses:
         '200':
@@ -789,6 +838,7 @@ paths:
       tags:
       - status
       x-koan-mcp: true
+      x-koan-mcp-description: Use this inexpensive call first to orient yourself before choosing a mission, observability, or control tool.
   /v1/update:
     post:
       operationId: admin_update_post
@@ -845,6 +895,9 @@ paths:
       - admin
   /v1/usage:
     get:
+      description: 'Results can be bucketed by day, week, or month and optionally split or
+
+        filtered by project.'
       operationId: observability_usage_get
       parameters:
       - description: Window length; values are clamped to the documented range.
@@ -909,10 +962,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Daily agent usage totals, optionally split by project.
+      summary: Report agent usage totals over a configurable window.
       tags:
       - observability
       x-koan-mcp: true
+      x-koan-mcp-description: Use for token and cost accounting. Choose a bounded window and add `project` only when a per-project breakdown is needed.
 security:
 - bearerAuth: []
 servers:

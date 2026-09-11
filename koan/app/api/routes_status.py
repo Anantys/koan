@@ -129,10 +129,20 @@ def _execution_truth(agent: dict, missions: dict, koan_root: Path) -> dict:
 
 
 @bp.route("/v1/status")
-@openapi_operation(mcp=True)
+@openapi_operation(
+    mcp=True,
+    mcp_description=(
+        "Use this inexpensive call first to orient yourself before choosing "
+        "a mission, observability, or control tool."
+    ),
+)
 @require_token
 def status():
-    """Get current agent state, execution and mission counters."""
+    """Get current agent state, execution and mission counters.
+
+    Combines execution state, queue counts, signal flags, pause details, and
+    attention count in one response.
+    """
     agent = _get_agent_state()
     missions = _mission_counts()
     return jsonify(

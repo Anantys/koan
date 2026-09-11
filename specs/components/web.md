@@ -4,7 +4,7 @@ title: "Component Spec — Web Dashboard & REST API"
 description: "Documents the Flask dashboard and token-gated REST API, their shared `dashboard_service`/`usage_service`/`log_reader` logic, the code-derived OpenAPI spec + drift guard, and the invariants keeping the two surfaces from drifting."
 tags: [web]
 created: 2026-06-27
-updated: 2026-09-09
+updated: 2026-09-11
 ---
 
 # Component Spec — Web Dashboard & REST API
@@ -201,8 +201,11 @@ control flow, lifecycle, or quota decisions.
   guard the declared field names, and numeric defaults used by both metadata and parsing come
   from the same constants.
 - **MCP exposure metadata stays beside the handler.** `openapi_operation(mcp=True)` makes
-  the generator emit `x-koan-mcp: true`; missing markers remain absent and therefore
-  fail closed. Marker meaning and the additional fixed curation gate belong to the
+  the generator emit `x-koan-mcp: true`; `mcp_description` emits
+  `x-koan-mcp-description`. First cleaned docstring line becomes OpenAPI `summary`,
+  while remaining cleaned body becomes `description`. Route-adjacent path parameter
+  prose merges into generated path parameters. Missing markers remain absent and
+  therefore fail closed. Marker meaning and additional fixed curation gate belong to
   [MCP server contract](mcp.md).
 - **The REST CLI consumes the committed OpenAPI document at runtime.** It does
   not commit generated client code. Every documented operation must map to one

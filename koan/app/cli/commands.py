@@ -224,6 +224,12 @@ def _configure_operation_parser(
     parser.set_defaults(_operation=operation)
 
 
+def _operation_description(operation: Operation) -> str:
+    return "\n\n".join(
+        part for part in (operation.summary, operation.description) if part
+    )
+
+
 def build_parser(
     operations: list[Operation],
     spec: dict[str, Any] | None = None,
@@ -273,7 +279,7 @@ def build_parser(
             leaf = roots.add_parser(
                 operation.command[0],
                 help=operation.summary,
-                description=operation.description or operation.summary,
+                description=_operation_description(operation),
                 epilog=_example_epilog(GROUP_EXAMPLES.get(operation.command[0])),
             )
         else:
@@ -292,7 +298,7 @@ def build_parser(
             leaf = groups[group_name].add_parser(
                 leaf_name,
                 help=operation.summary,
-                description=operation.description or operation.summary,
+                description=_operation_description(operation),
             )
         _configure_operation_parser(leaf, operation)
 

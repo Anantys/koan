@@ -279,6 +279,65 @@ def test_view_metadata_emits_request_body_and_query_parameters():
     assert query["schema"]["default"] is False
 
 
+def test_docstring_body_and_mcp_metadata_are_emitted():
+    from flask import Flask
+
+    test_app = Flask(__name__)
+
+    @test_app.get("/widgets/<widget_id>")
+    @openapi_operation(
+        mcp=True,
+        mcp_description="Use this after listing widgets.",
+        path_parameter_descriptions={
+            "widget_id": "Identifier returned by the widget list.",
+        },
+    )
+    def get_widget(widget_id):
+        """Fetch one widget.
+
+        Returns the current widget record.
+        """
+        return {"id": widget_id}
+
+    operation = openapi_gen.build_spec(test_app)["paths"][
+        "/widgets/{widget_id}"
+    ]["get"]
+
+    assert operation["summary"] == "Fetch one widget."
+    assert operation["description"] == "Returns the current widget record."
+    assert operation["x-koan-mcp-description"] == (
+        "Use this after listing widgets."
+    )
+    assert operation["parameters"][0]["description"] == (
+        "Identifier returned by the widget list."
+    )
+
+
+def test_curated_openapi_operations_are_self_describing(app):
+    spec = openapi_gen.build_spec(app)
+    marked = [
+        operation
+        for path_item in spec["paths"].values()
+        for operation in path_item.values()
+        if operation.get("x-koan-mcp") is True
+    ]
+
+    assert len(marked) == 15
+    for operation in marked:
+        assert operation.get("description", "").strip()
+        assert operation.get("x-koan-mcp-description", "").strip()
+
+        for parameter in operation.get("parameters", []):
+            assert parameter.get("description", "").strip()
+
+        body = operation.get("requestBody", {})
+        schema = body.get("content", {}).get("application/json", {}).get(
+            "schema", {}
+        )
+        for name, property_schema in schema.get("properties", {}).items():
+            assert property_schema.get("description", "").strip(), name
+
+
 def test_spec_matches_live_route_table(app):
     """Every registered route appears exactly once; no extra paths (FR-002, FR-004)."""
     spec = openapi_gen.build_spec(app)

@@ -63,10 +63,23 @@ def _mask_secrets(obj, depth: int = 0):
 
 
 @bp.route("/v1/pause", methods=["POST"])
-@openapi_operation(request_schema=_PAUSE_SCHEMA, request_required=False, mcp=True)
+@openapi_operation(
+    request_schema=_PAUSE_SCHEMA,
+    request_required=False,
+    mcp=True,
+    mcp_description=(
+        "Omit `duration` for an indefinite pause. A timed retry computes a "
+        "fresh deadline and can extend the pause, so do not retry it "
+        "automatically after an ambiguous timeout."
+    ),
+)
 @require_token
 def pause():
-    """Pause the agent, optionally for a duration like \"2h\" or \"30m\"."""
+    """Pause the agent indefinitely or for a relative duration.
+
+    Supported durations include `2h`, `30m`, and combined forms such as
+    `1h30m`.
+    """
     data = request.get_json(silent=True) or {}
     duration_str = data.get("duration", "").strip()
 
@@ -88,20 +101,38 @@ def pause():
 
 
 @bp.route("/v1/resume", methods=["POST"])
-@openapi_operation(mcp=True)
+@openapi_operation(
+    mcp=True,
+    mcp_description=(
+        "Use after a manual or timed pause when work should resume. Repeating "
+        "this call has no additional effect."
+    ),
+)
 @require_token
 def resume():
-    """Resume the agent after a pause."""
+    """Resume the agent after a pause.
+
+    Removes the active pause marker and leaves queued missions unchanged.
+    """
     from app.pause_manager import remove_pause
     remove_pause(str(_koan_root()))
     return jsonify({"status": "resumed"})
 
 
 @bp.route("/v1/config", methods=["GET"])
-@openapi_operation(mcp=True)
+@openapi_operation(
+    mcp=True,
+    mcp_description=(
+        "Use to inspect effective settings and known projects. Secret-looking "
+        "values are masked and cannot be recovered through this tool."
+    ),
+)
 @require_token
 def get_config():
-    """Get the effective config, with secrets masked out."""
+    """Get the effective configuration with secrets masked.
+
+    The response also includes the configured project names and local paths.
+    """
     from app.utils import load_config
     from app.utils import get_known_projects
     try:

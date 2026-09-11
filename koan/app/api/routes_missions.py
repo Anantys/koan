@@ -60,7 +60,11 @@ _REORDER_MISSION_SCHEMA = {
     "type": "object",
     "required": ["mission_id", "target_position"],
     "properties": {
-        "mission_id": {"type": "string", "pattern": r"\S"},
+        "mission_id": {
+            "type": "string",
+            "pattern": r"\S",
+            "description": "Identifier of the pending mission to move.",
+        },
         "target_position": {
             "type": "integer",
             "minimum": 1,
@@ -92,6 +96,8 @@ _LIST_MISSIONS_QUERY_PARAMETERS = (
         "Restrict results to one project.",
     ),
 )
+
+_MISSION_ID_DESCRIPTION = "Mission identifier returned when the mission was queued."
 
 
 def _instance_dir() -> Path:
@@ -159,10 +165,21 @@ def _find_pending_position(content: str, stored_text: str):
 
 
 @bp.route("/v1/missions", methods=["GET"])
-@openapi_operation(query_parameters=_LIST_MISSIONS_QUERY_PARAMETERS, mcp=True)
+@openapi_operation(
+    query_parameters=_LIST_MISSIONS_QUERY_PARAMETERS,
+    mcp=True,
+    mcp_description=(
+        "Use this to browse or filter queues. Do not poll it for one mission's "
+        "completion; use `koan_missions_get` with that mission id."
+    ),
+)
 @require_token
 def list_missions_route():
-    """List missions, newest first, optionally filtered."""
+    """List missions, newest first, optionally filtered.
+
+    Status and project filters narrow the response. Each record is reconciled
+    against `missions.md` before it is returned.
+    """
     status_filter = request.args.get("status")
     project_filter = request.args.get("project")
     records = list_missions(_instance_dir(), status_filter, project_filter)
@@ -176,10 +193,23 @@ def list_missions_route():
 
 
 @bp.route("/v1/missions", methods=["POST"])
-@openapi_operation(request_schema=_CREATE_MISSION_SCHEMA, mcp=True)
+@openapi_operation(
+    request_schema=_CREATE_MISSION_SCHEMA,
+    mcp=True,
+    mcp_description=(
+        "Supply exactly one of `command` or `text`; a call with neither is "
+        "rejected. The returned id identifies queued work, not a completed "
+        "result. Poll `koan_missions_get`, then call "
+        "`koan_missions_result` after status becomes `done`."
+    ),
+)
 @require_token
 def create_mission():
-    """Queue a new mission."""
+    """Queue a new mission.
+
+    The mission is appended to the pending queue for a later agent cycle.
+    Setting `urgent` inserts it at the front instead.
+    """
     data = request.get_json(silent=True) or {}
     try:
         text, project, urgent = _validate_mission_body(data)
@@ -196,10 +226,20 @@ def create_mission():
 
 
 @bp.route("/v1/missions/reorder", methods=["POST"])
-@openapi_operation(request_schema=_REORDER_MISSION_SCHEMA, mcp=True)
+@openapi_operation(
+    request_schema=_REORDER_MISSION_SCHEMA,
+    mcp=True,
+    mcp_description=(
+        "Only pending missions can be reordered. Obtain the mission id from "
+        "`koan_missions_list` and use a one-indexed target position."
+    ),
+)
 @require_token
 def reorder_mission_route():
-    """Move a pending mission to a new position."""
+    """Move a pending mission to a new position.
+
+    Reordering changes queue priority without editing the mission text.
+    """
     data = request.get_json(silent=True)
     if data is None:
         return jsonify(
@@ -254,10 +294,23 @@ def reorder_mission_route():
 
 
 @bp.route("/v1/missions/<mission_id>", methods=["GET"])
-@openapi_operation(mcp=True)
+@openapi_operation(
+    mcp=True,
+    mcp_description=(
+        "Use this to poll one queued mission. When its status is `done`, "
+        "fetch the complete structured result with `koan_missions_result`."
+    ),
+    path_parameter_descriptions={
+        "mission_id": _MISSION_ID_DESCRIPTION,
+    },
+)
 @require_token
 def get_mission_route(mission_id: str):
-    """Fetch one mission by id."""
+    """Fetch one mission by id.
+
+    Returns lifecycle state, outcome metadata, result references, and
+    aggregated usage for the selected mission.
+    """
     rec = get_mission(_instance_dir(), mission_id)
     if rec is None:
         return jsonify({"error": {"code": "not_found", "message": "Mission not found"}}), 404
@@ -292,10 +345,24 @@ def get_mission_route(mission_id: str):
 
 
 @bp.route("/v1/missions/<mission_id>/result", methods=["GET"])
-@openapi_operation(mcp=True)
+@openapi_operation(
+    mcp=True,
+    mcp_description=(
+        "Call this after `koan_missions_get` reports `done`. It returns the "
+        "complete structured result and reports not found when no structured "
+        "result is available."
+    ),
+    path_parameter_descriptions={
+        "mission_id": _MISSION_ID_DESCRIPTION,
+    },
+)
 @require_token
 def get_mission_result_route(mission_id: str):
-    """Fetch a finished mission's result."""
+    """Fetch a finished mission's result.
+
+    Inline and spilled results use the same HTTP response, so clients never
+    need filesystem access.
+    """
     if get_mission(_instance_dir(), mission_id) is None:
         return jsonify({"error": {"code": "not_found", "message": "Mission not found"}}), 404
     # reconcile so a just-completed mission gets its result attached first
@@ -309,10 +376,23 @@ def get_mission_result_route(mission_id: str):
 
 
 @bp.route("/v1/missions/<mission_id>", methods=["DELETE"])
-@openapi_operation(mcp=True)
+@openapi_operation(
+    mcp=True,
+    mcp_description=(
+        "This destructive tool is available only when "
+        "`mcp.tools_allow_destructive` is enabled, and it accepts pending "
+        "missions only."
+    ),
+    path_parameter_descriptions={
+        "mission_id": _MISSION_ID_DESCRIPTION,
+    },
+)
 @require_token
 def delete_mission(mission_id: str):
-    """Remove a pending mission."""
+    """Remove a pending mission.
+
+    The mission is removed from the queue and its API record is cancelled.
+    """
     rec = get_mission(_instance_dir(), mission_id)
     if rec is None:
         return jsonify({"error": {"code": "not_found", "message": "Mission not found"}}), 404

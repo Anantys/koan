@@ -4,7 +4,7 @@ title: "Kōan REST CLI"
 description: "Configure and use bin/koan-cli to call every operation in Kōan's token-authenticated REST API, with self-documenting --help."
 tags: [users]
 created: 2026-09-08
-updated: 2026-09-09
+updated: 2026-09-11
 ---
 
 # Kōan REST CLI
@@ -61,9 +61,10 @@ the corresponding nonzero exit code.
 
 ## Generated commands
 
-Commands follow the API resources. `--help` is generated from the OpenAPI
-document, so every root, group, and leaf carries a one-line description pulled
-from its view's summary, and every spec-described flag shows its help text:
+Commands follow API resources. `--help` comes from OpenAPI. Root and group
+listings stay terse by using each route's one-line summary. Detailed leaf help
+composes that summary with its docstring body. Parameter help comes from same
+OpenAPI parameter or request-property descriptions MCP uses:
 
 ```bash
 bin/koan-cli --help              # every root command, plus global examples

@@ -4,7 +4,7 @@ title: "MCP Server"
 description: "Configure Kōan's MCP server for local stdio clients or remote Streamable HTTP clients: shared bearer auth, TLS proxying, audits, and lifecycle."
 tags: [operations]
 created: 2026-09-09
-updated: 2026-09-10
+updated: 2026-09-11
 ---
 
 # MCP Server
@@ -138,13 +138,22 @@ stack separate preserves the lean main requirements and Python test matrix.
 Running `bin/koan-mcp` without the SDK prints `run make mcp-setup` and exits
 without a traceback.
 
-## Available tools
+## Tool discovery
 
-Fourteen tools appear by default: health, status, mission list/get/result,
-project list, usage, metrics, logs, masked config, mission create/reorder,
-pause, and resume. Names begin with `koan_`. Their input schemas describe path,
-query, and write-body fields, and read-only hints let clients avoid unnecessary
-write confirmations.
+Kōan defines fifteen curated `koan_*` tools plus generic `exec_operation`.
+Fourteen curated tools appear by default; `koan_missions_delete` requires its
+separate destructive-tool gate. Every published tool has a picker title,
+detailed description, documented parameters, and explicit MCP behavior hints.
+
+At connection time, server instructions direct clients to begin with
+`koan_status`, follow mission state with `koan_missions_get`, and retrieve a
+completed structured result with `koan_missions_result`. Mission-list calls
+serve queue browsing, not result polling.
+
+Curated parameter descriptions and enforceable numeric or pattern constraints
+come from the committed OpenAPI document. Route docstring bodies provide REST
+detail, while `x-koan-mcp-description` carries agent-specific call-order and
+safety advice.
 
 `koan_missions_delete` becomes the fifteenth named tool only when:
 
@@ -157,10 +166,11 @@ mcp:
 It carries a destructive hint. Shutdown, restart, updates, and all project
 create/update/delete operations never appear as named tools.
 
-`exec_operation` remains a deliberately conservative escape hatch. It accepts
-an OpenAPI `operation_id`, `path`, `query`, and optional JSON `body`, and can
-reach any operation in `koan/openapi.yaml`. Because this includes administrative
-operations, it always carries a destructive hint.
+`exec_operation` remains a deliberately broad escape hatch. It accepts an
+OpenAPI `operation_id`, `path`, `query`, and optional JSON `body`, and can reach
+any operation in `koan/openapi.yaml`. Named-tool denial does not restrict it,
+so it can reach administrative and project mutation operations without curated
+tools. It therefore carries destructive and open-world hints.
 
 Named exposure fails closed. A REST route must carry its explicit MCP marker
 and appear in Kōan's fixed curation table. Adding a route to OpenAPI alone never

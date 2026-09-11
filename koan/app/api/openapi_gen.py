@@ -14,6 +14,7 @@ See specs/005-openapi-enforcement/ and docs/operations/rest-api.md.
 """
 
 import argparse
+import inspect
 import re
 import sys
 from copy import deepcopy
@@ -23,7 +24,9 @@ import yaml
 from flask import Flask
 
 from app.api.openapi_metadata import (
+    MCP_DESCRIPTION_ATTR,
     MCP_ENABLED_ATTR,
+    PATH_PARAMETER_DESCRIPTIONS_ATTR,
     QUERY_PARAMETERS_ATTR,
     REQUEST_REQUIRED_ATTR,
     REQUEST_SCHEMA_ATTR,
@@ -80,26 +83,31 @@ def _openapi_path(rule: str) -> str:
     return _PATH_PARAM_RE.sub(r"{\1}", rule)
 
 
-def _path_params(openapi_path: str) -> list:
+def _path_params(openapi_path: str, descriptions: dict[str, str]) -> list:
     """Build OpenAPI parameter objects for each ``{name}`` in the path."""
     names = re.findall(r"{([^{}]+)}", openapi_path)
-    return [
-        {
+    result = []
+    for name in names:
+        parameter = {
             "name": name,
             "in": "path",
             "required": True,
             "schema": {"type": "string"},
         }
-        for name in names
-    ]
+        description = descriptions.get(name, "").strip()
+        if description:
+            parameter["description"] = description
+        result.append(parameter)
+    return result
 
 
-def _summary(view) -> str:
-    """First non-empty line of the view's docstring (fallback: humanized name)."""
-    doc = (view.__doc__ or "").strip()
-    if doc:
-        return doc.splitlines()[0].strip()
-    return view.__name__.replace("_", " ").strip().capitalize()
+def _doc_parts(view) -> tuple[str, str]:
+    """Return cleaned one-line summary and remaining docstring body."""
+    doc = inspect.cleandoc(view.__doc__ or "")
+    if not doc:
+        return view.__name__.replace("_", " ").strip().capitalize(), ""
+    lines = doc.splitlines()
+    return lines[0].strip(), "\n".join(lines[1:]).strip()
 
 
 def _tag(endpoint: str) -> str:
@@ -127,7 +135,11 @@ def build_spec(app: Flask) -> dict:
         secured = bool(getattr(view, "_koan_requires_token", False))
         tag = _tag(rule.endpoint)
         tags.add(tag)
-        path_params = _path_params(openapi_path)
+        summary, description = _doc_parts(view)
+        path_params = _path_params(
+            openapi_path,
+            getattr(view, PATH_PARAMETER_DESCRIPTIONS_ATTR, {}),
+        )
         query_params = getattr(view, QUERY_PARAMETERS_ATTR, ())
         request_schema = getattr(view, REQUEST_SCHEMA_ATTR, None)
 
@@ -144,12 +156,17 @@ def build_spec(app: Flask) -> dict:
                 # Method-qualified so a future multi-method view cannot emit two
                 # operations sharing an operationId (which is invalid OpenAPI).
                 "operationId": f"{rule.endpoint}_{m}".replace(".", "_"),
-                "summary": _summary(view),
+                "summary": summary,
                 "tags": [tag],
                 "responses": responses,
             }
+            if description:
+                operation["description"] = description
             if getattr(view, MCP_ENABLED_ATTR, False):
                 operation["x-koan-mcp"] = True
+                mcp_description = getattr(view, MCP_DESCRIPTION_ATTR, "")
+                if mcp_description:
+                    operation["x-koan-mcp-description"] = mcp_description
             parameters = [*deepcopy(path_params), *deepcopy(query_params)]
             if parameters:
                 operation["parameters"] = parameters

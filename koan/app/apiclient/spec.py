@@ -58,6 +58,7 @@ class Operation:
     summary: str = ""
     description: str = ""
     mcp_enabled: bool = False
+    mcp_description: str = ""
 
 
 def load_tag_descriptions(spec: dict[str, Any]) -> dict[str, str]:
@@ -216,6 +217,9 @@ def load_operations(spec: dict[str, Any]) -> list[Operation]:
                 summary=_first_line(operation.get("summary") or ""),
                 description=(operation.get("description") or "").strip(),
                 mcp_enabled=operation.get("x-koan-mcp") is True,
+                mcp_description=(
+                    operation.get("x-koan-mcp-description") or ""
+                ).strip(),
             )
         )
     assert_unique(operations)

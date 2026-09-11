@@ -127,10 +127,21 @@ def _int_param(name: str, default: str) -> int:
 
 
 @bp.route("/v1/usage")
-@openapi_operation(query_parameters=_USAGE_QUERY_PARAMETERS, mcp=True)
+@openapi_operation(
+    query_parameters=_USAGE_QUERY_PARAMETERS,
+    mcp=True,
+    mcp_description=(
+        "Use for token and cost accounting. Choose a bounded window and add "
+        "`project` only when a per-project breakdown is needed."
+    ),
+)
 @require_token
 def usage():
-    """Daily agent usage totals, optionally split by project."""
+    """Report agent usage totals over a configurable window.
+
+    Results can be bucketed by day, week, or month and optionally split or
+    filtered by project.
+    """
     from app.usage_service import build_usage_payload
 
     try:
@@ -150,10 +161,20 @@ def usage():
 
 
 @bp.route("/v1/metrics")
-@openapi_operation(query_parameters=_METRICS_QUERY_PARAMETERS, mcp=True)
+@openapi_operation(
+    query_parameters=_METRICS_QUERY_PARAMETERS,
+    mcp=True,
+    mcp_description=(
+        "Use for throughput, success-rate, trend, and security-block "
+        "measurements rather than raw token consumption."
+    ),
+)
 @require_token
 def metrics():
-    """Mission throughput and success metrics over a window."""
+    """Report mission throughput and success metrics over a window.
+
+    An optional project filter returns project-specific metrics and trend.
+    """
     from app.mission_metrics import (
         compute_global_metrics,
         compute_project_metrics,
@@ -188,10 +209,21 @@ def metrics():
 
 
 @bp.route("/v1/logs")
-@openapi_operation(query_parameters=_LOGS_QUERY_PARAMETERS, mcp=True)
+@openapi_operation(
+    query_parameters=_LOGS_QUERY_PARAMETERS,
+    mcp=True,
+    mcp_description=(
+        "Use for recent diagnostic context. Keep `limit` small first, then "
+        "narrow with `source` or the case-insensitive `q` filter."
+    ),
+)
 @require_token
 def logs():
-    """Tail recent agent logs, optionally filtered by source."""
+    """Tail recent agent logs, optionally filtered by source.
+
+    Returns bounded run, bridge, or combined log lines without following the
+    files continuously.
+    """
     from app.log_reader import read_logs
 
     source = request.args.get("source", "all")
