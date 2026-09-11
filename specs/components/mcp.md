@@ -155,6 +155,9 @@ capability; clients may apply a single conservative approval policy to it.
 - MCP never bypasses REST bearer authentication or server-side secret masking.
 - In HTTP mode, the outer ASGI layer authenticates every request before MCP
   parsing; missing credentials produce 401 and invalid credentials 403.
+- That layer allow-lists the scope types it forwards without a credential
+  check: only `lifespan`. Any other non-HTTP scope is refused and audited, so a
+  transport added later cannot inherit an unauthenticated path by default.
 - stdio remains the default transport and is never daemonized.
 
 ## Change protocol

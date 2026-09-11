@@ -7,7 +7,7 @@ from typing import Any
 
 import requests
 
-from app.apiclient import ApiClientError
+from app.apiclient.errors import ApiClientError
 from app.apiclient.request import RequestPlan
 
 log = logging.getLogger("koan.apiclient.http")

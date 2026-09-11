@@ -6,7 +6,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 from starlette.testclient import TestClient
 
-from app.mcp.http import BearerAuditMiddleware, build_http_app
+from app.mcp.http_transport import BearerAuditMiddleware, build_http_app
 from app.mcp.server import create_server
 
 
@@ -76,6 +76,38 @@ def test_rejected_request_is_audited(tmp_path):
     assert response.status_code == 401
     line = audit_path.read_text()
     assert " GET /mcp 401" in line
+
+
+def test_lifespan_scope_passes_through_unauthenticated(tmp_path):
+    seen = []
+
+    async def downstream(scope, receive, send):
+        seen.append(scope["type"])
+
+    middleware = BearerAuditMiddleware(downstream, tmp_path / "mcp.log")
+    asyncio.run(middleware({"type": "lifespan"}, None, None))
+
+    assert seen == ["lifespan"]
+
+
+def test_unknown_scope_is_refused_not_forwarded(tmp_path):
+    audit_path = tmp_path / "mcp.log"
+    forwarded = []
+    sent = []
+
+    async def downstream(scope, receive, send):
+        forwarded.append(scope["type"])
+
+    async def send(message):
+        sent.append(message)
+
+    middleware = BearerAuditMiddleware(downstream, audit_path)
+    scope = {"type": "websocket", "path": "/mcp", "headers": ()}
+    asyncio.run(middleware(scope, None, send))
+
+    assert forwarded == []
+    assert sent == [{"type": "websocket.close", "code": 1008}]
+    assert " /mcp 403" in audit_path.read_text()
 
 
 def test_stdio_and_http_servers_share_identical_tools(api_spec_path, tmp_path):

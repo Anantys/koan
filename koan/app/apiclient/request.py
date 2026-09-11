@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
 
-from app.apiclient import ApiClientError
+from app.apiclient.errors import ApiClientError
 from app.apiclient.spec import Operation
 
 

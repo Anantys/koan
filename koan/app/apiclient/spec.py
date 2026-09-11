@@ -10,7 +10,7 @@ from typing import Any
 
 import yaml
 
-from app.apiclient import ApiClientError
+from app.apiclient.errors import ApiClientError
 
 
 HTTP_METHODS = {"get", "post", "put", "patch", "delete"}

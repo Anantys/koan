@@ -35,13 +35,20 @@ def _config_path(koan_root: str) -> Path:
     return Path(koan_root) / "instance" / "config.yaml"
 
 
-def _mcp_is_legacy_list(config_path: Path) -> bool:
-    """True when ``config.yaml`` parses with ``mcp`` as a list."""
+def _mcp_is_legacy_list(config_path: Path) -> tuple[bool, Optional[str]]:
+    """Whether ``mcp`` parses as a list, plus why the check could not run.
+
+    "No legacy list" and "the config could not be inspected" are different
+    outcomes: the second leaves an operator believing a migration happened when
+    the file was never read, so it is reported rather than silently skipped.
+    """
     try:
         data = yaml.safe_load(config_path.read_text()) or {}
-    except (yaml.YAMLError, OSError):
-        return False
-    return isinstance(data, dict) and isinstance(data.get("mcp"), list)
+    except OSError as e:
+        return False, f"mcp: cannot read config.yaml ({e}); left unchanged"
+    except yaml.YAMLError as e:
+        return False, f"mcp: config.yaml is not valid YAML ({e}); left unchanged"
+    return isinstance(data, dict) and isinstance(data.get("mcp"), list), None
 
 
 def _rewrite_mcp_block(text: str) -> Optional[str]:
@@ -136,7 +143,10 @@ def migrate_mcp_config(koan_root: str) -> List[str]:
     if not config_path.exists():
         return []
 
-    if not _mcp_is_legacy_list(config_path):
+    is_legacy, problem = _mcp_is_legacy_list(config_path)
+    if problem:
+        return [problem]
+    if not is_legacy:
         return []
 
     try:

@@ -191,7 +191,7 @@ def test_http_entrypoint_serves_with_pid_lock(monkeypatch, tmp_path):
         lambda value, root, name: calls.append(("release", value, root, name)),
     )
     monkeypatch.setattr(
-        "app.mcp.http.serve_http",
+        "app.mcp.http_transport.serve_http",
         lambda server, **kwargs: calls.append(("serve", kwargs)),
     )
 
@@ -203,6 +203,36 @@ def test_http_entrypoint_serves_with_pid_lock(monkeypatch, tmp_path):
     assert calls[2] == ("release", lock, tmp_path, "mcp")
 
 
+def test_http_entrypoint_claims_pidfile_before_slow_startup(monkeypatch, tmp_path):
+    """The process manager's verify timeout starts at launch, not at listen."""
+    from app.mcp import __main__ as entrypoint
+
+    order = []
+
+    monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+    monkeypatch.setattr(entrypoint, "get_mcp_enabled", lambda: True)
+    monkeypatch.setattr(entrypoint, "get_mcp_transport", lambda: "http")
+    monkeypatch.setattr(entrypoint, "get_mcp_host", lambda: "127.0.0.1")
+    monkeypatch.setattr(entrypoint, "get_mcp_port", lambda: 8421)
+    monkeypatch.setattr(entrypoint, "get_api_token", lambda: "secret")
+    monkeypatch.setattr(
+        entrypoint, "_load_server", lambda: order.append("load_server") or object()
+    )
+    monkeypatch.setattr(entrypoint, "_probe_api", lambda: order.append("probe_api"))
+    monkeypatch.setattr(
+        "app.pid_manager.acquire_pidfile",
+        lambda root, name: order.append("acquire") or object(),
+    )
+    monkeypatch.setattr("app.pid_manager.release_pidfile", lambda *a: None)
+    monkeypatch.setattr(
+        "app.mcp.http_transport.serve_http",
+        lambda server, **kwargs: order.append("serve"),
+    )
+
+    assert entrypoint.main() == 0
+    assert order == ["acquire", "load_server", "probe_api", "serve"]
+
+
 def test_http_entrypoint_refuses_missing_token(monkeypatch, tmp_path, capsys):
     from app.mcp import __main__ as entrypoint
 
@@ -211,7 +241,7 @@ def test_http_entrypoint_refuses_missing_token(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(entrypoint, "get_mcp_transport", lambda: "http")
     monkeypatch.setattr(entrypoint, "get_api_token", lambda: "")
     monkeypatch.setattr(
-        "app.mcp.http.serve_http",
+        "app.mcp.http_transport.serve_http",
         lambda server, **kwargs: pytest.fail("listener must not start"),
     )
 
@@ -232,7 +262,7 @@ def test_http_entrypoint_warns_for_non_loopback(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(entrypoint, "_probe_api", lambda: None)
     monkeypatch.setattr("app.pid_manager.acquire_pidfile", lambda root, name: object())
     monkeypatch.setattr("app.pid_manager.release_pidfile", lambda lock, root, name: None)
-    monkeypatch.setattr("app.mcp.http.serve_http", lambda server, **kwargs: None)
+    monkeypatch.setattr("app.mcp.http_transport.serve_http", lambda server, **kwargs: None)
 
     assert entrypoint.main() == 0
     assert "non-loopback" in capsys.readouterr().err

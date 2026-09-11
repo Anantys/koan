@@ -145,12 +145,26 @@ def test_only_the_top_level_mcp_key_is_touched(koan_root):
     assert data["projects"]["demo"]["mcp"] == ["/per-project.json"]
 
 
-def test_unparseable_config_is_left_alone(koan_root):
+def test_unparseable_config_is_left_alone_and_reported(koan_root):
     original = "mcp:\n- /a.json\n  bad: [\n"
     path = write_config(koan_root, original)
 
-    assert run_config_migrations(str(koan_root)) == []
+    messages = run_config_migrations(str(koan_root))
+
     assert path.read_text() == original
+    assert len(messages) == 1
+    assert "not valid YAML" in messages[0]
+
+
+def test_unreadable_config_is_reported_not_silently_skipped(koan_root):
+    # A config.yaml that cannot be read at all (here: it is a directory) must
+    # not look like "nothing to migrate".
+    (koan_root / "instance" / "config.yaml").mkdir()
+
+    messages = run_config_migrations(str(koan_root))
+
+    assert len(messages) == 1
+    assert "cannot read config.yaml" in messages[0]
 
 
 def test_migrated_config_passes_strict_validation(koan_root):

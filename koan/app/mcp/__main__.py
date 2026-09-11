@@ -55,6 +55,58 @@ def _warn_non_loopback(host: str) -> None:
         )
 
 
+def _build_server() -> "object | None":
+    """Build the server, or print the SDK-missing hint and return None."""
+    try:
+        return _load_server()
+    except ModuleNotFoundError as exc:
+        if exc.name == "mcp" or (exc.name or "").startswith("mcp."):
+            print(
+                "Kōan MCP SDK missing; run `make mcp-setup`",
+                file=sys.stderr,
+            )
+            return None
+        raise
+
+
+def _run_http(koan_root: Path) -> int:
+    if not koan_root.is_dir():
+        print("ERROR: KOAN_ROOT must be set to a valid directory", file=sys.stderr)
+        return 1
+    if not get_api_token():
+        print(
+            "ERROR: Kōan MCP HTTP refuses to start without a bearer token",
+            file=sys.stderr,
+        )
+        return 1
+
+    from app.mcp.config import get_mcp_http_url
+    from app.mcp.http_transport import serve_http
+    from app.pid_manager import acquire_pidfile, release_pidfile
+
+    host = get_mcp_host()
+    _warn_non_loopback(host)
+    # Claim the pidfile before the SDK import, the spec parse and the API
+    # probe: the process manager only waits a few seconds for it to appear,
+    # and a slow startup must not be reported as a launch failure.
+    lock = acquire_pidfile(koan_root, "mcp")
+    try:
+        server = _build_server()
+        if server is None:
+            return 1
+        _probe_api()
+        print(f"Kōan MCP HTTP listening on {get_mcp_http_url()}", flush=True)
+        serve_http(
+            server,
+            host=host,
+            port=get_mcp_port(),
+            audit_path=koan_root / "logs" / "mcp.log",
+        )
+    finally:
+        release_pidfile(lock, koan_root, "mcp")
+    return 0
+
+
 def main() -> int:
     if not get_mcp_enabled():
         print(
@@ -63,54 +115,15 @@ def main() -> int:
         )
         return 1
 
-    transport = get_mcp_transport()
     koan_root = Path(os.environ.get("KOAN_ROOT", ""))
-    if transport == "http":
-        if not koan_root.is_dir():
-            print("ERROR: KOAN_ROOT must be set to a valid directory", file=sys.stderr)
-            return 1
-        if not get_api_token():
-            print(
-                "ERROR: Kōan MCP HTTP refuses to start without a bearer token",
-                file=sys.stderr,
-            )
-            return 1
+    if get_mcp_transport() == "http":
+        return _run_http(koan_root)
 
-    try:
-        server = _load_server()
-    except ModuleNotFoundError as exc:
-        if exc.name == "mcp" or (exc.name or "").startswith("mcp."):
-            print(
-                "Kōan MCP SDK missing; run `make mcp-setup`",
-                file=sys.stderr,
-            )
-            return 1
-        raise
-
+    server = _build_server()
+    if server is None:
+        return 1
     _probe_api()
-    if transport == "stdio":
-        server.run("stdio")
-        return 0
-
-    from app.mcp.http import serve_http
-    from app.pid_manager import acquire_pidfile, release_pidfile
-
-    from app.mcp.config import get_mcp_http_url
-
-    host = get_mcp_host()
-    port = get_mcp_port()
-    _warn_non_loopback(host)
-    lock = acquire_pidfile(koan_root, "mcp")
-    try:
-        print(f"Kōan MCP HTTP listening on {get_mcp_http_url()}", flush=True)
-        serve_http(
-            server,
-            host=host,
-            port=port,
-            audit_path=koan_root / "logs" / "mcp.log",
-        )
-    finally:
-        release_pidfile(lock, koan_root, "mcp")
+    server.run("stdio")
     return 0
 
 

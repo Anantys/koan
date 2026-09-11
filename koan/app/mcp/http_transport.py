@@ -1,4 +1,10 @@
-"""Authenticated Streamable HTTP adapter for Kōan's MCP server."""
+"""Authenticated Streamable HTTP adapter for Kōan's MCP server.
+
+Deliberately *not* named ``http``: the daemon is launched as a script
+(``app/mcp/__main__.py``), which puts this directory first on ``sys.path``, so
+a module named ``http`` here would shadow the stdlib package that uvicorn and
+starlette import.
+"""
 
 import sys
 import time
@@ -43,9 +49,21 @@ class BearerAuditMiddleware:
                 file=sys.stderr,
             )
 
+    async def _reject_unsupported(self, scope, send) -> None:
+        """Fail closed on a scope type this middleware cannot authenticate."""
+        self._write_audit(scope, 403)
+        if scope["type"] == "websocket":
+            await send({"type": "websocket.close", "code": 1008})
+
     async def __call__(self, scope, receive, send):
-        if scope["type"] != "http":
+        if scope["type"] == "lifespan":
+            # Startup/shutdown carries no credentials and no request to audit.
             await self.app(scope, receive, send)
+            return
+        if scope["type"] != "http":
+            # Allow-list, not "anything but HTTP": a transport added later must
+            # not inherit an unauthenticated, unaudited path by default.
+            await self._reject_unsupported(scope, send)
             return
 
         logged = False

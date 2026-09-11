@@ -5,7 +5,7 @@ from typing import Any
 
 import requests
 
-from app.apiclient import ApiClientError
+from app.apiclient.errors import ApiClientError
 from app.apiclient.http import send_request
 from app.apiclient.request import render_operation_request
 from app.apiclient.spec import load_operations, load_spec
