@@ -760,6 +760,82 @@ def test_shrinking_plan_retires_orphaned_parts(tmp_path):
         assert "Koan current plan (rev" not in orphan["body"]
 
 
+def test_retirement_ignores_a_lagging_replica_of_the_part_just_published(tmp_path):
+    """The retirement pass must never blank the plan it just verified.
+
+    Jira's comment listing is not read-your-writes, so the fresh listing the
+    pass issues can still serve the *pre-edit* body of the comment
+    ``_upsert_part`` already confirmed: the plan property is there and the
+    revision is the old one, which is exactly the shape of a stale orphan.
+    Overwriting it destroys the published plan while `/plan` reports success.
+    """
+    stage_plan(URL, "first plan", str(tmp_path))
+    comments = []
+
+    def add(_key, rendered, properties=None):
+        comments.append({
+            "id": str(len(comments) + 1),
+            "body": rendered,
+            "properties": _properties_map(properties),
+        })
+        return True
+
+    def edit(_key, comment_id, rendered, properties=None):
+        target = next(c for c in comments if c["id"] == comment_id)
+        target["body"] = rendered
+        if properties is not None:
+            target["properties"] = _properties_map(properties)
+        return True
+
+    def snapshot():
+        return [dict(comment) for comment in comments]
+
+    with (
+        patch(
+            "app.jira_plan_publish.jira_list_comments_checked",
+            side_effect=lambda _k: snapshot(),
+        ),
+        patch("app.jira_plan_publish.jira_add_comment", side_effect=add),
+        patch("app.jira_plan_publish.jira_edit_comment", side_effect=edit),
+        patch("app.jira_plan_publish.log_event"),
+    ):
+        publish_staged_plan(URL, str(tmp_path))
+        assert len(comments) == 1
+        stale = snapshot()
+
+        # Serve the live listing until the new revision has been read back and
+        # verified, then hand the retirement pass — and only it — the replica
+        # that predates that write. Every later read is live again, so a
+        # retirement that fires reads back its own damage as "nothing left to
+        # retire" and the publish reports success.
+        verified = []
+        lagged = []
+
+        def lagging_list(_key):
+            if verified and not lagged:
+                lagged.append(True)
+                return [dict(comment) for comment in stale]
+            live = snapshot()
+            if any(_footer("second plan") in c["body"] for c in live):
+                verified.append(True)
+            return live
+
+        stage_plan(URL, "second plan", str(tmp_path))
+        with patch(
+            "app.jira_plan_publish.jira_list_comments_checked",
+            side_effect=lagging_list,
+        ):
+            ok, ids = publish_staged_plan(URL, str(tmp_path))
+
+    assert ok is True
+    assert ids == "1"
+    assert len(comments) == 1
+    assert verified, "the publish read its own write back before retirement ran"
+    assert lagged, "the retirement pass was handed the stale replica"
+    assert comments[0]["body"].endswith(_footer("second plan"))
+    assert _SUPERSEDED_BODY not in comments[0]["body"]
+
+
 def test_split_part_failure_reports_which_part(tmp_path):
     stage_plan(URL, _split_fixture(3), str(tmp_path))
 

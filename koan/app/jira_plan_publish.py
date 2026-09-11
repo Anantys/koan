@@ -20,7 +20,7 @@ import re
 import time
 from contextlib import suppress
 from pathlib import Path
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, List, Optional, Sequence, Tuple
 
 from app import jira_notifications as _jira_notifications
 from app.github_url_parser import parse_jira_url
@@ -553,7 +553,12 @@ def _upsert_part(
     return False, ""
 
 
-def _retire_superseded_parts(issue_key: str, revision: str, part_count: int) -> bool:
+def _retire_superseded_parts(
+    issue_key: str,
+    revision: str,
+    part_count: int,
+    published_ids: Optional[Sequence[str]] = None,
+) -> bool:
     """Blank out plan comments left behind by an earlier, longer plan.
 
     Without this, shrinking a 3-part plan to 2 parts strands part 3 on the issue
@@ -573,11 +578,23 @@ def _retire_superseded_parts(issue_key: str, revision: str, part_count: int) -> 
     part (a human quoting an older plan on a property-less deployment) is left
     untouched: a stranded part is recoverable, an overwritten human comment is
     not.
+
+    ``published_ids`` are the comments this publish just wrote *and* read-back
+    verified. They are never orphans, whatever this fresh listing says: Jira's
+    comment read path is not read-your-writes (see :func:`_upsert_part`), so a
+    lagging replica can still be serving the pre-edit body — old revision,
+    ``koan.jira.plan`` property intact — and without this guard the pass would
+    blank out the plan it just published, then read no footer on it and report
+    the retirement as complete.
     """
+    protected = {str(comment_id) for comment_id in (published_ids or []) if comment_id}
+
     def superseded(comments):
         return [
             comment for comment, rev, part, _count in _find_plan_comments(comments)
-            if (rev != revision or part > part_count) and _provably_koan(comment)
+            if (rev != revision or part > part_count)
+            and str(comment.get("id", "")) not in protected
+            and _provably_koan(comment)
         ]
 
     try:
@@ -668,7 +685,7 @@ def publish_staged_plan(
     # Keep the stage until cleanup is verified. A stranded older group would be
     # picked up by `/implement` in preference to this revision, so the publish
     # is not finished while one survives — the next run resumes and retries.
-    if not _retire_superseded_parts(issue_key, revision, part_count):
+    if not _retire_superseded_parts(issue_key, revision, part_count, comment_ids):
         return _record_failed_session(
             issue_url, instance_dir, "superseded_parts_not_retired",
         )

@@ -115,7 +115,12 @@ See `docs/users/skills.md` for the end-user `/plan` reference and
   boundaries into sequential parts, each footered `(rev <digest>, part N/M)` and
   verified independently. Parts are located by **part number, not revision**, so a new
   revision updates the comments in place instead of posting a second set; parts left
-  over when a plan shrinks are retired. Jira's public REST API exposes no
+  over when a plan shrinks are retired. Retirement is scoped to comments this publish
+  did **not** write: a part just written and read-back verified is never an orphan,
+  however stale the listing that drives the pass looks. Jira's comment read path is
+  not read-your-writes, so that listing can still be serving the pre-edit body —
+  old revision, plan property intact — and retiring on that evidence would destroy
+  the plan just published while reporting success. Jira's public REST API exposes no
   reply-to-comment operation, so parts carry `?focusedCommentId=` previous/next links
   rather than being threaded — those links are attached in a second pass, once every
   part has an id.
