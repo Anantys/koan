@@ -949,16 +949,27 @@ def _review_stall_timeout() -> int:
     watchdog) rather than configured separately, because the only value the
     inner bound can usefully take is one strictly below the outer one — at or
     above it the outer watchdog fires first and SIGKILLs the whole runner, and
-    the inner bound is decorative. Half the outer budget leaves room for the
-    pass to fail, be reported, and let the review continue.
+    the inner bound is decorative.
+
+    The margin is a flat 60s, not half the budget. For this path the two
+    clocks are the *same* clock: run.py's watchdog resets on the per-event
+    ``print()`` inside ``run_command_streaming``'s read loop, which is exactly
+    what heartbeats the inner one. So ``outer // 2`` would not add a bound
+    where none existed — it would *halve* the silence a review pass has always
+    been allowed (600s → 300s), and a single long turn (notably the final
+    synthesis turn on a large PR, emitted as one complete stream-json message
+    because Kōan never passes ``--include-partial-messages``) would degrade to
+    an empty verdict where it used to finish. All the margin has to buy is
+    room for this pass to fail and be reported: ``review_runner`` prints
+    immediately after, which resets the outer watchdog, so seconds suffice.
 
     Returns 0 (no inner bound) in the two cases where one cannot help:
 
     - the operator disabled the outer watchdog (``first_output_timeout: 0``),
       i.e. asked for no stall killing at all;
-    - the outer budget is already tighter than the 60s floor below which a
-      brief legitimate pause would be misread as a stall. The outer watchdog
-      governs there, so an inner bound would only ever be decorative.
+    - the margin would leave less than a 60s inner bound, below which a brief
+      legitimate pause reads as a stall. The outer watchdog governs there, so
+      an inner bound would only ever be decorative.
 
     The postcondition is therefore exact: the result is either 0, or a value
     strictly below ``first_output_timeout``.
@@ -968,7 +979,7 @@ def _review_stall_timeout() -> int:
     outer = get_first_output_timeout()
     if outer <= 0:
         return 0
-    inner = outer // 2
+    inner = outer - 60
     return inner if inner >= 60 else 0
 
 

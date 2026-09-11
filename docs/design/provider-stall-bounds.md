@@ -4,7 +4,7 @@ title: "Bounding a stalled provider: inactivity, not wall-clock"
 description: "Why run_command_streaming's timeout never reached its read loop, why the replacement bound is on inactivity rather than duration, and why session isolation and the group SIGKILL are scoped to the armed watchdog."
 tags: [design, providers, decision]
 created: 2026-09-10
-updated: 2026-09-10
+updated: 2026-09-11
 ---
 
 # Bounding a stalled provider: inactivity, not wall-clock
@@ -80,10 +80,25 @@ the inner bound never gets to report anything — it becomes decorative while
 looking configured. Rather than add a knob an operator can silently set into
 uselessness, `review_runner._review_stall_timeout()` derives the value:
 
-- half of `first_output_timeout`, when that is at least 60s;
+- `first_output_timeout - 60`, when that leaves at least 60s;
 - `0` (no inner bound) when the operator disabled the outer watchdog, or when
-  the outer budget is already tighter than the 60s floor below which a brief
+  the margin would leave less than the 60s floor below which a brief
   legitimate pause reads as a stall.
+
+The margin is a flat 60s rather than half the budget, and that distinction was
+caught in review. On this path the inner and outer clocks are the **same
+clock**: run.py's watchdog resets on the per-event `print()` inside
+`run_command_streaming`'s read loop, which is exactly what heartbeats the
+inner watchdog. So `outer // 2` would not have added a bound where none
+existed — it would have *halved* the silence a review pass has always been
+allowed (600s → 300s). Kōan never passes `--include-partial-messages`, so
+plain `stream-json` emits one line per complete message, and a single long
+turn — notably the final synthesis turn on a large PR — is silent for its
+whole duration. A 350s synthesis turn would have degraded to an empty verdict
+where it previously finished: the exact outcome this change set out to
+eliminate, reachable at half the previous threshold. All the margin has to buy
+is room for the pass to fail and be reported, and `review_runner` prints
+immediately afterwards, which resets the outer watchdog — so seconds suffice.
 
 The postcondition is exact and directly tested: the result is either `0`, or a
 value strictly below `first_output_timeout`.
@@ -125,12 +140,35 @@ blocked, never reaches the `fired` check, and never reports the stall: the hang
 the watchdog was armed to end, re-entered through the kill path itself.
 
 `LivenessWatchdog` therefore gained a `graceful` flag mirroring the one
-`ProcessWatchdog` already had, and this caller passes `graceful=False`. The
-default is unchanged, so no existing watchdog behaves differently.
+`ProcessWatchdog` already had. The class default is unchanged, but both
+existing call sites now pass `graceful=False`: this one, and
+`cli_exec.stream_with_timeout` (the `/rebase` review and CI phases), which
+reads an inherited pipe in exactly the same shape. Leaving that one graceful
+would have made `rebase_review_idle_timeout` silently ineffective against a
+SIGTERM-surviving descendant, with the resulting hang misattributed to the
+much looser `rebase_review_max_duration` — the invariant documented here,
+violated by a caller in the same file.
 
 The regression test spawns a child that forks a SIGTERM-ignoring grandchild
 holding the same stdout, then goes silent. Under the graceful kill it blocks
 for the full 30s; under the group SIGKILL it returns in about two.
+
+## Why the watchdog is disarmed the moment stdout ends
+
+`proc.stderr.read()` and `proc.wait()` run after stdout EOF and emit no
+heartbeats. A watchdog left armed across them would SIGKILL a run that had
+already streamed everything, and — since the `fired` check has already been
+evaluated by then — the kill would surface as an opaque `exit -9` rather than
+a stall: a successful review reported as a provider crash. So the watchdog is
+disarmed at loop exit, before the stderr drain, which is what
+`cli_exec.stream_with_timeout` already did.
+
+`cancel()` is not sufficient on its own. `threading.Timer.cancel()` is a no-op
+once `_fire` has begun running, and the `graceful=False` path deliberately has
+no `poll()` guard — so a late fire would reach `os.killpg` on a possibly
+recycled PID. `LivenessWatchdog` therefore also gained `ProcessWatchdog`'s
+`mark_completed()` flag, checked under the lock at the top of `_fire()`, and
+both call sites set it alongside `cancel()`.
 
 ## Related
 

@@ -227,7 +227,9 @@ class LivenessWatchdog:
     handles or ignores SIGTERM survives it. Callers whose liveness depends on
     the group releasing an inherited pipe must pass ``graceful=False``: a
     survivor holding the write end keeps the reader blocked forever, which is
-    the exact hang the watchdog was armed to end.
+    the exact hang the watchdog was armed to end. That path has no ``poll()``
+    guard, so such callers MUST also :meth:`mark_completed` when their read
+    loop ends — see :class:`ProcessWatchdog` for the same race.
     """
 
     def __init__(
@@ -242,6 +244,7 @@ class LivenessWatchdog:
         self._on_timeout = on_timeout
         self._graceful = graceful
         self._fired = False
+        self._completed = False
         self._timer: Optional[threading.Timer] = None
         self._lock = threading.Lock()
 
@@ -262,6 +265,17 @@ class LivenessWatchdog:
             if self._timer is not None:
                 self._timer.cancel()
 
+    def mark_completed(self) -> None:
+        """Disarm permanently: a later ``_fire`` becomes a no-op.
+
+        ``cancel()`` alone cannot close the race — ``threading.Timer.cancel()``
+        is a no-op once ``_fire`` has started running, and on the
+        ``graceful=False`` path ``force_kill_process_group`` has no ``poll()``
+        guard, so a late fire would group-kill a possibly-recycled PID.
+        """
+        with self._lock:
+            self._completed = True
+
     @property
     def fired(self) -> bool:
         return self._fired
@@ -276,7 +290,10 @@ class LivenessWatchdog:
         self._timer.start()
 
     def _fire(self) -> None:
-        self._fired = True
+        with self._lock:
+            if self._completed:
+                return
+            self._fired = True
 
         if self._on_timeout:
             self._on_timeout()

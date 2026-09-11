@@ -347,7 +347,12 @@ def stream_with_timeout(
     if effective_max_duration and effective_max_duration > 0:
         duration_watchdog = ProcessWatchdog(proc, effective_max_duration, graceful=False).start()
     if idle_timeout and idle_timeout > 0:
-        idle_watchdog = LivenessWatchdog(proc, idle_timeout).start()
+        # graceful=False for the same reason the duration watchdog above uses
+        # it: SIGTERM-then-escalate stops escalating once the *leader* exits,
+        # so a descendant that ignores SIGTERM survives holding the inherited
+        # stdout write end — the loop below never sees EOF, never reaches the
+        # idle_fired check, and the hang is misattributed to max_duration.
+        idle_watchdog = LivenessWatchdog(proc, idle_timeout, graceful=False).start()
 
     try:
         try:
@@ -363,6 +368,7 @@ def stream_with_timeout(
                 duration_watchdog.mark_completed()
                 duration_watchdog.cancel()
             if idle_watchdog is not None:
+                idle_watchdog.mark_completed()
                 idle_watchdog.cancel()
 
         with suppress_logged(_log_cli, "warning", "Stderr stream read failed", OSError, ValueError):

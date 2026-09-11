@@ -2956,14 +2956,42 @@ class TestStreamingReadLoopIsInactivityBounded:
             f"returned in {elapsed:.1f}s — a SIGTERM survivor held the pipe"
         )
 
+    def test_the_watchdog_is_disarmed_once_stdout_reaches_eof(self):
+        """A completed run must not be killed during the post-EOF wait.
+
+        ``proc.stderr.read()`` and ``proc.wait()`` emit no heartbeats. A
+        watchdog still armed across them SIGKILLs a run that already streamed
+        everything, and because the ``fired`` check has already been
+        evaluated the kill surfaces as an opaque ``exit -9`` instead of a
+        stall — a successful review reported as a provider crash.
+        """
+        proc = self._spawn(
+            "import os,sys,time\n"
+            "sys.stdout.write('done\\n')\n"
+            "sys.stdout.flush()\n"
+            # os.close, not sys.stdout.close(): CPython builds the std streams
+            # with closefd=False, so closing the wrapper leaves fd 1 (and the
+            # pipe) open and the reader would never see EOF.
+            "os.close(1)\n"
+            # Still alive well past the idle bound, holding stderr open — the
+            # exact window `proc.stderr.read()` blocks in with no heartbeats.
+            "time.sleep(4)\n"
+        )
+        try:
+            out = self._run(proc, idle_timeout=2)
+        finally:
+            proc.kill()
+            proc.wait()
+        assert "done" in out
+
 
 class TestReviewStallTimeoutStaysUnderTheOuterWatchdog:
     """An inner bound at or above the outer one is decorative."""
 
     @pytest.mark.parametrize("outer,expected", [
-        (600, 300),  # the default
+        (600, 540),  # the default: a flat 60s of reporting margin
         (120, 60),   # exactly the floor, still strictly below the outer
-        (119, 0),    # half falls under the 60s floor -> outer governs
+        (119, 0),    # margin leaves less than the 60s floor -> outer governs
         (60, 0),     # outer already tighter than the floor
         (0, 0),      # operator disabled stall killing -- honour it
     ])

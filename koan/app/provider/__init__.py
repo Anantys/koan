@@ -1840,14 +1840,29 @@ def run_command_streaming(
                     print(stripped, flush=True)
                     text_lines.append(stripped)
             _flush_text_deltas()
+            if idle_watchdog is not None:
+                # Disarm the moment the read loop ends. `stderr.read()` and
+                # `proc.wait()` below emit no heartbeats, so a watchdog still
+                # armed across them would SIGKILL a run that already completed
+                # and surface as an opaque exit -9 — past the `fired` check,
+                # so not even attributable. mark_completed() is what actually
+                # closes it: Timer.cancel() is a no-op once `_fire` has begun,
+                # and the graceful=False kill has no poll() guard.
+                idle_watchdog.mark_completed()
+                idle_watchdog.cancel()
             if idle_watchdog is not None and idle_watchdog.fired:
                 # The watchdog already SIGKILLed the group, which is what ended
                 # the read loop. Reap the corpse and report the stall rather
                 # than letting it surface as an opaque exit -9 further down.
                 with contextlib.suppress(subprocess.TimeoutExpired):
                     proc.wait(timeout=5)
+                # Carry whatever the pass streamed before going silent, same as
+                # the cancelled-end path: a stall after most findings were
+                # printed must stay diagnosable from the error alone.
+                partial = (final_result or "\n".join(text_lines)).strip()
+                suffix = f" Partial output: {partial[:200]}" if partial else ""
                 raise RuntimeError(
-                    f"CLI stalled — no output for {idle_timeout}s"
+                    f"CLI stalled — no output for {idle_timeout}s{suffix}"
                 )
             stderr_text = proc.stderr.read() if proc.stderr else ""
             proc.wait(timeout=timeout)
@@ -1856,9 +1871,11 @@ def run_command_streaming(
             proc.wait()
             raise RuntimeError(f"CLI invocation timed out after {timeout}s") from e
         finally:
-            # Cancel before closing the pipes: a live timer outliving this call
-            # could group-kill a recycled PID.
+            # The loop-exit path above already disarmed; this covers an
+            # exception raised mid-loop. A live timer outliving this call could
+            # group-kill a recycled PID.
             if idle_watchdog is not None:
+                idle_watchdog.mark_completed()
                 idle_watchdog.cancel()
             if proc.stdout:
                 proc.stdout.close()

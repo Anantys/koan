@@ -504,7 +504,13 @@ tools — MCP tools must still be allowlisted via qualified names
   defaults to `None`, which preserves the historical (unbounded) behavior for
   callers that have not opted in. An opted-in caller MUST pick a value strictly
   below `first_output_timeout`, otherwise the outer watchdog still wins and the
-  inner bound is decorative.
+  inner bound is decorative. On the review path the two clocks are the *same*
+  clock — run.py's watchdog resets on the read loop's per-event `print()`,
+  which is what heartbeats the inner one — so the inner value MUST be derived
+  as a small fixed margin below the outer budget (`outer - 60`), never a
+  fraction of it: halving it would not add a bound where none existed, it
+  would halve the silence the pass was always allowed and kill legitimate long
+  turns.
 - **Session isolation is scoped to the armed watchdog, and the watchdog's kill
   is SIGKILL-to-the-group.** These two follow from the bound above and are as
   load-bearing as it is.
@@ -528,6 +534,19 @@ tools — MCP tools must still be allowlisted via qualified names
   streaming* leaves it running. It is bounded by its own strictly-tighter idle
   watchdog, which is why the trade is worth taking; closing it fully needs the
   outer teardown to track isolated provider sessions.
+- **An inactivity watchdog must be disarmed when the read loop ends, not when
+  the call returns.** `proc.stderr.read()` and `proc.wait()` run after stdout
+  EOF and emit no heartbeats, so a watchdog still armed across them kills a run
+  that already streamed everything — and past the `fired` check, so the kill
+  surfaces as an opaque `exit -9` instead of an attributable stall. Disarming
+  MUST use `mark_completed()` as well as `cancel()`: `threading.Timer.cancel()`
+  is a no-op once `_fire` has begun, and the `graceful=False` kill path has no
+  `poll()` guard, so a late fire would `killpg` a possibly recycled PID. The
+  same applies to every `LivenessWatchdog` feeding a pipe read loop —
+  `cli_exec.stream_with_timeout` (the `/rebase` review and CI phases) included,
+  where a graceful kill would make `rebase_review_idle_timeout` ineffective
+  against a SIGTERM-surviving descendant and misattribute the resulting hang to
+  `rebase_review_max_duration`.
 
 ## Integration points
 

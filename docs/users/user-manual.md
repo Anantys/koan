@@ -1414,7 +1414,7 @@ schedule:
 skill_timeout: 3600           # Max seconds for /fix, /implement, /incident
 first_output_timeout: 600     # Kill silent skills after N seconds (0 disables)
                               # /review derives its own per-pass stall bound
-                              # from this (half of it, min 60s), so a stalled
+                              # from this (this value minus 60s), so a stalled
                               # review pass fails on its own instead of the
                               # whole runner being killed. Not separately
                               # configurable — see docs/design/provider-stall-bounds.md.
