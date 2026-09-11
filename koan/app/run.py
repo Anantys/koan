@@ -500,10 +500,11 @@ def run_claude_task(
             # is a contended wait that a peer Kōan can hold for a whole mission,
             # and a forced restart during it must be honoured at once (no child
             # exists yet, so there is nothing to orphan). Ownership passes to
-            # popen_cli's cleanup(); only a failure before that returns leaves
-            # it to us.
+            # popen_cli's cleanup(); any exit that does not reach a live child
+            # leaves it to us (see the launch `finally` below).
             cli_lock = acquire_provider_lock(provider)
             lock_handed_over = False
+            launched = False
 
             def _spawn_in_scope(argv, launcher, **kwargs):
                 # popen_cli owns the provider's prompt-file stdin and the
@@ -540,6 +541,7 @@ def run_claude_task(
                     )
                     proc = scoped.proc
                     _sig.claude_proc = proc
+                launched = True
             except FileNotFoundError as e:
                 # The provider binary vanished mid-session (the startup check +
                 # planner gate handle the common case). Fail this mission
@@ -555,19 +557,25 @@ def run_claude_task(
                     err_f.flush()
                 exit_code = 127
                 return exit_code
-            except BaseException:
-                # Covers the paths popen_cli's own failure handling never
+            finally:
+                # Single owner for every launch exit that leaves no live child:
+                # the FileNotFoundError return above (mission_scope pre-checks
+                # the binary *before* spawn, so popen_cli never received the
+                # lock), and the paths popen_cli's own failure handling never
                 # reaches — notably SystemExit raised by a deferred forced
                 # restart replaying when _sigusr2_deferred exits, *after*
                 # popen_cli returned. That success return handed us the
                 # cleanup that owns the prompt temp file (under koan_tmp_dir(),
                 # so no mission-TMPDIR reap or stray sweep covers it) and the
-                # stdin fd, plus the invocation lock. Both are idempotent.
-                if cleanup is not None:
-                    with contextlib.suppress(Exception):
-                        cleanup()
-                cli_lock.release()
-                raise
+                # stdin fd, plus the invocation lock. Both are idempotent, so
+                # releasing a lock popen_cli already dropped is harmless.
+                # On a successful launch ownership stays with cleanup(), which
+                # the wait loop's finally invokes.
+                if not launched:
+                    if cleanup is not None:
+                        with contextlib.suppress(Exception):
+                            cleanup()
+                    cli_lock.release()
 
             # Record the live provider PID so status consumers can report
             # observed runtime state instead of an inferred timestamp (#2086).

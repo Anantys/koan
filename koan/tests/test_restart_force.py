@@ -517,3 +517,70 @@ class TestForcedRestartWhileProviderLockContended:
         assert exc.value.code == RESTART_EXIT_CODE
         # Honoured during the wait, not after the peer happened to let go.
         assert elapsed < 3
+
+    def test_missing_provider_binary_releases_the_hoisted_lock(
+            self, tmp_path, monkeypatch):
+        """Exit 127 must not strand the per-uid provider lock.
+
+        ``mission_scope`` pre-checks the binary *before* spawning, so on this
+        path ``popen_cli`` never receives the hoisted lock and cannot release
+        it. If ``run_claude_task`` returns without releasing it itself, the next
+        mission's ``acquire_provider_lock`` polls LOCK_NB forever and the agent
+        loop wedges.
+        """
+        from app import mission_scope, run
+        from app.cli_exec import _ProviderInvocationLock, acquire_provider_lock
+        from app.provider.codex import CodexProvider
+
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        monkeypatch.setattr("app.utils.koan_tmp_dir", lambda: str(tmp_path))
+        monkeypatch.setattr("app.utils.sweep_stray_tmp_dirs", lambda *a, **k: [])
+        monkeypatch.setattr("app.page_cache.run_reclaim", lambda *a, **k: None)
+        # Force the systemd-run branch: that is where _require_executable runs,
+        # and it is the only one that raises before the spawn hand-over.
+        monkeypatch.setattr(mission_scope, "systemd_run", lambda: ("/bin/true", []))
+
+        def unreachable_popen_cli(cmd, **kwargs):
+            raise AssertionError("spawned despite a missing provider binary")
+
+        monkeypatch.setattr("app.cli_exec.popen_cli", unreachable_popen_cli)
+
+        # Keep a strong reference to the lock the runner takes. Without one,
+        # CPython would finalize the dead frame's file handle and drop the
+        # flock implicitly — masking a missing explicit release.
+        taken = []
+
+        def recording_acquire(provider):
+            lock = acquire_provider_lock(provider)
+            taken.append(lock)
+            return lock
+
+        monkeypatch.setattr(
+            "app.cli_exec.acquire_provider_lock", recording_acquire,
+        )
+
+        exit_code = run.run_claude_task(
+            cmd=["koan-provider-that-does-not-exist"],
+            stdout_file=str(tmp_path / "out.txt"),
+            stderr_file=str(tmp_path / "err.txt"),
+            cwd=str(tmp_path),
+            provider=CodexProvider(),
+        )
+
+        assert exit_code == 127
+        assert taken and taken[0].acquired, "runner never took the lock"
+
+        # flock ownership is per open-file-description, so a second open in this
+        # same process contends with a leaked one exactly like a peer Kōan would.
+        retry = _ProviderInvocationLock(CodexProvider().invocation_lock_name())
+        acquired = threading.Event()
+
+        def _take_fresh_lock():
+            retry.__enter__()
+            acquired.set()
+
+        worker = threading.Thread(target=_take_fresh_lock, daemon=True)
+        worker.start()
+        assert acquired.wait(5), "exit 127 leaked the lock; the next mission hangs"
+        assert retry.acquired
+        retry.release()
