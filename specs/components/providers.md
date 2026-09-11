@@ -486,6 +486,67 @@ tools — MCP tools must still be allowlisted via qualified names
   and `53` (turn limit) are documented but not mapped to Kōan's max-turns
   handling. Recorded samples: `koan/tests/gemini_samples.py`. Operator docs:
   `docs/providers/gemini.md`.
+- **The streaming read loop must be inactivity-bounded, and the child must be
+  session-isolated.** `run_command_streaming` consumes `proc.stdout` with a
+  blocking `for line in ...`. Its `timeout` argument reaches only the
+  `proc.wait(timeout=...)` that runs **after** stdout EOF, so a provider that
+  opens the pipe, prints its session banner and then goes silent forever is not
+  bounded by it at all — the loop simply blocks. The only thing that ever ended
+  such a run was run.py's outer skill-runner liveness watchdog
+  (`first_output_timeout`, default 600s), which SIGKILLs the whole runner
+  mid-pipeline: the mission dies with a generic "Skill runner timed out", no
+  partial result is written, and the stall is not attributable to the pass that
+  caused it. A hard wall-clock bound is the wrong instrument here — a healthy
+  long pass emits progress events for many minutes and must not be capped — so
+  the bound is on **inactivity**: callers opt in with `idle_timeout`, a
+  `LivenessWatchdog` heartbeats on every consumed line, and a stall raises
+  `RuntimeError` that the caller can attribute and degrade on. `idle_timeout`
+  defaults to `None`, which preserves the historical (unbounded) behavior for
+  callers that have not opted in. An opted-in caller MUST pick a value strictly
+  below `first_output_timeout`, otherwise the outer watchdog still wins and the
+  inner bound is decorative. On the review path the two clocks are the *same*
+  clock — run.py's watchdog resets on the read loop's per-event `print()`,
+  which is what heartbeats the inner one — so the inner value MUST be derived
+  as a small fixed margin below the outer budget (`outer - 60`), never a
+  fraction of it: halving it would not add a bound where none existed, it
+  would halve the silence the pass was always allowed and kill legitimate long
+  turns.
+- **Session isolation is scoped to the armed watchdog, and the watchdog's kill
+  is SIGKILL-to-the-group.** These two follow from the bound above and are as
+  load-bearing as it is.
+  `start_new_session=True` is passed **only when `idle_timeout` is set**. An
+  armed watchdog requires it — the kill is a group kill, and a child sharing
+  Kōan's process group would make it SIGKILL the daemon itself. But isolation
+  is not free in the other direction: `run.py`'s skill-runner teardown and
+  `mission_scope`'s fallback path both reap by process group, and a child in
+  its own session is outside both. Isolating unconditionally would put every
+  non-opted-in caller's provider beyond that teardown with no watchdog to
+  justify it, so a stuck provider could outlive a skill timeout, an abort, or
+  the outer liveness kill while still burning quota.
+  The kill must be `force_kill_process_group` (`graceful=False`), not the
+  SIGTERM-then-escalate default: escalation stops as soon as the *leader*
+  exits, so a descendant that handles or ignores SIGTERM survives it — and a
+  survivor holding the inherited stdout write end keeps the reader blocked,
+  never reaching the fired check. That is the same hang the watchdog exists to
+  end, re-entered through the kill path.
+  Residual, accepted: an opted-in child is outside the outer group teardown, so
+  an abort or `skill_timeout` that fires while the provider is *actively
+  streaming* leaves it running. It is bounded by its own strictly-tighter idle
+  watchdog, which is why the trade is worth taking; closing it fully needs the
+  outer teardown to track isolated provider sessions.
+- **An inactivity watchdog must be disarmed when the read loop ends, not when
+  the call returns.** `proc.stderr.read()` and `proc.wait()` run after stdout
+  EOF and emit no heartbeats, so a watchdog still armed across them kills a run
+  that already streamed everything — and past the `fired` check, so the kill
+  surfaces as an opaque `exit -9` instead of an attributable stall. Disarming
+  MUST use `mark_completed()` as well as `cancel()`: `threading.Timer.cancel()`
+  is a no-op once `_fire` has begun, and the `graceful=False` kill path has no
+  `poll()` guard, so a late fire would `killpg` a possibly recycled PID. The
+  same applies to every `LivenessWatchdog` feeding a pipe read loop —
+  `cli_exec.stream_with_timeout` (the `/rebase` review and CI phases) included,
+  where a graceful kill would make `rebase_review_idle_timeout` ineffective
+  against a SIGTERM-surviving descendant and misattribute the resulting hang to
+  `rebase_review_max_duration`.
 
 ## Integration points
 
